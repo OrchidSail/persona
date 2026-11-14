@@ -166,11 +166,6 @@ func (m *Manifest) SwitchedByConfig(point, id string) (string, bool) {
 			return f.When, true
 		}
 	}
-	for _, d := range m.StartDefaults() {
-		if d.ID == id {
-			return d.When, true
-		}
-	}
 	return "", false
 }
 

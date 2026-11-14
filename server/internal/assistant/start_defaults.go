@@ -3,30 +3,34 @@ package assistant
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
-	"github.com/nwverse/persona/server/internal/extension"
 	"github.com/nwverse/persona/server/internal/prompts"
 	"github.com/nwverse/persona/server/internal/proto"
 	"github.com/nwverse/persona/server/internal/rpc"
 )
 
-// Start defaults: what a task's start runs with beyond what the caller named. A separate source supplies them at
-// start time (the manager's extensions). Every field is opt-in: the zero value leaves the start exactly as the caller
-// and the model configuration would have made it, and explicit caller values always win.
+// Start defaults: what a task Agent starts with beyond what its caller named, by the kind of work. The owner, or an
+// installed extension granted the assistant.start_defaults hub scope, stores a policy of rules (GET/PUT
+// /api/v1/assistant/start-defaults, start_defaults_routes.go); a policy an extension writes must expire within
+// startDefaultsMaxExpiry, so a stopped or uninstalled extension leaves nothing in force. With no policy, an expired one
+// or no rule that fits a task, the task starts exactly as it would without the feature, and explicit caller values
+// always win.
 
-// StartDefaults is one source's answer for a task start.
+// StartDefaults is what one policy rule gives a task start.
 type StartDefaults struct {
-	// By says what supplied the answer, for the task's why and the logs; never an internal name.
+	// By says who wrote the policy (an extension's id, or owner), for the task's why and the logs.
 	By string
 	// Presets: the Agent presets (model profile tiers) to try, in order. The first one the task's computer can start
 	// now wins; weights share starts among the usable ones. A preset that cannot be read, whose launcher the computer
 	// lacks or whose launcher is at its usage limit is passed over. None: keep the start's own launcher and model.
 	Presets []PresetChoice
-	// Effort: applied when the caller gave none and the chosen preset has no effort of its own.
+	// Effort: applied when the caller gave none and the caller's own tier has none either.
 	Effort string
 	// Ultracode: applied only to a Claude Code start whose caller did not say.
 	Ultracode *bool
@@ -47,80 +51,161 @@ type PresetChoice struct {
 	Weight int
 }
 
-// StartFacts is what the source sees when asked for a task's defaults: only the kind of work, never the task's words.
+// StartFacts is what a rule is matched against: only the kind of work, never the task's words.
 type StartFacts struct {
 	Machine, Role string
 	Readonly      bool
-	// Supervisor: main (the main conversation), leader (a leader conversation), conversation (another assistant
-	// conversation) or background (the built-in background supervisor).
+	// Supervisor: the class of the conversation that follows the task up, as the dispatch policy names classes (main,
+	// leader, background_supervisor, scheduled, other); "" when no conversation does.
 	Supervisor string
 	// DoneWhen: how many acceptance criteria the task has (the criteria themselves stay in the task).
 	DoneWhen int
 }
 
+// Policy bounds.
 const (
-	supMain         = "main"
-	supLeader       = "leader"
-	supConversation = "conversation"
-	supBackground   = "background"
+	startDefaultsMaxRules   = 16
+	startDefaultsMaxPresets = 16
+	startDefaultsMaxWeight  = 1000
+	startDefaultsMaxExpiry  = time.Hour
 )
 
-// startDefaultsSource answers a task start's defaults; false or an error means no defaults, fail-closed: a source
-// that does not answer never changes a start. The manager's extension layer sets it; tests stub it.
-type startDefaultsSource interface {
-	StartDefaults(ctx context.Context, facts StartFacts) (StartDefaults, bool, error)
+// The task roles a rule can name.
+var startDefaultsRoles = []string{"worker", roleLeader}
+
+// StartDefaultsPolicy is the stored policy (Settings.StartDefaults). ExpiresAt is optional for the owner's own write;
+// one an extension writes must expire within startDefaultsMaxExpiry. An expired policy is no policy.
+type StartDefaultsPolicy struct {
+	Rules     []StartDefaultsRule `json:"rules"`
+	ExpiresAt *time.Time          `json:"expires_at,omitempty"`
+	// By is who wrote it: the extension's id, or "owner"; set by the manager from the request, never from its body.
+	By string `json:"by,omitempty"`
 }
 
-// presetIntN is the roll over the usable presets' weights; a var so tests are deterministic.
-var presetIntN = func(n int) int { return rand.IntN(n) }
-
-// taskSupervisorKind classifies the conversation that follows up a task: what its supervision ledger names (written
-// when the plan started, before the agent), else the leader conversation the plan handed it to. A task leader's
-// worker is its leader's; a task no conversation follows up has no kind ("") and matches only rules that name none.
-func (s *Service) taskSupervisorKind(ctx context.Context, t *PlanTask) string {
-	if t.Parent != "" {
-		return supLeader // a task leader's worker: its leader's agent follows it up
-	}
-	sup := t.Supervisor
-	if t.TodoID != "" {
-		if todo, ok := s.todoNow(t.TodoID); ok && todo.Supervision != nil && todo.Supervision.Supervisor != "" {
-			sup = todo.Supervision.Supervisor
-		}
-	}
-	switch {
-	case sup == "":
-		return ""
-	case s.isLeader(ctx, sup):
-		return supLeader
-	case s.isBackground(ctx, sup):
-		return supBackground
-	case s.isMain(ctx, sup):
-		return supMain
-	}
-	return supConversation
+// StartDefaultsRule is one match and what a matching task starts with; the first rule that fits wins.
+type StartDefaultsRule struct {
+	When StartDefaultsMatch `json:"when"`
+	Then StartDefaultsThen  `json:"then"`
 }
 
-// matchStartDefaults finds the first rule of the first holding contribution whose when fits the task, and turns it
-// into the start's defaults. Contributions keep the order the registry lists them; the extension's id is the source
-// name for the task's why.
-func (s *Service) matchStartDefaults(items []extension.StartDefaultsItem, facts StartFacts) (StartDefaults, bool) {
-	for _, item := range items {
-		for _, r := range item.Rules {
-			if !startDefaultsMatch(r.When, facts) {
-				continue
+// StartDefaultsMatch selects tasks; every set field has to fit and an empty one matches anything.
+type StartDefaultsMatch struct {
+	Supervisor []string `json:"supervisor,omitempty"`
+	Role       string   `json:"role,omitempty"`
+	Readonly   *bool    `json:"readonly,omitempty"`
+}
+
+// StartDefaultsThen is what a matching task starts with; every field is opt-in.
+type StartDefaultsThen struct {
+	Presets   []StartDefaultsPreset `json:"presets,omitempty"`
+	Effort    string                `json:"effort,omitempty"`
+	Ultracode *bool                 `json:"ultracode,omitempty"`
+	Goal      string                `json:"goal,omitempty"`
+	PlanFirst bool                  `json:"plan_first,omitempty"`
+}
+
+// StartDefaultsPreset is an Agent preset to try, with its share among usable presets (0 counts as 1).
+type StartDefaultsPreset struct {
+	Name   string `json:"name"`
+	Weight int    `json:"weight,omitempty"`
+}
+
+// validate checks the shape without touching the store. allowNoExpiry is true for the owner's own write.
+func (p *StartDefaultsPolicy) validate(allowNoExpiry bool, now time.Time) error {
+	if len(p.Rules) == 0 {
+		return errors.New("start_defaults.rules must name at least one rule")
+	}
+	if len(p.Rules) > startDefaultsMaxRules {
+		return fmt.Errorf("start_defaults.rules has %d entries; at most %d", len(p.Rules), startDefaultsMaxRules)
+	}
+	for i, r := range p.Rules {
+		at := fmt.Sprintf("start_defaults.rules[%d]", i)
+		for _, c := range r.When.Supervisor {
+			if !slices.Contains(dispatchClasses, c) {
+				return fmt.Errorf("%s.when.supervisor has %q; allowed: %v", at, c, dispatchClasses)
 			}
-			d := StartDefaults{By: item.ID, Effort: r.Then.Effort, Ultracode: r.Then.Ultracode, Goal: r.Then.Goal, PlanFirst: r.Then.PlanFirst}
-			for _, p := range r.Then.Presets {
-				d.Presets = append(d.Presets, PresetChoice{Name: p.Name, Weight: p.Weight})
-			}
-			return d, true
 		}
+		if r.When.Role != "" && !slices.Contains(startDefaultsRoles, r.When.Role) {
+			return fmt.Errorf("%s.when.role must be one of %v", at, startDefaultsRoles)
+		}
+		if r.Then.Effort != "" && !slices.Contains(proto.EffortLevels, r.Then.Effort) {
+			return fmt.Errorf("%s.then.effort must be one of %v", at, proto.EffortLevels)
+		}
+		if r.Then.Goal != "" && r.Then.Goal != GoalFromDoneWhen {
+			return fmt.Errorf("%s.then.goal must be %q", at, GoalFromDoneWhen)
+		}
+		if len(r.Then.Presets) > startDefaultsMaxPresets {
+			return fmt.Errorf("%s.then.presets has %d entries; at most %d", at, len(r.Then.Presets), startDefaultsMaxPresets)
+		}
+		for j, pr := range r.Then.Presets {
+			if n := utf8.RuneCountInString(strings.TrimSpace(pr.Name)); n == 0 || n > 64 {
+				return fmt.Errorf("%s.then.presets[%d].name must be 1 to 64 characters", at, j)
+			}
+			if pr.Weight < 0 || pr.Weight > startDefaultsMaxWeight {
+				return fmt.Errorf("%s.then.presets[%d].weight must be 0 to %d", at, j, startDefaultsMaxWeight)
+			}
+		}
+	}
+	if p.ExpiresAt == nil {
+		if !allowNoExpiry {
+			return errors.New("start_defaults.expires_at is required on this route")
+		}
+		return nil
+	}
+	if !p.ExpiresAt.After(now) {
+		return errors.New("start_defaults.expires_at must be in the future")
+	}
+	if !allowNoExpiry {
+		if limit := now.Add(startDefaultsMaxExpiry); p.ExpiresAt.After(limit) {
+			return fmt.Errorf("start_defaults.expires_at must be at most %s ahead", startDefaultsMaxExpiry)
+		}
+	}
+	return nil
+}
+
+// activeStartDefaults is the stored policy while it is in force; absent or expired is none.
+func (s *Service) activeStartDefaults(ctx context.Context) *StartDefaultsPolicy {
+	p := s.settings(ctx).StartDefaults
+	if p == nil || len(p.Rules) == 0 {
+		return nil
+	}
+	if p.ExpiresAt != nil && !p.ExpiresAt.After(time.Now().UTC()) {
+		return nil
+	}
+	return p
+}
+
+// startDefaults is the defaults the policy in force gives a task with these facts; false when none applies (no
+// policy, an expired one, or no rule fits). Tests stub it with startDefaultsFor.
+func (s *Service) startDefaults(ctx context.Context, facts StartFacts) (StartDefaults, bool, error) {
+	if s.startDefaultsFor != nil {
+		return s.startDefaultsFor(ctx, facts)
+	}
+	p := s.activeStartDefaults(ctx)
+	if p == nil {
+		return StartDefaults{}, false, nil
+	}
+	d, ok := matchStartDefaults(p, facts)
+	return d, ok, nil
+}
+
+// matchStartDefaults turns the first rule of p whose when fits the task into the start's defaults.
+func matchStartDefaults(p *StartDefaultsPolicy, facts StartFacts) (StartDefaults, bool) {
+	for _, r := range p.Rules {
+		if !startDefaultsMatch(r.When, facts) {
+			continue
+		}
+		d := StartDefaults{By: p.By, Effort: r.Then.Effort, Ultracode: r.Then.Ultracode, Goal: r.Then.Goal, PlanFirst: r.Then.PlanFirst}
+		for _, pr := range r.Then.Presets {
+			d.Presets = append(d.Presets, PresetChoice{Name: strings.TrimSpace(pr.Name), Weight: pr.Weight})
+		}
+		return d, true
 	}
 	return StartDefaults{}, false
 }
 
 // startDefaultsMatch says whether a rule's when fits a task's facts; every set field has to fit.
-func startDefaultsMatch(m extension.StartDefaultMatch, f StartFacts) bool {
+func startDefaultsMatch(m StartDefaultsMatch, f StartFacts) bool {
 	if len(m.Supervisor) > 0 && !slices.Contains(m.Supervisor, f.Supervisor) {
 		return false
 	}
@@ -133,6 +218,30 @@ func startDefaultsMatch(m extension.StartDefaultMatch, f StartFacts) bool {
 	return true
 }
 
+// presetIntN is the roll over the usable presets' weights; a var so tests are deterministic.
+var presetIntN = func(n int) int { return rand.IntN(n) }
+
+// taskSupervisorClass is the class (dispatch policy's) of the conversation that follows a task up: the one its
+// supervision ledger names (written when the plan started, before the agent), else the leader conversation the plan
+// was handed to. A task leader's worker takes the class of the conversation that follows up its leader's task. ""
+// when no conversation follows the task up.
+func (s *Service) taskSupervisorClass(ctx context.Context, t *PlanTask) string {
+	sup := t.Supervisor
+	todoID := t.TodoID
+	if t.Parent != "" {
+		todoID, sup = t.Parent, "" // the leader's own task
+	}
+	if todoID != "" {
+		if todo, ok := s.todoNow(todoID); ok && todo.Supervision != nil && todo.Supervision.Supervisor != "" {
+			sup = todo.Supervision.Supervisor
+		}
+	}
+	if sup == "" || s.isLeaderRef(sup) {
+		return ""
+	}
+	return s.dispatchConversationClass(ctx, s.settings(ctx).MachineID, sup)
+}
+
 // roleOf is the task's role as a fact: roleLeader for a task leader, else worker.
 func roleOf(t *PlanTask) string {
 	if t.Role == roleLeader {
@@ -141,93 +250,86 @@ func roleOf(t *PlanTask) string {
 	return "worker"
 }
 
-// applyStartDefaults adds the source's defaults to a task and its resolved start params, after the launcher fit (which
-// can fill and remove params) and before permission, the goal and session.start. caller is what the task named before
-// any tier, Model Settings or the fit filled something in. Returned on the task's Why: what was applied and what was
-// passed over. It mutates only this task and this start.
-func (s *Service) applyStartDefaults(ctx context.Context, t *PlanTask, caller startPick, params map[string]any) {
-	if s.startDefaultsFor == nil {
-		return
-	}
-	d, ok, err := s.startDefaultsFor(ctx, StartFacts{
+// taskStartDefaults is the policy's defaults for task t's start, false when none applies. It is asked once per start
+// try, before anything is resolved, with only the kind of work.
+func (s *Service) taskStartDefaults(ctx context.Context, t *PlanTask) (StartDefaults, bool) {
+	d, ok, err := s.startDefaults(ctx, StartFacts{
 		Machine: t.Machine, Role: roleOf(t), Readonly: t.Readonly,
-		Supervisor: s.taskSupervisorKind(ctx, t), DoneWhen: len(t.DoneWhen),
+		Supervisor: s.taskSupervisorClass(ctx, t), DoneWhen: len(t.DoneWhen),
 	})
 	if err != nil {
 		s.logf("task %s: start defaults: %v", t.TodoID, err)
-		return
+		return StartDefaults{}, false
 	}
-	if !ok {
-		return
-	}
-	var why []string
-	agent, _ := params["launcher"].(string)
-	isClaude := s.launcherAgent(ctx, t.Machine, agent) == "claude"
-	explicitEffort := strings.TrimSpace(caller.effort) != ""
-	explicitModel := strings.TrimSpace(caller.model) != ""
-	explicitLauncher := strings.TrimSpace(caller.launcher) != ""
-	explicitTier := strings.TrimSpace(caller.tier) != ""
+	return d, ok
+}
 
-	if len(d.Presets) > 0 && !explicitLauncher && !explicitModel && !explicitTier {
-		if name, tier, note, found := s.chooseStartPreset(ctx, t, d.Presets); found {
-			params["launcher"], params["model"] = tier.Launcher, tier.Model
-			if tier.Effort != "" && !explicitEffort { // the caller's own effort still wins
-				params["effort"] = tier.Effort
-				t.Effort = tier.Effort
-			}
-			t.Launcher, t.Model, t.Tier = tier.Launcher, tier.Model, name
-			why = append(why, note)
-		} else if note != "" {
-			why = append(why, note)
-		}
+// applyStartPreset picks the defaults' preset for a task whose caller named no launcher, model or tier, before the
+// start is resolved: the start then goes through the tier exactly as if the task had named it (the launcher fit, its
+// permission and the launch fingerprint all follow). params' launcher, model and effort go back to the caller's own,
+// so a preset chosen by an earlier try does not pin this one. The returned note is for the task's why.
+func (s *Service) applyStartPreset(ctx context.Context, t *PlanTask, caller startPick, d StartDefaults, params map[string]any) string {
+	if len(d.Presets) == 0 || caller.launcher != "" || caller.model != "" || caller.tier != "" {
+		return ""
 	}
+	name, note, found := s.chooseStartPreset(ctx, t, d.Presets)
+	if !found {
+		return note
+	}
+	params["launcher"], params["model"], params["effort"], params["tier"] = "", "", caller.effort, name
+	t.Tier = name
+	return note
+}
+
+// applyStartExtras adds the defaults' effort, ultracode, goal and self-planning prompt to a task's start, after the
+// launcher fit (claude: what runs is Claude Code). caller is what the task named before any tier, Model Settings, the
+// fit or a preset filled something in. Explicit caller values always win; why is the preset's note, said with the rest.
+func (s *Service) applyStartExtras(ctx context.Context, t *PlanTask, caller startPick, d StartDefaults, claude bool, params map[string]any, why string) {
 	// Effort, strongest first: the caller's own effort, then the effort of a tier the caller named; otherwise the
-	// source's effort wins over Model Settings' default (the source is the policy for how this task starts). Claude
-	// Code only; other agents keep whatever they were given.
+	// policy's effort wins over a preset's and Model Settings' default (the policy says how this kind of task starts).
+	// Claude Code only; other agents keep whatever they were given.
 	tierEffort := false
-	if explicitTier {
+	if caller.tier != "" {
 		if tm, err := s.tierModel(ctx, caller.tier); err == nil && tm.Effort != "" {
 			tierEffort = true
 		}
 	}
-	if isClaude && strings.TrimSpace(d.Effort) != "" && !explicitEffort && !tierEffort {
+	if claude && strings.TrimSpace(d.Effort) != "" && caller.effort == "" && !tierEffort {
 		params["effort"] = d.Effort
 		t.Effort = d.Effort
 	}
-	if isClaude && d.Ultracode != nil && t.Ultracode == nil {
-		if *d.Ultracode {
-			params["ultracode"] = true
-			on := true
-			t.Ultracode = &on
+	if claude && d.Ultracode != nil && *d.Ultracode && t.Ultracode == nil {
+		params["ultracode"] = true
+		on := true
+		t.Ultracode = &on
+	}
+	if claude && d.Goal == GoalFromDoneWhen && len(t.DoneWhen) > 0 {
+		goal := prompts.RenderTaskGoal(t.DoneWhen)
+		if utf8.RuneCountInString(goal) <= proto.StartGoalMax {
+			params["goal"] = goal
+		} else {
+			s.logf("task %s: goal longer than %d runes, no /goal set", t.TodoID, proto.StartGoalMax)
 		}
 	}
-	if isClaude && d.Goal == GoalFromDoneWhen && len(t.DoneWhen) > 0 {
-		if existing, _ := params["goal"].(string); strings.TrimSpace(existing) == "" {
-			goal := prompts.RenderTaskGoal(t.DoneWhen)
-			if utf8.RuneCountInString(goal) <= proto.StartGoalMax {
-				params["goal"] = goal
-			} else {
-				s.logf("task %s: goal longer than %d runes, no /goal set", t.TodoID, proto.StartGoalMax)
-			}
-		}
-	}
-	if d.PlanFirst {
-		t.planFirst = true
-	}
-	if d.By != "" && len(why) > 0 {
-		t.noteWhy(d.By + ": " + strings.Join(why, "; "))
+	t.planFirst = d.PlanFirst
+	if d.By != "" && why != "" {
+		t.noteWhy(d.By + ": " + why)
 	}
 }
 
 // chooseStartPreset picks the first usable preset, or one of the weighted usable ones. A usable preset is one the
 // profile in use has and whose launcher the task's computer starts now: present on the machine and not at its usage
 // limit (a launch that failed for another reason still gets tried, the way an ordinary default does).
-func (s *Service) chooseStartPreset(ctx context.Context, t *PlanTask, choices []PresetChoice) (name string, tier ModelTier, note string, found bool) {
+func (s *Service) chooseStartPreset(ctx context.Context, t *PlanTask, choices []PresetChoice) (name, note string, found bool) {
 	p, _, err := s.activeModelProfile(ctx)
 	if p == nil || err != nil {
-		return "", ModelTier{}, "", false
+		return "", "", false
 	}
-	launchers, err := s.pickerLaunchers(ctx, t.Machine)
+	machine := t.Machine
+	if m, ok := s.machineByName(ctx, t.Machine); ok {
+		machine = m.ID
+	}
+	launchers, err := s.pickerLaunchers(ctx, machine)
 	known := err == nil
 	usable, skipped := make([]PresetChoice, 0, len(choices)), make([]string, 0)
 	for _, c := range choices {
@@ -244,14 +346,14 @@ func (s *Service) chooseStartPreset(ctx context.Context, t *PlanTask, choices []
 			skipped = append(skipped, c.Name+": this computer has no launcher "+tier.Launcher)
 			continue
 		}
-		if _, bad := s.launcherUnusable(ctx, t.Machine, tier.Launcher); bad {
+		if _, bad := s.launcherUnusable(ctx, machine, tier.Launcher); bad {
 			skipped = append(skipped, c.Name+": "+tier.Launcher+" is not available yet")
 			continue
 		}
 		usable = append(usable, PresetChoice{Name: c.Name, Weight: max(c.Weight, 1)})
 	}
 	if len(usable) == 0 {
-		return "", ModelTier{}, strings.Join(skipped, "; "), false
+		return "", strings.Join(skipped, "; "), false
 	}
 	weighted := func() PresetChoice {
 		total := 0
@@ -275,7 +377,7 @@ func (s *Service) chooseStartPreset(ctx context.Context, t *PlanTask, choices []
 	if len(skipped) > 0 {
 		note += " (passed over: " + strings.Join(skipped, "; ") + ")"
 	}
-	return pick.Name, p.Tiers[pick.Name], note, true
+	return pick.Name, note, true
 }
 
 // goalRefusal: a session.start that carried a goal was refused for it (an old node, an agent other than Claude Code, a

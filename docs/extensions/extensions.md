@@ -127,7 +127,6 @@ What an extension contributes where is written in the manifest's `contributes`: 
 | `looks` (version 1) | — | `id` (`^[a-z0-9][a-z0-9-]{0,31}$`), `name`, `names?`, `subtitle?`, `subtitles?`, `avatar` (`sizes`: PNG, `svg?`, `safe?`, `dark?`), `colors?`, `dot?`, `app_icon_fallback` (id of a built-in avatar) | Declarative is enough; the package has the images it names | One more **Avatar** in settings: Persona's name, picture, colors and status dot, plus the App icon where it can be changed; see "Avatars" below |
 | `triage_templates` (version 1) | — | `id`, `title` (≤ 40 characters), `text` (≤ 4000 characters) | Declarative is enough | Templates to pick from when filling in Inbox triage rules (`triage_rules`), see "Declarative contributions" |
 | `agent_filters` (version 1) | — | `id`, `title?` (≤ 40 characters), `when?` (name of a boolean field in the config), `agents?` (`claude` / `codex`), `originators?`, `added_dirs?`, `first_message_prefixes?` (at least one kind) | Declarative is enough | Which Agent sessions on your computers stay out of Agents, see "Agent filters" below |
-| `start_defaults` (version 1) | — | `id`, `when?` (name of a boolean field in the config), `rules[]`; each rule is `when {supervisor?[] (`main` / `leader` / `conversation` / `background`), role? (`worker` / `leader`), readonly?}` and `then {presets?[] {name, weight?}, effort?, ultracode?, goal? ("done_when"), plan_first?}`; at most 16 rules and 16 presets per rule, effort one of the common levels | Declarative is enough; no process, no extra permission | The defaults a task Agent starts with beyond what the caller named — an Agent preset chosen among ones the computer can start, thinking effort, ultracode, a goal set from the task's criteria, or a self-planning prompt; the first matching rule wins, explicit caller values always win, see "Start defaults for task Agents" below |
 | `tunnels` (version 1) | — | `id`, `name` (1–40 characters, the row title in App settings) | Pure declaration; `configuration` must have a required `string` field `target_host`; `target_port` and `ssh_port`, if present, must be `integer` | When the phone cannot reach the hub address, connect through the App's built-in tunnel core; see "In-App tunnels" below |
 | `messaging` (version 1, #2138) | — | `id` (`^[a-z][a-z0-9_]{0,31}$`, also the source id in API paths and events), `name`, `icon?`, `capabilities?`, `composer_modes?`, `settings_ui?` (an `extension_page` from the same extension), `links?` | `runtime.http`, with `on_startup` in `activation_events` | The App's **Messages** entry: conversations, chats and sending all go through `/api/v1/messaging/<id>/…`, drawn by the App with shared native messaging components; see [extension-messaging.md](extension-messaging.md) |
 | `error_reports` (version 1, #5533) | `error_reports.` | `id`, `sources?` (`hub` / `manager` / `web` / `android` / `ios` / `mac` / `watch` / `vision`; omitted means all) | Process speaks the protocol, `on_startup`, permission `error_reports` | The hub's and the devices' errors and crashes, scrubbed, given to the program as `error_reports.deliver`; see "Error reports" below |
@@ -439,6 +438,7 @@ To call the hub's HTTP API, an extension lists the scopes it uses in `permission
 | `todos.read` | See to-dos | `GET /api/v1/todos`, `GET /api/v1/todos/{id}/decisions` |
 | `leaders.read` | See leader conversations (directions) and what they report | `GET /api/v1/assistant/leaders`; the events `leader.changed` and `leader.report` (see "Leader events") |
 | `assistant.dispatch_policy` | Read and change the assistant dispatch policy | `GET` / `PUT /api/v1/assistant/dispatch-policy`; a policy written by an extension must expire within one hour (see "Dispatch policy") |
+| `assistant.start_defaults` | Read the Agent presets and set the defaults task Agents start with | `GET /api/v1/assistant/worker-presets`, `GET` / `PUT /api/v1/assistant/start-defaults`; a policy written by an extension must expire within one hour ([assistant.md](../assistant/assistant.md) "Start defaults") |
 | `todos.write` | Create and edit to-dos, attach chats to to-dos | `POST /api/v1/todos`, `PATCH /api/v1/todos/{id}`, a to-do's `agents/{mid}/{sid}` and `spaces/{mid}/{space…}` (`PUT` / `DELETE`), `POST /api/v1/todos/{id}/decisions` (outcome decisions only, see [todos.md](../assistant/todos.md) "API overview"); creating and editing to-dos and adding decisions not with terminal control characters (see below); deleting to-dos, superseding decisions, completion checks and retries still require full access |
 | `assistant.read` | Read your Persona chats (your messages and its replies) | No HTTP route: the `assistant.conversations` / `assistant.messages` RPC (see "Assistant conversations"). `assistant.ask` does not include it |
 | `assistant.memory.read` | Read what Persona remembers about you (read-only, never the health space) | No HTTP route: the `assistant.memory` RPC (see "Assistant memory"). Writing and deleting memory stay with full credentials; `assistant.read` does not include it |
@@ -2894,36 +2894,6 @@ once on connection, again on rule changes, followed by another session-list fetc
 - **Never removed**: assistant sessions, reserved sessions (main chat), forked sessions and Agents in hosts (herdr panes, runtime). Rules inspect only transcripts / rollouts found on disk.
 - **Cost**: the node reads each file's beginning (at most 512 KB, stopping after the first message), caching results per file; Claude sessions are filtered before the "latest 80" cutoff, so platform sessions do not crowd out your own.
 - Code: `server/internal/extension/agentfilters.go` (extension point and validation), `server/internal/extmgr/agent_filters.go` (distribution), `server/internal/node/agentfilters.go` (marker reading and filtering), `server/internal/proto/agentfilters.go` (rules and matching).
-
-## Start defaults for task Agents
-
-A `start_defaults` contribution says what a task Agent starts with beyond what the task's caller named. It is
-declarative: no program runs for it, it asks for no permission beyond the install's, and the manager reads it from the
-extension's saved configuration when a task starts. Each contribution holds a list of rules; the first rule whose
-`when` fits the task wins, and a rule whose `when` names nothing matches every task.
-
-- **`when`**, every field optional: `supervisor` names the conversation kind that follows the task up — `main` (the
-  main conversation), `leader` (a leader conversation or a task leader's worker), `conversation` (another assistant
-  conversation) or `background` (the built-in background supervisor); `role` is `worker` or `leader`; `readonly`
-  matches only read-only or only writable tasks. The extension sees kinds, never conversation ids.
-- **`then`**, every field optional: `presets` lists Agent presets (the active model profile's tiers) to try in order,
-  each with an optional `weight`; the manager takes the first one whose launcher the task's computer has and whose
-  launcher is not at its usage limit, and with weights shares starts among the usable ones, while a preset that cannot
-  be read or run is passed over and named in the task's record. `effort` is one of the common effort levels,
-  `ultracode` a boolean (Claude Code only), `goal: "done_when"` turns the task's acceptance criteria into one
-  checkable condition the node sets with `/goal` before the first message (a task without criteria gets none), and
-  `plan_first` adds a self-planning requirement to the prompt, for a launch whose model does not act on an effort
-  setting.
-- **The caller always wins**: an effort, ultracode, tier, model or launcher the task itself named is never replaced,
-  and with no matching rule a task starts exactly as it would without the extension. A preset or effort is applied
-  only to what the caller left open.
-- **Switches**: as for `agent_filters`, a contribution with `when` is active only while that boolean configuration
-  field is true, and that field is its only switch; without one it follows the extension switch and the contribution's
-  own toggle. Disabling or uninstalling the extension returns every task start to the built-in behavior.
-- Code: `server/internal/extension/start_defaults.go` (point and validation), `server/internal/extmgr/start_defaults.go`
-  (the holding contributions), `server/internal/assistant/start_defaults.go` (matching and applying them, including the
-  preset order and the usage-limit pass-over); the goal itself is in
-  [agent-goal.md](../integrations/agent-goal.md) ("A goal set at the start").
 
 ## In-App tunnels
 

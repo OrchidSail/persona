@@ -279,6 +279,7 @@ func New(o Options) *Service {
 	s.directionRoutes()
 	s.dispatchPolicyRoutes() // dispatch_policy_routes.go
 	s.startPresetRoutes()
+	s.startDefaultsRoutes() // start_defaults_routes.go
 	s.directionTreeRoutes()
 	s.routeRoutes()
 	s.agentRouteRoutes()

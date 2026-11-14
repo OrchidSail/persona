@@ -335,11 +335,6 @@ export interface Contributes {
   looks?: LookItem[];
   triage_templates?: TriageTemplateItem[];
   agent_filters?: AgentFilterItem[];
-  /**
-   * Start defaults for task Agents (docs "Start defaults for task Agents"): the presets, effort, ultracode, goal or
-   * self-planning rule a matching task starts with.
-   */
-  start_defaults?: StartDefaultsItem[];
   tunnels?: TunnelItem[];
   error_reports?: ErrorReportsItem[];
   auth_relay?: AuthRelayItem[];
@@ -601,43 +596,6 @@ export interface AgentFilterItem {
    * marker.
    */
   first_message_prefixes?: string[];
-}
-
-/**
- * A contribution of start defaults for task Agents: rules matched by the kind of task; the first match wins.
- */
-export interface StartDefaultsItem {
-  id: string;
-  /**
-   * A boolean field of the configuration: the contribution holds only while it is true, and that field is its only
-   * switch. Without it the contribution holds while the extension is on.
-   */
-  when?: string;
-  rules: StartDefaultRule[];
-}
-
-export interface StartDefaultRule {
-  when: StartDefaultMatch;
-  then: StartDefaultThen;
-}
-
-export interface StartDefaultMatch {
-  supervisor?: string[];
-  role?: string;
-  readonly?: boolean;
-}
-
-export interface StartDefaultThen {
-  presets?: StartDefaultPreset[];
-  effort?: string;
-  ultracode?: boolean;
-  goal?: string;
-  plan_first?: boolean;
-}
-
-export interface StartDefaultPreset {
-  name: string;
-  weight?: number;
 }
 
 /**

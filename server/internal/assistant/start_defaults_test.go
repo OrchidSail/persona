@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -11,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nwverse/persona/server/internal/extension"
 	"github.com/nwverse/persona/server/internal/prompts"
 	"github.com/nwverse/persona/server/internal/proto"
 	"github.com/nwverse/persona/server/internal/rpc"
@@ -360,42 +361,49 @@ func TestStartDefaultsFactsSayWhoSupervises(t *testing.T) {
 		"expect_minutes": 30})
 	planWait(3)
 	got := seen()
-	if a := got[0]; a.Supervisor != "leader" || a.Readonly || a.Role != "worker" || a.DoneWhen != 1 || a.Machine != "box" {
+	if a := got[0]; a.Supervisor != dispatchClassLeader || a.Readonly || a.Role != "worker" || a.DoneWhen != 1 || a.Machine != "box" {
 		t.Fatalf("leader's task: %+v", a)
 	}
-	if b := got[1]; b.Supervisor != "main" || !b.Readonly {
+	if b := got[1]; b.Supervisor != dispatchClassMain || !b.Readonly {
 		t.Fatalf("main's own task: %+v", b)
 	}
-	if c := got[2]; c.Supervisor != "leader" {
+	if c := got[2]; c.Supervisor != dispatchClassLeader {
 		t.Fatalf("task handed to the leader: %+v", c)
 	}
 }
 
-// staticStartDefaults is the extension layer with these contributions holding (extmgr StartDefaultItems).
-type staticStartDefaults struct {
-	ExtensionTools
-	items []extension.StartDefaultsItem
+// putStartDefaults sends PUT /api/v1/assistant/start-defaults as role (full, extension, read-only) and answers the code
+// and body.
+func putStartDefaults(t *testing.T, s *Service, role, ext, body string) (int, string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/assistant/start-defaults", strings.NewReader(body))
+	if role != "" {
+		req.Header.Set(RoleHeader, role)
+	}
+	if ext != "" {
+		req.Header.Set(ExtensionHeader, ext)
+	}
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	return rec.Code, rec.Body.String()
 }
 
-func (s staticStartDefaults) StartDefaultItems() []extension.StartDefaultsItem { return s.items }
-
-// A manifest whose rule picks the tasks a leader conversation follows up: those start with the defaults, the main
-// conversation's own task starts exactly as it would without the extension, and a read-only task is left alone too.
-func TestStartDefaultsFromAContributionOnlyWhereItsRuleMatches(t *testing.T) {
-	m, err := extension.Parse([]byte(`{"manifest_version": 1, "id": "kit", "name": "Kit", "version": "1.0.0",
-		"contributes": {"start_defaults": [{"id": "led", "rules": [
-			{"when": {"supervisor": ["leader"], "readonly": false},
-			 "then": {"presets": [{"name": "deep"}], "effort": "max", "ultracode": true, "goal": "done_when"}}]}]}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
+// A policy whose rule picks the tasks a leader conversation follows up: those start with the defaults, the main
+// conversation's own task starts exactly as it would without the policy, and a read-only task is left alone too. The
+// policy is the one an extension wrote through the route.
+func TestStartDefaultsPolicyOnlyWhereItsRuleMatches(t *testing.T) {
 	s, f := newQuietService(t)
 	f.devices = []Device{{ID: "box", Name: "box", Home: "/home/me", Online: true, Reachable: true}}
 	f.known["lead1"] = true
 	f.setSessions("server", proto.Session{SessionID: "conv1", MachineID: "server", Assistant: true, Status: proto.StatusIdle},
 		proto.Session{SessionID: "lead1", MachineID: "server", Assistant: true, Status: proto.StatusIdle})
 	setSettings(t, s, func(v *Settings) { v.Leaders = []string{"lead1"} })
-	s.SetExtensions(staticStartDefaults{items: m.StartDefaults()})
+	expires := time.Now().Add(30 * time.Minute).UTC().Format(time.RFC3339)
+	code, body := putStartDefaults(t, s, roleExtension, "kit", `{"start_defaults":{"expires_at":"`+expires+`","rules":[
+		{"when":{"supervisor":["leader"],"readonly":false},"then":{"effort":"max","ultracode":true,"goal":"done_when"}}]}}`)
+	if code != http.StatusOK {
+		t.Fatalf("put: %d %s", code, body)
+	}
 	ctx := context.Background()
 	start := func(conversation string, readonly bool) map[string]any {
 		t.Helper()
@@ -431,5 +439,99 @@ func TestStartDefaultsFromAContributionOnlyWhereItsRuleMatches(t *testing.T) {
 	ro := start("lead1", true)
 	if ro["ultracode"] != nil || ro["goal"] != nil || ro["effort"] == "max" {
 		t.Fatalf("a read-only task got the defaults: %v", ro)
+	}
+}
+
+// The route's rules: an extension's policy must expire within an hour; the owner may keep one without expiry; a
+// read-only device is refused; an unknown field, class or effort is a 400; empty rules clear it; once expired it is
+// gone from GET and from task starts.
+func TestStartDefaultsRoute(t *testing.T) {
+	s, f := defaultsHub(t)
+	soon := time.Now().Add(30 * time.Minute).UTC().Format(time.RFC3339)
+	late := time.Now().Add(3 * time.Hour).UTC().Format(time.RFC3339)
+	rule := `"rules":[{"when":{},"then":{"effort":"max"}}]`
+	for _, c := range []struct {
+		name, role, body string
+		code             int
+	}{
+		{"extension without expiry", roleExtension, `{"start_defaults":{` + rule + `}}`, http.StatusBadRequest},
+		{"extension too far ahead", roleExtension, `{"start_defaults":{"expires_at":"` + late + `",` + rule + `}}`, http.StatusBadRequest},
+		{"read-only device", "read", `{"start_defaults":{` + rule + `}}`, http.StatusForbidden},
+		{"unknown field", roleFull, `{"start_defaults":{"rules":[{"when":{},"then":{"efort":"max"}}]}}`, http.StatusBadRequest},
+		{"unknown class", roleFull, `{"start_defaults":{"rules":[{"when":{"supervisor":["owner"]},"then":{}}]}}`, http.StatusBadRequest},
+		{"unknown effort", roleFull, `{"start_defaults":{"rules":[{"when":{},"then":{"effort":"banana"}}]}}`, http.StatusBadRequest},
+		{"no body key", roleFull, `{}`, http.StatusBadRequest},
+		{"owner without expiry", roleFull, `{"start_defaults":{` + rule + `}}`, http.StatusOK},
+		{"extension within the hour", roleExtension, `{"start_defaults":{"expires_at":"` + soon + `",` + rule + `}}`, http.StatusOK},
+	} {
+		if code, body := putStartDefaults(t, s, c.role, "kit", c.body); code != c.code {
+			t.Errorf("%s: %d %s", c.name, code, body)
+		}
+	}
+	if p := s.activeStartDefaults(context.Background()); p == nil || p.By != "kit" {
+		t.Fatalf("the extension's policy is not the one in force: %+v", p)
+	}
+	// The policy in force reaches a task start.
+	task := defaultsTask()
+	if _, _, err := s.startTaskAgent(context.Background(), &task, false); err != nil {
+		t.Fatal(err)
+	}
+	if st := startsOf(f)[0]; st["effort"] != "max" {
+		t.Fatalf("the policy did not reach the start: %v", st)
+	}
+	// Expired: gone from GET and from starts.
+	past := time.Now().Add(-time.Minute)
+	setSettings(t, s, func(v *Settings) { v.StartDefaults.ExpiresAt = &past })
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/assistant/start-defaults", nil))
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"start_defaults":{"rules":[]}}` {
+		t.Fatalf("expired policy still listed: %s", got)
+	}
+	task = defaultsTask()
+	if _, _, err := s.startTaskAgent(context.Background(), &task, false); err != nil {
+		t.Fatal(err)
+	}
+	if st := startsOf(f)[1]; st["effort"] == "max" {
+		t.Fatalf("an expired policy still applied: %v", st)
+	}
+	// Empty rules clear it.
+	if code, body := putStartDefaults(t, s, roleExtension, "kit", `{"start_defaults":{"rules":[]}}`); code != http.StatusOK {
+		t.Fatalf("clear: %d %s", code, body)
+	}
+	if s.settings(context.Background()).StartDefaults != nil {
+		t.Fatal("not cleared")
+	}
+}
+
+// A preset the policy picks starts exactly as if the task had named that tier: the same launcher, model, launch
+// fingerprint and permission, here for a preset whose launcher is not Model Settings' default.
+func TestStartDefaultsPresetStartsAsIfTheTaskNamedIt(t *testing.T) {
+	start := func(policy bool) map[string]any {
+		t.Helper()
+		s, f := defaultsHub(t)
+		task := defaultsTask()
+		if policy {
+			stubStartDefaults(s, func(StartFacts) (StartDefaults, bool) {
+				return StartDefaults{Presets: []PresetChoice{{Name: "plain"}}}, true
+			})
+		} else {
+			task.Tier = "plain"
+		}
+		if _, _, err := s.startTaskAgent(context.Background(), &task, false); err != nil {
+			t.Fatal(err)
+		}
+		if task.Tier != "plain" {
+			t.Fatalf("the task does not name the preset it runs: %+v", task)
+		}
+		st := maps.Clone(startsOf(f)[0])
+		delete(st, "session_id")
+		return st
+	}
+	picked, named := start(true), start(false)
+	if !reflect.DeepEqual(picked, named) {
+		t.Fatalf("picked by the policy:\n%v\nnamed by the task:\n%v", picked, named)
+	}
+	if picked["launcher"] != "claude" || picked["model"] != "claude-plain" {
+		t.Fatalf("not the preset's launcher and model: %v", picked)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -15,9 +16,9 @@ func TestWorkerPresetsRoute(t *testing.T) {
 	s, f := defaultsHub(t)
 	ctx := context.Background()
 	saveTiers(t, s, map[string]ModelTier{
-		"deep":     {Launcher: "gateway", Model: "gw-deep", Effort: "high", Description: "the deep one"},
+		"deep":      {Launcher: "gateway", Model: "gw-deep", Effort: "high", Description: "the deep one"},
 		"elsewhere": {Launcher: "other", Model: "o-1"}, // l4's launcher, not box's
-		"plain":    {Launcher: "claude", Model: "claude-plain"},
+		"plain":     {Launcher: "claude", Model: "claude-plain"},
 	})
 	resets := time.Now().Add(2 * time.Hour)
 	s.recordHealth(ctx, "box", "gateway", healthResult{err: "usage limit reached", source: healthSourceSession,
@@ -56,14 +57,16 @@ func TestWorkerPresetsRoute(t *testing.T) {
 	}
 
 	// No profile in use: an empty list, not an error.
-	f.settings.ModelProfiles = modelProfiles{}
-	s.putSetting(ctx, modelProfilesKey, modelProfiles{})
+	if err := s.store().PutSetting(ctx, modelProfileStateKey, modelProfileState{}); err != nil {
+		t.Fatal(err)
+	}
 	rec = httptest.NewRecorder()
 	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/assistant/worker-presets?machine=box", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("no profile: code %d", rec.Code)
 	}
-	if string(rec.Body.Bytes()) != `{"presets":[]}`+"\n" {
-		t.Fatalf("body = %q", rec.Body.String())
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"presets":[]}` {
+		t.Fatalf("body = %q", got)
 	}
+	_ = f
 }

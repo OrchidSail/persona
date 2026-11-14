@@ -7,13 +7,13 @@ import (
 	"time"
 
 	"github.com/nwverse/persona/server/internal/apierr"
-	"github.com/nwverse/persona/server/internal/extwire"
 )
 
 // startPresetRoutes: GET /api/v1/assistant/worker-presets?machine=<id> lists the Agent presets (the active model
 // profile's tiers) a task can start with on that computer: the presets whose launcher the machine has, each with its
-// launcher, model, effort, description and whether its launcher is unavailable now. An extension granted agents.read
-// reads it to build its start_defaults presets; the list is read-only and never carries credentials.
+// launcher, model, effort, description and whether its launcher is unavailable now. An extension granted the
+// assistant.start_defaults hub scope reads it to name the presets of its start defaults; the list is read-only and never
+// carries credentials.
 func (s *Service) startPresetRoutes() {
 	s.handle("GET /api/v1/assistant/worker-presets", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -54,5 +54,3 @@ type workerPreset struct {
 	// reset still ahead); absent check results leave it false, so an unchecked preset is offered.
 	Unavailable bool `json:"unavailable,omitempty"`
 }
-
-var _ = extwire.ScopeAgentsRead // the route is held to agents.read in extwire.RouteScopes

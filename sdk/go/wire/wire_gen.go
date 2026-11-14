@@ -286,9 +286,6 @@ type Contributes struct {
 	Looks           []LookItem           `json:"looks,omitempty"`
 	TriageTemplates []TriageTemplateItem `json:"triage_templates,omitempty"`
 	AgentFilters    []AgentFilterItem    `json:"agent_filters,omitempty"`
-	// Start defaults for task Agents (docs "Start defaults for task Agents"): the presets, effort, ultracode, goal or
-	// self-planning rule a matching task starts with.
-	StartDefaults   []StartDefaultsItem  `json:"start_defaults,omitempty"`
 	Tunnels         []TunnelItem         `json:"tunnels,omitempty"`
 	ErrorReports    []ErrorReportsItem   `json:"error_reports,omitempty"`
 	AuthRelay       []AuthRelayItem      `json:"auth_relay,omitempty"`
@@ -304,7 +301,7 @@ func (v *Contributes) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	declared := map[string]json.RawMessage{}
-	for _, key := range []string{"connectors", "voice", "transcription", "computer", "browser", "iphone", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "start_defaults", "tunnels", "error_reports", "auth_relay", "secret_providers", "messaging"} {
+	for _, key := range []string{"connectors", "voice", "transcription", "computer", "browser", "iphone", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "messaging"} {
 		if value, ok := extra[key]; ok {
 			declared[key] = value
 			delete(extra, key)
@@ -336,7 +333,7 @@ func (v Contributes) MarshalJSON() ([]byte, error) {
 	}
 	for key, value := range v.AdditionalProperties {
 		switch key {
-		case "connectors", "voice", "transcription", "computer", "browser", "iphone", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "start_defaults", "tunnels", "error_reports", "auth_relay", "secret_providers", "messaging":
+		case "connectors", "voice", "transcription", "computer", "browser", "iphone", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "messaging":
 			continue
 		}
 		fields[key] = value
@@ -609,40 +606,6 @@ type AgentFilterItem struct {
 	// The first user message starts with one of these (leading blanks ignored): a fallback for sessions without a
 	// marker.
 	FirstMessagePrefixes []string `json:"first_message_prefixes,omitempty"`
-}
-
-// StartDefaultsItem: A contribution of start defaults for task Agents: rules matched by the kind of task; the first
-// match wins.
-type StartDefaultsItem struct {
-	ID string `json:"id"`
-	// A boolean field of the configuration: the contribution holds only while it is true, and that field is its only
-	// switch. Without it the contribution holds while the extension is on.
-	When  string             `json:"when,omitempty"`
-	Rules []StartDefaultRule `json:"rules"`
-}
-
-type StartDefaultRule struct {
-	When StartDefaultMatch `json:"when"`
-	Then StartDefaultThen  `json:"then"`
-}
-
-type StartDefaultMatch struct {
-	Supervisor []string `json:"supervisor,omitempty"`
-	Role       string   `json:"role,omitempty"`
-	Readonly   bool     `json:"readonly,omitempty"`
-}
-
-type StartDefaultThen struct {
-	Presets   []StartDefaultPreset `json:"presets,omitempty"`
-	Effort    string               `json:"effort,omitempty"`
-	Ultracode bool                 `json:"ultracode,omitempty"`
-	Goal      string               `json:"goal,omitempty"`
-	PlanFirst bool                 `json:"plan_first,omitempty"`
-}
-
-type StartDefaultPreset struct {
-	Name   string `json:"name"`
-	Weight int    `json:"weight,omitempty"`
 }
 
 // ConnectorItem: the connector protocol's manifest (docs/protocol/connector-protocol.md).
@@ -6053,11 +6016,6 @@ var newDef = map[string]func() any{
 	"ErrorReportsItem":              func() any { return new(ErrorReportsItem) },
 	"TunnelItem":                    func() any { return new(TunnelItem) },
 	"AgentFilterItem":               func() any { return new(AgentFilterItem) },
-	"StartDefaultsItem":             func() any { return new(StartDefaultsItem) },
-	"StartDefaultRule":              func() any { return new(StartDefaultRule) },
-	"StartDefaultMatch":             func() any { return new(StartDefaultMatch) },
-	"StartDefaultThen":              func() any { return new(StartDefaultThen) },
-	"StartDefaultPreset":            func() any { return new(StartDefaultPreset) },
 	"ConnectorItem":                 func() any { return new(ConnectorItem) },
 	"NamedItem":                     func() any { return new(NamedItem) },
 	"QuotaItem":                     func() any { return new(QuotaItem) },

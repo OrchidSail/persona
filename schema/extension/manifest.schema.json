@@ -308,7 +308,7 @@
         "network": {"type": "array", "items": {"$ref": "#/$defs/NetworkEntry"}},
         "hub_api": {"type": "boolean", "description": "The old way: the hub's full token. With hub scopes, the scopes win."},
         "hub": {"type": "array", "description": "The scopes of the hub's API it calls: its token opens their routes only.",
-          "items": {"type": "string", "pattern": "^(kb\\.read|kb\\.write|sent\\.read|inbox\\.read|inbox\\.write|agents\\.read|agents\\.control|agents\\.permission_mode|machines\\.read|notify|assistant\\.ask|assistant\\.read|assistant\\.memory\\.read|todos\\.read|todos\\.write|leaders\\.read|assistant\\.dispatch_policy|models|extensions\\.call:[a-z0-9][a-z0-9_-]{0,31})$"}},
+          "items": {"type": "string", "pattern": "^(kb\\.read|kb\\.write|sent\\.read|inbox\\.read|inbox\\.write|agents\\.read|agents\\.control|agents\\.permission_mode|machines\\.read|notify|assistant\\.ask|assistant\\.read|assistant\\.memory\\.read|todos\\.read|todos\\.write|leaders\\.read|assistant\\.dispatch_policy|assistant\\.start_defaults|models|extensions\\.call:[a-z0-9][a-z0-9_-]{0,31})$"}},
         "launcher_keys": {"type": "boolean"},
         "gh_login": {"type": "boolean", "description": "It asks the hub for the GitHub token of a computer's gh login (the one the user picks for the GitHub connector), held in its memory only."},
         "usage_gateways": {"type": "boolean", "description": "It reads the account list of the account-pool gateways in the hub's usage sources (usage.gateway_accounts): accounts, status and quota windows, never a key."},
@@ -357,7 +357,6 @@
         "looks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/LookItem"}},
         "triage_templates": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/TriageTemplateItem"}},
         "agent_filters": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/AgentFilterItem"}},
-        "start_defaults": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/StartDefaultsItem"}, "description": "Start defaults for task Agents (docs \"Start defaults for task Agents\"): the presets, effort, ultracode, goal or self-planning rule a matching task starts with."},
         "tunnels": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/TunnelItem"}},
         "error_reports": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/ErrorReportsItem"}},
         "auth_relay": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/AuthRelayItem"}},
@@ -593,55 +592,6 @@
         "first_message_prefixes": {"type": "array", "items": {"type": "string", "minLength": 8, "maxLength": 200}, "maxItems": 16, "description": "The first user message starts with one of these (leading blanks ignored): a fallback for sessions without a marker."}
       },
       "required": ["id"]
-    },
-    "StartDefaultsItem": {
-      "description": "A contribution of start defaults for task Agents: rules matched by the kind of task; the first match wins.",
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "id": {"$ref": "#/$defs/ID"},
-        "when": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "A boolean field of the configuration: the contribution holds only while it is true, and that field is its only switch. Without it the contribution holds while the extension is on."},
-        "rules": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/StartDefaultRule"}}
-      },
-      "required": ["id", "rules"]
-    },
-    "StartDefaultRule": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "when": {"$ref": "#/$defs/StartDefaultMatch"},
-        "then": {"$ref": "#/$defs/StartDefaultThen"}
-      },
-      "required": ["when", "then"]
-    },
-    "StartDefaultMatch": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "supervisor": {"type": "array", "maxItems": 16, "items": {"type": "string", "enum": ["main", "leader", "conversation", "background"]}},
-        "role": {"type": "string", "enum": ["worker", "leader"]},
-        "readonly": {"type": "boolean"}
-      }
-    },
-    "StartDefaultThen": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "presets": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/StartDefaultPreset"}},
-        "effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max"]},
-        "ultracode": {"type": "boolean"},
-        "goal": {"type": "string", "enum": ["done_when"]},
-        "plan_first": {"type": "boolean"}
-      }
-    },
-    "StartDefaultPreset": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "name": {"$ref": "#/$defs/ID"},
-        "weight": {"type": "integer", "minimum": 0}
-      },
-      "required": ["name"]
     },
     "ConnectorItem": {
       "description": "The connector protocol's manifest (docs/protocol/connector-protocol.md).",

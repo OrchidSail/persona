@@ -125,7 +125,6 @@ var catalogItemTypes = map[string]reflect.Type{
 	"themes":           reflect.TypeFor[ThemeItem](),
 	"triage_templates": reflect.TypeFor[TriageTemplateItem](),
 	"agent_filters":    reflect.TypeFor[AgentFilterItem](),
-	"start_defaults":   reflect.TypeFor[StartDefaultsItem](),
 	"looks":            reflect.TypeFor[LookItem](),
 	"connectors":       reflect.TypeFor[ConnectorItem](),
 	"quota":            reflect.TypeFor[QuotaItem](),

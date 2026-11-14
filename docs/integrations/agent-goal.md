@@ -96,9 +96,10 @@ too-long condition, a CLI without `/goal`) or no answer never stops the start â€
 the node logs why â€” and a command that may still sit in the input box holds the first message back for the user, the
 same safeguard an ultracode start switch uses.
 
-The assistant only attaches such a goal to a task whose `done_when` gives it something checkable, rendered as one
-sentence (`prompts/assistant/task_goal.md`); tasks without criteria start without one, and only brand-new Claude Code
-sessions take one. Its transcript lines, `goal_status` attachment, `Session.goal` and the goal bar are the ordinary
+The assistant attaches such a goal when a start-defaults rule asks for one (`goal: "done_when"`,
+[assistant.md](../assistant/assistant.md) "Start defaults") and the task's `done_when` gives it something checkable,
+rendered as one sentence (`prompts/assistant/task_goal.md`); tasks without criteria start without one, and only
+brand-new Claude Code sessions take one. Its transcript lines, `goal_status` attachment, `Session.goal` and the goal bar are the ordinary
 goal's below; nothing else about goals changes.
 
 ## Screenshots

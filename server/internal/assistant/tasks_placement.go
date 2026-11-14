@@ -129,6 +129,19 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 		return "", "", err
 	}
 	params := map[string]any{"launcher": t.Launcher, "model": t.Model, "effort": t.Effort, "tier": t.Tier}
+	// What the task itself named, kept from its first try: later tries see what earlier ones resolved in t.
+	if t.callerPick == nil {
+		p := pickOf(params)
+		t.callerPick = &p
+	}
+	caller := *t.callerPick
+	// The start-defaults policy (start_defaults.go): its preset goes in before the start is resolved, as if the task
+	// had named that tier; its effort, ultracode and goal after the launcher fit.
+	defaults, withDefaults := s.taskStartDefaults(ctx, t)
+	presetNote := ""
+	if withDefaults {
+		presetNote = s.applyStartPreset(ctx, t, caller, defaults, params)
+	}
 	own, err := s.resolveStart(ctx, params)
 	if err != nil {
 		return "", "", err
@@ -190,9 +203,9 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 	if claude && !t.preservePermission {
 		t.Permission = "bypassPermissions"
 	}
-	// An extension's start defaults (preset, effort, ultracode, a goal from done_when): only what the task left open
-	// (start_defaults.go), so after the fit, which may itself have filled in a launcher and an effort.
-	s.applyStartDefaults(ctx, t, own, params)
+	if withDefaults { // only what the task left open, after the fit, which may itself have filled some in
+		s.applyStartExtras(ctx, t, caller, defaults, claude, params, presetNote)
+	}
 	if t.MachinePolicy == machineFixed {
 		// Only an actual terminal start can recheck a repaired terminal shell.
 		// An explicit retry keeps that existing recovery path on the fixed target;

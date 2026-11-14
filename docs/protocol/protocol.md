@@ -1843,7 +1843,9 @@ Clients report their errors and crashes only while `features` has `error_reports
 | GET | `/api/v1/assistant/leaders` | Every direction (leader conversation): `{"leaders":[{"id","title","name"?,"project"?,"ended"?,"progress"?,"by","at","ended_at"?}]}`, current ones first, then ended ones, each by `at` then `id`; `name` is what the direction is called (the owner's or the secretary's name, else the project's name, else the title without its date and kind), `progress` the leader's latest own summary `{reached?,doing?,needs_you?,links?,at}`; titles or directions not readable 503 (`docs/assistant/unified-entry.md` "Leader conversations") |
 | GET | `/api/v1/assistant/dispatch-policy` | The assistant's dispatch policy: `{"dispatch_policy":{"rules":[{"conversation_class","deny":["task_plan"|"agent_start"|"start_conversation"|"send_to_main"|"send_to_leader"],"message"?}],"expires_at"?}}`. A conversation class is `main`, `leader`, `background_supervisor`, `scheduled` (a scheduled task's own conversation) or `other`; with no policy in force the answer is `{"dispatch_policy":{"rules":[]}}`. Full credentials, or an extension token granted `assistant.dispatch_policy`. See "Dispatch policy" below |
 | PUT | `/api/v1/assistant/dispatch-policy` | Replace the dispatch policy with `{"dispatch_policy":{…}}`; empty `rules` clears it (`{"rules":[]}`). A full-credential write may omit `expires_at`; an extension write must name an `expires_at` no more than one hour ahead (a past or later one is 400), so a stopped or uninstalled extension leaves nothing in force. An unknown class or action, a repeated class, an empty `deny` or an over-long `message` is 400; read-only devices are 403. The same field may be written with `PUT /api/v1/assistant` (full credentials, expiry optional). Full credentials, or an extension token granted `assistant.dispatch_policy`; see "Dispatch policy" below |
-| GET | `/api/v1/assistant/worker-presets?machine=<id>` | The Agent presets (the active model profile's tiers) a task can start with on that computer: `{"presets":[{"name","launcher","model"?,"effort"?,"description"?,"unavailable"?}]}`, only those whose launcher the machine has; `unavailable` says its latest health check fails right now (for example a usage limit), and an absent check leaves it false. An extension token with `agents.read` may read it; it is read-only and carries no credentials |
+| GET | `/api/v1/assistant/worker-presets?machine=<id>` | The Agent presets (the active model profile's tiers) a task can start with on that computer: `{"presets":[{"name","launcher","model"?,"effort"?,"description"?,"unavailable"?}]}`, only those whose launcher the machine has; `unavailable` says its latest health check fails right now (for example a usage limit), and an absent check leaves it false. Full credentials, or an extension token granted `assistant.start_defaults`; read-only, it carries no credentials. Unknown machine 404 |
+| GET | `/api/v1/assistant/start-defaults` | The start-defaults policy: `{"start_defaults":{"rules":[{"when":{"supervisor"?,"role"?,"readonly"?},"then":{"presets"?,"effort"?,"ultracode"?,"goal"?,"plan_first"?}}],"expires_at"?,"by"?}}`; with no policy in force `{"start_defaults":{"rules":[]}}`. Full credentials, or an extension token granted `assistant.start_defaults`. See "Start defaults" below |
+| PUT | `/api/v1/assistant/start-defaults` | Replace it with `{"start_defaults":{…}}`; empty `rules` clears it. A full-credential write may omit `expires_at`; an extension write must name one no more than one hour ahead (a past or later one is 400). An unknown field, class, role, effort or goal source, more than 16 rules or presets, a preset name over 64 characters or a weight outside 0–1000 is 400; read-only devices are 403. `by` is set by the manager (the extension's id, or `owner`), never taken from the body. See "Start defaults" below |
 | GET | `/api/v1/assistant/directions/tree` | The direction tree (#4352) every client's sidebar, To-dos grouping and Agents grouping read: `{"directions":[{"id","name","secretary"?,"counts":{"working","needs_you","stuck","review","planned"},"running","tasks":[{"id","title","state","agents":[{"machine_id","session_id","title","agent","state","children"?}]}]}]}`. Current directions in the order `GET /api/v1/assistant/leaders` lists them, then the secretary group last (`secretary: true`, `id` the main conversation's, `name` `""`, always present). `tasks` are the open to-dos (the To-dos page's open count) whose supervisor is that direction; the main conversation's, no supervisor's, an ended or unknown conversation's go to the secretary group; a worker of a task leader is not listed or counted, its Agents are `children` of the leader's Agent. `state` is `needs_you`, `review`, `planned` (no Agent has worked on it yet, #5846; `counts.planned` absent or 0 from an older hub), `stuck` or `working` (first match), tasks listed needs_you, review, stuck, working, planned, newest activity first; `counts` counts the listed tasks per state. `running` (#6626, always sent): an Agent of the direction's listed tasks, or one under it, has a `working` session, whatever the task's state — the one rule for a direction row's spinner on every client (a client reading a tree without it, from an older hub, uses `counts.working > 0`). An Agent's `state` is its session's as on session rows (`""`: not found); `children` are the Agents it spawned, its workers' Agents, its running sub-agents (`session_id` `"<parent>@<id>"`, `title` the description) and its Codex sub-agent sessions still going. Answered by the default manager alone (not merged over managers like `GET /api/v1/todos`). Read-only devices may read it; to-dos not loaded 503; an older hub 404 (clients keep the flat direction rows). Rules: `docs/assistant/unified-entry.md` "The direction tree" |
 | GET | `/api/v1/assistant/directions/offers` | The directions offered for New chats and not yet answered, newest first: `{"offers":[{"conversation","machine_id","title","project"?,"new_project"?,"closest"?,"at"}]}` (`docs/assistant/unified-entry.md` "New chat opens a direction") |
 | DELETE | `/api/v1/assistant/directions/offers/{id}` | Just a quick chat: drops conversation `id`'s offer → `{"dropped"}`; read-only devices 403 |
@@ -1982,6 +1984,41 @@ How a device adds a pending computer: see "Computer pairing codes" under "Tempor
 - Each rename is written to `machine_audit` (action `rename`, detail `{from, to, via}`; `via`: `admin` / `device` / `link` / `system`).
 - A computer that pairs while its name is still its id is named once after its system (`system_name` in the pairing request, `POST /api/v1/auth/tokens`, via `system`).
 - Clients show a rename entry only when hello's `features` has `machine_rename`.
+
+### Start defaults
+
+An optional policy of what a task Agent starts with beyond what its caller named, by the kind of work; with no policy,
+an expired one or no rule that fits, a task starts exactly as without the feature (rules and behaviour:
+`docs/assistant/assistant.md` "Start defaults"). Its shape:
+
+```json
+{
+  "rules": [
+    {
+      "when": {"supervisor": ["leader"], "role": "worker", "readonly": false},
+      "then": {
+        "presets": [{"name": "<preset>", "weight": 2}, {"name": "<other preset>"}],
+        "effort": "max",
+        "ultracode": true,
+        "goal": "done_when",
+        "plan_first": false
+      }
+    }
+  ],
+  "expires_at": "2026-11-15T10:00:00Z"
+}
+```
+
+- `when`: every field optional, an empty one matches anything. `supervisor` takes the dispatch policy's classes
+  (`main`, `leader`, `background_supervisor`, `scheduled`, `other`) for the conversation that follows the task up;
+  `role` is `worker` or `leader`; `readonly` true or false.
+- `then`: every field optional. `presets` are Agent presets (the active model profile's tiers, see
+  `GET /api/v1/assistant/worker-presets`) tried in order, the first one the task's computer can start winning, or one
+  of the usable ones by weight when weights differ; `effort` one of `low` / `medium` / `high` / `xhigh` / `max`;
+  `ultracode` a boolean; `goal` only `done_when`; `plan_first` a boolean. Effort, ultracode and goal reach Claude Code
+  starts only.
+- Rules are tried in order and the first that fits wins. A caller's own effort, ultracode, tier, model or launcher is
+  never replaced.
 
 ### Dispatch policy
 

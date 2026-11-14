@@ -127,6 +127,9 @@ type Settings struct {
 	// relay to the main or a leader conversation (dispatch_policy.go). nil or expired: every conversation behaves as
 	// without it.
 	DispatchPolicy *DispatchPolicy `json:"dispatch_policy,omitempty"`
+	// StartDefaults is the optional policy of what task Agents start with beyond what their caller named, by the kind
+	// of work (start_defaults.go). nil or expired: every task starts as without it.
+	StartDefaults *StartDefaultsPolicy `json:"start_defaults,omitempty"`
 	// Leaders are the side conversations the user made leaders (#3133, supervise_leader.go): a task one hands out with
 	// task_plan is supervised by it instead of the main conversation. Empty (the default): only the main one supervises.
 	Leaders []string `json:"leaders,omitempty"`
