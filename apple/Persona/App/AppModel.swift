@@ -1059,7 +1059,15 @@ final class AppModel {
         do {
             let st = try await api.assistant()
             guard showsPage(of: api) else { return } // another group or manager was picked meanwhile
+            let previousMain = assistantMain
             assistantConfig = st
+            if let current = assistantCurrent {
+                assistantCurrent = Self.followingMainRoute(current: current, previous: previousMain, updated: assistantMain)
+            }
+            // Assistant snapshots are the settings-level refresh signal. Session.rev is deliberately not used here:
+            // it ticks during transcript streaming and is not published through SessionCell to the composer.
+            assistantLauncherCache = [:]
+            launchersRevision += 1
             if sessionLists.lists[api.group]?.paged == true { landSessionSummaries(api.stamp(st.conversations), group: api.group) }
             // Only on the very first launch: after New Chat the key exists but is empty, and the home page stays.
             let neverChosen = UserDefaults.standard.object(forKey: "assistant.current") == nil
@@ -1176,6 +1184,13 @@ final class AppModel {
     /// The main conversation (the Persona tab's long-running one), when the hub has one.
     var assistantMain: SessionKey? {
         assistantConfig?.mainKey(group: hub?.group ?? "")
+    }
+
+    /// Follow a confirmed main-route move only while the user is looking at the old main conversation. A side
+    /// conversation deliberately opened by the user stays where it is; no old main key means no migration to invent.
+    static func followingMainRoute(current: SessionKey?, previous: SessionKey?, updated: SessionKey?) -> SessionKey? {
+        guard let previous, let updated, current == previous, updated != previous else { return current }
+        return updated
     }
 
     /// Shows a Persona conversation from another page (Scheduled Tasks' Run Now / its own conversation): the Persona tab or the

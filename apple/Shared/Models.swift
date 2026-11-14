@@ -555,11 +555,11 @@ nonisolated extension Launcher {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         name = try c.decode(String.self, forKey: .name)
-        displayName = try c.decodeIfPresent(String.self, forKey: .displayName)
+        displayName = (try? c.decodeIfPresent(String.self, forKey: .displayName)).flatMap { $0 }
         baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL)
         model = try c.decodeIfPresent(String.self, forKey: .model)
         agent = try c.decodeIfPresent(String.self, forKey: .agent)
-        agentType = try c.decodeIfPresent(String.self, forKey: .agentType)
+        agentType = (try? c.decodeIfPresent(String.self, forKey: .agentType)).flatMap { $0 }
         assistant = try c.decodeIfPresent(Bool.self, forKey: .assistant)
         health = (try? c.decodeIfPresent(LauncherHealth.self, forKey: .health)) ?? nil
         promptOptional = try c.decodeIfPresent(Bool.self, forKey: .promptOptional)

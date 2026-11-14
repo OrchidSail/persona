@@ -159,12 +159,20 @@ struct AssistantModelChoiceTests {
         #expect(AssistantModelChoice.visibleModels(unlocked).count == 2)
     }
 
-    @Test func anEmptyCatalogFallsBackToTheConfiguredModelOnlyWhenUnlocked() {
+    @Test func anEmptyCatalogFallsBackToTheConfiguredModel() {
         let launcher = Launcher(name: "team-api", model: "claude-sonnet-5-5")
-        #expect(AssistantModelChoice.configuredFallback(launcher, models: [], locked: nil) == "claude-sonnet-5-5")
-        #expect(AssistantModelChoice.configuredFallback(launcher, models: [], locked: "locked") == nil)
+        #expect(AssistantModelChoice.configuredFallback(launcher, models: [], locked: nil) ==
+                AssistantModelChoice.ConfiguredFallback(id: "claude-sonnet-5-5", sendsDefault: false))
+        #expect(AssistantModelChoice.configuredFallback(launcher, models: [], locked: "locked") ==
+                AssistantModelChoice.ConfiguredFallback(id: "claude-sonnet-5-5", sendsDefault: true))
         let models = [AgentModel(id: "opus", name: "Opus")]
         #expect(AssistantModelChoice.configuredFallback(launcher, models: models, locked: nil) == nil)
+
+        let inherited = AssistantModelChoice.Effective(launcher: "team-api", model: nil, effort: nil, source: .defaultValue)
+        #expect(AssistantModelChoice.selectedModel(inherited, launcher: "team-api",
+                                                   configuredModel: "claude-sonnet-5-5") == "claude-sonnet-5-5")
+        #expect(AssistantModelChoice.pick(launcher: "team-api", model: nil, effort: nil, current: inherited,
+                                          configuredModel: "claude-sonnet-5-5", configuredIsDefault: true) == nil)
     }
 
     @Test func onlyKnownDifferentConversationEnginesAreRefused() {
@@ -173,6 +181,8 @@ struct AssistantModelChoiceTests {
         #expect(!AssistantModelChoice.isOtherEngine(sessionAgent: "claude", launcherAgent: "claudecode"))
         #expect(!AssistantModelChoice.isOtherEngine(sessionAgent: "dsh", launcherAgent: "codex"))
         #expect(!AssistantModelChoice.isOtherEngine(sessionAgent: "claude", launcherAgent: "dsh"))
+        #expect(!AssistantModelChoice.isOtherEngine(sessionAgent: nil, launcherAgent: "codex"))
+        #expect(AssistantModelChoice.isOtherEngine(sessionAgent: "", launcherAgent: "codex"))
     }
 
     @Test func codexSourceAlsoDrivesTheConversationEngine() throws {
@@ -244,6 +254,11 @@ struct AssistantModelChoiceTests {
 
         let fallback = try JSON.decoder.decode(Launcher.self, from: Data(#"{"name":"cx","agent_type":"","agent":"codex"}"#.utf8))
         #expect(fallback.runtimeAgent == "codex")
+
+        let odd = try JSON.decoder.decode(Launcher.self, from: Data(#"{"name":"cx","display_name":{},"agent_type":123,"agent":"codex"}"#.utf8))
+        #expect(odd.name == "cx")
+        #expect(odd.displayName == nil && odd.agentType == nil)
+        #expect(odd.runtimeAgent == "codex")
     }
 
     @Test func assistantStateUsesTheConfirmedMainMachine() throws {
@@ -263,6 +278,15 @@ struct AssistantModelChoiceTests {
          "main":"main-session","conversations":[]}
         """.utf8))
         #expect(empty.mainKey() == SessionKey(machineID: "default", sessionID: "main-session"))
+    }
+
+    @Test func aMainRouteMoveMigratesOnlyTheConversationBeingViewed() {
+        let old = SessionKey(machineID: "default", sessionID: "main")
+        let updated = SessionKey(machineID: "route", sessionID: "main")
+        let side = SessionKey(machineID: "default", sessionID: "side")
+        #expect(AppModel.followingMainRoute(current: old, previous: old, updated: updated) == updated)
+        #expect(AppModel.followingMainRoute(current: side, previous: old, updated: updated) == side)
+        #expect(AppModel.followingMainRoute(current: nil, previous: nil, updated: updated) == nil)
     }
 
     @Test func conversationModelBodyEncodesMachineIdSnakeCase() throws {

@@ -106,8 +106,8 @@ struct CarPlayMicPermission: MicPermission {
                 throw CarPlayVoiceStartError.noHub
             }
             let st = try await api.assistant()
-            guard let main = st.main, !main.isEmpty else { throw CarPlayVoiceStartError.noMain }
-            key = SessionKey(group: api.group, machineID: st.machineID, sessionID: main)
+            guard let confirmed = st.mainKey(group: api.group) else { throw CarPlayVoiceStartError.noMain }
+            key = confirmed
         }
         let list = try await api.pluginList()
         guard let voice = VoiceAvailability.pick(list.plugins) else { throw CarPlayVoiceStartError.noExtension }

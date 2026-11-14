@@ -52,10 +52,11 @@ nonisolated enum AssistantModelChoice {
 
     /// The model id ticked for `launcher` in the sheet: nil when the setup runs on another launcher, "" on its Default
     /// row, else the picked model's id. A hub-resolved model also ticks its alias row.
-    static func selectedModel(_ e: Effective, launcher: String, aliases: [String: String] = [:]) -> String? {
+    static func selectedModel(_ e: Effective, launcher: String, aliases: [String: String] = [:],
+                              configuredModel: String? = nil) -> String? {
         guard e.launcher == launcher else { return nil }
         let model = e.model?.emptyAsNil
-        guard let model else { return "" }
+        guard let model else { return configuredModel?.emptyAsNil ?? "" }
         return aliases[model] ?? model
     }
 
@@ -81,7 +82,7 @@ nonisolated enum AssistantModelChoice {
     /// An existing Claude/Codex conversation keeps its engine, matching the hub and web. Unknown runtimes stay
     /// selectable because refusing them would be a guess; the hub remains authoritative.
     static func isOtherEngine(sessionAgent: String?, launcherAgent: String?) -> Bool {
-        guard let session = engine(sessionAgent), let launcher = engine(launcherAgent) else { return false }
+        guard let session = engine(sessionAgent), let launcher = engine(launcherAgent, nilIsClaude: true) else { return false }
         return session != launcher
     }
 
@@ -91,16 +92,24 @@ nonisolated enum AssistantModelChoice {
         (list?.models ?? []).filter { list?.locked == nil || $0.isDefault }
     }
 
-    /// The configured-model row for a launcher with no readable catalog or no models of its own.
-    static func configuredFallback(_ launcher: Launcher, models: [AgentModel], locked: String?) -> String? {
-        guard models.isEmpty, locked == nil else { return nil }
-        return launcher.model?.emptyAsNil
+    /// The configured-model row for an empty catalog. A locked launcher's configured model is sent as Default (nil),
+    /// because the hub accepts the launcher's own fixed model only without an overriding model ID.
+    struct ConfiguredFallback: Equatable {
+        var id: String
+        var sendsDefault: Bool
     }
 
-    private static func engine(_ raw: String?) -> String? {
-        switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "" {
-        case "", "claude", "claude-code", "claudecode": "claude"
-        case "codex", "codex-cli": "codex"
+    /// The configured-model row for a launcher with no readable catalog or no models of its own.
+    static func configuredFallback(_ launcher: Launcher, models: [AgentModel], locked: String?) -> ConfiguredFallback? {
+        guard models.isEmpty, let id = launcher.model?.emptyAsNil else { return nil }
+        return ConfiguredFallback(id: id, sendsDefault: locked != nil)
+    }
+
+    private static func engine(_ raw: String?, nilIsClaude: Bool = false) -> String? {
+        let normalized = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized ?? (nilIsClaude ? "" : nil) {
+        case .some(""), .some("claude"), .some("claude-code"), .some("claudecode"): "claude"
+        case .some("codex"), .some("codex-cli"): "codex"
         default: nil
         }
     }
@@ -109,13 +118,16 @@ nonisolated enum AssistantModelChoice {
     /// model; `effort` carries the setup's current effort so the pick keeps it. Resolved aliases and a configured
     /// fallback are compared by what runs, not just by their spelling, so tapping the current row never pins a default.
     static func pick(launcher: String, model: String?, effort: String?, current: Effective,
-                     aliases: [String: String] = [:], configuredModel: String? = nil) -> ModelPick? {
+                     aliases: [String: String] = [:], configuredModel: String? = nil,
+                     configuredIsDefault: Bool = false) -> ModelPick? {
         let sentModel = model?.emptyAsNil
         if current.launcher == launcher {
-            let selected = selectedModel(current, launcher: launcher, aliases: aliases)
+            let selected = selectedModel(current, launcher: launcher, aliases: aliases, configuredModel: configuredModel)
             if selected == (sentModel ?? "") { return nil }
             // No catalog: the configured model is what this launcher's default already runs.
             if let sentModel, current.model?.emptyAsNil == nil, sentModel == configuredModel?.emptyAsNil { return nil }
+            // A locked configured row is the same Default choice, not an override with a concrete ID.
+            if configuredIsDefault, sentModel == nil, selected == configuredModel?.emptyAsNil { return nil }
         }
         return ModelPick(launcher: launcher, model: sentModel, effort: effort?.emptyAsNil)
     }
@@ -236,9 +248,13 @@ final class AssistantModelPanelModel {
     /// Keeps `model` (nil: its default) for `launcher`; returns whether the hub took it.
     func choose(launcher: String, model: String?, session: Session?) async -> Bool {
         let current = AssistantModelChoice.effective(session: session, response: response)
-        let configured = response?.launchers.first { $0.name == launcher }?.model
+        let launcherInfo = response?.launchers.first { $0.name == launcher }
+        let fallback = launcherInfo.flatMap {
+            AssistantModelChoice.configuredFallback($0, models: models(launcher), locked: list(launcher)?.locked)
+        }
         guard let pick = AssistantModelChoice.pick(launcher: launcher, model: model, effort: current.effort, current: current,
-                                                   aliases: selectionAliases(launcher), configuredModel: configured) else { return true }
+                                                   aliases: selectionAliases(launcher), configuredModel: fallback?.id,
+                                                   configuredIsDefault: fallback?.sendsDefault == true) else { return true }
         busyLauncher = launcher
         defer { busyLauncher = nil }
         return await deps.keep(key, pick)
@@ -354,13 +370,13 @@ struct AssistantModelSheet: View {
     @ViewBuilder
     private func section(_ launcher: Launcher) -> some View {
         let list = panel.list(launcher.name)
-        let selected = AssistantModelChoice.selectedModel(
-            effective, launcher: launcher.name, aliases: panel.selectionAliases(launcher.name))
-        let otherEngine = effective.launcher != launcher.name && AssistantModelChoice.isOtherEngine(
-            sessionAgent: AssistantModelChoice.sessionEngine(session), launcherAgent: launcher.runtimeAgent)
         let locked = list?.locked
         let models = panel.models(launcher.name)
         let configured = AssistantModelChoice.configuredFallback(launcher, models: models, locked: locked)
+        let selected = AssistantModelChoice.selectedModel(
+            effective, launcher: launcher.name, aliases: panel.selectionAliases(launcher.name), configuredModel: configured?.id)
+        let otherEngine = effective.launcher != launcher.name && AssistantModelChoice.isOtherEngine(
+            sessionAgent: AssistantModelChoice.sessionEngine(session), launcherAgent: launcher.runtimeAgent)
         Section {
             if otherEngine {
                 let to = launcher.runtimeAgent?.lowercased() == "codex" ? "Codex" : "Claude Code"
@@ -391,8 +407,10 @@ struct AssistantModelSheet: View {
                 if let list {
                     if let configured {
                         // No catalog (a direct API or an older node): its configured model is still a concrete choice.
-                        row(launcher: launcher.name, modelID: configured, title: SessionModes.modelName(configured) ?? configured,
-                            detail: nil, ticked: selected == configured, locked: nil)
+                        // A locked launcher sends Default (nil), never an overriding concrete model ID.
+                        row(launcher: launcher.name, modelID: configured.sendsDefault ? "" : configured.id,
+                            title: SessionModes.modelName(configured.id) ?? configured.id,
+                            detail: nil, ticked: selected == configured.id || (configured.sendsDefault && selected == ""), locked: nil)
                     } else {
                         ForEach(models) { m in
                             row(launcher: launcher.name, modelID: m.isDefault ? "" : m.id,
