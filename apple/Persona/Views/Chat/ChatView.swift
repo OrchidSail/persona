@@ -5784,7 +5784,7 @@ struct Composer: View, Equatable {
         // Keep the effective Main chat model fresh so the composer title matches what the next message runs (#6542):
         // re-read when the conversation changes or Model/Assistant settings change. A transcript rev would cancel this
         // request every streaming tick, so the AppModel invalidates the cache from assistant snapshots instead.
-        .task(id: "\(key.sessionID)-\(model.launchersRevision)") {
+        .task(id: "\(key.sessionID)-\(model.assistantLauncherRequestRevision)") {
             guard assistantModelPickAvailable else { return }
             _ = try? await model.assistantLaunchers(key.machineRef, refresh: true)
         }

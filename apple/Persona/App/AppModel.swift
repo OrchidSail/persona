@@ -373,6 +373,9 @@ final class AppModel {
     @ObservationIgnored private(set) var assistantLauncherCache: [MachineRef: APIClient.LaunchersResponse] = [:]
     /// Observed because the cache above is intentionally not observed: a fresh answer must redraw the composer's title.
     private(set) var assistantLauncherRevision = 0
+    /// Only a settings snapshot should start another picker request. Kept separate from the answer revision so a
+    /// completed request never re-triggers itself, and from the global launcher revision used by New Chat/providers.
+    private(set) var assistantLauncherRequestRevision = 0
 
     /// The hub-level group's client: for pages about the hub (Persona, Inbox, its settings). A session's, a machine's
     /// or an interaction's requests go to its own group (`api(_:)`). The assistant's routes go to the manager the Persona
@@ -1067,8 +1070,9 @@ final class AppModel {
             }
             // Assistant snapshots are the settings-level refresh signal. Session.rev is deliberately not used here:
             // it ticks during transcript streaming and is not published through SessionCell to the composer.
+            // Invalidate only the assistant picker; New Chat and Model Providers use launchersRevision instead.
             assistantLauncherCache = [:]
-            launchersRevision += 1
+            assistantLauncherRequestRevision += 1
             if sessionLists.lists[api.group]?.paged == true { landSessionSummaries(api.stamp(st.conversations), group: api.group) }
             // Only on the very first launch: after New Chat the key exists but is empty, and the home page stays.
             let neverChosen = UserDefaults.standard.object(forKey: "assistant.current") == nil
@@ -3233,6 +3237,7 @@ final class AppModel {
         // Model Settings changes are launcher changes too: wake the open main-chat composer to re-read the default.
         launchersRevision += 1
         assistantLauncherRevision += 1
+        assistantLauncherRequestRevision += 1
     }
 
     /// The list a start picks from (New Agent, Run Agent Here): always read again, and the cache with it. Each launcher's
