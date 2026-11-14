@@ -28603,7 +28603,7 @@ MOCK_HELP.append("MOCK_CUSTOM_MODELS=1|forgetfail|empty|fail  手动输入模型
 # model with sonnetcc 400). =picked: the second chat starts
 # with a pick. =otherkind: the main chat already runs Codex while its default stays Claude (#4662). GET /mock/model_pick:
 # the requests; ?reset=1 drops every pick and restores the default; ?default=claude|codex|gone changes the launcher-list
-# default for the notice's positive, same-kind and unknown-default browser cases.
+# default and pushes a main-chat revision for the notice's live positive, same-kind and unknown-default browser cases.
 MODEL_PICK_MODE = os.environ.get("MOCK_MODEL_PICK", "")
 MODEL_PICK_DEFAULT = "claude"
 MODEL_PICK_LOG = []
@@ -28655,6 +28655,10 @@ def model_pick_route(handler, p, body):
             push_machine(ASSISTANT_CONFIG["machine_id"])
         if query.get("default"):
             MODEL_PICK_DEFAULT = query["default"][0]
+            main = next((s for s in ASSISTANT if s["session_id"] == ASK1), None)
+            if main is not None:
+                main["rev"] = (main.get("rev") or 0) + 1
+            push_machine(ASSISTANT_CONFIG["machine_id"])
         return handler.send_json({"requests": MODEL_PICK_LOG, "default": MODEL_PICK_DEFAULT}) or True
     if handler.command == "GET" and re.fullmatch(r"/api/v1/machines/[^/]+/launchers", p) and query.get("purpose") == ["assistant"]:
         return handler.send_json({

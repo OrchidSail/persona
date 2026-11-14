@@ -6,11 +6,17 @@ import { t } from "../../i18n";
 import { getState, reset } from "../../lib/store";
 import type { Session } from "../../lib/types";
 
-const launcherRead = vi.hoisted(() => ({ info: undefined as import("../../lib/session-models").AssistantLaunchers | undefined }));
+const launcherRead = vi.hoisted(() => ({
+  info: undefined as import("../../lib/session-models").AssistantLaunchers | undefined,
+  calls: [] as { mid: string; again: boolean }[],
+}));
 vi.mock("../../lib/session-models", async (original) => ({
   ...(await original<typeof import("../../lib/session-models")>()),
   assistantLaunchers: () => ({ info: launcherRead.info }),
-  readAssistantLaunchers: () => Promise.resolve(),
+  readAssistantLaunchers: (mid: string, o: { again?: boolean } = {}) => {
+    launcherRead.calls.push({ mid, again: Boolean(o.again) });
+    return Promise.resolve();
+  },
   useModelLists: () => 0,
 }));
 
@@ -30,6 +36,7 @@ const notice = () => host.querySelector<HTMLElement>("[data-main-chat-agent-noti
 
 beforeEach(() => {
   reset();
+  launcherRead.calls = [];
   launcherRead.info = {
     launchers: [{ name: "claude", source: "builtin" }, { name: "codex", source: "builtin", agent: "codex" }],
     def: { provider: "claude" }, unavailable: [],
@@ -87,5 +94,12 @@ describe("the Main chat default's agent-kind mismatch", () => {
     };
     await show(session({ model_pick: { launcher: "codex" } }));
     expect(notice()).toBeNull();
+  });
+
+  it("refreshes the default on mount and when the conversation revision changes", async () => {
+    await show(session({ rev: 1 }));
+    expect(launcherRead.calls).toEqual([{ mid: "hub", again: true }]);
+    await show(session({ rev: 2 }));
+    expect(launcherRead.calls).toEqual([{ mid: "hub", again: true }, { mid: "hub", again: true }]);
   });
 });

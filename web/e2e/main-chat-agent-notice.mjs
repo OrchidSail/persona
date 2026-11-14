@@ -1,6 +1,7 @@
 // Real Chromium against the synthetic mock hub: the current main chat runs Codex while Main chat defaults to Claude.
 // The notice and pill name what runs, the existing New main dialog opens, and Models previews the same explanation.
-// Same-kind and unknown defaults are negative controls. Light/dark, desktop standard text and phone large text.
+// Same-kind and unknown defaults are negative controls, delivered as live session revisions without reloading.
+// Light/dark, desktop standard text and phone large text.
 //
 //   MOCK_MAIN_ACTIONS=1 MOCK_MODEL_PICK=otherkind PORT=18874 python3 scripts/mock/mock_hub.py &
 //   (cd web && PERSONA_HUB_URL=http://127.0.0.1:18874 npx vite --port 5374 --strictPort &)
@@ -131,20 +132,26 @@ async function run(theme, large) {
   await editor.waitFor({ state: "detached" });
   await page.waitForFunction(() => !history.state?.personaOverlay);
 
-  // The same agent kind is not a mismatch. The unknown default is a separate negative control, not a guessed fallback.
-  await mock("model_pick?default=codex");
-  await openMain(page);
-  await page.waitForTimeout(400);
-  assert.equal(await notice.count(), 0, `${tag}: same-kind default stays silent`);
-  await mock("model_pick?default=gone");
-  await openMain(page);
-  await page.waitForTimeout(400);
-  assert.equal(await notice.count(), 0, `${tag}: unknown default stays silent`);
-  await mock("model_pick?default=claude");
+  // The default changes elsewhere while this page stays open. A pushed session revision must refresh the cached
+  // launchers: a same-kind default removes the notice, an unknown one stays silent, and Claude restores the mismatch.
   await openMain(page);
   await notice.waitFor();
+  const sameKindRead = page.waitForResponse((r) => r.url().includes("/launchers?") && r.url().includes("purpose=assistant") && r.status() === 200);
+  await mock("model_pick?default=codex");
+  await sameKindRead;
+  await notice.waitFor({ state: "detached" });
+  assert.equal(await notice.count(), 0, `${tag}: same-kind default removes the stale notice without a reload`);
+  const unknownRead = page.waitForResponse((r) => r.url().includes("/launchers?") && r.url().includes("purpose=assistant") && r.status() === 200);
+  await mock("model_pick?default=gone");
+  await unknownRead;
+  await page.waitForTimeout(400);
+  assert.equal(await notice.count(), 0, `${tag}: unknown default stays silent`);
+  const restoredRead = page.waitForResponse((r) => r.url().includes("/launchers?") && r.url().includes("purpose=assistant") && r.status() === 200);
+  await mock("model_pick?default=claude");
+  await restoredRead;
+  await notice.waitFor();
   assert.deepEqual(errors, [], `${tag}: no browser exceptions`);
-  console.log(`PASS ${tag}: actual pill, notice, New main dialog, Models preview, same-kind/unknown suppression and restoration`);
+  console.log(`PASS ${tag}: actual pill, notice, New main dialog, Models preview, live same-kind/unknown suppression and restoration`);
   await context.close();
 }
 

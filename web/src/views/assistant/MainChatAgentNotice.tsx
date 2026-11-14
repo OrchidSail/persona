@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { t } from "../../i18n";
 import { ASSISTANT_MODEL_PICK_FEATURE, mainChatAgentMismatch } from "../../lib/assistant-models";
 import { providerTitle } from "../../lib/provider-names";
@@ -17,8 +17,16 @@ export function MainChatAgentNotice({ session, isMain, onNewMain }: { session: S
   useModelLists();
   const { info } = assistantLaunchers(mid);
   useEffect(() => {
-    if (isMain && mid) void readAssistantLaunchers(mid);
+    if (isMain && mid) void readAssistantLaunchers(mid, { again: true });
   }, [isMain, mid]);
+  // A hub-side default change can arrive while this page stays open. Follow the pill: a pushed session revision
+  // re-reads the launchers, and useModelLists redraws this notice with the answer so a stale mismatch cannot linger.
+  const lastRev = useRef<number | undefined>(session.rev);
+  useEffect(() => {
+    if (!isMain || !mid || session.rev === undefined || session.rev === lastRev.current) return;
+    lastRev.current = session.rev;
+    void readAssistantLaunchers(mid, { again: true });
+  }, [isMain, mid, session.rev]);
   const mismatch = mainChatAgentMismatch({ session, isMain, kept, config: assistant?.launcher }, info);
   if (!mismatch) return null;
   const named = (launcher: string) => {
