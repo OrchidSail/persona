@@ -52,14 +52,27 @@ nonisolated enum AssistantModelChoice {
 
     /// The model id ticked for `launcher` in the sheet: nil when the setup runs on another launcher, "" on its Default
     /// row, else the picked model's id. A hub-resolved model also ticks its alias row.
-    static func selectedModel(_ e: Effective, launcher: String, list: LauncherModels? = nil) -> String? {
+    static func selectedModel(_ e: Effective, launcher: String, aliases: [String: String] = [:]) -> String? {
         guard e.launcher == launcher else { return nil }
         let model = e.model?.emptyAsNil
         guard let model else { return "" }
-        if let row = list?.models.first(where: { $0.id == model || $0.resolved == model }) {
-            return row.isDefault ? "" : row.id
+        return aliases[model] ?? model
+    }
+
+    /// Resolved-ID → row-ID lookup, built once when a catalog lands rather than searched in a view's body.
+    static func selectionAliases(_ list: LauncherModels?) -> [String: String] {
+        var out: [String: String] = [:]
+        for model in list?.models ?? [] {
+            let row = model.isDefault ? "" : model.id
+            if out[model.id] == nil { out[model.id] = row }
+            if let resolved = model.resolved, out[resolved] == nil { out[resolved] = row }
         }
-        return model
+        return out
+    }
+
+    /// The engine the existing conversation actually runs on, including Codex threads identified by their source.
+    static func sessionEngine(_ session: Session?) -> String? {
+        session?.isCodex == true ? "codex" : session?.agent
     }
 
     /// An existing Claude/Codex conversation keeps its engine, matching the hub and web. Unknown runtimes stay
@@ -135,6 +148,9 @@ final class AssistantModelPanelModel {
     private(set) var response: APIClient.LaunchersResponse?
     /// Each launcher's `/model` list, by launcher name.
     private(set) var lists: [String: LauncherModels] = [:]
+    /// Rows the sheet may offer and resolved-model → row-ID aliases, derived once per answer (P4: not in `body`).
+    private(set) var visibleLists: [String: [AgentModel]] = [:]
+    private(set) var resolvedAliases: [String: [String: String]] = [:]
     /// Why one launcher's list could not be read (a 404 from an older hub/node leaves it empty, not an error).
     private(set) var listErrors: [String: String] = [:]
     private(set) var loading = false
@@ -150,6 +166,8 @@ final class AssistantModelPanelModel {
     }
 
     func list(_ launcher: String) -> LauncherModels? { lists[launcher] }
+    func models(_ launcher: String) -> [AgentModel] { visibleLists[launcher] ?? [] }
+    func selectionAliases(_ launcher: String) -> [String: String] { resolvedAliases[launcher] ?? [:] }
     func error(_ launcher: String) -> String? { listErrors[launcher] }
     var unavailable: [UnavailableLauncher] { response?.unavailable ?? [] }
 
@@ -178,17 +196,23 @@ final class AssistantModelPanelModel {
         do {
             let answer = try await deps.models(machine, name, refresh)
             lists[name] = answer
+            visibleLists[name] = AssistantModelChoice.visibleModels(answer)
+            resolvedAliases[name] = AssistantModelChoice.selectionAliases(answer)
             listErrors[name] = nil
         } catch {
             if let e = error as? APIError, e.status == 404 {
                 // Older hub/node: no catalog, but the launcher's configured model is still a concrete choice.
                 lists[name] = LauncherModels(agent: launcher.runtimeAgent ?? "claude",
                                              models: [], locked: nil, machine: nil)
+                visibleLists[name] = []
+                resolvedAliases[name] = [:]
                 listErrors[name] = nil
                 return
             }
             guard !error.isCancellation else { return }
             lists[name] = nil
+            visibleLists[name] = nil
+            resolvedAliases[name] = nil
             listErrors[name] = error.shown
         }
     }
@@ -298,11 +322,12 @@ struct AssistantModelSheet: View {
     @ViewBuilder
     private func section(_ launcher: Launcher) -> some View {
         let list = panel.list(launcher.name)
-        let selected = AssistantModelChoice.selectedModel(effective, launcher: launcher.name, list: list)
+        let selected = AssistantModelChoice.selectedModel(
+            effective, launcher: launcher.name, aliases: panel.selectionAliases(launcher.name))
         let otherEngine = effective.launcher != launcher.name && AssistantModelChoice.isOtherEngine(
-            sessionAgent: session?.agent, launcherAgent: launcher.runtimeAgent)
+            sessionAgent: AssistantModelChoice.sessionEngine(session), launcherAgent: launcher.runtimeAgent)
         let locked = list?.locked
-        let models = AssistantModelChoice.visibleModels(list)
+        let models = panel.models(launcher.name)
         let configured = AssistantModelChoice.configuredFallback(launcher, models: models, locked: locked)
         Section {
             if otherEngine {

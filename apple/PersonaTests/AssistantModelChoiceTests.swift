@@ -118,13 +118,15 @@ struct AssistantModelChoiceTests {
             AgentModel(id: "haiku", name: "Haiku", resolved: "claude-haiku-5-5")
         ], locked: nil, machine: nil)
         let e = AssistantModelChoice.Effective(launcher: "claude", model: "claude-opus-5-5", effort: nil, source: .pick)
-        #expect(AssistantModelChoice.selectedModel(e, launcher: "claude", list: aliases) == "opus")
+        #expect(AssistantModelChoice.selectedModel(
+            e, launcher: "claude", aliases: AssistantModelChoice.selectionAliases(aliases)) == "opus")
 
         let withDefault = LauncherModels(agent: "claude", models: [
             AgentModel(id: "default", name: "Default", resolved: "claude-opus-5-5", isDefault: true),
             AgentModel(id: "opus", name: "Opus", resolved: "claude-opus-5-5")
         ], locked: nil, machine: nil)
-        #expect(AssistantModelChoice.selectedModel(e, launcher: "claude", list: withDefault) == "")
+        #expect(AssistantModelChoice.selectedModel(
+            e, launcher: "claude", aliases: AssistantModelChoice.selectionAliases(withDefault)) == "")
     }
 
     @Test func lockedLaunchersKeepOnlyTheirSelectableDefault() {
@@ -153,6 +155,14 @@ struct AssistantModelChoiceTests {
         #expect(!AssistantModelChoice.isOtherEngine(sessionAgent: "claude", launcherAgent: "claudecode"))
         #expect(!AssistantModelChoice.isOtherEngine(sessionAgent: "dsh", launcherAgent: "codex"))
         #expect(!AssistantModelChoice.isOtherEngine(sessionAgent: "claude", launcherAgent: "dsh"))
+    }
+
+    @Test func codexSourceAlsoDrivesTheConversationEngine() throws {
+        let json = #"{"machine_id":"box","session_id":"s1","source_kind":"codex_app_server"}"#
+        let session = try JSON.decoder.decode(Session.self, from: Data(json.utf8))
+        #expect(AssistantModelChoice.sessionEngine(session) == "codex")
+        #expect(AssistantModelChoice.isOtherEngine(sessionAgent: AssistantModelChoice.sessionEngine(session),
+                                                   launcherAgent: "claude"))
     }
 
     // MARK: Display name
