@@ -873,6 +873,13 @@ func (n *Node) readAssistant(p *assistantProc, r io.Reader) {
 			recovering := n.recoverAssistantResult(p, ev.IsError, ev.Result, kinds...)
 			if !recovering {
 				n.clearAssistantRecovery(p, !ev.IsError)
+				// A turn that ended well is newer evidence than an exhausted chain: the failure card's cause and reset
+				// time must not survive onto a later error, so drop the marker on any successful result (#7824).
+				if !ev.IsError {
+					if r := n.modelRecovery(p.id); r != nil && r.ChainExhausted {
+						n.clearModelRecovery(p.id)
+					}
+				}
 			}
 			p.mu.Lock()
 			manual := p.manual

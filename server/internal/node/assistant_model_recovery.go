@@ -283,12 +283,18 @@ var assistantModelProbe = func(ctx context.Context, n *Node, launcher, model str
 	if base == "" || key == "" || model == "" {
 		return false
 	}
+	return probeGateway(ctx, base, key, n.resolvedLauncherModel(ctx, launcher, model))
+}
+
+// probeGateway is the probe's HTTP seam: one one-token request to the gateway. A 2xx (including a stream ended with a
+// refusal) proves the model is served and has quota; a 429/5xx/auth error or a connection failure keeps the fallback.
+func probeGateway(ctx context.Context, base, key, model string) bool {
 	root, err := rootURL(base)
-	if err != nil {
+	if err != nil || model == "" || key == "" {
 		return false
 	}
 	body, _ := json.Marshal(map[string]any{
-		"model": n.resolvedLauncherModel(ctx, launcher, model), "max_tokens": 1,
+		"model": model, "max_tokens": 1,
 		"messages": []map[string]string{{"role": "user", "content": "ping"}},
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(root, "/v1")+"/v1/messages", bytes.NewReader(body))

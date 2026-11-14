@@ -198,8 +198,15 @@ func (n *Node) restoreModel(ctx context.Context, id string) (map[string]any, err
 		return nil, refusal(restoreGone, "找不到这个会话的记录", nil)
 	}
 	m := n.meta(path, st)
+	// The runtime's own fallback, or the node's bounded-recovery marker projected onto the same shape (#7824). Either
+	// one means the conversation answers on a model that is not its configured one and a "back to configured" is valid.
 	if err := fallbackToRestore(m); err != nil {
-		return nil, err
+		if r := n.modelRecovery(id); r != nil && !r.ChainExhausted && r.From != "" && r.From != r.To {
+			// A node-driven switch has no transcript fallback: synthesize what restore needs from the marker.
+			m.modelFallback = &proto.ModelRefusal{Subtype: "model_refusal_fallback", OriginalModel: r.From, FallbackModel: r.To, Raw: ""}
+		} else {
+			return nil, err
+		}
 	}
 	if !n.isAssistantSession(id) {
 		// A typed /model may also become the default for new sessions (model_switch.go): not done behind the user's back.
@@ -232,7 +239,11 @@ func (n *Node) restoreModel(ctx context.Context, id string) (map[string]any, err
 	n.mu.Unlock()
 	m = n.meta(path, st)
 	if err := fallbackToRestore(m); err != nil {
-		return nil, err
+		if r := n.modelRecovery(id); r != nil && !r.ChainExhausted && r.From != "" && r.From != r.To {
+			m.modelFallback = &proto.ModelRefusal{Subtype: "model_refusal_fallback", OriginalModel: r.From, FallbackModel: r.To, Raw: ""}
+		} else {
+			return nil, err
+		}
 	}
 	// The configured model as the hub says it now: what the next start asks for unless the setting changes again.
 	_, exec := n.assistantModel(ctx, id)
@@ -249,6 +260,11 @@ func (n *Node) restoreModel(ctx context.Context, id string) (map[string]any, err
 		return nil, errRestoreBusy()
 	}
 	n.restores.set(id, restoreMark{to: exec.Model, at: time.Now(), raw: m.modelFallback.Raw, size: st.Size()})
+	// A node-driven switch is released here too, so the conversation actually leaves its fallback and the marker and
+	// 30-minute hold do not pin it to the cheaper model (#7824).
+	if r := n.modelRecovery(id); r != nil && !r.ChainExhausted {
+		n.releaseModelRecovery(id, r.From)
+	}
 	n.logger.Printf("assistant %s: back to the configured model asked: closed %v, next start uses %s", short(id), p != nil, exec.Model)
 	n.notifySessions()
 	return map[string]any{"restore": proto.ModelRestoreNextStart, "restore_to": exec.Model, "closed": p != nil}, nil
