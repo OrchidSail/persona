@@ -113,10 +113,12 @@ nonisolated enum AssistantModelChoice {
     }
 
     private static func engine(_ raw: String?, nilIsClaude: Bool = false) -> String? {
-        let normalized = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        switch normalized ?? (nilIsClaude ? "" : nil) {
-        case .some(""), .some("claude"), .some("claude-code"), .some("claudecode"): "claude"
-        case .some("codex"), .some("codex-cli"): "codex"
+        guard let normalized = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
+            return nilIsClaude ? "claude" : nil
+        }
+        switch normalized {
+        case "", "claude", "claude-code", "claudecode": "claude"
+        case "codex", "codex-cli": "codex"
         default: nil
         }
     }

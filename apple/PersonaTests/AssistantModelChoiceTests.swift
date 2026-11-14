@@ -181,6 +181,7 @@ struct AssistantModelChoiceTests {
     @Test func onlyKnownDifferentConversationEnginesAreRefused() {
         #expect(AssistantModelChoice.isOtherEngine(sessionAgent: "claude", launcherAgent: "codex"))
         #expect(AssistantModelChoice.isOtherEngine(sessionAgent: "codex-cli", launcherAgent: "claude-code"))
+        #expect(AssistantModelChoice.isOtherEngine(sessionAgent: "codex", launcherAgent: nil))
         #expect(!AssistantModelChoice.isOtherEngine(sessionAgent: "claude", launcherAgent: "claudecode"))
         #expect(!AssistantModelChoice.isOtherEngine(sessionAgent: "dsh", launcherAgent: "codex"))
         #expect(!AssistantModelChoice.isOtherEngine(sessionAgent: "claude", launcherAgent: "dsh"))
