@@ -350,7 +350,7 @@ struct AssistantModelSheet: View {
                 if let list {
                     if let configured {
                         // No catalog (a direct API or an older node): its configured model is still a concrete choice.
-                        row(launcher: launcher.name, modelID: configured, title: SessionModes.modelName(configured),
+                        row(launcher: launcher.name, modelID: configured, title: SessionModes.modelName(configured) ?? configured,
                             detail: nil, ticked: selected == configured, locked: nil)
                     } else {
                         ForEach(models) { m in
