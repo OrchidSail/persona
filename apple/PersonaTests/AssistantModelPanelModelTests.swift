@@ -9,6 +9,7 @@ struct AssistantModelPanelModelTests {
         var modelRefreshes: [String: [Bool]] = [:]
         var kept: ModelPick?
         var dropped = false
+        var modelErrors: [String: APIError] = [:]
     }
 
     private let key = SessionKey(machineID: "box", sessionID: "main")
@@ -22,8 +23,7 @@ struct AssistantModelPanelModelTests {
         unavailable: nil
     )
 
-    private func deps(_ recorder: Recorder,
-                      modelErrors: [String: APIError] = [:]) -> AssistantModelPanelModel.Deps {
+    private func deps(_ recorder: Recorder) -> AssistantModelPanelModel.Deps {
         .init(
             launchers: { _, refresh in
                 recorder.launcherRefreshes.append(refresh)
@@ -31,7 +31,7 @@ struct AssistantModelPanelModelTests {
             },
             models: { _, launcher, refresh in
                 recorder.modelRefreshes[launcher, default: []].append(refresh)
-                if let error = modelErrors[launcher] { throw error }
+                if let error = recorder.modelErrors[launcher] { throw error }
                 return LauncherModels(agent: launcher == "claude" ? "claude" : "codex",
                                       models: [], locked: nil, machine: nil)
             },
@@ -61,9 +61,8 @@ struct AssistantModelPanelModelTests {
 
     @Test func a404BecomesAnEmptyCatalogInsteadOfLoadingForever() async throws {
         let recorder = Recorder()
-        let panel = AssistantModelPanelModel(
-            key: key, machine: machine,
-            deps: deps(recorder, modelErrors: ["team-api": APIError(status: 404, message: "no models")]))
+        recorder.modelErrors["team-api"] = APIError(status: 404, message: "no models")
+        let panel = AssistantModelPanelModel(key: key, machine: machine, deps: deps(recorder))
 
         await panel.load()
 
@@ -72,16 +71,29 @@ struct AssistantModelPanelModelTests {
         #expect(panel.list("claude")?.models == [])
     }
 
-    @Test func aTemporaryModelCatalogErrorKeepsARetryReason() async throws {
+    @Test func aTemporaryRefreshErrorKeepsTheLastGoodCatalogAndShowsRetry() async throws {
         let recorder = Recorder()
-        let panel = AssistantModelPanelModel(
-            key: key, machine: machine,
-            deps: deps(recorder, modelErrors: ["claude": APIError(status: 502, message: "hub down")]))
+        let panel = AssistantModelPanelModel(key: key, machine: machine, deps: deps(recorder))
+        await panel.load()
+        #expect(panel.list("claude") != nil)
+
+        recorder.modelErrors["claude"] = APIError(status: 502, message: "hub down")
+        await panel.load(refresh: true)
+
+        #expect(panel.list("claude") != nil)
+        #expect(panel.error("claude") == "hub down")
+        #expect(recorder.modelRefreshes["claude"] == [false, true])
+    }
+
+    @Test func aProviderMissingFromBothListsNeedsRecovery() async throws {
+        let recorder = Recorder()
+        let panel = AssistantModelPanelModel(key: key, machine: machine, deps: deps(recorder))
 
         await panel.load()
 
-        #expect(panel.list("claude") == nil)
-        #expect(panel.error("claude") == "hub down")
+        #expect(panel.isMissing("old-gw"))
+        #expect(!panel.isMissing("claude"))
+        #expect(!panel.isMissing("team-api"))
     }
 
     @Test func chooseAndFollowDefaultCallTheConversationModelEndpoints() async throws {

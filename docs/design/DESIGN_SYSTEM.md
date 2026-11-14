@@ -1014,9 +1014,12 @@ chat (#5033), where the panel only offers models and says plainly which one the 
   reach the sheet.
   Each launcher's catalog supplies its rows; an empty or older-node 404 catalog falls back to its configured model, a
   locked launcher keeps only its valid Default choice, and a Default row sends no model ID so it follows later default
-  changes. Resolved aliases tick their real row. An existing Claude/Codex conversation marks the other engine as needing
-  a new conversation instead of offering a pick the hub would refuse. Typed IDs require `typed_models`, independently of
-  `assistant_model_pick`. The sheet refreshes every catalog on pull-to-refresh; the composer's effective label redraws
+  changes. When Default and a concrete alias resolve to the same model, the concrete alias is ticked; choosing the
+  current row is a no-op, never a new pick that pins the default. Resolved aliases use a lookup built when the catalog
+  loads. A refresh failure keeps the last good rows beside Retry, and a provider removed from both lists is named as
+  unavailable with the follow-default recovery path. An existing Claude/Codex conversation marks the other engine as
+  needing a new conversation instead of offering a pick the hub would refuse. Typed IDs require `typed_models`,
+  independently of `assistant_model_pick`. The sheet refreshes every catalog on pull-to-refresh; the composer's effective label redraws
   from fresh hub answers and Model Settings saves. No new token, style, component or navigation pattern.
 
 ### 3.9 Empty states

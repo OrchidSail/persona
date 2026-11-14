@@ -98,6 +98,24 @@ struct AssistantModelChoiceTests {
         #expect(AssistantModelChoice.pick(launcher: "claude", model: "opus", effort: "high", current: current) == nil)
     }
 
+    @Test func equivalentAliasAndConfiguredRowsAreNoOps() {
+        let current = AssistantModelChoice.Effective(launcher: "claude", model: "claude-opus-5-5", effort: "high",
+                                                     source: .defaultValue)
+        let list = LauncherModels(agent: "claude", models: [
+            AgentModel(id: "default", name: "Default", resolved: "claude-opus-5-5", isDefault: true),
+            AgentModel(id: "opus", name: "Opus", resolved: "claude-opus-5-5")
+        ], locked: nil, machine: nil)
+        let aliases = AssistantModelChoice.selectionAliases(list)
+        #expect(AssistantModelChoice.pick(launcher: "claude", model: "opus", effort: "high", current: current,
+                                          aliases: aliases) == nil)
+        #expect(AssistantModelChoice.pick(launcher: "claude", model: nil, effort: "high", current: current,
+                                          aliases: aliases) == ModelPick(launcher: "claude", model: nil, effort: "high"))
+
+        let inherited = AssistantModelChoice.Effective(launcher: "team-api", model: nil, effort: nil, source: .defaultValue)
+        #expect(AssistantModelChoice.pick(launcher: "team-api", model: "claude-sonnet-5-5", effort: nil,
+                                          current: inherited, configuredModel: "claude-sonnet-5-5") == nil)
+    }
+
     @Test func aNewModelBuildsAPickAndADefaultRowSendsNoModel() {
         let current = AssistantModelChoice.Effective(launcher: "claude", model: "opus", effort: "high", source: .defaultValue)
         let switched = AssistantModelChoice.pick(launcher: "claude", model: "sonnet", effort: "high", current: current)
@@ -126,7 +144,7 @@ struct AssistantModelChoiceTests {
             AgentModel(id: "opus", name: "Opus", resolved: "claude-opus-5-5")
         ], locked: nil, machine: nil)
         #expect(AssistantModelChoice.selectedModel(
-            e, launcher: "claude", aliases: AssistantModelChoice.selectionAliases(withDefault)) == "")
+            e, launcher: "claude", aliases: AssistantModelChoice.selectionAliases(withDefault)) == "opus")
     }
 
     @Test func lockedLaunchersKeepOnlyTheirSelectableDefault() {

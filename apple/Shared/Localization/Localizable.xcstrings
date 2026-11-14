@@ -160761,6 +160761,29 @@
         }
       }
     },
+    "This conversation's launcher is no longer available. Follow the Main Chat default or choose another launcher." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This conversation's launcher is no longer available. Follow the Main Chat default or choose another launcher."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "この会話のランチャーは利用できなくなりました。メインチャットのデフォルトに戻すか、別のランチャーを選んでください。"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这个对话的启动器已不可用。请跟随 Main Chat 默认设置，或另选启动器。"
+          }
+        }
+      }
+    },
     "This conversation's context is sealed. Continue in a new session instead." : {
       "extractionState" : "manual",
       "localizations" : {

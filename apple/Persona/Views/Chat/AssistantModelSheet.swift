@@ -65,7 +65,10 @@ nonisolated enum AssistantModelChoice {
         for model in list?.models ?? [] {
             let row = model.isDefault ? "" : model.id
             if out[model.id] == nil { out[model.id] = row }
-            if let resolved = model.resolved, out[resolved] == nil { out[resolved] = row }
+            if let resolved = model.resolved {
+                // Default and its concrete alias often resolve to the same ID: the concrete alias wins, as on the web.
+                if out[resolved] == nil || !model.isDefault { out[resolved] = row }
+            }
         }
         return out
     }
@@ -103,10 +106,17 @@ nonisolated enum AssistantModelChoice {
     }
 
     /// The pick a row keeps: nil for the setup already in force (the hub would store a no-op). A Default row sends no
-    /// model; `effort` carries the setup's current effort so the pick keeps it.
-    static func pick(launcher: String, model: String?, effort: String?, current: Effective) -> ModelPick? {
+    /// model; `effort` carries the setup's current effort so the pick keeps it. Resolved aliases and a configured
+    /// fallback are compared by what runs, not just by their spelling, so tapping the current row never pins a default.
+    static func pick(launcher: String, model: String?, effort: String?, current: Effective,
+                     aliases: [String: String] = [:], configuredModel: String? = nil) -> ModelPick? {
         let sentModel = model?.emptyAsNil
-        if current.launcher == launcher, (current.model?.emptyAsNil ?? nil) == sentModel { return nil }
+        if current.launcher == launcher {
+            let selected = selectedModel(current, launcher: launcher, aliases: aliases)
+            if selected == (sentModel ?? "") { return nil }
+            // No catalog: the configured model is what this launcher's default already runs.
+            if let sentModel, current.model?.emptyAsNil == nil, sentModel == configuredModel?.emptyAsNil { return nil }
+        }
         return ModelPick(launcher: launcher, model: sentModel, effort: effort?.emptyAsNil)
     }
 
@@ -146,6 +156,8 @@ final class AssistantModelPanelModel {
     let key: SessionKey
     let machine: MachineRef
     private(set) var response: APIClient.LaunchersResponse?
+    private(set) var offeredLauncherNames: Set<String> = []
+    private(set) var unavailableLauncherNames: Set<String> = []
     /// Each launcher's `/model` list, by launcher name.
     private(set) var lists: [String: LauncherModels] = [:]
     /// Rows the sheet may offer and resolved-model → row-ID aliases, derived once per answer (P4: not in `body`).
@@ -168,6 +180,10 @@ final class AssistantModelPanelModel {
     func list(_ launcher: String) -> LauncherModels? { lists[launcher] }
     func models(_ launcher: String) -> [AgentModel] { visibleLists[launcher] ?? [] }
     func selectionAliases(_ launcher: String) -> [String: String] { resolvedAliases[launcher] ?? [:] }
+    /// A current provider absent from both lists needs its own explanation and recovery row.
+    func isMissing(_ launcher: String) -> Bool {
+        response != nil && !offeredLauncherNames.contains(launcher) && !unavailableLauncherNames.contains(launcher)
+    }
     func error(_ launcher: String) -> String? { listErrors[launcher] }
     var unavailable: [UnavailableLauncher] { response?.unavailable ?? [] }
 
@@ -181,6 +197,8 @@ final class AssistantModelPanelModel {
         do {
             let r = try await deps.launchers(machine, refresh)
             response = r
+            offeredLauncherNames = Set(r.launchers.map(\.name))
+            unavailableLauncherNames = Set((r.unavailable ?? []).map(\.name))
         } catch {
             guard !error.isCancellation else { return }
             loadError = error.shown
@@ -210,9 +228,7 @@ final class AssistantModelPanelModel {
                 return
             }
             guard !error.isCancellation else { return }
-            lists[name] = nil
-            visibleLists[name] = nil
-            resolvedAliases[name] = nil
+            // Keep the last good rows selectable; the section shows the refresh failure and Retry beside them.
             listErrors[name] = error.shown
         }
     }
@@ -220,7 +236,9 @@ final class AssistantModelPanelModel {
     /// Keeps `model` (nil: its default) for `launcher`; returns whether the hub took it.
     func choose(launcher: String, model: String?, session: Session?) async -> Bool {
         let current = AssistantModelChoice.effective(session: session, response: response)
-        guard let pick = AssistantModelChoice.pick(launcher: launcher, model: model, effort: current.effort, current: current) else { return true }
+        let configured = response?.launchers.first { $0.name == launcher }?.model
+        guard let pick = AssistantModelChoice.pick(launcher: launcher, model: model, effort: current.effort, current: current,
+                                                   aliases: selectionAliases(launcher), configuredModel: configured) else { return true }
         busyLauncher = launcher
         defer { busyLauncher = nil }
         return await deps.keep(key, pick)
@@ -273,6 +291,20 @@ struct AssistantModelSheet: View {
                         .disabled(panel.busyLauncher != nil)
                     } footer: {
                         Text(String(localized: "This conversation has its own model. Following the default makes its next messages use Model configuration › Main chat again."))
+                    }
+                }
+                if panel.isMissing(effective.launcher) {
+                    Section {
+                        VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+                            Text(effective.launcher).font(Theme.Font.heading).foregroundStyle(.secondary)
+                            if let model = effective.model {
+                                Text(SessionModes.modelName(model) ?? model)
+                                    .font(Theme.Font.label).foregroundStyle(.secondary)
+                            }
+                            Text("This conversation's launcher is no longer available. Follow the Main Chat default or choose another launcher.")
+                                .font(Theme.Font.label).foregroundStyle(.secondary)
+                        }
+                        .accessibilityIdentifier("assistantModel.missing.\(effective.launcher)")
                     }
                 }
                 ForEach(panel.response?.launchers ?? []) { launcher in
@@ -346,6 +378,15 @@ struct AssistantModelSheet: View {
                     Label(locked, systemImage: Theme.Icon.locked)
                         .font(Theme.Font.secondary).foregroundStyle(.secondary)
                         .accessibilityIdentifier("assistantModel.locked.\(launcher.name)")
+                }
+                if let problem = panel.error(launcher.name), list != nil {
+                    HStack(spacing: Theme.Space.s) {
+                        Label(problem, systemImage: Theme.Icon.error)
+                            .font(Theme.Font.secondary).foregroundStyle(Theme.cautionText)
+                        Spacer(minLength: Theme.Space.s)
+                        Button(String(localized: "Retry")) { Task { await panel.load(refresh: true) } }
+                            .lineLimit(1)
+                    }
                 }
                 if let list {
                     if let configured {
