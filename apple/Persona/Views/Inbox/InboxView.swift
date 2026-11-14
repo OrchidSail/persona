@@ -1408,6 +1408,9 @@ struct InboxDetailView: View {
             .onChange(of: item.key) { _, _ in
                 expandedSourceKey = nil
             }
+            .onChange(of: slot.showsSource) { _, showsSource in
+                expandedSourceKey = showsSource ? item.key : nil
+            }
             #endif
             #if DEBUG
             // `-showInboxAction draft|handoff`: open that sheet (screenshots).
