@@ -88,13 +88,15 @@ one, is more specific).
 ## A goal set at the start
 
 A new Claude Code session can begin with a goal of its own: `session.start` carries `goal`, a one-line condition the
-node types as `/goal <condition>` after the process is ready and **before** its first message (protocol
-[protocol.md](../protocol/protocol.md), "A goal set at the start"). It goes on its own because a local command and a
-prompt in one message would make Claude Code take the prompt for the condition. The node confirms `Goal set:` on the
-screen with a bounded wait; a refusal (an untrusted workspace, restricted hooks, a policy not read yet, an empty or
-too-long condition, a CLI without `/goal`) or no answer never stops the start — the first message still goes in and
-the node logs why — and a command that may still sit in the input box holds the first message back for the user, the
-same safeguard an ultracode start switch uses.
+node types as `/goal <condition>` right **after** the first message is in the transcript, while the agent works
+([protocol.md](../protocol/protocol.md), "A goal set at the start"). Claude Code runs `/goal` at once even mid-turn. It
+goes after the task, and on its own, because `/goal` answers `Goal set: …` and then starts a turn toward its condition:
+typed first, the agent would begin from the criteria alone, without the task (checked 2026-11-15 with Claude Code
+2.1.325 through a relay launcher: with `/goal` first the agent acted on the condition before the task arrived; with the
+task first and `/goal` mid-turn, the goal was set at once, the agent did the task, and the Stop hook found it met). The
+node confirms `Goal set:` on the screen with a bounded wait; a refusal (an untrusted workspace, restricted hooks, a
+policy not read yet, an empty or too-long condition, a CLI without `/goal`) or no answer never stops the work, and a
+first message that never reaches the transcript gets no goal.
 
 The assistant attaches such a goal when a start-defaults rule asks for one (`goal: "done_when"`,
 [assistant.md](../assistant/assistant.md) "Start defaults") and the task's `done_when` gives it something checkable,

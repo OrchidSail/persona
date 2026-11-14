@@ -11,11 +11,12 @@ import (
 )
 
 // A start's goal (session.start's goal, nodeproto.StartGoal; docs/integrations/agent-goal.md "A goal set at the
-// start"): Claude Code's `/goal <condition>`, typed into a new Claude before its first message, so that the agent checks
-// the condition each time it would stop. /goal is a local command that answers at once; typed in the same message as
-// the first prompt it would take the prompt for its condition and the agent would not start on the work. So it goes
-// on its own, first, and the first message is typed only once the box is known to be clear again, as after ultracode
-// (ultracode.go startUltracode). A goal never fails a start: Claude is up, and the first message goes in either way.
+// start"): Claude Code's `/goal <condition>`, typed into a new Claude after its first message, so that the agent checks
+// the condition each time it would stop. /goal is a local command that answers at once and then starts a turn toward
+// its condition; typed before the task it would set the agent to work from the condition alone, and typed in the same
+// message as the task it would take the task for its condition. So it goes on its own, after the first message is in
+// the transcript (firstPrompt), while the agent works: Claude Code runs it at once even mid-turn. A goal never fails a
+// start: Claude is up, and the work goes on either way.
 
 // goalVerdictWait bounds how long the screen has to show what Claude Code said to /goal; tests shorten it.
 var goalVerdictWait = 5 * time.Second
@@ -92,9 +93,28 @@ func goalOutcome(before, shown string) (set bool, note string) {
 	return false, ""
 }
 
-// startGoal types /goal <goal> into the Claude just started in pane and reads Claude Code's answer off the screen. It
-// is the best it can do and never fails the start; what it saw is logged. unsure: the command went to the terminal
-// and is not known to have gone in, so it may still sit in the input box (the caller looks before typing more).
+// goalAfterFirst sets the goal of a start whose first message the transcript has just shown, with a bound of its
+// own (the first message's check may have spent most of its own); nothing when goal is empty. The caller holds the
+// session's typing lock, so no other message is typed in between.
+func (n *Node) goalAfterFirst(parent context.Context, id, pane, goal string) {
+	if goal == "" {
+		return
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, goalVerdictWait+15*time.Second)
+	defer cancel()
+	if n.startGoal(ctx, id, pane, goal) {
+		// Not seen to go in: it may still be in the box, where the next message's own check finds it as a draft and
+		// refuses rather than sending the two together.
+		n.logf("start %s: the /goal command may still be in the input box", id)
+	}
+}
+
+// startGoal types /goal <goal> into the Claude in pane and reads Claude Code's answer off the screen. It is the best
+// it can do; what it saw is logged. unsure: the command went to the terminal and is not known to have gone in, so it
+// may still sit in the input box.
 func (n *Node) startGoal(ctx context.Context, id, pane, goal string) (unsure bool) {
 	before, err := n.readPane(ctx, pane, "visible", 60)
 	if err != nil { // its answer could not be read: better no goal than a first message typed after a stuck command

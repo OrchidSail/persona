@@ -41,9 +41,10 @@ func goalAnswers(t *testing.T, f *fakeHerdr, home, cwd, plain, ansi, verdict str
 	})
 }
 
-// A start with a goal types /goal on its own, waits for Claude Code to say it is set, and only then types the first
-// message: in one message, /goal would take the prompt for its condition and the agent would not start on it.
-func TestStartGoalBeforeFirstPrompt(t *testing.T) {
+// A start with a goal types the first message, and once the transcript has it, /goal on its own: Claude Code's /goal
+// starts a turn toward its condition at once, so typed first it would set the agent to work from the criteria alone,
+// and typed in the same message it would take the task for its condition.
+func TestStartGoalAfterFirstPrompt(t *testing.T) {
 	n, f, home := herdrNode(t)
 	cwd := mkdir(t, filepath.Join(home, "project"))
 	plain, ansi := screenFixture(t, "claude-2.1.312-empty-162.txt"), screenFixture(t, "claude-2.1.312-empty-162.ansi")
@@ -56,7 +57,7 @@ func TestStartGoalBeforeFirstPrompt(t *testing.T) {
 	}
 	n.firstWait.Wait()
 	got := f.trace("agent.prompt")
-	if len(got) != 2 || !strings.Contains(got[0], `"/goal `+goal+`"`) || !strings.Contains(got[1], "fix the build") {
+	if len(got) != 2 || !strings.Contains(got[0], "fix the build") || !strings.Contains(got[1], `"/goal `+goal+`"`) {
 		t.Fatalf("wrong start order: %v", got)
 	}
 	if _, lost := n.lostFirst.get(startedID(f)); lost {
@@ -64,8 +65,8 @@ func TestStartGoalBeforeFirstPrompt(t *testing.T) {
 	}
 }
 
-// With ultracode too, ultracode goes first, then the goal, then the first message: one command at a time.
-func TestStartGoalAfterUltracode(t *testing.T) {
+// With ultracode too: ultracode, then the first message, then the goal, one command at a time.
+func TestStartGoalAfterUltracodeAndFirstPrompt(t *testing.T) {
 	n, f, home := herdrNode(t)
 	cwd := mkdir(t, filepath.Join(home, "project"))
 	plain, ansi := screenFixture(t, "claude-2.1.312-empty-162.txt"), screenFixture(t, "claude-2.1.312-empty-162.ansi")
@@ -79,15 +80,15 @@ func TestStartGoalAfterUltracode(t *testing.T) {
 	}
 	n.firstWait.Wait()
 	got := f.trace("agent.prompt")
-	if len(got) != 3 || !strings.Contains(got[0], "/effort ultracode on") || !strings.Contains(got[1], "/goal "+goal) ||
-		!strings.Contains(got[2], "write the report") {
+	if len(got) != 3 || !strings.Contains(got[0], "/effort ultracode on") || !strings.Contains(got[1], "write the report") ||
+		!strings.Contains(got[2], "/goal "+goal) {
 		t.Fatalf("wrong start order: %v", got)
 	}
 }
 
-// A goal Claude Code refuses (here: hooks are off) is the start's loss, not its failure: Claude is up, the refusal
-// shows on the screen, and the first message still goes in.
-func TestStartGoalRefusedByClaudeStillSendsTheFirstMessage(t *testing.T) {
+// A goal Claude Code refuses (here: hooks are off) changes nothing else: the first message went in before it, and is
+// not lost or typed again.
+func TestStartGoalRefusedByClaudeLeavesTheStartAlone(t *testing.T) {
 	withGoalVerdictWait(t, 2*time.Second)
 	n, f, home := herdrNode(t)
 	cwd := mkdir(t, filepath.Join(home, "project"))
@@ -100,7 +101,7 @@ func TestStartGoalRefusedByClaudeStillSendsTheFirstMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	n.firstWait.Wait()
-	if got := f.trace("agent.prompt"); len(got) != 2 || !strings.Contains(got[1], "fix the build") {
+	if got := f.trace("agent.prompt"); len(got) != 2 || !strings.Contains(got[0], "fix the build") || !strings.Contains(got[1], "/goal ") {
 		t.Fatalf("typed %v", got)
 	}
 	if _, lost := n.lostFirst.get(startedID(f)); lost {
@@ -108,30 +109,25 @@ func TestStartGoalRefusedByClaudeStillSendsTheFirstMessage(t *testing.T) {
 	}
 }
 
-// No answer on the screen and the command still in the box: the first message is held back for the user, as after an
-// ultracode command that may still sit there, instead of being typed after the /goal and swallowed by it.
-func TestStartGoalLeftInTheBoxHoldsTheFirstMessage(t *testing.T) {
-	withGoalVerdictWait(t, 300*time.Millisecond)
-	withSubmitGrace(t, 50*time.Millisecond)
+// A first message the transcript never shows gets no goal: the goal is about that task, and typing it at an agent
+// that never got the task would set it to work from the criteria alone.
+func TestStartGoalNotTypedWhenTheFirstMessageIsLost(t *testing.T) {
+	withFirstPromptWaits(t, 50*time.Millisecond, 50*time.Millisecond)
 	n, f, home := herdrNode(t)
 	cwd := mkdir(t, filepath.Join(home, "project"))
 	startPane(t, f, screenFixture(t, "claude-2.1.312-empty-162.txt"), screenFixture(t, "claude-2.1.312-empty-162.ansi"))
-	typedTxt, typedANSI := screenFixture(t, "claude-2.1.312-typed-162.txt"), screenFixture(t, "claude-2.1.312-typed-162.ansi")
-	f.after(func(c herdrCall) {
-		if c.Method == "agent.prompt" && strings.HasPrefix(str(c.Params["text"]), "/goal ") {
-			f.setScreens("w1:p2", typedTxt, typedANSI) // still in the box, not submitted
-		}
-	})
-
+	// Nothing reaches the transcript.
 	if _, err := request(t, n, "session.start", map[string]any{"cwd": cwd, "workspace_id": "w1", "prompt": "fix the build", "goal": "CI is green"}); err != nil {
 		t.Fatal(err)
 	}
 	n.firstWait.Wait()
-	if got := f.trace("agent.prompt"); len(got) != 1 {
-		t.Fatalf("the first message was typed after a /goal that may sit in the box: %v", got)
+	for _, c := range f.trace("agent.prompt") {
+		if strings.Contains(c, "/goal") {
+			t.Fatalf("the goal was typed without its task: %v", f.trace("agent.prompt"))
+		}
 	}
-	if lost, ok := n.lostFirst.get(startedID(f)); !ok || lost.why != lostGoal {
-		t.Fatalf("lost = %+v, %v", lost, ok)
+	if _, lost := n.lostFirst.get(startedID(f)); !lost {
+		t.Fatal("the lost first message is not reported")
 	}
 }
 

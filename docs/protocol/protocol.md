@@ -617,14 +617,15 @@ a screenless engine or a condition over 2000 characters is refused before anythi
 `409 start_goal_unsupported`, and a node without the `start_goal` capability gets the same code. The condition is
 one line: newlines collapse to spaces.
 
-When it takes the goal, the node types `/goal <condition>` after Claude is ready and after an `ultracode` start
-switch, and only then types the `prompt`. The two are never one message: a local command typed together with text
-would take the text for its condition and the agent would not start on the work. The node reads Claude Code's answer
-off the screen (`Goal set: …`) with a bounded wait; a refusal (an untrusted workspace, restricted hooks, an
-organization policy not read yet, an empty or too-long condition, an older CLI without `/goal`) or an answer not read
-back never fails the start — the `prompt` is still typed and the node logs why. If the command may still sit in the
-input box (typed, no verdict, the box then showing a draft or a dialog, or unreadable), the first prompt is held back
-instead of typed after it, and the session is listed as needing the user, exactly as after an ultracode command.
+When it takes the goal, the node types the `prompt` first (after an `ultracode` start switch, as usual) and, once the
+transcript has it, types `/goal <condition>` on its own while the agent works: Claude Code runs `/goal` at once even
+mid-turn. The order matters. `/goal` answers with `Goal set: …` and then starts a turn toward its condition, so typed
+before the task it would set the agent working from the criteria alone; and a local command typed together with text
+would take the text for its condition. The node reads Claude Code's answer off the screen with a bounded wait. A
+refusal (an untrusted workspace, restricted hooks, an organization policy not read yet, an empty or too-long condition,
+an older CLI without `/goal`) or an answer not read back never fails the start: the work goes on and the node logs why.
+A first message the transcript never shows gets no goal. A `/goal` command that may still sit in the input box is left
+there, where the next message's own check finds it as a draft and refuses rather than sending the two together.
 
 The assistant supplies the condition from a task's `done_when` as one checkable sentence
 (`assistant/task_goal.md`); a task without criteria carries no goal. Whether a task start carries one at all is the
