@@ -9,13 +9,27 @@ import type { Session } from "../../lib/types";
 const launcherRead = vi.hoisted(() => ({
   info: undefined as import("../../lib/session-models").AssistantLaunchers | undefined,
   calls: [] as { mid: string; again: boolean }[],
+  hold: false,
+  loading: false,
+  promise: undefined as Promise<void> | undefined,
+  release: undefined as (() => void) | undefined,
 }));
 vi.mock("../../lib/session-models", async (original) => ({
   ...(await original<typeof import("../../lib/session-models")>()),
-  assistantLaunchers: () => ({ info: launcherRead.info }),
+  assistantLaunchers: () => ({ info: launcherRead.info, loading: launcherRead.loading }),
   readAssistantLaunchers: (mid: string, o: { again?: boolean } = {}) => {
     launcherRead.calls.push({ mid, again: Boolean(o.again) });
-    return Promise.resolve();
+    if (launcherRead.loading) return launcherRead.promise!;
+    if (!launcherRead.hold) return Promise.resolve();
+    launcherRead.loading = true;
+    launcherRead.promise = new Promise<void>((resolve) => {
+      launcherRead.release = () => {
+        launcherRead.loading = false;
+        launcherRead.promise = undefined;
+        resolve();
+      };
+    });
+    return launcherRead.promise;
   },
   useModelLists: () => 0,
 }));
@@ -37,6 +51,10 @@ const notice = () => host.querySelector<HTMLElement>("[data-main-chat-agent-noti
 beforeEach(() => {
   reset();
   launcherRead.calls = [];
+  launcherRead.hold = false;
+  launcherRead.loading = false;
+  launcherRead.promise = undefined;
+  launcherRead.release = undefined;
   launcherRead.info = {
     launchers: [{ name: "claude", source: "builtin" }, { name: "codex", source: "builtin", agent: "codex" }],
     def: { provider: "claude" }, unavailable: [],
@@ -101,5 +119,17 @@ describe("the Main chat default's agent-kind mismatch", () => {
     expect(launcherRead.calls).toEqual([{ mid: "hub", again: true }]);
     await show(session({ rev: 2 }));
     expect(launcherRead.calls).toEqual([{ mid: "hub", again: true }, { mid: "hub", again: true }]);
+  });
+
+  it("keeps a trailing refresh when a revision arrives during a pending launcher read", async () => {
+    launcherRead.hold = true;
+    await show(session({ rev: 1 }));
+    expect(launcherRead.calls).toHaveLength(1);
+    await show(session({ rev: 2 }));
+    expect(launcherRead.calls).toHaveLength(2);
+    const release = launcherRead.release!;
+    await act(async () => { release(); await flush(); });
+    expect(launcherRead.calls).toHaveLength(3);
+    expect(launcherRead.calls.every((call) => call.mid === "hub" && call.again)).toBe(true);
   });
 });
