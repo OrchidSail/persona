@@ -224,7 +224,7 @@ struct AssistantModelChoiceTests {
     }
 
     @Test func aMalformedModelPickDoesNotDropTheSession() throws {
-        for pick in [#"{"launcher":123}"#, #"\"odd\""#] {
+        for pick in [#"{"launcher":123}"#, #""odd""#] {
             let json = """
             {"machine_id":"box","session_id":"s1","title":"Main","cwd":"/tmp","status":"offline",
              "assistant":true,"model_pick":\(pick)}

@@ -117,9 +117,9 @@ nonisolated enum AssistantModelChoice {
             return nilIsClaude ? "claude" : nil
         }
         switch normalized {
-        case "", "claude", "claude-code", "claudecode": "claude"
-        case "codex", "codex-cli": "codex"
-        default: nil
+        case "", "claude", "claude-code", "claudecode": return "claude"
+        case "codex", "codex-cli": return "codex"
+        default: return nil
         }
     }
 
