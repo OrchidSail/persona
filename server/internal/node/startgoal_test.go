@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -190,5 +191,97 @@ func TestCleanStartGoal(t *testing.T) {
 	}
 	if got := cleanStartGoal(" \n "); got != "" {
 		t.Fatalf("%q", got)
+	}
+}
+
+// Before typing /goal, the node looks at the terminal the way the ultracode switch does: a dialog keeps the command
+// out, and an unsent draft in the box is never answered or sent.
+func TestStartGoalRefusesWhenTheTerminalIsNotReady(t *testing.T) {
+	n, f, _ := herdrNode(t)
+	plain, ansi := screenFixture(t, "claude-2.1.312-typed-162.txt"), screenFixture(t, "claude-2.1.312-typed-162.ansi")
+	startPane(t, f, plain, ansi)
+	// A typed draft in the box: checkPane refuses it, so no command is typed.
+	n.startGoal(context.Background(), "id", "w1:p2", "CI is green")
+	if c := f.trace("agent.prompt"); len(c) != 0 {
+		t.Fatalf("the goal was typed over a draft: %v", c)
+	}
+}
+
+// An async start (the shape every App start uses) sets the goal too: still after the first message is in, not before.
+func TestStartGoalOnAnAsyncStart(t *testing.T) {
+	n, f, home := herdrNode(t)
+	cwd := mkdir(t, filepath.Join(home, "project"))
+	plain, ansi := screenFixture(t, "claude-2.1.312-empty-162.txt"), screenFixture(t, "claude-2.1.312-empty-162.ansi")
+	startPane(t, f, plain, ansi)
+	goal := "async start: the report is in docs/report.md"
+	goalAnswers(t, f, home, cwd, plain, ansi, "Goal set: "+goal)
+
+	res, err := request(t, n, "session.start", map[string]any{"cwd": cwd, "workspace_id": "w1", "async": true,
+		"prompt": "write the report", "goal": goal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := res["session"].(map[string]any)
+	if session == nil || session["starting"] != true {
+		t.Fatalf("an async start should answer starting in its session: %v", res)
+	}
+	for i := 0; i < 200 && len(f.trace("agent.prompt")) < 2; i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	n.firstWait.Wait()
+	got := f.trace("agent.prompt")
+	if len(got) != 2 || !strings.Contains(got[0], "write the report") || !strings.Contains(got[1], "/goal "+goal) {
+		t.Fatalf("async start order: %v", got)
+	}
+}
+
+// A start whose Claude comes up blocked on its own dialog: the first message is held, then typed once the dialog is
+// answered, and only then is the goal set.
+func TestStartGoalAfterADialogHeldFirstMessage(t *testing.T) {
+	withFirstAfterDialog(t, 400*time.Millisecond, 20*time.Millisecond)
+	n, f, home := herdrNode(t)
+	n.claudeStart, n.claudeReady = 500*time.Millisecond, 500*time.Millisecond
+	cwd := mkdir(t, filepath.Join(home, "project"))
+	plain, ansi := screenFixture(t, "claude-2.1.312-empty-162.txt"), screenFixture(t, "claude-2.1.312-empty-162.ansi")
+	blockedPlain, blockedAnsi := screenFixture(t, "claude-2.1.312-model-picker-162.txt"), screenFixture(t, "claude-2.1.312-model-picker-162.ansi")
+	startPane(t, f, blockedPlain, blockedAnsi)
+	// waitReady returns at once on a dialog: the pane's agent is blocked, and the first message is held for it.
+	f.reply("agent.get", map[string]any{"agent": map[string]any{"agent": "claude", "agent_status": proto.StatusBlocked,
+		"pane_id": "w1:p2", "tab_id": "w1:t2", "workspace_id": "w1"}})
+	goal := "dialog start: CI is green"
+	goalAnswers(t, f, home, cwd, plain, ansi, "Goal set: "+goal)
+
+	if _, err := request(t, n, "session.start", map[string]any{"cwd": cwd, "workspace_id": "w1",
+		"prompt": "fix the build", "goal": goal}); err != nil {
+		t.Fatal(err)
+	}
+	// Held while the dialog is up: nothing has been typed and the session asks for the user.
+	waitFor(t, "the held first message", func() bool {
+		if l, ok := n.lostFirst.get(startedID(f)); ok && l.why == lostDialogHeld {
+			return true
+		}
+		return false
+	})
+	if got := f.trace("agent.prompt"); len(got) != 0 {
+		t.Fatalf("text was typed into the dialog: %v", got)
+	}
+	// The dialog is answered: the pane's agent is idle again and the box is free; the held first message goes in and
+	// then the goal follows it.
+	f.reply("agent.get", map[string]any{"agent": map[string]any{"agent": "claude", "agent_status": proto.StatusIdle,
+		"pane_id": "w1:p2", "tab_id": "w1:t2", "workspace_id": "w1"}})
+	f.setScreens("w1:p2", plain, ansi)
+	waitFor(t, "the message and the goal", func() bool {
+		got := f.trace("agent.prompt")
+		return len(got) == 2 && strings.Contains(got[0], "fix the build") && strings.Contains(got[1], "/goal "+goal)
+	})
+	// The held mark is cleared once the first message's own check confirms it; the goal waits behind that check.
+	for i := 0; i < 100; i++ {
+		if lost, ok := n.lostFirst.get(startedID(f)); !ok || lost.why == "" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if lost, ok := n.lostFirst.get(startedID(f)); ok && lost.why != "" {
+		t.Fatalf("the held mark was not cleared: %+v", lost)
 	}
 }

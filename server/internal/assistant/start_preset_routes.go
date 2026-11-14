@@ -19,10 +19,12 @@ func (s *Service) startPresetRoutes() {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 		machine := r.URL.Query().Get("machine")
-		if _, ok := s.machineByName(ctx, machine); !ok {
+		m, ok := s.machineByName(ctx, machine)
+		if !ok {
 			apierr.Write(w, http.StatusNotFound, errUnknownMachine)
 			return
 		}
+		machine = m.ID // the rest of the manager addresses machines by id, not name or ssh alias
 		launchers, err := s.pickerLaunchers(ctx, machine)
 		if err != nil {
 			apierr.Write(w, http.StatusBadGateway, err)

@@ -535,3 +535,156 @@ func TestStartDefaultsPresetStartsAsIfTheTaskNamedIt(t *testing.T) {
 		t.Fatalf("not the preset's launcher and model: %v", picked)
 	}
 }
+
+// A rule whose then does nothing is a mistake: it would shadow every later rule, so the write is refused; as is an
+// extension request without the header naming the extension.
+func TestStartDefaultsRouteRejectsEmptyThenAndAnUnknownExtension(t *testing.T) {
+	s, _ := defaultsHub(t)
+	if code, body := putStartDefaults(t, s, roleFull, "",
+		`{"start_defaults":{"rules":[{"when":{},"then":{}}]}}`); code != http.StatusBadRequest {
+		t.Fatalf("empty then: %d %s", code, body)
+	}
+	if code, body := putStartDefaults(t, s, roleExtension, "",
+		`{"start_defaults":{"expires_at":"`+time.Now().Add(time.Minute).Format(time.RFC3339)+`","rules":[{"when":{},"then":{"effort":"max"}}]}}`); code != http.StatusForbidden {
+		t.Fatalf("extension without its header: %d %s", code, body)
+	}
+	// The owner can also write the policy through the general settings route; empty rules clear it there.
+	rec := httptest.NewRecorder()
+	body := `{"start_defaults":{"rules":[{"when":{},"then":{"effort":"max"}}]}}`
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/v1/assistant", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT settings: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := s.settings(context.Background()).StartDefaults; got == nil || got.By != "owner" {
+		t.Fatalf("the settings write was not applied: %+v", got)
+	}
+	rec = httptest.NewRecorder()
+	s.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/v1/assistant", strings.NewReader(`{"start_defaults":{"rules":[]}}`)))
+	if rec.Code != http.StatusOK || s.settings(context.Background()).StartDefaults != nil {
+		t.Fatalf("empty rules did not clear the policy: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// The policy is visible only with its own scope: an assistant.ask extension reads GET /api/v1/assistant without it.
+func TestStartDefaultsHiddenFromTheGeneralSettingsRoute(t *testing.T) {
+	s, f := defaultsHub(t)
+	stubStartDefaults(s, func(StartFacts) (StartDefaults, bool) {
+		return StartDefaults{Effort: "max"}, true
+	})
+	expires := time.Now().Add(time.Minute)
+	setSettings(t, s, func(v *Settings) {
+		v.StartDefaults = &StartDefaultsPolicy{ExpiresAt: &expires, Rules: []StartDefaultsRule{{Then: StartDefaultsThen{Effort: "max"}}}}
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/assistant", nil)
+	req.Header.Set(RoleHeader, roleExtension)
+	req.Header.Set(ExtensionHeader, "kit")
+	s.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "start_defaults") {
+		t.Fatalf("an extension read the policy through assistant.ask: %d %s", rec.Code, rec.Body.String())
+	}
+	_ = f
+}
+
+// A try without a matching policy must not keep an earlier try's fill-in: the start goes back to what the task named,
+// and the plan-first prompt and goal are gone.
+func TestStartDefaultsDroppedWhenThePolicyNoLongerApplies(t *testing.T) {
+	s, f := defaultsHub(t)
+	on := func() bool { return true }
+	off := func() bool { return false }
+	stubStartDefaults(s, func(StartFacts) (StartDefaults, bool) {
+		if on() {
+			return StartDefaults{Effort: "max", Presets: []PresetChoice{{Name: "deep"}}, PlanFirst: true}, true
+		}
+		return StartDefaults{}, false
+	})
+	task := defaultsTask()
+	if _, _, err := s.startTaskAgent(context.Background(), &task, false); err != nil {
+		t.Fatal(err)
+	}
+	if !task.startDefaulted || task.planFirst != true || task.Tier != "deep" || task.Effort != "max" {
+		t.Fatalf("the first try did not take the defaults: %+v", task)
+	}
+	on = off
+	// A second try of the same task: no policy matches now, so everything it filled in is gone.
+	if _, _, err := s.startTaskAgent(context.Background(), &task, false); err != nil {
+		t.Fatal(err)
+	}
+	if task.startDefaulted && (task.planFirst || task.Tier == "deep" || task.Effort == "max") {
+		t.Fatalf("the second try kept the dropped policy: %+v", task)
+	}
+	st := startsOf(f)[1]
+	if st["goal"] != nil || st["ultracode"] != nil || st["effort"] == "max" || st["model"] == "gw-deep" {
+		t.Fatalf("the second start kept policy params: %v", st)
+	}
+	if st["launcher"] != "gateway" || st["model"] != "gw-model" { // Model Settings' default still applies
+		t.Fatalf("the ordinary default launch changed: %v", st)
+	}
+	_ = off
+}
+
+// A hidden launcher still starts a preset: availability agrees with GET worker-presets, which offers hidden-but-usable
+// launchers.
+func TestStartDefaultsPresetOnAHiddenLauncher(t *testing.T) {
+	s, f := defaultsHub(t)
+	f.zshrc["box"] = append(f.zshrc["box"], proto.Launcher{Name: "secret", Source: "zshrc"})
+	if err := s.putSetting(context.Background(), launchersHiddenKey, []string{"secret"}); err != nil {
+		t.Fatal(err)
+	}
+	saveTiers(t, s, map[string]ModelTier{"h": {Launcher: "secret", Model: "m-1"}})
+	stubStartDefaults(s, func(StartFacts) (StartDefaults, bool) {
+		return StartDefaults{Presets: []PresetChoice{{Name: "h"}}}, true
+	})
+	task := defaultsTask()
+	if _, _, err := s.startTaskAgent(context.Background(), &task, false); err != nil {
+		t.Fatal(err)
+	}
+	if st := startsOf(f)[0]; st["launcher"] != "secret" {
+		t.Fatalf("the hidden preset was passed over: %v", st)
+	}
+}
+
+// A rule can match a task leader (role) and a task leader's worker (parent): the facts carry the role and the class of
+// the conversation that follows the leader's own task up.
+func TestStartDefaultsRoleAndLeaderWorkerFacts(t *testing.T) {
+	s, f := newQuietService(t)
+	f.devices = []Device{{ID: "box", Name: "box", Home: "/home/me", Online: true, Reachable: true}}
+	f.known["lead1"] = true
+	f.setSessions("server", proto.Session{SessionID: "conv1", MachineID: "server", Assistant: true, Status: proto.StatusIdle},
+		proto.Session{SessionID: "lead1", MachineID: "server", Assistant: true, Status: proto.StatusIdle})
+	setSettings(t, s, func(v *Settings) { v.Leaders = []string{"lead1"} })
+	var got StartFacts
+	stubStartDefaults(s, func(facts StartFacts) (StartDefaults, bool) { got = facts; return StartDefaults{}, false })
+	ctx := context.Background()
+
+	// The leader's own task, supervised by the leader conversation, with its coding agent (the session a worker's
+	// parent lookup resolves) already running.
+	putTodo(s, Todo{ID: "todo_leader", Title: "L",
+		Supervision: &Supervision{Supervisor: "lead1"},
+		Agents:      []TodoAgent{{MachineID: "server", SessionID: "lead1", Source: sourceLeader, Agent: "claude"}}})
+
+	// A task leader the main conversation hands out: role leader, followed up by the leader conversation.
+	leader := PlanTask{Title: "L", Prompt: "lead the work", Machine: "box", Cwd: "/code/app", Role: roleLeader,
+		Permission: "bypassPermissions", DoneWhen: []string{"the worker finishes"}, ExpectMinutes: 30,
+		Supervisor: "lead1", TodoID: "todo_leader2"}
+	putTodo(s, Todo{ID: "todo_leader2", Title: "L", Supervision: &Supervision{Supervisor: "lead1"},
+		Agents: []TodoAgent{{MachineID: "server", SessionID: "lead1", Source: sourceLeader, Agent: "claude"}}})
+	if _, _, err := s.startTaskAgent(ctx, &leader, false); err != nil {
+		t.Fatal(err)
+	}
+	if got.Role != roleLeader || got.Supervisor != dispatchClassLeader {
+		t.Fatalf("the leader task: %+v", got)
+	}
+
+	// Its worker: the parent todo names the leader task; its supervisor is the leader agent, whose session the ledger
+	// records as a leader, so the worker's class is still the leader conversation's.
+	worker := PlanTask{Title: "W", Prompt: "do the work", Machine: "box", Cwd: "/code/app",
+		Permission: "bypassPermissions", DoneWhen: []string{"CI is green"}, ExpectMinutes: 30,
+		Parent: "todo_leader"}
+	if _, _, err := s.startTaskAgent(ctx, &worker, false); err != nil {
+		t.Fatal(err)
+	}
+	if got.Role != "worker" || got.Supervisor != dispatchClassLeader {
+		t.Fatalf("the leader's worker: %+v", got)
+	}
+}

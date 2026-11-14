@@ -129,18 +129,30 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 		return "", "", err
 	}
 	params := map[string]any{"launcher": t.Launcher, "model": t.Model, "effort": t.Effort, "tier": t.Tier}
-	// What the task itself named, kept from its first try: later tries see what earlier ones resolved in t.
+	// What the task itself named, kept from its first try in this process: later tries see what earlier ones resolved
+	// in t, and a task read back from the store already carries its resolved launch, so this is never recomputed.
 	if t.callerPick == nil {
 		p := pickOf(params)
 		t.callerPick = &p
 	}
 	caller := *t.callerPick
+	// A self-planning constraint applies only while a policy rule asks for it on this try (start_defaults.go).
+	t.planFirst = false
 	// The start-defaults policy (start_defaults.go): its preset goes in before the start is resolved, as if the task
 	// had named that tier; its effort, ultracode and goal after the launcher fit.
 	defaults, withDefaults := s.taskStartDefaults(ctx, t)
 	presetNote := ""
 	if withDefaults {
 		presetNote = s.applyStartPreset(ctx, t, caller, defaults, params)
+	} else if t.startDefaulted {
+		// An earlier try took defaults from a policy that no longer applies. The preset, effort, ultracode, goal and
+		// plan-first were the policy's, so they go back to what the task named; the launcher and model stay resolved
+		// by Model Settings and the fit below, exactly as a start with no policy would have them.
+		t.Effort, t.Tier, t.Ultracode, t.planFirst = caller.effort, caller.tier, nil, false
+		t.Model = "" // the policy's preset set it; the fit below fills the ordinary default model
+		params["effort"], params["tier"], params["model"] = caller.effort, caller.tier, ""
+		delete(params, "ultracode")
+		delete(params, "goal")
 	}
 	own, err := s.resolveStart(ctx, params)
 	if err != nil {

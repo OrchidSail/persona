@@ -116,6 +116,12 @@ func (n *Node) goalAfterFirst(parent context.Context, id, pane, goal string) {
 // it can do; what it saw is logged. unsure: the command went to the terminal and is not known to have gone in, so it
 // may still sit in the input box.
 func (n *Node) startGoal(ctx context.Context, id, pane, goal string) (unsure bool) {
+	// The same look the ultracode switch takes first: never type into a dialog (Enter would answer it) or onto a
+	// draft in the box (the two would go as one message).
+	if err := n.checkPane(ctx, pane, "claude", ""); err != nil {
+		n.logf("start %s: goal not set: the terminal is not ready for it: %v", id, err)
+		return false
+	}
 	before, err := n.readPane(ctx, pane, "visible", 60)
 	if err != nil { // its answer could not be read: better no goal than a first message typed after a stuck command
 		n.logf("start %s: goal not set: the screen cannot be read: %v", id, err)

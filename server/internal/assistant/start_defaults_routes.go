@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/nwverse/persona/server/internal/apierr"
@@ -45,6 +46,11 @@ func (s *Service) startDefaultsRoutes() {
 			return
 		}
 		fromExtension := role == roleExtension
+		ext := strings.TrimSpace(r.Header.Get(ExtensionHeader))
+		if fromExtension && ext == "" { // the hub names the extension of every request it relays for one
+			apierr.Write(w, http.StatusForbidden, errors.New("the extension of this request is unknown"))
+			return
+		}
 		clearing := len(in.StartDefaults.Rules) == 0
 		if !clearing {
 			if err := in.StartDefaults.validate(!fromExtension, time.Now().UTC()); err != nil {
@@ -53,7 +59,7 @@ func (s *Service) startDefaultsRoutes() {
 			}
 			in.StartDefaults.By = "owner"
 			if fromExtension {
-				in.StartDefaults.By = r.Header.Get(ExtensionHeader)
+				in.StartDefaults.By = ext
 			}
 		}
 		var saved StartDefaultsPolicy

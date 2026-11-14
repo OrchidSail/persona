@@ -595,7 +595,11 @@ func (s *Service) profileRoutes() {
 			apierr.Write(w, http.StatusBadRequest, fmt.Errorf("space %q: health or none", space))
 			return
 		}
-		apierr.WriteJSON(w, s.view(r.Context(), archived == "1" || archived == "true", space))
+		out := s.view(r.Context(), archived == "1" || archived == "true", space)
+		if r.Header.Get(RoleHeader) == roleExtension {
+			out.StartDefaults = nil // read with its own scope (GET /api/v1/assistant/start-defaults), not assistant.ask
+		}
+		apierr.WriteJSON(w, out)
 	})
 	s.handle("PUT /api/v1/assistant", s.putSettings)
 	// warm: the app opened the chat tab; get a process ready so the first message skips claude's startup, and say what

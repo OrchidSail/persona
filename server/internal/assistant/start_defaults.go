@@ -120,6 +120,9 @@ func (p *StartDefaultsPolicy) validate(allowNoExpiry bool, now time.Time) error 
 	}
 	for i, r := range p.Rules {
 		at := fmt.Sprintf("start_defaults.rules[%d]", i)
+		if len(r.Then.Presets) == 0 && r.Then.Effort == "" && r.Then.Ultracode == nil && r.Then.Goal == "" && !r.Then.PlanFirst {
+			return fmt.Errorf("%s.then must name at least one of presets, effort, ultracode, goal or plan_first", at)
+		}
 		for _, c := range r.When.Supervisor {
 			if !slices.Contains(dispatchClasses, c) {
 				return fmt.Errorf("%s.when.supervisor has %q; allowed: %v", at, c, dispatchClasses)
@@ -285,6 +288,7 @@ func (s *Service) applyStartPreset(ctx context.Context, t *PlanTask, caller star
 // launcher fit (claude: what runs is Claude Code). caller is what the task named before any tier, Model Settings, the
 // fit or a preset filled something in. Explicit caller values always win; why is the preset's note, said with the rest.
 func (s *Service) applyStartExtras(ctx context.Context, t *PlanTask, caller startPick, d StartDefaults, claude bool, params map[string]any, why string) {
+	t.startDefaulted = true
 	// Effort, strongest first: the caller's own effort, then the effort of a tier the caller named; otherwise the
 	// policy's effort wins over a preset's and Model Settings' default (the policy says how this kind of task starts).
 	// Claude Code only; other agents keep whatever they were given.
@@ -325,12 +329,6 @@ func (s *Service) chooseStartPreset(ctx context.Context, t *PlanTask, choices []
 	if p == nil || err != nil {
 		return "", "", false
 	}
-	machine := t.Machine
-	if m, ok := s.machineByName(ctx, t.Machine); ok {
-		machine = m.ID
-	}
-	launchers, err := s.pickerLaunchers(ctx, machine)
-	known := err == nil
 	usable, skipped := make([]PresetChoice, 0, len(choices)), make([]string, 0)
 	for _, c := range choices {
 		if c.Name == "" {
@@ -341,12 +339,15 @@ func (s *Service) chooseStartPreset(ctx context.Context, t *PlanTask, choices []
 			skipped = append(skipped, c.Name+": unknown preset")
 			continue
 		}
-		has := !known || slices.ContainsFunc(launchers, func(l ConfiguredLauncher) bool { return l.Name == tier.Launcher })
-		if known && !has {
+		// Hidden launchers still start (#4661): judge availability the way a start does, with this one put back, so
+		// the policy's choice agrees with GET /api/v1/assistant/worker-presets.
+		list, listKnown := s.launchersHere(withUnhidden(ctx, tier.Launcher), t.Machine)
+		has := !listKnown || slices.ContainsFunc(list, func(l proto.Launcher) bool { return l.Name == tier.Launcher })
+		if listKnown && !has {
 			skipped = append(skipped, c.Name+": this computer has no launcher "+tier.Launcher)
 			continue
 		}
-		if _, bad := s.launcherUnusable(ctx, machine, tier.Launcher); bad {
+		if _, bad := s.launcherUnusable(ctx, t.Machine, tier.Launcher); bad {
 			skipped = append(skipped, c.Name+": "+tier.Launcher+" is not available yet")
 			continue
 		}
