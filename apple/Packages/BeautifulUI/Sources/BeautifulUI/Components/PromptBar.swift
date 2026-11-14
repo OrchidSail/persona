@@ -395,7 +395,7 @@ public struct PromptBar: View {
             HStack(alignment: .bottom, spacing: 4) {
                 plusButton
                 input
-                if !models.isEmpty { modelButton }
+                if !models.isEmpty || options.modelAction != nil { modelButton }
                 if options.showsDictation { micButton }
                 sendOrStopButton
             }

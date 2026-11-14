@@ -290,8 +290,8 @@ struct AssistantModelChoiceTests {
         let old = SessionKey(machineID: "default", sessionID: "main")
         let updated = SessionKey(machineID: "route", sessionID: "main")
         let side = SessionKey(machineID: "default", sessionID: "side")
-        #expect(AppModel.followingMainRoute(current: old, previous: old, updated: updated) == updated)
-        #expect(AppModel.followingMainRoute(current: side, previous: old, updated: updated) == side)
+        #expect(AppModel.followingMainRoute(current: old, previous: old, updated: updated, mainID: "main") == updated)
+        #expect(AppModel.followingMainRoute(current: side, previous: old, updated: updated, mainID: "main") == side)
         #expect(AppModel.followingMainRoute(current: nil, previous: nil, updated: updated) == nil)
 
         // A fresh install may have the persisted current key but no cached previous AssistantState.
