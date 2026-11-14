@@ -3,15 +3,16 @@
 # starts its own mock hub, and runs PersonaUITests/ShareFromAppsTests on a stock simulator (the slim profile leaves
 # Safari's and Files' services out). docs/apple/ios.md "Share to Persona (#4586, #1460)".
 #
-#   scripts/app/share-from-apps.sh [light|dark] [screenshot dir] [test name]
+#   scripts/app/share-from-apps.sh [light|dark] [screenshot dir] [test name | Suite | Suite/test]
 #
 # SIM: the simulator's name or udid (default "Persona Share"); PORT: the mock hub's port (default a free one).
-# Prints one verdict line last: share-from-apps: passed|failed <appearance>.
+# The full xcodebuild log is kept in $TMPDIR/share-from-apps-<appearance>.log. Prints one verdict line last: share-from-apps: passed|failed <appearance>.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
 APPEARANCE="${1:-light}"
 SHOTS="${2:-}"
-ONLY="PersonaUITests/ShareFromAppsTests${3:+/$3}"
+# A test name runs that test of ShareFromAppsTests; a suite (…Tests) or Suite/test runs that against the same mock hub.
+case "${3:-}" in */*|*Tests) ONLY="PersonaUITests/$3" ;; *) ONLY="PersonaUITests/ShareFromAppsTests${3:+/$3}" ;; esac
 case "$APPEARANCE" in light|dark) ;; *) echo "share-from-apps: appearance is light or dark" >&2; exit 2 ;; esac
 eval "$(python3 scripts/persona_config.py env)"
 python3 scripts/persona_config.py xcconfig >/dev/null
@@ -49,8 +50,9 @@ xcrun simctl ui "$SIM" appearance "$APPEARANCE"
 cd apple && xcodegen generate -q
 TEST_RUNNER_PERSONA_MOCK_HUB="http://127.0.0.1:$PORT" TEST_RUNNER_PERSONA_SHOTS="$SHOTS" TEST_RUNNER_PERSONA_SHOTS_APPEARANCE="$APPEARANCE" \
   xcodebuild test -project Persona.xcodeproj -scheme Persona -destination "id=$SIM" -derivedDataPath ../build/DerivedData \
-  -only-testing:"$ONLY" >"$WORK/test.log" 2>&1
+  -parallel-testing-enabled NO -only-testing:"$ONLY" >"$WORK/test.log" 2>&1
 STATUS=$?
+cp "$WORK/test.log" "${TMPDIR:-/tmp}/share-from-apps-$APPEARANCE.log"
 grep -E "error:|Test Case|XCTAssert|TEST (SUCCEEDED|FAILED)" "$WORK/test.log" | tail -40
 if [ "$STATUS" = 0 ]; then echo "share-from-apps: passed $APPEARANCE"; else echo "share-from-apps: failed $APPEARANCE"; fi
 exit "$STATUS"

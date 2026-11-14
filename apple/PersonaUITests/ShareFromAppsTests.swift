@@ -143,10 +143,11 @@ final class ShareFromAppsTests: XCTestCase {
     /// Browse › On My iPhone, and the seeded file there.
     @MainActor private func openOnMyIPhone(_ files: XCUIApplication) -> XCUIElement {
         let file = files.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", (Self.seededFile as NSString).deletingPathExtension)).firstMatch
-        if file.waitForExistence(timeout: 3) { return file }
+        // Files opens where it was last: On My iPhone after the first run.
+        if file.waitForExistence(timeout: 10) { return file }
         let browse = files.buttons.matching(NSPredicate(format: "label IN {'Browse', '浏览', 'ブラウズ'}")).firstMatch
         if browse.waitForExistence(timeout: 5) { browse.tap() }
-        let place = files.descendants(matching: .any).matching(NSPredicate(format: "label IN {'On My iPhone', '我的 iPhone', 'このiPhone内'}")).firstMatch
+        let place = files.descendants(matching: .any).matching(NSPredicate(format: "label IN {'On My iPhone', '我的iPhone', '我的 iPhone', 'このiPhone内'}")).firstMatch
         XCTAssertTrue(place.waitForExistence(timeout: 10), "no On My iPhone in Files:\n\(files.debugDescription)")
         place.tap()
         XCTAssertTrue(file.waitForExistence(timeout: 10), "\(Self.seededFile) is not in On My iPhone (scripts/app/share-from-apps.sh seeds it)")
