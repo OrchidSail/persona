@@ -335,16 +335,16 @@ export interface Contributes {
   looks?: LookItem[];
   triage_templates?: TriageTemplateItem[];
   agent_filters?: AgentFilterItem[];
-  tunnels?: TunnelItem[];
-  error_reports?: ErrorReportsItem[];
-  auth_relay?: AuthRelayItem[];
-  secret_providers?: SecretProviderItem[];
-  messaging?: MessagingItem[];
   /**
    * Start defaults for task Agents (docs "Start defaults for task Agents"): the presets, effort, ultracode, goal or
    * self-planning rule a matching task starts with.
    */
   start_defaults?: StartDefaultsItem[];
+  tunnels?: TunnelItem[];
+  error_reports?: ErrorReportsItem[];
+  auth_relay?: AuthRelayItem[];
+  secret_providers?: SecretProviderItem[];
+  messaging?: MessagingItem[];
   /** Extra keys are opaque JSON; declared properties keep their own types. */
   [key: string]: unknown;
 }
@@ -604,6 +604,43 @@ export interface AgentFilterItem {
 }
 
 /**
+ * A contribution of start defaults for task Agents: rules matched by the kind of task; the first match wins.
+ */
+export interface StartDefaultsItem {
+  id: string;
+  /**
+   * A boolean field of the configuration: the contribution holds only while it is true, and that field is its only
+   * switch. Without it the contribution holds while the extension is on.
+   */
+  when?: string;
+  rules: StartDefaultRule[];
+}
+
+export interface StartDefaultRule {
+  when: StartDefaultMatch;
+  then: StartDefaultThen;
+}
+
+export interface StartDefaultMatch {
+  supervisor?: string[];
+  role?: string;
+  readonly?: boolean;
+}
+
+export interface StartDefaultThen {
+  presets?: StartDefaultPreset[];
+  effort?: string;
+  ultracode?: boolean;
+  goal?: string;
+  plan_first?: boolean;
+}
+
+export interface StartDefaultPreset {
+  name: string;
+  weight?: number;
+}
+
+/**
  * The connector protocol's manifest (docs/protocol/connector-protocol.md).
  */
 export interface ConnectorItem {
@@ -788,43 +825,6 @@ export interface ShortcutParam {
 
 export type ShortcutParamKind = "text" | "number" | "toggle" | "choice" | (string & {});
 export const SHORTCUT_PARAM_KINDS = ["text", "number", "toggle", "choice"] as const;
-
-/**
- * A contribution of start defaults for task Agents: rules matched by the kind of task; the first match wins.
- */
-export interface StartDefaultsItem {
-  id: string;
-  /**
-   * A boolean field of the configuration: the contribution holds only while it is true, and that field is its only
-   * switch. Without it the contribution holds while the extension is on.
-   */
-  when?: string;
-  rules: StartDefaultRule[];
-}
-
-export interface StartDefaultRule {
-  when: StartDefaultMatch;
-  then: StartDefaultThen;
-}
-
-export interface StartDefaultMatch {
-  supervisor?: string[];
-  role?: string;
-  readonly?: boolean;
-}
-
-export interface StartDefaultThen {
-  presets?: StartDefaultPreset[];
-  effort?: string;
-  ultracode?: boolean;
-  goal?: string;
-  plan_first?: boolean;
-}
-
-export interface StartDefaultPreset {
-  name: string;
-  weight?: number;
-}
 
 /**
  * One line: a request {id, method, params}, an answer {id, result} or {id, error}, or an event {event, params}.
