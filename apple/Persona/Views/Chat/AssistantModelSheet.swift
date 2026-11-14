@@ -57,7 +57,7 @@ nonisolated enum AssistantModelChoice {
         guard e.launcher == launcher else { return nil }
         let model = e.model?.emptyAsNil
         guard let model else { return configuredModel?.emptyAsNil ?? "" }
-        return aliases[model] ?? model
+        return aliases[model.lowercased()] ?? model
     }
 
     /// Resolved-ID → row-ID lookup, built once when a catalog lands rather than searched in a view's body.
@@ -65,10 +65,12 @@ nonisolated enum AssistantModelChoice {
         var out: [String: String] = [:]
         for model in list?.models ?? [] {
             let row = model.isDefault ? "" : model.id
-            if out[model.id] == nil { out[model.id] = row }
+            let key = model.id.lowercased()
+            if out[key] == nil { out[key] = row }
             if let resolved = model.resolved {
                 // Default and its concrete alias often resolve to the same ID: the concrete alias wins, as on the web.
-                if out[resolved] == nil || !model.isDefault { out[resolved] = row }
+                let resolvedKey = resolved.lowercased()
+                if out[resolvedKey] == nil || !model.isDefault { out[resolvedKey] = row }
             }
         }
         return out
@@ -103,6 +105,11 @@ nonisolated enum AssistantModelChoice {
     static func configuredFallback(_ launcher: Launcher, models: [AgentModel], locked: String?) -> ConfiguredFallback? {
         guard models.isEmpty, let id = launcher.model?.emptyAsNil else { return nil }
         return ConfiguredFallback(id: id, sendsDefault: locked != nil)
+    }
+
+    /// The user-facing destination in the cross-engine warning, normalized from `codex-cli` / case variants.
+    static func otherEngineName(_ runtimeAgent: String?) -> String {
+        engine(runtimeAgent, nilIsClaude: true) == "codex" ? "Codex" : "Claude Code"
     }
 
     private static func engine(_ raw: String?, nilIsClaude: Bool = false) -> String? {
@@ -379,7 +386,7 @@ struct AssistantModelSheet: View {
             sessionAgent: AssistantModelChoice.sessionEngine(session), launcherAgent: launcher.runtimeAgent)
         Section {
             if otherEngine {
-                let to = launcher.runtimeAgent?.lowercased() == "codex" ? "Codex" : "Claude Code"
+                let to = AssistantModelChoice.otherEngineName(launcher.runtimeAgent)
                 Label(String(localized: "Switching from \(session?.agentLabel ?? "Claude Code") to \(to) needs a new conversation"),
                       systemImage: Theme.Icon.locked)
                     .font(Theme.Font.secondary).foregroundStyle(.secondary)

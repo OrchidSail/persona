@@ -135,9 +135,11 @@ struct AssistantModelChoiceTests {
             AgentModel(id: "opus", name: "Opus", resolved: "claude-opus-5-5"),
             AgentModel(id: "haiku", name: "Haiku", resolved: "claude-haiku-5-5")
         ], locked: nil, machine: nil)
-        let e = AssistantModelChoice.Effective(launcher: "claude", model: "claude-opus-5-5", effort: nil, source: .pick)
+        let e = AssistantModelChoice.Effective(launcher: "claude", model: "CLAUDE-OPUS-5-5", effort: nil, source: .pick)
         #expect(AssistantModelChoice.selectedModel(
             e, launcher: "claude", aliases: AssistantModelChoice.selectionAliases(aliases)) == "opus")
+        #expect(AssistantModelChoice.pick(launcher: "claude", model: "opus", effort: nil, current: e,
+                                          aliases: AssistantModelChoice.selectionAliases(aliases)) == nil)
 
         let withDefault = LauncherModels(agent: "claude", models: [
             AgentModel(id: "default", name: "Default", resolved: "claude-opus-5-5", isDefault: true),
@@ -183,6 +185,9 @@ struct AssistantModelChoiceTests {
         #expect(!AssistantModelChoice.isOtherEngine(sessionAgent: "claude", launcherAgent: "dsh"))
         #expect(!AssistantModelChoice.isOtherEngine(sessionAgent: nil, launcherAgent: "codex"))
         #expect(AssistantModelChoice.isOtherEngine(sessionAgent: "", launcherAgent: "codex"))
+        #expect(AssistantModelChoice.otherEngineName("codex-cli") == "Codex")
+        #expect(AssistantModelChoice.otherEngineName("Codex") == "Codex")
+        #expect(AssistantModelChoice.otherEngineName("claude") == "Claude Code")
     }
 
     @Test func codexSourceAlsoDrivesTheConversationEngine() throws {

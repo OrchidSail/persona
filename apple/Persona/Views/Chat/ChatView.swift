@@ -5533,7 +5533,16 @@ struct Composer: View, Equatable {
                                      assistantModelName: assistantEffectiveName, pick: pickMode)
                 }
             } else if AppStyle.current.usesBeautifulUI {
-                // The BeautifulUI style's prompt bar; every other style keeps the original input line.
+                // The BeautifulUI style's prompt bar; every other style keeps the original input line. Its model
+                // button is also the main chat's Change Model entry (#6542), including on macOS.
+                let assistantPromptID = "persona.assistant-model"
+                let promptModels = assistantModelPickAvailable
+                    ? [PromptModel(id: assistantPromptID, name: String(localized: "Change Model…"),
+                                    tag: assistantEffectiveName ?? "")]
+                    : (canPickModel ? PromptItems.composerModels(running: model.session(key)?.model, list: runningModels) : [])
+                let promptModelID = assistantModelPickAvailable
+                    ? assistantPromptID
+                    : PromptItems.runningModelID(model.session(key)?.model, list: runningModels)
                 PromptComposer(placeholder: status.isActive ? String(localized: "Add a note (queued)") : (suggestion ?? placeholder ?? String(localized: "Message Claude")),
                                text: textBinding, selection: $selection, focused: $focused,
                                hasAttachments: hasAttachments,
@@ -5542,9 +5551,10 @@ struct Composer: View, Equatable {
                                    + (VoicePlatform.current == .phone ? [PromptItems.voice] : []),
                                mentions: mentions,
                                commands: promptCommands,
-                               models: canPickModel ? PromptItems.composerModels(running: model.session(key)?.model, list: runningModels) : [],
-                               modelID: PromptItems.runningModelID(model.session(key)?.model, list: runningModels),
+                               models: promptModels,
+                               modelID: promptModelID,
                                pickModel: { id in
+                                   if id == assistantPromptID { showAssistantModel = true; return }
                                    switch PromptItems.modelPick(id, running: model.session(key)?.model, list: runningModels) {
                                    case .typeID: typingModel = true // #1644: through …/modes
                                    case .keep: break

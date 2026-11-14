@@ -1013,7 +1013,7 @@ chat (#5033), where the panel only offers models and says plainly which one the 
   already viewing that main chat; a deliberately opened side conversation stays put. Siri, Share and CarPlay use that
   same confirmed key. The composer's current-model entry shows a disclosure chevron; its first menu row is
   explicitly **Change Model…**, with the effective model as its detail, so the conversation page itself shows how to
-  reach the sheet.
+  reach the sheet. The macOS BeautifulUI prompt bar uses the same Change Model… action; other macOS styles use the shell composer.
   Each launcher's catalog supplies its rows; an empty or older-node 404 catalog falls back to its configured model, a
   locked launcher keeps only its valid Default choice, and a Default row sends no model ID so it follows later default
   changes. When Default and a concrete alias resolve to the same model, the concrete alias is ticked; choosing the
