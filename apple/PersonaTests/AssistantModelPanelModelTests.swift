@@ -9,6 +9,7 @@ struct AssistantModelPanelModelTests {
         var modelRefreshes: [String: [Bool]] = [:]
         var kept: ModelPick?
         var dropped = false
+        var launcherError: APIError?
         var modelErrors: [String: APIError] = [:]
     }
 
@@ -27,6 +28,7 @@ struct AssistantModelPanelModelTests {
         .init(
             launchers: { _, refresh in
                 recorder.launcherRefreshes.append(refresh)
+                if let error = recorder.launcherError { throw error }
                 return response
             },
             models: { _, launcher, refresh in
@@ -83,6 +85,19 @@ struct AssistantModelPanelModelTests {
         #expect(panel.list("claude") != nil)
         #expect(panel.error("claude") == "hub down")
         #expect(recorder.modelRefreshes["claude"] == [false, true])
+    }
+
+    @Test func aLauncherRefreshErrorKeepsTheResponseAndShowsRetry() async throws {
+        let recorder = Recorder()
+        let panel = AssistantModelPanelModel(key: key, machine: machine, deps: deps(recorder))
+        await panel.load()
+        #expect(panel.response != nil)
+
+        recorder.launcherError = APIError(status: 502, message: "launcher hub down")
+        await panel.load(refresh: true)
+
+        #expect(panel.response != nil)
+        #expect(panel.loadError == "launcher hub down")
     }
 
     @Test func aProviderMissingFromBothListsNeedsRecovery() async throws {

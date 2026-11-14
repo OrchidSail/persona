@@ -285,9 +285,9 @@ struct AssistantModelSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                if panel.loadError != nil, panel.response == nil {
+                if let problem = panel.loadError {
                     Section {
-                        Label(panel.loadError ?? "", systemImage: Theme.Icon.error)
+                        Label(problem, systemImage: Theme.Icon.error)
                             .font(Theme.Font.secondary).foregroundStyle(Theme.cautionText)
                         Button { Task { await panel.load(refresh: true) } } label: {
                             Label(String(localized: "Retry"), systemImage: Theme.Icon.error)
