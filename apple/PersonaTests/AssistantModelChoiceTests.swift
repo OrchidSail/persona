@@ -292,6 +292,17 @@ struct AssistantModelChoiceTests {
         #expect(AppModel.followingMainRoute(current: old, previous: nil, updated: updated, mainID: "main") == updated)
         #expect(AppModel.followingMainRoute(current: side, previous: nil, updated: updated, mainID: "main") == side)
         #expect(AppModel.followingMainRoute(current: old, previous: nil, updated: updated, mainID: "other") == old)
+
+        // The persisted current key may be ahead of a throttled snapshot after another confirmed route move.
+        let stalePrevious = SessionKey(machineID: "first", sessionID: "main")
+        let currentRoute = SessionKey(machineID: "second", sessionID: "main")
+        let newestRoute = SessionKey(machineID: "third", sessionID: "main")
+        #expect(AppModel.followingMainRoute(current: currentRoute, previous: stalePrevious, updated: newestRoute,
+                                            mainID: "main") == newestRoute)
+        #expect(AppModel.followingMainRoute(current: currentRoute, previous: stalePrevious, updated: newestRoute,
+                                            mainID: nil) == currentRoute)
+        #expect(AppModel.followingMainRoute(current: currentRoute, previous: stalePrevious, updated: currentRoute,
+                                            mainID: "main") == currentRoute)
     }
 
     @Test func conversationModelBodyEncodesMachineIdSnakeCase() throws {

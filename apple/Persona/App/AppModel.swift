@@ -1187,13 +1187,17 @@ final class AppModel {
         assistantConfig?.mainKey(group: hub?.group ?? "")
     }
 
-    /// Follow a confirmed main-route move only while the user is looking at the old main conversation. A side
-    /// conversation deliberately opened by the user stays where it is; no old main key means no migration to invent.
+    /// Follow a confirmed main-route move only while the user is looking at the main conversation. The persisted
+    /// `assistant.current` may be one route ahead of a throttled on-disk Assistant snapshot, so matching the main
+    /// session ID is enough to recognize that current key. A deliberately opened side conversation stays where it is.
     static func followingMainRoute(current: SessionKey?, previous: SessionKey?, updated: SessionKey?,
                                    mainID: String? = nil) -> SessionKey? {
-        let old = previous ?? (current?.sessionID == mainID ? current : nil)
-        guard let old, let updated, current == old, updated != old else { return current }
-        return updated
+        guard let current, let updated, current != updated else { return current }
+        let currentlyMain: Bool
+        if let previous, previous.sessionID == current.sessionID { currentlyMain = true }
+        else if previous == nil, current.sessionID == mainID { currentlyMain = true }
+        else { currentlyMain = false }
+        return currentlyMain ? updated : current
     }
 
     /// Shows a Persona conversation from another page (Scheduled Tasks' Run Now / its own conversation): the Persona tab or the
