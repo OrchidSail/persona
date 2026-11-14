@@ -1314,6 +1314,61 @@ The new fields are stored in the existing interaction JSON payload; no database 
 
 <a id="工作区看板"></a>
 
+## Saved Agent searches
+
+The default manager owns reusable runtime-Agent query definitions in its Postgres setting `agents.saved_searches`.
+The hub forwards these routes unchanged; explicit `X-Persona-Manager` pins a captured owner, otherwise the default
+manager is used. The web deliberately uses the default rather than the sidebar's current Assistant. These routes
+do not execute or interpret a search, start sessions, run commands or send messages. Applying a query remains a
+client action through the existing palette. No new migration or browser-local persistence is required.
+
+| Method and path | Body | Response |
+| --- | --- | --- |
+| `GET /api/v1/saved-agent-searches` | none | `SavedAgentSearches` |
+| `POST /api/v1/saved-agent-searches` | `{revision: decimal string, action, ...fields}` | full confirmed `SavedAgentSearches` |
+
+```text
+SavedAgentSearches { revision: decimal string, searches: SavedAgentSearch[], can_write: bool }
+SavedAgentSearch { id, name, query, created_at: RFC3339, updated_at: RFC3339 }
+```
+
+The revision is a canonical nonnegative int64 decimal string on the wire (no leading zeros except `"0"`), preserving
+identity in JavaScript. It is stored as int64 in Settings. An absent key starts at revision `"0"` with `searches: []`;
+a failed read is never an empty success. GET and POST require a real store with both `Setting` and `CompareSetting`.
+Full-role connections may write; answer-role connections and extension tokens with `agents.read` may only read.
+No extension write scope is granted. `can_write` reflects the request role, not a promise that the next write succeeds.
+
+| Action | Fields beyond revision/action |
+| --- | --- |
+| `add` | `name`, `query`; server creates `search_` + 24 lowercase hex ID and UTC timestamps |
+| `update` | `id`, `name`, `query`; preserves identity, creation time and position |
+| `delete` | `id`; removes that entry without resetting collection revision |
+| `move` | `id`, optional `before_id`; absent/empty appends, an existing different anchor inserts before it |
+| `restore` | full captured `item`, optional `before_id`; restores a deleted identity only when ID/name are absent |
+
+Every action has an exact field set; unknown, duplicate, differently cased or mixed-action members are rejected.
+The body limit is 16 KiB. Names are trimmed, control-free, 1–64 Unicode code points, unique by Unicode case-fold.
+Queries are trimmed, valid UTF-8, control-free and 1–1,024 bytes; a leading `>` is rejected because the palette treats
+it as command mode. Relative-time expressions stay relative. At most 50 records are retained. Restored timestamps
+must be valid, nonzero and ordered; restore preserves the captured metadata. IDs and anchors must use the generated
+ID syntax. A missing anchor or self-move is invalid.
+
+A mutation checks the supplied revision against the read document, then atomically replaces it using
+`CompareSetting`. A successful mutation increments revision exactly once, including a valid no-op; int64 overflow
+is refused. Only after success does the manager broadcast `saved_agent_searches` with `{revision: decimal string}`;
+its normal manager stamp identifies the owner. No query text or names are included in the event. The client reloads
+that owner while its view is open, and never retries a conflicting write automatically.
+
+Errors: 400 `invalid_request` / `limit_reached`, 403 `forbidden`, 404 `search_not_found` for a missing entry,
+409 `conflict` for stale/CAS revisions, 409 `duplicate_name` for conflicting names/restore IDs, 503 `not_supported`
+when durable CAS is unavailable, and 503 `storage_unavailable` for read/write failure or corrupt stored data.
+A missing route on an older manager is 404. Clients distinguish missing entries from an unsupported endpoint and
+name validation from revision conflict. Failed actions emit no event and change no persisted collection.
+
+Undo is a `restore` using the revision acknowledged by the delete, never a blind overwrite of the whole collection.
+Another write invalidates that Undo. The visible entry order is the stored array order. Newer reads must not replace
+a dirty editor's draft or retarget an in-flight request after credential/default-manager changes.
+
 ## Workspace board
 
 Workflow, upgrades and persistence are covered in [Workspace board](../web/workspace-board.md). The APIs below belong to the manager (the hub forwards them unchanged over the bus `http.request`, see "Forwarding App requests"; `503 assistant_offline` when the manager isn't there), and the two events are sent by the manager via `ws.broadcast` and pushed unchanged by the hub. The APIs use the hub machine's Postgres as the only persistent state, with no fallback to in-memory or JSON file writes. `answer` may GET the board and the list; POST requires `full`. `can_write` says whether the current request's role can edit; it grants no extra file, Git or Agent permissions.
@@ -1762,6 +1817,8 @@ Clients report their errors and crashes only while `features` has `error_reports
 | POST | `/api/v1/assistant/conversations` | `{"prompt","images"?,"launcher"?,"model"?,"effort"?,"service_tier"?,"purpose"?,"machine_id"?,"main"?,"space"?,"report_tasks"?,"via"?}` → `{"session"}`: writes CLAUDE.md, then starts a new session in the assistant directory. `via` says how the app sent the prompt when it was not typed in the app itself: `"intent"` (Siri, Shortcuts, an App Intent), `"share"` (the share sheet) or `"card"` (a card's button that wrote it, as the Today card's Prep does from a calendar event); any value marks it, and such a message never counts as the user's own words for a secret hand-off's Always rule (`docs/extensions/secret-providers.md` "Always rules"), and the same field on a message to an assistant conversation (`…/messages`) does the same. `launcher` / `model` / `effort` are the first message's, as a message's pick (#5033): `service_tier` (feature `assistant_start_service_tier`, #6240) is the native speed ID advertised by the selected Codex model's `service_tiers`, currently `priority` for Fast; it is independent of `effort` and is acknowledged through `thread/settings/update` before the first `turn/start`, including when a warm thread is adopted. Omitting it makes no per-request speed override, so Codex's configured default remains effective; later messages omit it and the native thread retains its acknowledged setting. An existing-session send gets 409 `assistant_service_tier_start_only`, a non-Codex start 409 `assistant_service_tier_unsupported`, and a native refusal 409 `assistant_service_tier_refused`, all with `delivered: "none"` and no turn. A native refusal stops the cold or warm-adopted process before conversation, mode or recovery state is saved. These coded summaries are localized in en, zh-Hans and ja, without exposing the native English diagnostic as person-facing detail. A nonempty value requires the node capability `assistant_service_tier` and returns 409 `node_outdated` before starting on an older node. A manager without `assistant_start_service_tier` in its hello gets no relay and the app gets 501 `assistant_service_tier_manager_outdated`; an older hub ignores the unknown field, so capable web clients neither offer nor send it without the hub feature and default manager. `model` is any model ID (`proto.ValidModelID`, else 400; a typed one the list lacks is kept), for `launcher` or else the purpose's launcher; 400 when that launcher sets its own model (`locked`) or its agent takes none, before anything starts; a `launcher` that isn't on the computer falls back to the purpose's, its `model` dropped. Without `purpose` or `guest`, a named `launcher` or `model` (with `effort`) is kept as the new chat's `model_pick` (in the answer's `session` too) so its later messages keep it (feature `assistant_model_pick`); an `effort` alone, nothing named, or a fallback keeps nothing. A `main: true` start after `/clear` starts on the cleared main chat's pick unless it names a launcher or model (its `effort` is then the first message's only); when it names neither, the manager discards an explicit `service_tier` rather than applying it to that carried pick, so a client choosing Fast must name the launcher or model whose displayed setup it belongs to; a carried pick that can't run any more refuses that start once (409 `launcher_out_of_scope` / `launcher_own_service` / `launcher_missing`, or 400) and is dropped, so the next start runs on the default. `space: "health"` starts it in the health space's directory (the health CLAUDE.md, `docs/assistant/health.md`); together with `main: true` it's 400, and any other `space` is 400. `purpose`: which model purpose to use (one the hub knows, e.g. `lark.agent`; unknown 400; empty means `assistant`); `machine_id`: which of the hub's machines to run on (empty means the assistant's; unknown machine 400). The plugin's /agent uses these two (#1484). `report_tasks: true`: tasks dispatched by this chat (`task_plan`, `agent_start`) are, like the main chat's "quiet tasks", not pushed separately; their status changes are sent into this chat as task notifications (#3192, `docs/extensions/lark-agent.md` ("Dispatched tasks")); the plugin's /agent sets it. `guest: {"tools": [...]}`: starts a guest conversation (`docs/assistant/assistant.md` ("Guest conversations")): it can use only these 1–8 connector tools, runs in its own directory with no built-in tools and no live snapshot, can't be combined with `main` / `space`; 400 when the node is too old The answer has `launcher_note` when the configured launcher can't run there and one of the same kind runs it instead (#4659). |
 | GET / PUT | `/api/v1/assistant` (Agent naming) | `agent_auto_naming` (effective default `true`), `agent_auto_naming_max` (effective default `1`, integer 1–1000), `agent_auto_naming_interval_hours` (effective default `0`: periodic updates off; integer 0–8760). A sparse PUT requires full credentials and an explicit assistant in `X-Persona-Manager` or `?manager=`; conflicting or missing targets are rejected. The success response includes the owner and effective values. The count is successful automatic name changes per session, including periodic refreshes; refresh requires new output tokens and never overrides manual titles. iOS and Android can add controls against this same API later; this change adds web controls only. Older managers omit these fields, so clients must not infer support. |
 | GET | `/api/v1/assistant/leaders` | Every direction (leader conversation): `{"leaders":[{"id","title","name"?,"project"?,"ended"?,"progress"?,"by","at","ended_at"?}]}`, current ones first, then ended ones, each by `at` then `id`; `name` is what the direction is called (the owner's or the secretary's name, else the project's name, else the title without its date and kind), `progress` the leader's latest own summary `{reached?,doing?,needs_you?,links?,at}`; titles or directions not readable 503 (`docs/assistant/unified-entry.md` "Leader conversations") |
+| GET | `/api/v1/assistant/dispatch-policy` | The assistant's dispatch policy: `{"dispatch_policy":{"rules":[{"conversation_class","deny":["task_plan"|"agent_start"|"start_conversation"|"send_to_main"|"send_to_leader"],"message"?}],"expires_at"?}}`. A conversation class is `main`, `leader`, `background_supervisor`, `scheduled` (a scheduled task's own conversation) or `other`; with no policy in force the answer is `{"dispatch_policy":{"rules":[]}}`. Full credentials, or an extension token granted `assistant.dispatch_policy`. See "Dispatch policy" below |
+| PUT | `/api/v1/assistant/dispatch-policy` | Replace the dispatch policy with `{"dispatch_policy":{…}}`; empty `rules` clears it (`{"rules":[]}`). A full-credential write may omit `expires_at`; an extension write must name an `expires_at` no more than one hour ahead (a past or later one is 400), so a stopped or uninstalled extension leaves nothing in force. An unknown class or action, a repeated class, an empty `deny` or an over-long `message` is 400; read-only devices are 403. The same field may be written with `PUT /api/v1/assistant` (full credentials, expiry optional). Full credentials, or an extension token granted `assistant.dispatch_policy`; see "Dispatch policy" below |
 | GET | `/api/v1/assistant/directions/tree` | The direction tree (#4352) every client's sidebar, To-dos grouping and Agents grouping read: `{"directions":[{"id","name","secretary"?,"counts":{"working","needs_you","stuck","review","planned"},"running","tasks":[{"id","title","state","agents":[{"machine_id","session_id","title","agent","state","children"?}]}]}]}`. Current directions in the order `GET /api/v1/assistant/leaders` lists them, then the secretary group last (`secretary: true`, `id` the main conversation's, `name` `""`, always present). `tasks` are the open to-dos (the To-dos page's open count) whose supervisor is that direction; the main conversation's, no supervisor's, an ended or unknown conversation's go to the secretary group; a worker of a task leader is not listed or counted, its Agents are `children` of the leader's Agent. `state` is `needs_you`, `review`, `planned` (no Agent has worked on it yet, #5846; `counts.planned` absent or 0 from an older hub), `stuck` or `working` (first match), tasks listed needs_you, review, stuck, working, planned, newest activity first; `counts` counts the listed tasks per state. `running` (#6626, always sent): an Agent of the direction's listed tasks, or one under it, has a `working` session, whatever the task's state — the one rule for a direction row's spinner on every client (a client reading a tree without it, from an older hub, uses `counts.working > 0`). An Agent's `state` is its session's as on session rows (`""`: not found); `children` are the Agents it spawned, its workers' Agents, its running sub-agents (`session_id` `"<parent>@<id>"`, `title` the description) and its Codex sub-agent sessions still going. Answered by the default manager alone (not merged over managers like `GET /api/v1/todos`). Read-only devices may read it; to-dos not loaded 503; an older hub 404 (clients keep the flat direction rows). Rules: `docs/assistant/unified-entry.md` "The direction tree" |
 | GET | `/api/v1/assistant/directions/offers` | The directions offered for New chats and not yet answered, newest first: `{"offers":[{"conversation","machine_id","title","project"?,"new_project"?,"closest"?,"at"}]}` (`docs/assistant/unified-entry.md` "New chat opens a direction") |
 | DELETE | `/api/v1/assistant/directions/offers/{id}` | Just a quick chat: drops conversation `id`'s offer → `{"dropped"}`; read-only devices 403 |
@@ -1901,6 +1958,54 @@ How a device adds a pending computer: see "Computer pairing codes" under "Tempor
 - A computer that pairs while its name is still its id is named once after its system (`system_name` in the pairing request, `POST /api/v1/auth/tokens`, via `system`).
 - Clients show a rename entry only when hello's `features` has `machine_rename`.
 
+### Dispatch policy
+
+The assistant can run under an optional dispatch policy: an organization rule for which conversations may hand out
+work, so a conversation that is meant to only read and report cannot open tasks or push work into the main or a
+leader conversation. With no policy stored, or one past its expiry, every conversation behaves exactly as without
+the feature.
+
+A policy is one setting on the assistant (`dispatch_policy` in `GET`/`PUT /api/v1/assistant`, full credentials) and
+also has its own route, `GET`/`PUT /api/v1/assistant/dispatch-policy`, open to full credentials and to an extension
+token granted the `assistant.dispatch_policy` hub scope. Its shape:
+
+```json
+{
+  "rules": [
+    {
+      "conversation_class": "scheduled",
+      "deny": ["task_plan", "agent_start", "start_conversation", "send_to_main", "send_to_leader"],
+      "message": "where the model should leave findings instead"
+    }
+  ],
+  "expires_at": "RFC 3339, optional"
+}
+```
+
+- `conversation_class` is one of `main`, `leader`, `background_supervisor`, `scheduled` (a scheduled task's own
+  conversation) or `other`. Classes are resolved most specific first, so a conversation a scheduled task runs in
+  that is later made the main or a leader conversation keeps that higher class.
+- `deny` names what the class may not do: hand out work (`task_plan`, `agent_start`), start another conversation
+  (`start_conversation`, so the limit cannot be bypassed by opening one), or relay work with `conversation_send` to
+  the main conversation (`send_to_main`) or a leader conversation (`send_to_leader`). A send to any other
+  conversation is not limited.
+  A limited conversation also cannot cancel or delete its own scheduled task (`cancel_followup`,
+  `delete_routine`): removing the task would take away the conversation's own class mid-turn.
+- `message` is an optional short note (at most 300 runes) appended to the localized refusal that starts with
+  "The current organization policy requires…".
+- `expires_at` is optional for a full-credential write, which may also set one further than an hour ahead. An
+  extension write must set it to no more than one hour ahead; an expired policy is treated as absent, so a stopped or
+  uninstalled extension leaves nothing in force. Empty `rules` clears the policy.
+- The owner's own words are never blocked: when a limited conversation relays something to the **main**
+  conversation, the send is allowed if the current turn started with the owner's own message (a user text item with
+  a client message id and no source marking it as a scheduled run, a supervision message, a relay or a system
+  notice), or if the sent text starts with one of the owner's messages verbatim. If the conversation's transcript
+  cannot be read, the send stays refused.
+
+The checks run on the model's tool-call entry only: the hub's own internal starts are not affected, and the main
+conversation, leader conversations and the background supervisor keep working unless a rule explicitly names their
+class.
+
 ## WebSocket `/api/v1/ws`
 
 Envelope `{"type":"…", ...}`.
@@ -1917,6 +2022,7 @@ Server → client:
 | `machines` | `machines` (also after a rename: the whole list, with the new `name`) |
 | `file_transfer` | `transfer` (`FileTransfer`): a computer-to-computer transfer started, progressed (at most once a second) or ended; `manager` identifies a non-default manager. Only full devices that declared `file_transfer` receive it; not in the event log, so clients `GET` the current transfers after reconnecting ([file-transfer.md](file-transfer.md)) |
 | `managers` | No payload: the manager roster changed (created, renamed, connected, disconnected, deleted, new reported bot identities); clients re-read `GET /api/v1/managers` ("Bus" below, [managers.md](../assistant/managers.md) "Clients"). Only sent to connections that asked for feature `managers` (`?features=` or `client_hello.features`), not in the event log |
+| `saved_agent_searches` | `revision` (decimal string): the default manager committed a saved-query mutation; re-read the collection while its view is open, respecting the message's manager stamp. No query/name payload; see "Saved Agent searches" |
 | `workspace_board` | `revision`: a board change was saved; the client re-reads the full state; doesn't indicate an Agent state change |
 | `workspace_board_settings` | `enabled`: the board switch changed (`PUT /api/v1/workspace-board/settings`); clients show or hide the entry accordingly |
 | `kb_selection` | —: the knowledge base's selection was saved (`PUT /api/v1/kb/selection`, or a per-item change from the assistant); clients re-read `GET /api/v1/kb/selection` |
@@ -3310,7 +3416,7 @@ hub → node requests:
 | `plugin.node.sync` / `plugin.node.renew` / `plugin.node.status` | `sync {programs: [{id, version, digest}], installed: [id]}` → `{programs: [state]}`: those not in `programs` are stopped and their packages deleted; those not in `installed` are deleted along with their data. `renew {ids, lease_seconds}`; `status` → `{programs}` |
 | `plugin.node.dial` | `{id, plugin}` → `{}`: connects to this plugin program's HTTP socket and opens a stream `id` (after that, bytes flow over `stream.*` events, same as `port.dial`); if the program isn't running or doesn't serve HTTP it returns `code: not_running` |
 | `plugin.node.call` | `{id, method, params?}` → the program's answer: a plugin protocol method (programs on the hub call it via `nodes.call`); if the program isn't running it returns `code: not_running` |
-| `port.dial` | `{id, port, keep_awake?, pair?, link?, attach?}` → `{}`, or `{link: 1}` when it opened a screen session for 5900 with `pair` (`link`; `attach` rejoins a live one without dialing, else `session_gone`; [computer-use.md](../extensions/computer-use.md) "Live screen routes (#6398)"): connects to this local port (the address it was bound to at scan time, otherwise 127.0.0.1 then ::1; local only) and opens a stream `id`; if nothing is listening it errors with `code: port_gone`. After that both sides pass bytes over the `stream.*` events below |
+| `port.dial` | `{id, port, keep_awake?, pair?, link?, attach?}` → `{}`, or `{link: 1}` when it opened a screen session for 5900 with `pair` (`link`; `attach` rejoins a live one without dialing, else `session_gone`; [computer-use.md](../extensions/computer-use.md) "Live screen routes (#6398)"): connects to this local port (the address it was bound to at scan time, otherwise 127.0.0.1 then ::1; local only) and opens a stream `id`; if nothing is listening it errors with `code: port_gone`. After that both sides pass bytes over the `stream.*` events below. On a Mac a paired 5900 stream is also read for the phone's pixel scroll records (RFB client message type 200), which never reach Screen Sharing ([computer-use.md](../extensions/computer-use.md) "Pixel scrolling (#7775)") |
 | events `plugin.node.state` / `plugin.node.event` | node → hub: `{id, version, state, error?}` (came up, stopped on lease expiry), `{id, event, params}` (events the program sends; the hub forwards them to programs on the hub) |
 | `credential.gh_token` | `{host}` → `{token}`: runs `gh auth token --hostname <host>` non-interactively on this machine, for the GitHub connector (`github.auth.from_machine`). Only the hub can call it (the hook / MCP `node.sock` doesn't accept it); the token is never logged. gh not installed reports `code: no_gh`; not signed in (or signed in via the keychain, unreadable over ssh) reports `code: not_signed_in`; old nodes report unknown method |
 | `connector.list` | → `{connectors:[{id, status, error?, guide?, via}]}`: connectors this computer itself can provide (currently only `imessage` on Mac; other systems return an empty list). `status` is `ok` / `not_configured` (no Messages data) / `no_permission` (no Full Disk Access; `guide` gives step-by-step instructions to enable it on this Mac, worded two ways depending on whether `via` is `ssh` or a resident `launchd` node) / `error` |
@@ -3507,6 +3613,7 @@ The answer is `{name,role,managers:[{id,name,role,online}],owner,owner_notes,ass
   `agents`, `kb` (`{off?,text_days?,attachment_days?,attachment_days_by_source?,extra_dirs?}`, the knowledge base, `docs/assistant/knowledge.md` ("Who owns what")), the models (`ai`, `kb.ai`, `inbox.triage_ai` / `judge_ai`, `inbox.agent.machine`) and `hook_timeout_minutes` (`notify.hook_timeout_ms`).
   `owner` and `owner_notes` are still in the answer, empty. An older hub still fills these fields from its hub.json; a section the manager's `manager.json` has replaces them.
 - `mutes` `{spaces,sessions,allowed?}`: the hub's mutes (`GET /api/v1/mutes`) of the manager's own machines only (as `fleet.mutes`), so a manager has them before it pushes anything; left out while the hub cannot read them (they follow with `fleet.mutes` once it can) and by older hubs. `manager.updated` carries no `mutes`.
+- `quiet_push` (bool, left out when off and by older hubs): the hub's push tiering switch (`docs/server/server.md`, push levels) is on; the manager then holds back what is its own to send by the same levels (`server/internal/assistant/push_quiet.go`). Turning the switch on or off sends `manager.updated`.
 - The assistant keeps this answer. Where it might have changed (the linked group changed center, the machine list changed), the hub coalesces for 200 milliseconds and recomputes; if it differs from what it last gave, it sends
   `manager.updated` with the new answer as params (as above, without `name`, `role`, `managers`). On receiving it the assistant rereads its settings and its `manager.json` and reports a snapshot.
 
@@ -3879,8 +3986,7 @@ Tasks dispatched from an assistant chat ([unified-entry.md](../assistant/unified
 
 **Stable task rows (#2878).** The feed endpoint additionally returns `task_cards`, a derived projection, without changing or
 removing its original `items` and `plans`. Android and web render a task only as its single row in **In progress**, or in
-**Needs you** while it waits on the user (#3387); the chat shows a small dispatched line instead of plan/task/receipt/review/report cards (Android's Glass style draws the receipts, reviews, reports, Persona's hand-offs, message cards and `notice` lines in the chat as iOS does, `docs/plans/android-ios-alignment/chats.md` C13): one task reads
-"Dispatched: <title> · Open", several list their titles, and each opens that task's own details, never the whole tray (#3700).
+**Needs you** while it waits on the user (#3387); the chat shows hand-off cards instead of plan/task/receipt/review/report cards (Android's Glass style draws the receipts, reviews, reports, Persona's hand-offs, message cards and `notice` lines in the chat as iOS does, `docs/plans/android-ios-alignment/chats.md` C13). Web, iOS and Android draw one card per Agent a dispatch started or a task took over (#5096, #5110). A card with an Agent opens that Agent's page, and before an Agent is up it opens the task, never the whole tray (#3700).
 Clients take the dispatched to-dos from data they already have: a `task` item's `ref`, or a started plan's `tasks[].todo_id`
 in plan order (a task without `todo_id` did not start and has no link); no extra field is sent. Plans awaiting Start and acceptance decisions are handled in **Needs you**. Task details and the original audit records remain accessible.
 

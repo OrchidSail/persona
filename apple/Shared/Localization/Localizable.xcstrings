@@ -14798,6 +14798,28 @@
       },
       "extractionState" : "manual"
     },
+    "A related push already alerted in the last 12 hours [Push Intercepts]" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A related push already alerted in the last 12 hours"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "関連する通知は過去12時間以内に送信済みです"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "同一件事在过去 12 小时内已经推过"
+          }
+        }
+      }
+    },
     "A relay, a company gateway or any Anthropic-compatible service; you enter the address and auth yourself" : {
       "localizations" : {
         "zh-Hans" : {
@@ -49811,6 +49833,28 @@
       },
       "extractionState" : "manual"
     },
+    "Couldn’t load held pushes. Check the connection and retry. [Push Intercepts]" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Couldn’t load held pushes. Check the connection and retry."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保留された通知を読み込めませんでした。接続を確認して再試行してください。"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没能读到被拦推送。检查连接后重试。"
+          }
+        }
+      }
+    },
     "Couldn’t put it back: %@" : {
       "localizations" : {
         "en" : {
@@ -51835,6 +51879,29 @@
         }
       },
       "extractionState" : "manual"
+    },
+    "Default" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Default"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "標準"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "默认"
+          }
+        }
+      }
     },
     "Default (no background)" : {
       "localizations" : {
@@ -62583,6 +62650,29 @@
       },
       "extractionState" : "manual"
     },
+    "Faster" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Faster"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "速め"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "较快"
+          }
+        }
+      }
+    },
     "Faster route" : {
       "localizations" : {
         "en" : {
@@ -69267,6 +69357,94 @@
       },
       "extractionState" : "manual"
     },
+    "Held Pushes Today [Push Intercepts]" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Held Pushes Today"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "今日保留された通知"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "今天被拦下的推送"
+          }
+        }
+      }
+    },
+    "Held pushes, %lld today [Push Intercepts]" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Held pushes, %lld today"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保留された通知、今日%lld件"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "被拦推送，今天 %lld 条"
+          }
+        }
+      }
+    },
+    "Held Pushes [Push Intercepts]" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Held Pushes"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保留された通知"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "被拦推送"
+          }
+        }
+      }
+    },
+    "Held for the briefing [Push Intercepts]" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Held for the briefing"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ブリーフィングへ"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "留给简报"
+          }
+        }
+      }
+    },
     "Help" : {
       "localizations" : {
         "en" : {
@@ -70393,6 +70571,29 @@
         }
       },
       "extractionState" : "manual"
+    },
+    "How far a computer's screen scrolls when you drag two fingers on it." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "How far a computer's screen scrolls when you drag two fingers on it."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "コンピュータの画面を2本指でドラッグしたときの、スクロールの速さです。"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "用两指在电脑画面上拖动时，画面滚动的快慢。"
+          }
+        }
+      }
     },
     "How full your subscription windows are, and today's tokens. [Home Widgets]" : {
       "extractionState" : "manual",
@@ -76967,6 +77168,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "保持するセグメント"
+          }
+        }
+      }
+    },
+    "Kept silent [Push Intercepts]" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kept silent"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通知せずに記録"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "静默记录"
           }
         }
       }
@@ -96414,6 +96637,50 @@
         }
       }
     },
+    "Loading held pushes… [Push Intercepts]" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loading held pushes…"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保留された通知を読み込み中…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在读取被拦推送…"
+          }
+        }
+      }
+    },
+    "No pushes were held today. [Push Intercepts]" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No pushes were held today."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "今日保留された通知はありません。"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "今天没有被拦下的推送。"
+          }
+        }
+      }
+    },
     "No quick commands yet. Tap Edit to add one." : {
       "localizations" : {
         "en" : {
@@ -96845,6 +97112,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "没有这个分支，或者这个名字不能用"
+          }
+        }
+      }
+    },
+    "No summary [Push Intercepts]" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No summary"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "概要なし"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有摘要"
           }
         }
       }
@@ -109055,6 +109344,50 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "所有者：%1$@ · 同组：%2$@ · 其他人：%3$@"
+          }
+        }
+      }
+    },
+    "P1 · Needs Your Review [Push Intercepts]" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "P1 · Needs Your Review"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "P1・要確認"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "P1 · 等你看"
+          }
+        }
+      }
+    },
+    "P2 · Quiet [Push Intercepts]" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "P2 · Quiet"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "P2・通知なし"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "P2 · 静默"
           }
         }
       }
@@ -130531,6 +130864,29 @@
       },
       "extractionState" : "manual"
     },
+    "Scroll Speed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scroll Speed"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "スクロールの速さ"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "滚动速度"
+          }
+        }
+      }
+    },
     "Scroll up to load earlier output" : {
       "localizations" : {
         "en" : {
@@ -139229,6 +139585,29 @@
         }
       },
       "extractionState" : "manual"
+    },
+    "Slower" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Slower"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "遅め"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "较慢"
+          }
+        }
+      }
     },
     "Slowest and most careful" : {
       "localizations" : {
@@ -195897,19 +196276,19 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "live screen screen route direct connection quality cellular mobile data hotspot"
+            "value" : "live screen screen route direct connection quality cellular mobile data hotspot scroll scrolling scroll speed two fingers"
           }
         },
         "ja" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "ライブ画面 画面 経路 直接接続 画質 モバイル通信 インターネット共有"
+            "value" : "ライブ画面 画面 経路 直接接続 画質 モバイル通信 インターネット共有 スクロール スクロールの速さ 2本指"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "实时屏幕 屏幕 线路 直连 画质 蜂窝 移动数据 热点"
+            "value" : "实时屏幕 屏幕 线路 直连 画质 蜂窝 移动数据 热点 滚动 滚动速度 双指"
           }
         }
       }
