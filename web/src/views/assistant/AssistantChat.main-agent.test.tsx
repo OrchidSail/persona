@@ -10,15 +10,20 @@ const launcherRead = vi.hoisted(() => ({
   info: undefined as import("../../lib/session-models").AssistantLaunchers | undefined,
   calls: [] as { mid: string; again: boolean }[],
   hold: false,
+  settleBeforeRead: false,
   loading: false,
   promise: undefined as Promise<void> | undefined,
   release: undefined as (() => void) | undefined,
 }));
 vi.mock("../../lib/session-models", async (original) => ({
   ...(await original<typeof import("../../lib/session-models")>()),
-  assistantLaunchers: () => ({ info: launcherRead.info, loading: launcherRead.loading }),
+  assistantLaunchers: () => ({ info: launcherRead.info, loading: launcherRead.loading, read: launcherRead.promise }),
   readAssistantLaunchers: (mid: string, o: { again?: boolean } = {}) => {
     launcherRead.calls.push({ mid, again: Boolean(o.again) });
+    if (launcherRead.settleBeforeRead) {
+      launcherRead.settleBeforeRead = false;
+      launcherRead.release?.();
+    }
     if (launcherRead.loading) return launcherRead.promise!;
     if (!launcherRead.hold) return Promise.resolve();
     launcherRead.loading = true;
@@ -52,6 +57,7 @@ beforeEach(() => {
   reset();
   launcherRead.calls = [];
   launcherRead.hold = false;
+  launcherRead.settleBeforeRead = false;
   launcherRead.loading = false;
   launcherRead.promise = undefined;
   launcherRead.release = undefined;
@@ -131,5 +137,16 @@ describe("the Main chat default's agent-kind mismatch", () => {
     await act(async () => { release(); await flush(); });
     expect(launcherRead.calls).toHaveLength(3);
     expect(launcherRead.calls.every((call) => call.mid === "hub" && call.again)).toBe(true);
+  });
+
+  it("does not add a trailing refresh when the old request settles before the effect", async () => {
+    launcherRead.hold = true;
+    await show(session({ rev: 1 }));
+    launcherRead.settleBeforeRead = true;
+    await show(session({ rev: 2 }));
+    expect(launcherRead.calls).toHaveLength(2);
+    const release = launcherRead.release!;
+    await act(async () => { release(); await flush(); });
+    expect(launcherRead.calls).toHaveLength(2);
   });
 });

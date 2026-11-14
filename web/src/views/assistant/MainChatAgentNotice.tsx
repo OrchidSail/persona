@@ -15,7 +15,7 @@ export function MainChatAgentNotice({ session, isMain, onNewMain }: { session: S
   const kept = useStore((s) => hubHas(s.features, ASSISTANT_MODEL_PICK_FEATURE));
   const mid = session.machine_id;
   useModelLists();
-  const { info, loading } = assistantLaunchers(mid);
+  const { info, read: renderedRead } = assistantLaunchers(mid);
   useEffect(() => {
     if (isMain && mid) void readAssistantLaunchers(mid, { again: true });
   }, [isMain, mid]);
@@ -26,15 +26,15 @@ export function MainChatAgentNotice({ session, isMain, onNewMain }: { session: S
     if (!isMain || !mid || session.rev === undefined || session.rev === lastRev.current) return;
     lastRev.current = session.rev;
     const read = readAssistantLaunchers(mid, { again: true });
-    // `loading` is this render's snapshot. If the revision arrived during an older request, our read was deduped into
-    // it; follow that answer with one trailing read. A request another effect starts for this same revision needs none.
-    if (!loading) return;
+    // Only the exact request seen at render can have preceded this revision. If it already settled, this call returned
+    // a new promise and needs no trailing read; a request another effect starts for this revision also needs none.
+    if (!renderedRead || read !== renderedRead) return;
     let active = true;
     void read.then(() => {
       if (active) void readAssistantLaunchers(mid, { again: true });
     });
     return () => { active = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only a new revision needs the render-time loading snapshot.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only a new revision needs this render's request identity.
   }, [isMain, mid, session.rev]);
   const mismatch = mainChatAgentMismatch({ session, isMain, kept, config: assistant?.launcher }, info);
   if (!mismatch) return null;
