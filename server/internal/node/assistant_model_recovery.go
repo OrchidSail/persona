@@ -114,20 +114,33 @@ func (n *Node) modelRecovery(id string) *proto.ModelRecovery {
 // putModelRecovery stores the marker in memory and persists the session state so a node restart keeps it.
 func (n *Node) putModelRecovery(id string, r *proto.ModelRecovery) {
 	n.mu.Lock()
+	n.putModelRecoveryLocked(id, r)
+	n.mu.Unlock()
+	n.persistModelRecovery(id)
+}
+
+// putModelRecoveryLocked updates only the in-memory marker. Caller must hold n.mu.
+func (n *Node) putModelRecoveryLocked(id string, r *proto.ModelRecovery) {
 	if r == nil {
 		delete(n.recoveryMarks, id)
-	} else {
-		if n.recoveryMarks == nil {
-			n.recoveryMarks = map[string]*proto.ModelRecovery{}
-		}
-		n.recoveryMarks[id] = r
+		return
 	}
-	n.mu.Unlock()
+	if n.recoveryMarks == nil {
+		n.recoveryMarks = map[string]*proto.ModelRecovery{}
+	}
+	n.recoveryMarks[id] = r
+}
+
+// persistModelRecovery copies the in-memory marker into the session record. n.mu must not be held: it takes the
+// state lock and may notify over the peer.
+func (n *Node) persistModelRecovery(id string) {
 	st, ok := n.state.get(id)
 	if !ok {
 		return
 	}
-	st.ModelRecovery = r
+	n.mu.Lock()
+	st.ModelRecovery = n.recoveryMarks[id]
+	n.mu.Unlock()
 	n.state.put(id, st)
 }
 
@@ -238,17 +251,33 @@ func (n *Node) returnToConfiguredAt(ctx context.Context, id string, at time.Time
 }
 
 // releaseModelRecovery clears every in-memory bookkeeping that would keep id off its configured model: the fallback
-// hold, the sticky refusal window and the "unavailable" entry for the configured model.
+// hold, the sticky refusal window and the "unavailable" entry for the configured model. It takes n.mu itself, so it
+// must not be called while n.mu is held; use releaseModelRecoveryLocked there.
 func (n *Node) releaseModelRecovery(id, configured string) {
-	n.forgetFallback(id)
 	n.mu.Lock()
+	had := n.releaseModelRecoveryLocked(id, configured)
+	n.mu.Unlock()
+	n.forgetFallback(id)
+	if had {
+		n.persistModelRecovery(id)
+		n.notifySessions()
+	}
+}
+
+// releaseModelRecoveryLocked does the n.mu-guarded half of a release and reports whether a marker was dropped.
+// Caller must hold n.mu and must persist and notify only after releasing it (see releaseModelRecovery and
+// clearAssistantRecovery, which already holds n.mu).
+func (n *Node) releaseModelRecoveryLocked(id, configured string) (dropped bool) {
 	for k := range n.unavailable {
 		if _, model, ok := strings.Cut(k, "\x00"); ok && model == configured {
 			delete(n.unavailable, k)
 		}
 	}
-	n.mu.Unlock()
-	n.clearModelRecovery(id)
+	if n.recoveryMarks[id] != nil {
+		n.putModelRecoveryLocked(id, nil)
+		return true
+	}
+	return false
 }
 
 func unavailableKey(launcher, model string) string { return launcher + "\x00" + model }

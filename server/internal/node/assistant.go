@@ -393,16 +393,23 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 		return "", err
 	}
 	if recovery == nil && id != "" {
+		askedModel := execution.Model
 		execution = n.heldFallback(id, launcher, execution) // the fallback that answered, for a while (#3788)
 		// A protected conversation's fallback is temporary: once the configured model is reachable again, the next
 		// request runs on it instead of staying pinned to the cheaper model (#7824). Only a conversation the node's own
 		// recovery moved is touched; worker conversations, and ones with no marker, keep what they asked for.
 		if marker := n.modelRecovery(id); marker != nil && !marker.ChainExhausted && marker.From != "" &&
-			n.recoveryProtected(id) && n.returnToConfiguredAt(ctx, id, time.Now()) {
-			if marker.From != execution.Model {
-				execution.Model = marker.From
+			n.recoveryProtected(id) {
+			// The hold expired on its own and already put the configured model back, or a probe/reset says it is back.
+			// Without the hold-expiry branch the marker could linger after the conversation had effectively returned
+			// when no availability probe can run.
+			backViaHold := askedModel == marker.From && execution.Model == marker.From
+			if backViaHold || n.returnToConfiguredAt(ctx, id, time.Now()) {
+				if marker.From != execution.Model {
+					execution.Model = marker.From
+				}
+				n.releaseModelRecovery(id, marker.From)
 			}
-			n.releaseModelRecovery(id, marker.From)
 		}
 	}
 	if execution.Model != "" {

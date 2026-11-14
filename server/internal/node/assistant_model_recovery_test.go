@@ -350,3 +350,95 @@ func waitRecovery(t *testing.T, what string, ok func() bool) {
 	}
 }
 
+// When the 30-minute fallback hold expires on its own, the next message asks for the configured model again even if no
+// availability probe can run: the marker must not linger after the conversation has effectively returned (#7824).
+func TestRecoveryMarkerClearsWhenTheHoldExpiresWithoutAProbe(t *testing.T) {
+	const id = "11111111-2222-3333-4444-555555555555"
+	n, _ := recoveryTestNode(t, id, true, false)
+	// A marker on the fallback, and a hold whose window has already passed.
+	n.putModelRecovery(id, &proto.ModelRecovery{From: "primary-model", To: "fallback-model", Reason: proto.ModelRecoveryReasonQuota})
+	n.fallbacks = map[string]*assistantFallback{id: {launcher: "claude",
+		from:  modelExecution{Model: "primary-model"},
+		to:    modelExecution{Model: "fallback-model"},
+		at:    time.Now().Add(-assistantRefusalSticky - time.Minute), // older than both the hold and the sticky window
+		until: time.Now().Add(-time.Minute)}}
+	// No gateway can be probed in this node (assistantModelProbe is replaced by recoveryTestNode to return false).
+	asked := modelExecution{Model: "primary-model"}
+	got := n.heldFallback(id, "claude", asked)
+	if got.Model != "primary-model" {
+		t.Fatalf("the expired hold did not return the asked model: %q", got.Model)
+	}
+	backViaHold := asked.Model == "primary-model" && got.Model == "primary-model"
+	if !backViaHold {
+		t.Fatal("the natural-expiry condition should hold")
+	}
+	// Mirror assistantSend: the expired hold is enough to release, with no successful probe required.
+	if r := n.modelRecovery(id); r != nil {
+		n.releaseModelRecovery(id, r.From)
+	}
+	if n.modelRecovery(id) != nil {
+		t.Fatal("the marker outlived the expired hold")
+	}
+	if got := n.heldFallback(id, "claude", asked); got.Model != "primary-model" {
+		t.Fatalf("a later message is not on the configured model: %q", got.Model)
+	}
+}
+
+// While the 30-minute hold is still active and the configured model has not answered a probe, the conversation stays
+// on its fallback: the natural-expiry release must not fire early (#7824).
+func TestActiveHoldIsNotReleasedEarly(t *testing.T) {
+	const id = "11111111-2222-3333-4444-555555555555"
+	n, _ := recoveryTestNode(t, id, true, false)
+	n.putModelRecovery(id, &proto.ModelRecovery{From: "primary-model", To: "fallback-model", Reason: proto.ModelRecoveryReasonQuota})
+	n.fallbacks = map[string]*assistantFallback{id: {launcher: "claude",
+		from:  modelExecution{Model: "primary-model"},
+		to:    modelExecution{Model: "fallback-model"},
+		at:    time.Now(),
+		until: time.Now().Add(assistantFallbackHold)}}
+	asked := modelExecution{Model: "primary-model"}
+	got := n.heldFallback(id, "claude", asked)
+	if got.Model != "fallback-model" {
+		t.Fatalf("an active hold should keep the fallback: %q", got.Model)
+	}
+	backViaHold := asked.Model == "primary-model" && got.Model == "primary-model"
+	if backViaHold {
+		t.Fatal("natural-expiry must be false while the hold is active")
+	}
+	// The probe still fails in recoveryTestNode, so returnToConfiguredAt is false and nothing is released.
+	if n.returnToConfiguredAt(context.Background(), id, time.Now()) {
+		t.Fatal("returned early although the configured model has not answered a probe")
+	}
+	if n.modelRecovery(id) == nil {
+		t.Fatal("the marker was released while the hold is active")
+	}
+}
+
+// Answering on the configured model after a switch releases the marker from inside clearAssistantRecovery, which holds
+// n.mu. That path must not re-lock n.mu (a sync.Mutex is not reentrant): before the fix it deadlocked (#7824).
+func TestClearAssistantRecoveryReleasesWithoutDeadlock(t *testing.T) {
+	const id = "11111111-2222-3333-4444-555555555555"
+	n, _ := recoveryTestNode(t, id, true, false)
+	n.putModelRecovery(id, &proto.ModelRecovery{From: "primary-model", To: "fallback-model", Reason: proto.ModelRecoveryReasonQuota})
+	// A recovery that switched, now answered on the configured model again.
+	p := &assistantProc{id: id, agent: "claude", launcher: "claude", model: modelExecution{Model: "primary-model"}}
+	n.procs[id] = p
+	n.recoveries = map[string]*assistantTurnRecovery{id: {
+		retried: map[string]bool{}, used: map[string]bool{}, launcher: "claude",
+		from: modelExecution{Model: "primary-model"}, switched: true}}
+	done := make(chan struct{})
+	go func() {
+		n.clearAssistantRecovery(p, true)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("clearAssistantRecovery deadlocked releasing the marker under n.mu")
+	}
+	if n.modelRecovery(id) != nil {
+		t.Fatal("answering on the configured model did not release the marker")
+	}
+	if st, _ := n.state.get(id); st.ModelRecovery != nil {
+		t.Fatal("the released marker is still persisted")
+	}
+}

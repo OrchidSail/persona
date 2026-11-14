@@ -223,18 +223,24 @@ func (n *Node) clearAssistantRecovery(p *assistantProc, answered bool) {
 		}
 		return
 	}
-	defer n.mu.Unlock()
+	needPersist := false
 	if n.procs[p.id] == p { // a replaced process's late result cannot clear its replacement's recovery
 		r := n.recoveries[p.id]
 		if answered && r != nil && r.switched && r.launcher == launcher {
 			n.holdFallback(p.id, launcher, r.from, model)
 			// Answering on the configured model again ends the recovery marker; answering on the fallback keeps it so
-			// the apps keep naming the model that actually answers and why it switched (#7824).
+			// the apps keep naming the model that actually answers and why it switched (#7824). n.mu is already held,
+			// so do only the locked half; persist and notify after the unlock below (a reentrant lock would deadlock).
 			if r.from.Model != "" && r.from.Model == model.Model {
-				defer n.releaseModelRecovery(p.id, r.from.Model)
+				needPersist = n.releaseModelRecoveryLocked(p.id, r.from.Model)
 			}
 		}
 		delete(n.recoveries, p.id)
+	}
+	n.mu.Unlock()
+	if needPersist {
+		n.persistModelRecovery(p.id)
+		n.notifySessions()
 	}
 }
 
