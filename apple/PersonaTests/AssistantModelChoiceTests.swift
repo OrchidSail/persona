@@ -287,6 +287,11 @@ struct AssistantModelChoiceTests {
         #expect(AppModel.followingMainRoute(current: old, previous: old, updated: updated) == updated)
         #expect(AppModel.followingMainRoute(current: side, previous: old, updated: updated) == side)
         #expect(AppModel.followingMainRoute(current: nil, previous: nil, updated: updated) == nil)
+
+        // A fresh install may have the persisted current key but no cached previous AssistantState.
+        #expect(AppModel.followingMainRoute(current: old, previous: nil, updated: updated, mainID: "main") == updated)
+        #expect(AppModel.followingMainRoute(current: side, previous: nil, updated: updated, mainID: "main") == side)
+        #expect(AppModel.followingMainRoute(current: old, previous: nil, updated: updated, mainID: "other") == old)
     }
 
     @Test func conversationModelBodyEncodesMachineIdSnakeCase() throws {
