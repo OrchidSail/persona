@@ -85,6 +85,22 @@ one, is more specific).
   are left. iOS and Android follow separately.
 - Not persisted: it is read from the transcript on each scan, and after a node restart by the first full scan.
 
+## A goal set at the start
+
+A new Claude Code session can begin with a goal of its own: `session.start` carries `goal`, a one-line condition the
+node types as `/goal <condition>` after the process is ready and **before** its first message (protocol
+[protocol.md](../protocol/protocol.md), "A goal set at the start"). It goes on its own because a local command and a
+prompt in one message would make Claude Code take the prompt for the condition. The node confirms `Goal set:` on the
+screen with a bounded wait; a refusal (an untrusted workspace, restricted hooks, a policy not read yet, an empty or
+too-long condition, a CLI without `/goal`) or no answer never stops the start — the first message still goes in and
+the node logs why — and a command that may still sit in the input box holds the first message back for the user, the
+same safeguard an ultracode start switch uses.
+
+The assistant only attaches such a goal to a task whose `done_when` gives it something checkable, rendered as one
+sentence (`prompts/assistant/task_goal.md`); tasks without criteria start without one, and only brand-new Claude Code
+sessions take one. Its transcript lines, `goal_status` attachment, `Session.goal` and the goal bar are the ordinary
+goal's below; nothing else about goals changes.
+
 ## Screenshots
 
 Mock hub with `MOCK_GOAL=1`: on the MacBook, "Add a home screen widget to the weather app" has an active goal (with the reason from the latest check), and the goal of "Review the changes in PR #42" is achieved;

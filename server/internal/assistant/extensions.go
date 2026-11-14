@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/nwverse/persona/server/internal/assistantwire"
+	"github.com/nwverse/persona/server/internal/extension"
 	"github.com/nwverse/persona/server/internal/proto"
 )
 
@@ -102,12 +103,23 @@ func (s *Service) ownerHeard(session string) {
 	}
 }
 
+// startDefaultsReader is the extensions' start_defaults contributions that hold now (extmgr); nil: none.
+type startDefaultsReader interface {
+	StartDefaultItems() []extension.StartDefaultsItem
+}
+
 // SetExtensions gives the service the extensions' tools (before Run).
 func (s *Service) SetExtensions(e ExtensionTools) {
 	s.ext = e
 	s.heard, _ = e.(ownerHeard)
 	if r, ok := e.(launcherSecrets); ok {
 		s.refs = r
+	}
+	if r, ok := e.(startDefaultsReader); ok {
+		s.startDefaultsFor = func(ctx context.Context, facts StartFacts) (StartDefaults, bool, error) {
+			d, ok := s.matchStartDefaults(r.StartDefaultItems(), facts)
+			return d, ok, nil
+		}
 	}
 	s.trans, _ = e.(transcribers)
 	s.transcriptionReadinessReset()

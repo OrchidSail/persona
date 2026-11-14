@@ -34,6 +34,9 @@ type modelExecution struct {
 	// SecretTicket: the hand-off a new Claude Code start puts in its environment (secretenv.go). Per start, never
 	// part of a fingerprint, never kept for a resume.
 	SecretTicket string `json:"-"`
+	// Goal: a Claude Code /goal condition typed before the first message of a new start (startgoal.go). Per start,
+	// never part of a fingerprint, never kept for a resume.
+	Goal string `json:"-"`
 }
 
 // check refuses a model that is not a model id (proto.ValidModelID, #1644) before anything runs; the error's text is

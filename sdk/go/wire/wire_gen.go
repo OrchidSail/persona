@@ -291,6 +291,9 @@ type Contributes struct {
 	AuthRelay       []AuthRelayItem      `json:"auth_relay,omitempty"`
 	SecretProviders []SecretProviderItem `json:"secret_providers,omitempty"`
 	Messaging       []MessagingItem      `json:"messaging,omitempty"`
+	// Start defaults for task Agents (docs "Start defaults for task Agents"): the presets, effort, ultracode, goal or
+	// self-planning rule a matching task starts with.
+	StartDefaults []StartDefaultsItem `json:"start_defaults,omitempty"`
 	// Extra keys stay at this object's level on the wire; they cannot replace declared fields.
 	AdditionalProperties map[string]json.RawMessage `json:"-"`
 }
@@ -301,7 +304,7 @@ func (v *Contributes) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	declared := map[string]json.RawMessage{}
-	for _, key := range []string{"connectors", "voice", "transcription", "computer", "browser", "iphone", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "messaging"} {
+	for _, key := range []string{"connectors", "voice", "transcription", "computer", "browser", "iphone", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "messaging", "start_defaults"} {
 		if value, ok := extra[key]; ok {
 			declared[key] = value
 			delete(extra, key)
@@ -333,7 +336,7 @@ func (v Contributes) MarshalJSON() ([]byte, error) {
 	}
 	for key, value := range v.AdditionalProperties {
 		switch key {
-		case "connectors", "voice", "transcription", "computer", "browser", "iphone", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "messaging":
+		case "connectors", "voice", "transcription", "computer", "browser", "iphone", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "messaging", "start_defaults":
 			continue
 		}
 		fields[key] = value
@@ -785,6 +788,40 @@ const (
 
 // ShortcutParamKinds are the values of ShortcutParamKind, in order.
 var ShortcutParamKinds = []string{"text", "number", "toggle", "choice"}
+
+// StartDefaultsItem: A contribution of start defaults for task Agents: rules matched by the kind of task; the first
+// match wins.
+type StartDefaultsItem struct {
+	ID string `json:"id"`
+	// A boolean field of the configuration: the contribution holds only while it is true, and that field is its only
+	// switch. Without it the contribution holds while the extension is on.
+	When  string             `json:"when,omitempty"`
+	Rules []StartDefaultRule `json:"rules"`
+}
+
+type StartDefaultRule struct {
+	When StartDefaultMatch `json:"when"`
+	Then StartDefaultThen  `json:"then"`
+}
+
+type StartDefaultMatch struct {
+	Supervisor []string `json:"supervisor,omitempty"`
+	Role       string   `json:"role,omitempty"`
+	Readonly   bool     `json:"readonly,omitempty"`
+}
+
+type StartDefaultThen struct {
+	Presets   []StartDefaultPreset `json:"presets,omitempty"`
+	Effort    string               `json:"effort,omitempty"`
+	Ultracode bool                 `json:"ultracode,omitempty"`
+	Goal      string               `json:"goal,omitempty"`
+	PlanFirst bool                 `json:"plan_first,omitempty"`
+}
+
+type StartDefaultPreset struct {
+	Name   string `json:"name"`
+	Weight int    `json:"weight,omitempty"`
+}
 
 // Frame: one line: a request {id, method, params}, an answer {id, result} or {id, error}, or an event {event,
 // params}.
@@ -6029,6 +6066,11 @@ var newDef = map[string]func() any{
 	"EventsItem":                    func() any { return new(EventsItem) },
 	"ShortcutItem":                  func() any { return new(ShortcutItem) },
 	"ShortcutParam":                 func() any { return new(ShortcutParam) },
+	"StartDefaultsItem":             func() any { return new(StartDefaultsItem) },
+	"StartDefaultRule":              func() any { return new(StartDefaultRule) },
+	"StartDefaultMatch":             func() any { return new(StartDefaultMatch) },
+	"StartDefaultThen":              func() any { return new(StartDefaultThen) },
+	"StartDefaultPreset":            func() any { return new(StartDefaultPreset) },
 	"Frame":                         func() any { return new(Frame) },
 	"RPCError":                      func() any { return new(RPCError) },
 	"AuthStatus":                    func() any { return new(AuthStatus) },

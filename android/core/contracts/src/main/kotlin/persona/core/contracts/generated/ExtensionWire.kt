@@ -415,6 +415,11 @@ data class ExtensionContributes(
     @SerialName("auth_relay") val authRelay: List<ExtensionAuthRelayItem>? = null,
     @SerialName("secret_providers") val secretProviders: List<ExtensionSecretProviderItem>? = null,
     val messaging: List<ExtensionMessagingItem>? = null,
+    /**
+     * Start defaults for task Agents (docs "Start defaults for task Agents"): the presets, effort, ultracode, goal or
+     * self-planning rule a matching task starts with.
+     */
+    @SerialName("start_defaults") val startDefaults: List<ExtensionStartDefaultsItem>? = null,
     /** Extra keys stay at this object's level on the wire; declared fields always win. */
     val additionalProperties: Map<String, JsonElement> = emptyMap(),
 )
@@ -448,11 +453,16 @@ private data class ExtensionContributesKnown(
     @SerialName("auth_relay") val authRelay: List<ExtensionAuthRelayItem>? = null,
     @SerialName("secret_providers") val secretProviders: List<ExtensionSecretProviderItem>? = null,
     val messaging: List<ExtensionMessagingItem>? = null,
+    /**
+     * Start defaults for task Agents (docs "Start defaults for task Agents"): the presets, effort, ultracode, goal or
+     * self-planning rule a matching task starts with.
+     */
+    @SerialName("start_defaults") val startDefaults: List<ExtensionStartDefaultsItem>? = null,
 )
 
 object ExtensionContributesSerializer : KSerializer<ExtensionContributes> {
     private val known = ExtensionContributesKnown.serializer()
-    private val keys = setOf<String>("connectors", "voice", "transcription", "computer", "browser", "iphone", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "messaging")
+    private val keys = setOf<String>("connectors", "voice", "transcription", "computer", "browser", "iphone", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "messaging", "start_defaults")
     override val descriptor: SerialDescriptor = known.descriptor
 
     override fun deserialize(decoder: Decoder): ExtensionContributes {
@@ -488,6 +498,7 @@ object ExtensionContributesSerializer : KSerializer<ExtensionContributes> {
             authRelay = fields.authRelay,
             secretProviders = fields.secretProviders,
             messaging = fields.messaging,
+            startDefaults = fields.startDefaults,
             additionalProperties = obj.filterKeys { it !in keys },
         )
     }
@@ -522,6 +533,7 @@ object ExtensionContributesSerializer : KSerializer<ExtensionContributes> {
             authRelay = value.authRelay,
             secretProviders = value.secretProviders,
             messaging = value.messaging,
+            startDefaults = value.startDefaults,
         )
         val obj = output.json.encodeToJsonElement(known, fields) as JsonObject
         output.encodeJsonElement(JsonObject(value.additionalProperties.filterKeys { it !in keys } + obj))
@@ -1116,6 +1128,48 @@ object ExtensionShortcutParamKind {
     const val CHOICE = "choice"
     val ALL = listOf("text", "number", "toggle", "choice")
 }
+
+/**
+ * A contribution of start defaults for task Agents: rules matched by the kind of task; the first match wins.
+ */
+@Serializable
+data class ExtensionStartDefaultsItem(
+    val id: String = "",
+    /**
+     * A boolean field of the configuration: the contribution holds only while it is true, and that field is its only
+     * switch. Without it the contribution holds while the extension is on.
+     */
+    val `when`: String? = null,
+    val rules: List<ExtensionStartDefaultRule> = emptyList(),
+)
+
+@Serializable
+data class ExtensionStartDefaultRule(
+    val `when`: ExtensionStartDefaultMatch = ExtensionStartDefaultMatch(),
+    val then: ExtensionStartDefaultThen = ExtensionStartDefaultThen(),
+)
+
+@Serializable
+data class ExtensionStartDefaultMatch(
+    val supervisor: List<String>? = null,
+    val role: String? = null,
+    val readonly: Boolean? = null,
+)
+
+@Serializable
+data class ExtensionStartDefaultThen(
+    val presets: List<ExtensionStartDefaultPreset>? = null,
+    val effort: String? = null,
+    val ultracode: Boolean? = null,
+    val goal: String? = null,
+    @SerialName("plan_first") val planFirst: Boolean? = null,
+)
+
+@Serializable
+data class ExtensionStartDefaultPreset(
+    val name: String = "",
+    val weight: Int? = null,
+)
 
 /**
  * One line: a request {id, method, params}, an answer {id, result} or {id, error}, or an event {event, params}.

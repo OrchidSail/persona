@@ -20,13 +20,16 @@ import (
 // (docs/server/launcher-health.md, "A launcher the computer doesn't have").
 
 // startPick is what a start's caller named itself, before a tier and Model configuration › Agents fill in the rest.
-type startPick struct{ launcher, effort string }
+type startPick struct{ launcher, effort, model, tier string }
 
 // pickOf is the caller's own pick in a start's params.
 func pickOf(params map[string]any) startPick {
 	l, _ := params["launcher"].(string)
 	e, _ := params["effort"].(string)
-	return startPick{launcher: strings.TrimSpace(l), effort: strings.TrimSpace(e)}
+	m, _ := params["model"].(string)
+	t, _ := params["tier"].(string)
+	return startPick{launcher: strings.TrimSpace(l), effort: strings.TrimSpace(e),
+		model: strings.TrimSpace(m), tier: strings.TrimSpace(t)}
 }
 
 // resolveStart fills params (a session.start's, with the caller's own launcher, model, effort and tier, if any) with

@@ -263,16 +263,35 @@ func (n *Node) start(ctx context.Context, cwd, launcher, prompt, resume, workspa
 	n.starts.recovered(id)
 	_ = launch.NameAgent(ctx, created.Pane, "j-"+id[:6])
 	n.holdResume(ctx, launch, pane, id, spec) // herdr's restore resumes it through the launcher (herdrresume.go)
+	// The goal, after ultracode and before the first prompt (startgoal.go): only a new Claude's.
+	goal := ""
+	if kind == "claude" && resume == "" {
+		goal = execution.Goal
+	}
 	// Before the first prompt; never a failed start: Claude is up, and ultracode_note says why it is not on.
-	if n.startUltracode(ctx, id, pane, execution.Ultracode) && prompt != "" {
+	if n.startUltracode(ctx, id, pane, execution.Ultracode) && (prompt != "" || goal != "") {
 		// The command may still sit in the input box: the first prompt would be typed after it and sent with it. Left
 		// to the user as one held back by a dialog is (firstPrompt).
 		if err := n.ultracodeBoxClear(ctx, pane); err != nil {
-			why := lostUltracode
+			if prompt != "" {
+				why := lostUltracode
+				if rpcCode(err) == screen.DialogOpen {
+					why = lostDialog
+				}
+				n.logf("start %s: first message held back after ultracode: %v", id, err)
+				n.lostFirst.set(id, why, time.Now())
+			}
+			prompt, goal = "", "" // nothing more is typed after a command that may still be there
+		}
+	}
+	if goal != "" && n.startGoal(ctx, id, pane, goal) && prompt != "" {
+		// The same for /goal: in the box with the first prompt, it would take the prompt for its condition.
+		if err := n.ultracodeBoxClear(ctx, pane); err != nil {
+			why := lostGoal
 			if rpcCode(err) == screen.DialogOpen {
 				why = lostDialog
 			}
-			n.logf("start %s: first message held back after ultracode: %v", id, err)
+			n.logf("start %s: first message held back after /goal: %v", id, err)
 			n.lostFirst.set(id, why, time.Now())
 			prompt = ""
 		}

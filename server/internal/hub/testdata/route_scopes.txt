@@ -150,6 +150,7 @@ assistant.ask        GET /api/v1/assistant/reporters
 -                    GET /api/v1/assistant/standing-authorizations
 -                    GET /api/v1/assistant/tasks
 -                    GET /api/v1/assistant/tasks/cron
+agents.read          GET /api/v1/assistant/worker-presets
 -                    GET /api/v1/auth/password/state
 -                    GET /api/v1/auth/tokens
 -                    GET /api/v1/bots/feishu

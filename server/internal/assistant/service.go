@@ -70,6 +70,8 @@ type Service struct {
 	leaderStarts atomic.Int64
 	// ext is the extensions' tools in this process (extensions.go SetExtensions); nil: none (tests).
 	ext ExtensionTools
+	// startDefaultsFor answers a task start's defaults from the extension layer (start_defaults.go); nil: no defaults.
+	startDefaultsFor func(ctx context.Context, facts StartFacts) (StartDefaults, bool, error)
 	// refs is the provider extensions' values for launcher keys that are references (launcher_secrets.go); nil: none.
 	refs launcherSecrets
 	// trans reaches the transcription contributions (meeting_transcribe_ext.go): the extensions' when they offer it
@@ -274,6 +276,7 @@ func New(o Options) *Service {
 	s.northStarRoutes()
 	s.reporterRoutes()
 	s.directionRoutes()
+	s.startPresetRoutes()
 	s.directionTreeRoutes()
 	s.routeRoutes()
 	s.agentRouteRoutes()

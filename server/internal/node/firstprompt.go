@@ -137,6 +137,9 @@ const (
 	// lostUltracode: the start's ultracode command may still sit in the input box (ultracode.go), or the box could
 	// not be read after it.
 	lostUltracode = "ultracode 的开关命令可能还停在电脑上的输入框里，首条消息没有送进去，Agent 还没开始：看看电脑上的终端，再在这里把任务重发一遍。"
+	// lostGoal: the start's /goal command may still sit in the input box (startgoal.go), or the box could not be read
+	// after it.
+	lostGoal = "/goal 命令可能还停在电脑上的输入框里，首条消息没有送进去，Agent 还没开始：看看电脑上的终端，再在这里把任务重发一遍。"
 )
 
 // firstPromptTaken waits for the transcript to show a message from since on, for firstPromptWait after it was typed.

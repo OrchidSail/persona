@@ -810,10 +810,13 @@ nonisolated struct ExtensionContributes: Codable, Hashable, Sendable {
     var authRelay: [ExtensionAuthRelayItem]?
     var secretProviders: [ExtensionSecretProviderItem]?
     var messaging: [ExtensionMessagingItem]?
+    /// Start defaults for task Agents (docs "Start defaults for task Agents"): the presets, effort, ultracode, goal
+    /// or self-planning rule a matching task starts with.
+    var startDefaults: [ExtensionStartDefaultsItem]?
     /// Extra keys stay at this object's level on the wire; declared fields always win.
     var additionalProperties: [String: JSONValue]
 
-    init(connectors: [ExtensionConnectorItem]? = nil, voice: [ExtensionNamedItem]? = nil, transcription: [ExtensionNamedItem]? = nil, computer: [ExtensionNamedItem]? = nil, browser: [ExtensionNamedItem]? = nil, iphone: [ExtensionNamedItem]? = nil, quota: [ExtensionQuotaItem]? = nil, providers: [ExtensionProviderItem]? = nil, api: [ExtensionAPIItem]? = nil, assistant: [ExtensionAssistantItem]? = nil, mcpServers: [ExtensionMCPServerItem]? = nil, ui: [ExtensionUIItem]? = nil, agentSources: [ExtensionAgentSourceItem]? = nil, channel: [ExtensionChannelItem]? = nil, events: [ExtensionEventsItem]? = nil, shortcuts: [ExtensionShortcutItem]? = nil, skills: [ExtensionSkillItem]? = nil, prompts: [ExtensionPromptItem]? = nil, themes: [ExtensionThemeItem]? = nil, looks: [ExtensionLookItem]? = nil, triageTemplates: [ExtensionTriageTemplateItem]? = nil, agentFilters: [ExtensionAgentFilterItem]? = nil, tunnels: [ExtensionTunnelItem]? = nil, errorReports: [ExtensionErrorReportsItem]? = nil, authRelay: [ExtensionAuthRelayItem]? = nil, secretProviders: [ExtensionSecretProviderItem]? = nil, messaging: [ExtensionMessagingItem]? = nil, additionalProperties: [String: JSONValue] = [:]) {
+    init(connectors: [ExtensionConnectorItem]? = nil, voice: [ExtensionNamedItem]? = nil, transcription: [ExtensionNamedItem]? = nil, computer: [ExtensionNamedItem]? = nil, browser: [ExtensionNamedItem]? = nil, iphone: [ExtensionNamedItem]? = nil, quota: [ExtensionQuotaItem]? = nil, providers: [ExtensionProviderItem]? = nil, api: [ExtensionAPIItem]? = nil, assistant: [ExtensionAssistantItem]? = nil, mcpServers: [ExtensionMCPServerItem]? = nil, ui: [ExtensionUIItem]? = nil, agentSources: [ExtensionAgentSourceItem]? = nil, channel: [ExtensionChannelItem]? = nil, events: [ExtensionEventsItem]? = nil, shortcuts: [ExtensionShortcutItem]? = nil, skills: [ExtensionSkillItem]? = nil, prompts: [ExtensionPromptItem]? = nil, themes: [ExtensionThemeItem]? = nil, looks: [ExtensionLookItem]? = nil, triageTemplates: [ExtensionTriageTemplateItem]? = nil, agentFilters: [ExtensionAgentFilterItem]? = nil, tunnels: [ExtensionTunnelItem]? = nil, errorReports: [ExtensionErrorReportsItem]? = nil, authRelay: [ExtensionAuthRelayItem]? = nil, secretProviders: [ExtensionSecretProviderItem]? = nil, messaging: [ExtensionMessagingItem]? = nil, startDefaults: [ExtensionStartDefaultsItem]? = nil, additionalProperties: [String: JSONValue] = [:]) {
         self.connectors = connectors
         self.voice = voice
         self.transcription = transcription
@@ -841,6 +844,7 @@ nonisolated struct ExtensionContributes: Codable, Hashable, Sendable {
         self.authRelay = authRelay
         self.secretProviders = secretProviders
         self.messaging = messaging
+        self.startDefaults = startDefaults
         self.additionalProperties = additionalProperties
     }
 
@@ -872,6 +876,7 @@ nonisolated struct ExtensionContributes: Codable, Hashable, Sendable {
         case authRelay = "auth_relay"
         case secretProviders = "secret_providers"
         case messaging
+        case startDefaults = "start_defaults"
     }
 
     init(from decoder: Decoder) throws {
@@ -903,12 +908,13 @@ nonisolated struct ExtensionContributes: Codable, Hashable, Sendable {
         self.authRelay = ExtensionWireJSON.decode([ExtensionAuthRelayItem].self, from: raw["auth_relay"])
         self.secretProviders = ExtensionWireJSON.decode([ExtensionSecretProviderItem].self, from: raw["secret_providers"])
         self.messaging = ExtensionWireJSON.decode([ExtensionMessagingItem].self, from: raw["messaging"])
-        let known: Set<String> = ["connectors", "voice", "transcription", "computer", "browser", "iphone", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "messaging"]
+        self.startDefaults = ExtensionWireJSON.decode([ExtensionStartDefaultsItem].self, from: raw["start_defaults"])
+        let known: Set<String> = ["connectors", "voice", "transcription", "computer", "browser", "iphone", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "messaging", "start_defaults"]
         additionalProperties = raw.filter { !known.contains($0.key) }
     }
 
     func encode(to encoder: Encoder) throws {
-        let known: Set<String> = ["connectors", "voice", "transcription", "computer", "browser", "iphone", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "messaging"]
+        let known: Set<String> = ["connectors", "voice", "transcription", "computer", "browser", "iphone", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "messaging", "start_defaults"]
         var fields = additionalProperties.filter { !known.contains($0.key) }
         if let value = connectors { fields["connectors"] = try ExtensionWireJSON.encode(value) }
         if let value = voice { fields["voice"] = try ExtensionWireJSON.encode(value) }
@@ -937,6 +943,7 @@ nonisolated struct ExtensionContributes: Codable, Hashable, Sendable {
         if let value = authRelay { fields["auth_relay"] = try ExtensionWireJSON.encode(value) }
         if let value = secretProviders { fields["secret_providers"] = try ExtensionWireJSON.encode(value) }
         if let value = messaging { fields["messaging"] = try ExtensionWireJSON.encode(value) }
+        if let value = startDefaults { fields["start_defaults"] = try ExtensionWireJSON.encode(value) }
         var container = encoder.singleValueContainer()
         try container.encode(fields)
     }
@@ -2178,6 +2185,134 @@ nonisolated enum ExtensionShortcutParamKind {
     static let toggle = "toggle"
     static let choice = "choice"
     static let all = ["text", "number", "toggle", "choice"]
+}
+
+/// A contribution of start defaults for task Agents: rules matched by the kind of task; the first match wins.
+nonisolated struct ExtensionStartDefaultsItem: Codable, Hashable, Sendable {
+    var id: String
+    /// A boolean field of the configuration: the contribution holds only while it is true, and that field is its only
+    /// switch. Without it the contribution holds while the extension is on.
+    var when: String?
+    var rules: [ExtensionStartDefaultRule]
+
+    init(id: String = "", when: String? = nil, rules: [ExtensionStartDefaultRule] = []) {
+        self.id = id
+        self.when = when
+        self.rules = rules
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case when
+        case rules
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? ""
+        self.when = try? c.decodeIfPresent(String.self, forKey: .when)
+        self.rules = (try? c.decodeIfPresent([ExtensionStartDefaultRule].self, forKey: .rules)) ?? []
+    }
+}
+
+nonisolated struct ExtensionStartDefaultRule: Codable, Hashable, Sendable {
+    var when: ExtensionStartDefaultMatch
+    var then: ExtensionStartDefaultThen
+
+    init(when: ExtensionStartDefaultMatch = ExtensionStartDefaultMatch(), then: ExtensionStartDefaultThen = ExtensionStartDefaultThen()) {
+        self.when = when
+        self.then = then
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case when
+        case then
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.when = (try? c.decodeIfPresent(ExtensionStartDefaultMatch.self, forKey: .when)) ?? ExtensionStartDefaultMatch()
+        self.then = (try? c.decodeIfPresent(ExtensionStartDefaultThen.self, forKey: .then)) ?? ExtensionStartDefaultThen()
+    }
+}
+
+nonisolated struct ExtensionStartDefaultMatch: Codable, Hashable, Sendable {
+    var supervisor: [String]?
+    var role: String?
+    var readonly: Bool?
+
+    init(supervisor: [String]? = nil, role: String? = nil, readonly: Bool? = nil) {
+        self.supervisor = supervisor
+        self.role = role
+        self.readonly = readonly
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case supervisor
+        case role
+        case readonly
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.supervisor = try? c.decodeIfPresent([String].self, forKey: .supervisor)
+        self.role = try? c.decodeIfPresent(String.self, forKey: .role)
+        self.readonly = try? c.decodeIfPresent(Bool.self, forKey: .readonly)
+    }
+}
+
+nonisolated struct ExtensionStartDefaultThen: Codable, Hashable, Sendable {
+    var presets: [ExtensionStartDefaultPreset]?
+    var effort: String?
+    var ultracode: Bool?
+    var goal: String?
+    var planFirst: Bool?
+
+    init(presets: [ExtensionStartDefaultPreset]? = nil, effort: String? = nil, ultracode: Bool? = nil, goal: String? = nil, planFirst: Bool? = nil) {
+        self.presets = presets
+        self.effort = effort
+        self.ultracode = ultracode
+        self.goal = goal
+        self.planFirst = planFirst
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case presets
+        case effort
+        case ultracode
+        case goal
+        case planFirst = "plan_first"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.presets = try? c.decodeIfPresent([ExtensionStartDefaultPreset].self, forKey: .presets)
+        self.effort = try? c.decodeIfPresent(String.self, forKey: .effort)
+        self.ultracode = try? c.decodeIfPresent(Bool.self, forKey: .ultracode)
+        self.goal = try? c.decodeIfPresent(String.self, forKey: .goal)
+        self.planFirst = try? c.decodeIfPresent(Bool.self, forKey: .planFirst)
+    }
+}
+
+nonisolated struct ExtensionStartDefaultPreset: Codable, Hashable, Sendable {
+    var name: String
+    var weight: Int?
+
+    init(name: String = "", weight: Int? = nil) {
+        self.name = name
+        self.weight = weight
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case weight
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? ""
+        self.weight = try? c.decodeIfPresent(Int.self, forKey: .weight)
+    }
 }
 
 /// One line: a request {id, method, params}, an answer {id, result} or {id, error}, or an event {event, params}.

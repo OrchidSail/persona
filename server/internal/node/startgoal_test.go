@@ -1,0 +1,198 @@
+package node
+
+import (
+	"errors"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/nwverse/persona/server/internal/proto"
+	"github.com/nwverse/persona/server/internal/rpc"
+)
+
+// withGoalVerdictWait shortens how long a start waits for /goal's answer on the screen.
+func withGoalVerdictWait(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := goalVerdictWait
+	goalVerdictWait = d
+	t.Cleanup(func() { goalVerdictWait = old })
+}
+
+// goalAnswers makes the pane show Claude Code's answer to a /goal typed at it (verdict, e.g. "Goal set: …"), and
+// writes every other prompt to the transcript as delivered.
+func goalAnswers(t *testing.T, f *fakeHerdr, home, cwd, plain, ansi, verdict string) {
+	t.Helper()
+	f.after(func(c herdrCall) {
+		if c.Method != "agent.prompt" {
+			return
+		}
+		text := str(c.Params["text"])
+		switch {
+		case strings.HasPrefix(text, "/goal "):
+			if verdict != "" {
+				f.setScreens("w1:p2", plain+"\n❯ "+text+"\n  ⎿  "+verdict+"\n", ansi)
+			}
+		case text == ultracodeCommand(true):
+			f.setScreens("w1:p2", plain+"\n❯ "+text+"\n  ⎿ Ultracode on (this session only): dynamic workflows on every task. Effort stays max.\n", ansi)
+		default:
+			writeUserLine(t, home, cwd, startedID(f), text)
+		}
+	})
+}
+
+// A start with a goal types /goal on its own, waits for Claude Code to say it is set, and only then types the first
+// message: in one message, /goal would take the prompt for its condition and the agent would not start on it.
+func TestStartGoalBeforeFirstPrompt(t *testing.T) {
+	n, f, home := herdrNode(t)
+	cwd := mkdir(t, filepath.Join(home, "project"))
+	plain, ansi := screenFixture(t, "claude-2.1.312-empty-162.txt"), screenFixture(t, "claude-2.1.312-empty-162.ansi")
+	startPane(t, f, plain, ansi)
+	goal := "go test ./... passes; the fix is merged"
+	goalAnswers(t, f, home, cwd, plain, ansi, "Goal set: "+goal)
+
+	if _, err := request(t, n, "session.start", map[string]any{"cwd": cwd, "workspace_id": "w1", "prompt": "fix the build", "goal": goal}); err != nil {
+		t.Fatal(err)
+	}
+	n.firstWait.Wait()
+	got := f.trace("agent.prompt")
+	if len(got) != 2 || !strings.Contains(got[0], `"/goal `+goal+`"`) || !strings.Contains(got[1], "fix the build") {
+		t.Fatalf("wrong start order: %v", got)
+	}
+	if _, lost := n.lostFirst.get(startedID(f)); lost {
+		t.Error("the first message was marked as lost")
+	}
+}
+
+// With ultracode too, ultracode goes first, then the goal, then the first message: one command at a time.
+func TestStartGoalAfterUltracode(t *testing.T) {
+	n, f, home := herdrNode(t)
+	cwd := mkdir(t, filepath.Join(home, "project"))
+	plain, ansi := screenFixture(t, "claude-2.1.312-empty-162.txt"), screenFixture(t, "claude-2.1.312-empty-162.ansi")
+	startPane(t, f, plain, ansi)
+	goal := "the report is in docs/report.md"
+	goalAnswers(t, f, home, cwd, plain, ansi, "Goal set: "+goal)
+
+	if _, err := request(t, n, "session.start", map[string]any{"cwd": cwd, "workspace_id": "w1", "prompt": "write the report",
+		"goal": goal, "ultracode": true, "effort": "max"}); err != nil {
+		t.Fatal(err)
+	}
+	n.firstWait.Wait()
+	got := f.trace("agent.prompt")
+	if len(got) != 3 || !strings.Contains(got[0], "/effort ultracode on") || !strings.Contains(got[1], "/goal "+goal) ||
+		!strings.Contains(got[2], "write the report") {
+		t.Fatalf("wrong start order: %v", got)
+	}
+}
+
+// A goal Claude Code refuses (here: hooks are off) is the start's loss, not its failure: Claude is up, the refusal
+// shows on the screen, and the first message still goes in.
+func TestStartGoalRefusedByClaudeStillSendsTheFirstMessage(t *testing.T) {
+	withGoalVerdictWait(t, 2*time.Second)
+	n, f, home := herdrNode(t)
+	cwd := mkdir(t, filepath.Join(home, "project"))
+	plain, ansi := screenFixture(t, "claude-2.1.312-empty-162.txt"), screenFixture(t, "claude-2.1.312-empty-162.ansi")
+	startPane(t, f, plain, ansi)
+	goalAnswers(t, f, home, cwd, plain, ansi,
+		"/goal can't run while hooks are restricted (disableAllHooks or allowManagedHooksOnly is set in settings or by policy).")
+
+	if _, err := request(t, n, "session.start", map[string]any{"cwd": cwd, "workspace_id": "w1", "prompt": "fix the build", "goal": "CI is green"}); err != nil {
+		t.Fatal(err)
+	}
+	n.firstWait.Wait()
+	if got := f.trace("agent.prompt"); len(got) != 2 || !strings.Contains(got[1], "fix the build") {
+		t.Fatalf("typed %v", got)
+	}
+	if _, lost := n.lostFirst.get(startedID(f)); lost {
+		t.Error("the first message was marked as lost")
+	}
+}
+
+// No answer on the screen and the command still in the box: the first message is held back for the user, as after an
+// ultracode command that may still sit there, instead of being typed after the /goal and swallowed by it.
+func TestStartGoalLeftInTheBoxHoldsTheFirstMessage(t *testing.T) {
+	withGoalVerdictWait(t, 300*time.Millisecond)
+	withSubmitGrace(t, 50*time.Millisecond)
+	n, f, home := herdrNode(t)
+	cwd := mkdir(t, filepath.Join(home, "project"))
+	startPane(t, f, screenFixture(t, "claude-2.1.312-empty-162.txt"), screenFixture(t, "claude-2.1.312-empty-162.ansi"))
+	typedTxt, typedANSI := screenFixture(t, "claude-2.1.312-typed-162.txt"), screenFixture(t, "claude-2.1.312-typed-162.ansi")
+	f.after(func(c herdrCall) {
+		if c.Method == "agent.prompt" && strings.HasPrefix(str(c.Params["text"]), "/goal ") {
+			f.setScreens("w1:p2", typedTxt, typedANSI) // still in the box, not submitted
+		}
+	})
+
+	if _, err := request(t, n, "session.start", map[string]any{"cwd": cwd, "workspace_id": "w1", "prompt": "fix the build", "goal": "CI is green"}); err != nil {
+		t.Fatal(err)
+	}
+	n.firstWait.Wait()
+	if got := f.trace("agent.prompt"); len(got) != 1 {
+		t.Fatalf("the first message was typed after a /goal that may sit in the box: %v", got)
+	}
+	if lost, ok := n.lostFirst.get(startedID(f)); !ok || lost.why != lostGoal {
+		t.Fatalf("lost = %+v, %v", lost, ok)
+	}
+}
+
+// What Claude Code answers to /goal, read off the screen: only what is new since the command was typed counts.
+func TestGoalOutcome(t *testing.T) {
+	before := "╭────╮\n│ > │\n╰────╯\n"
+	for _, tc := range []struct {
+		name, shown string
+		set         bool
+		note        string
+	}{
+		{"set", before + "❯ /goal tests pass\n  ⎿  Goal set: tests pass\n", true, ""},
+		{"wrapped", before + "❯ /goal the whole\n  suite passes\n  ⎿  Goal\n  set: the whole suite passes\n", true, ""},
+		{"untrusted", before + "  ⎿  /goal is only available in trusted workspaces. Restart, accept the trust dialog, and try again.\n", false, "trusted"},
+		{"hooks", before + "  ⎿  /goal can't run while hooks are restricted (disableAllHooks or allowManagedHooksOnly is set in settings or by policy).\n", false, "hooks"},
+		{"policy", before + "  ⎿  /goal can't run yet: your organization's settings haven't been read, so it isn't known whether it allows hooks.\n", false, "organization"},
+		{"long", before + "  ⎿  Goal condition is limited to 4000 characters (got 4100)\n", false, "too long"},
+		{"empty", before + "  ⎿  The goal condition is empty once whitespace and invisible characters are removed. Provide a visible condition.\n", false, "empty"},
+		{"old", before + "  ⎿  Unknown command: /goal\n", false, "no /goal"},
+		{"nothing yet", before + "❯ /goal tests pass\n", false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			set, note := goalOutcome(before, tc.shown)
+			if set != tc.set || tc.note == "" && note != "" || tc.note != "" && !strings.Contains(note, tc.note) {
+				t.Fatalf("set=%v note=%q", set, note)
+			}
+		})
+	}
+	// An earlier goal's line on the screen is not this one's answer.
+	old := before + "  ⎿  Goal set: an earlier goal\n"
+	if set, _ := goalOutcome(old, old+"❯ /goal tests pass\n"); set {
+		t.Fatal("an earlier goal's line counted")
+	}
+}
+
+// A start whose goal cannot be had is refused before anything starts, with the code the caller starts again on
+// without the goal.
+func TestStartGoalRefusedBeforeAnythingStarts(t *testing.T) {
+	n, f, home := herdrNode(t)
+	cwd := mkdir(t, filepath.Join(home, "project"))
+	for name, params := range map[string]map[string]any{
+		"codex":  {"cwd": cwd, "workspace_id": "w1", "prompt": "x", "launcher": "codex", "goal": "done"},
+		"resume": {"cwd": cwd, "workspace_id": "w1", "prompt": "x", "resume_session_id": sidA, "goal": "done"},
+		"long":   {"cwd": cwd, "workspace_id": "w1", "prompt": "x", "goal": strings.Repeat("y", proto.StartGoalMax+1)},
+	} {
+		_, err := request(t, n, "session.start", params)
+		var re *rpc.Error
+		if !errors.As(err, &re) || re.Code != proto.CodeStartGoalUnsupported {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if got := f.trace("tab.create", "agent.prompt"); len(got) != 0 {
+		t.Fatalf("started anyway: %v", got)
+	}
+}
+
+func TestCleanStartGoal(t *testing.T) {
+	if got := cleanStartGoal("  tests pass\n and\tthe PR is merged  "); got != "tests pass and the PR is merged" {
+		t.Fatalf("%q", got)
+	}
+	if got := cleanStartGoal(" \n "); got != "" {
+		t.Fatalf("%q", got)
+	}
+}

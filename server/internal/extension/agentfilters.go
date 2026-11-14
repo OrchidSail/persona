@@ -110,14 +110,20 @@ func (f AgentFilterItem) Holds(config json.RawMessage) bool {
 	return on
 }
 
-// switchedByConfig: an agent filter with When goes with that configuration field, not a contribution switch.
+// switchedByConfig: a contribution with When goes with that configuration field, not a contribution switch.
 func (m *Manifest) switchedByConfig(point, id string) bool {
-	if point != "agent_filters" {
-		return false
-	}
-	for _, f := range m.AgentFilters() {
-		if f.ID == id {
-			return f.When != ""
+	switch point {
+	case "agent_filters":
+		for _, f := range m.AgentFilters() {
+			if f.ID == id {
+				return f.When != ""
+			}
+		}
+	case "start_defaults":
+		for _, d := range m.StartDefaults() {
+			if d.ID == id {
+				return d.When != ""
+			}
 		}
 	}
 	return false

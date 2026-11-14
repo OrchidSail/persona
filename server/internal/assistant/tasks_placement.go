@@ -190,6 +190,9 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 	if claude && !t.preservePermission {
 		t.Permission = "bypassPermissions"
 	}
+	// An extension's start defaults (preset, effort, ultracode, a goal from done_when): only what the task left open
+	// (start_defaults.go), so after the fit, which may itself have filled in a launcher and an effort.
+	s.applyStartDefaults(ctx, t, own, params)
 	if t.MachinePolicy == machineFixed {
 		// Only an actual terminal start can recheck a repaired terminal shell.
 		// An explicit retry keeps that existing recovery path on the fixed target;
@@ -208,6 +211,9 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 	prompt := t.Prompt
 	if t.Readonly {
 		prompt += "\n\n" + prompts.RenderReadonlyTaskConstraint()
+	}
+	if t.planFirst {
+		prompt += "\n\n" + prompts.RenderPlanFirstTaskConstraint()
 	}
 	if len(t.DoneWhen) > 0 { // what the supervisor will check (supervise.go)
 		prompt += "\n\n" + prompts.RenderTaskDoneWhen(t.DoneWhen)
@@ -281,11 +287,26 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 	s.setPlanThen(ctx, m.ID, params)
 	sentAt := time.Now()
 	err = s.call(ctx, m.ID, DeviceSessionStart, params, &res)
-	skipped, refused := s.ultracodeRefusal(ctx, err, params)
-	if refused {
-		delete(params, "ultracode") // an extra the agent it landed on cannot have: it starts without it (#3596)
-		s.logf("task %s: start: %s; starting without ultracode", t.TodoID, skipped)
-		err = s.call(ctx, m.ID, DeviceSessionStart, params, &res)
+	// Extras the agent it landed on cannot have (ultracode #3596, a start goal: start_defaults.go) are each dropped
+	// once, in whatever order the node refuses them; both refusals come before anything starts.
+	var skipped string
+	var refused bool
+	for range 2 {
+		if reason, no := s.goalRefusal(err, params); no {
+			delete(params, "goal")
+			s.logf("task %s: start: %s; starting without a goal", t.TodoID, reason)
+			t.noteWhy(i18n.T(s.lang(ctx), "assistant-tasks.start_goal_skipped", i18n.Args{"reason": reason}))
+			err = s.call(ctx, m.ID, DeviceSessionStart, params, &res)
+			continue
+		}
+		if reason, no := s.ultracodeRefusal(ctx, err, params); no {
+			skipped, refused = reason, true
+			delete(params, "ultracode")
+			s.logf("task %s: start: %s; starting without ultracode", t.TodoID, skipped)
+			err = s.call(ctx, m.ID, DeviceSessionStart, params, &res)
+			continue
+		}
+		break
 	}
 	if err != nil {
 		s.recordStartFailure(ctx, m.ID, s.startLauncher(ctx, picked), err)

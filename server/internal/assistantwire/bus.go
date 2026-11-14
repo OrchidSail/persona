@@ -210,6 +210,7 @@ var Routes = []string{
 	"POST /api/v1/assistant/conversations/{id}/stop",
 	"GET /api/v1/assistant/reporters",
 	"GET /api/v1/assistant/leaders",
+	"GET /api/v1/assistant/worker-presets",
 	"GET /api/v1/assistant/availability",
 	"GET /api/v1/assistant/directions/tree",
 	"GET /api/v1/assistant/directions/offers",
