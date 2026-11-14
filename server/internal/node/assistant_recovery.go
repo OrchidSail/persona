@@ -28,6 +28,12 @@ type assistantTurnRecovery struct {
 	launcher string
 	from     modelExecution
 	switched bool
+	// lastResult and lastReset are the most recent failure's words and any recovery time they named, kept so the
+	// model-recovery marker (#7824) can say why the chain switched and when the configured model is back.
+	lastResult string
+	lastReset  *time.Time
+	// triedOrder keeps r.used in first-use order for the marker's tried-model list.
+	triedOrder []string
 }
 
 // newAssistantRecovery is a conversation's chain begun by a failure of launcher running execution (key and current as
@@ -37,6 +43,7 @@ func (n *Node) newAssistantRecovery(id, launcher string, execution modelExecutio
 	r := &assistantTurnRecovery{retried: map[string]bool{}, used: map[string]bool{}, launcher: launcher, from: execution}
 	if current != "" {
 		r.used[current] = true
+		r.triedOrder = append(r.triedOrder, current)
 	}
 	if from, l, ok := n.recentFallback(id); ok && l == launcher {
 		r.from = from // what the user's setting asks for, not the fallback a failure there came from
@@ -218,8 +225,14 @@ func (n *Node) clearAssistantRecovery(p *assistantProc, answered bool) {
 	}
 	defer n.mu.Unlock()
 	if n.procs[p.id] == p { // a replaced process's late result cannot clear its replacement's recovery
-		if r := n.recoveries[p.id]; answered && r != nil && r.switched && r.launcher == launcher {
+		r := n.recoveries[p.id]
+		if answered && r != nil && r.switched && r.launcher == launcher {
 			n.holdFallback(p.id, launcher, r.from, model)
+			// Answering on the configured model again ends the recovery marker; answering on the fallback keeps it so
+			// the apps keep naming the model that actually answers and why it switched (#7824).
+			if r.from.Model != "" && r.from.Model == model.Model {
+				defer n.releaseModelRecovery(p.id, r.from.Model)
+			}
 		}
 		delete(n.recoveries, p.id)
 	}
@@ -307,6 +320,11 @@ func (n *Node) recoverAssistantResultFor(p *assistantProc, expected *assistantTu
 		// No new goroutine runs on the ended connection. The keeper carries this failure and the remaining budget to
 		// the next Node, even when the result arrives after the process map has already handed over.
 		r.pending = &assistantPendingFailure{text: result, kinds: kinds}
+		r.lastResult = result
+		if t, ok := GatewayAvailableAgain(result, time.Now()); ok {
+			t := t
+			r.lastReset = &t
+		}
 		r.finished = false
 		r.proc = p
 		n.mu.Unlock()
@@ -325,6 +343,11 @@ func (n *Node) recoverAssistantResultFor(p *assistantProc, expected *assistantTu
 	r.proc = p
 	if r.running {
 		r.pending = &assistantPendingFailure{text: result, kinds: kinds}
+		r.lastResult = result
+		if t, ok := GatewayAvailableAgain(result, time.Now()); ok {
+			t := t
+			r.lastReset = &t
+		}
 		n.mu.Unlock()
 		p.mu.Lock()
 		p.busy = true
@@ -348,9 +371,16 @@ func (n *Node) recoverAssistantResultFor(p *assistantProc, expected *assistantTu
 	}
 	if current != "" {
 		r.used[current] = true
+		r.triedOrder = append(r.triedOrder, current)
 	}
-	if replyModel != "" {
+	if replyModel != "" && replyModel != current {
 		r.used[replyModel] = true // an alias and the concrete model it resolved to share one retry budget
+		r.triedOrder = append(r.triedOrder, replyModel)
+	}
+	r.lastResult = result
+	if t, ok := GatewayAvailableAgain(result, time.Now()); ok {
+		t := t
+		r.lastReset = &t
 	}
 	r.running = true
 	done := make(chan struct{})
@@ -485,9 +515,13 @@ func (n *Node) runAssistantRecovery(p *assistantProc, r *assistantTurnRecovery, 
 		}
 		execution = assistantExecutionForModel(execution, list, next)
 		r.used[next] = true
+		r.triedOrder = append(r.triedOrder, next)
 		n.mu.Lock()
 		r.switched = true
 		n.mu.Unlock()
+		// Make the node-driven switch visible: the marker names the configured model, the model now answering, why it
+		// switched and, when the upstream said so, when the configured model is available again (#7824).
+		n.recordRecoverySwitch(p.id, launcher, r.from.Model, next, ModelRecoveryReason(r.lastResult), r.lastReset, r.triedOrder)
 	}
 	err := assistantRecoverySend(withAssistantRecovery(ctx, r, !same), n, p, launcher, cwd, execution)
 	var pending *assistantPendingFailure
@@ -548,6 +582,9 @@ func (n *Node) finishAssistantRecovery(p *assistantProc, r *assistantTurnRecover
 	current := n.procs[p.id] == p
 	delete(n.recoveries, p.id) // an exhausted chain leaves no per-conversation bookkeeping behind
 	n.mu.Unlock()
+	// The failure card needs the exhausted marker so it can offer Retry with the cause and reset time. A chain that
+	// switched keeps its From/To on the record; one that never moved leaves them empty.
+	n.recordRecoveryExhausted(p.id, ModelRecoveryReason(r.lastResult), r.lastReset, r.triedOrder)
 	if current {
 		p.mu.Lock()
 		p.busy = false

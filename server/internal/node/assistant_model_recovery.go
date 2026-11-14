@@ -1,0 +1,437 @@
+package node
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/nwverse/persona/server/internal/proto"
+)
+
+// Visible, reversible model recovery for the main and leader/supervisor conversations (#7824).
+//
+// The runtime's own refusal fallback is recorded by the runtime itself (ModelRefusal). When the runtime does not
+// switch, the node's bounded recovery (assistant_recovery.go) restarts it on the next launcher model. That switch used
+// to exist only in memory and was invisible to clients; the records here make it a Session field the apps render,
+// persist it through session state so a node restart keeps it, and return the conversation to its configured model as
+// soon as that model answers an availability probe again. Worker Agent conversations keep their own cheaper-tier
+// behavior and carry no marker.
+
+// ModelRecoveryReason classifies the failure that moved a conversation off its configured model.
+func ModelRecoveryReason(result string) string {
+	t := strings.ToLower(strings.TrimSpace(result))
+	switch {
+	case assistantSafeguardsRefusal(result):
+		return proto.ModelRecoveryReasonSafeguards
+	case strings.Contains(t, "model_not_found") || strings.Contains(t, "model not found") ||
+		strings.Contains(t, "model does not exist") || strings.Contains(t, "issue with the selected model"):
+		return proto.ModelRecoveryReasonUnavailable
+	case assistantServerError.MatchString(t):
+		return proto.ModelRecoveryReasonServer
+	case assistantRateLimit.MatchString(t) || strings.Contains(t, "rate limit") || strings.Contains(t, "rate_limit") ||
+		strings.Contains(t, "too many requests"):
+		if strings.Contains(t, "quota_exhausted") || strings.Contains(t, "quota usage limit") || strings.Contains(t, "usage limit") {
+			return proto.ModelRecoveryReasonQuota
+		}
+		return proto.ModelRecoveryReasonRateLimit
+	default:
+		return proto.ModelRecoveryReasonServer
+	}
+}
+
+var (
+	// "an account becomes available again at 15:48 UTC (in 32m)" and the dated form
+	// "... available again at 2026-11-17 04:03 UTC (in 2d3h)". The words are a gateway's, so the match stays narrow.
+	gatewayAvailableRe     = regexp.MustCompile(`(?i)available again at (?:(\d{4})-(\d{2})-(\d{2})\s+)?(\d{2}):(\d{2})\s*UTC`)
+	modelRecoveryProbeEvery = time.Minute
+)
+
+// GatewayAvailableAgain reads the UTC moment a gateway says an account becomes available again. A bare clock time is
+// placed at its first future occurrence relative to at; a dated form is read literally in UTC. False when the words do
+// not name such a time: callers then show a manual Retry without a countdown.
+func GatewayAvailableAgain(text string, at time.Time) (time.Time, bool) {
+	m := gatewayAvailableRe.FindStringSubmatch(text)
+	if m == nil {
+		return time.Time{}, false
+	}
+	hour, min := atoiOr(m[4]), atoiOr(m[5])
+	if hour > 23 || min > 59 {
+		return time.Time{}, false
+	}
+	if m[1] != "" {
+		t, err := time.Parse("2006-01-02 15:04", m[1]+"-"+m[2]+"-"+m[3]+" "+fmt.Sprintf("%02d:%02d", hour, min))
+		if err != nil {
+			return time.Time{}, false
+		}
+		return t.UTC(), true
+	}
+	now := at.UTC()
+	t := time.Date(now.Year(), now.Month(), now.Day(), hour, min, 0, 0, time.UTC)
+	if !t.After(now) {
+		t = t.Add(24 * time.Hour)
+	}
+	return t, true
+}
+
+func atoiOr(s string) int {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// recoveryProtected says the conversation is the main one or a leader/supervisor one, the only conversations the
+// owner's auto-switch-and-return rule applies to. The manager marks both through follows_setting (assistant/start.go);
+// worker Agents have neither flag and keep their own fallback behavior.
+func (n *Node) recoveryProtected(id string) bool {
+	st, ok := n.state.get(id)
+	return ok && (st.IsMain || st.FollowsSetting)
+}
+
+// modelRecovery is the node-owned switch record for a conversation, hydrated from persisted session state.
+func (n *Node) modelRecovery(id string) *proto.ModelRecovery {
+	n.mu.Lock()
+	r := n.recoveryMarks[id]
+	n.mu.Unlock()
+	if r != nil {
+		return r
+	}
+	if st, ok := n.state.get(id); ok && st.ModelRecovery != nil {
+		return st.ModelRecovery
+	}
+	return nil
+}
+
+// putModelRecovery stores the marker in memory and persists the session state so a node restart keeps it.
+func (n *Node) putModelRecovery(id string, r *proto.ModelRecovery) {
+	n.mu.Lock()
+	if r == nil {
+		delete(n.recoveryMarks, id)
+	} else {
+		if n.recoveryMarks == nil {
+			n.recoveryMarks = map[string]*proto.ModelRecovery{}
+		}
+		n.recoveryMarks[id] = r
+	}
+	n.mu.Unlock()
+	st, ok := n.state.get(id)
+	if !ok {
+		return
+	}
+	st.ModelRecovery = r
+	n.state.put(id, st)
+}
+
+// recordRecoverySwitch marks that recovery moved id from its configured model to the model that answers now. The
+// marker accumulates every model the chain tried and keeps the first failure's reason and reset time.
+func (n *Node) recordRecoverySwitch(id, launcher, from, to, reason string, resets *time.Time, tried []string) {
+	if !n.recoveryProtected(id) {
+		return
+	}
+	prev := n.modelRecovery(id)
+	r := &proto.ModelRecovery{From: from, To: to, Reason: reason, At: time.Now().UTC(), Tried: append([]string{}, tried...)}
+	if resets != nil {
+		r.ResetsAt = resets
+	} else if prev != nil && prev.From == from {
+		r.ResetsAt = prev.ResetsAt // keep the first reset the upstream named for this configured model
+	}
+	n.putModelRecovery(id, r)
+	n.notifySessions()
+}
+
+// recordRecoveryExhausted marks that every model the chain could try failed: the turn ends on the failure card, which
+// offers Retry with the cause and, when known, the reset time.
+func (n *Node) recordRecoveryExhausted(id, reason string, resets *time.Time, tried []string) {
+	if !n.recoveryProtected(id) {
+		return
+	}
+	prev := n.modelRecovery(id)
+	r := &proto.ModelRecovery{Reason: reason, At: time.Now().UTC(), Tried: append([]string{}, tried...), ChainExhausted: true}
+	if prev != nil {
+		r.From, r.To = prev.From, prev.To
+	}
+	if resets != nil {
+		r.ResetsAt = resets
+	} else if prev != nil {
+		r.ResetsAt = prev.ResetsAt
+	}
+	n.putModelRecovery(id, r)
+	n.notifySessions()
+}
+
+// clearModelRecovery ends the marker once the configured model runs again, the conversation compacted its refused
+// turns, or the owner picked another model.
+func (n *Node) clearModelRecovery(id string) {
+	if n.modelRecovery(id) == nil {
+		return
+	}
+	n.putModelRecovery(id, nil)
+	n.notifySessions()
+}
+
+// modelRecoveryLoop probes the configured model of every protected conversation while it answers on a fallback, and
+// flips the marker to Returning once that model is reachable again. The actual switch happens on the next request
+// (assistantSend), so a probe never spends a real conversation turn.
+func (n *Node) modelRecoveryLoop(ctx context.Context) {
+	t := time.NewTicker(modelRecoveryProbeEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			n.probeModelRecoveries(ctx)
+		}
+	}
+}
+
+func (n *Node) probeModelRecoveries(ctx context.Context) {
+	ids := map[string]bool{}
+	n.mu.Lock()
+	for id, r := range n.recoveryMarks {
+		if r != nil && !r.ChainExhausted && r.From != "" && r.From != r.To {
+			ids[id] = true
+		}
+	}
+	n.mu.Unlock()
+	for id := range ids {
+		cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		ok := n.configuredModelAvailable(cctx, id)
+		cancel()
+		if !ok {
+			continue
+		}
+		r := n.modelRecovery(id)
+		if r == nil || r.Returning {
+			continue
+		}
+		r.Returning = true
+		n.putModelRecovery(id, r)
+		n.notifySessions()
+	}
+}
+
+// returnToConfiguredAt decides whether id's next request must run on its configured model again. A successful
+// availability probe (or an exhausted reset time that has passed) ends the fallback hold; an unprobed or still-failing
+// configured model keeps the conversation on the fallback.
+func (n *Node) returnToConfiguredAt(ctx context.Context, id string, at time.Time) bool {
+	r := n.modelRecovery(id)
+	if r == nil || r.From == "" || r.From == r.To {
+		return true
+	}
+	if r.ResetsAt != nil && at.After(*r.ResetsAt) {
+		return true
+	}
+	if r.Returning {
+		return true
+	}
+	return n.configuredModelAvailable(ctx, id)
+}
+
+// releaseModelRecovery clears every in-memory bookkeeping that would keep id off its configured model: the fallback
+// hold, the sticky refusal window and the "unavailable" entry for the configured model.
+func (n *Node) releaseModelRecovery(id, configured string) {
+	n.forgetFallback(id)
+	n.mu.Lock()
+	for k := range n.unavailable {
+		if _, model, ok := strings.Cut(k, "\x00"); ok && model == configured {
+			delete(n.unavailable, k)
+		}
+	}
+	n.mu.Unlock()
+	n.clearModelRecovery(id)
+}
+
+func unavailableKey(launcher, model string) string { return launcher + "\x00" + model }
+
+// configuredModelAvailable asks the launcher's gateway whether the conversation's configured model can answer now.
+// A 2xx (including a content refusal, which still proves the model is served) or a 4xx other than 429 counts as
+// reachable: the model exists and is authenticated. A 429/5xx or a connection failure keeps the fallback in place.
+// Launchers without a reachable gateway answer false rather than guess, so the probe can never strand a conversation.
+func (n *Node) configuredModelAvailable(ctx context.Context, id string) bool {
+	// The configured model is the marker's From: session state's Model is what the process last ran, which a recovery
+	// send overwrites with the fallback, so it must not be what the probe asks for.
+	r := n.modelRecovery(id)
+	st, ok := n.state.get(id)
+	if r == nil || r.From == "" || !ok || st.Launcher == "" {
+		return false
+	}
+	return n.launcherModelAnswers(ctx, st.Launcher, r.From)
+}
+
+// launcherModelAnswers is one availability probe of model through launcher's gateway (assistantModelProbe, replaceable
+// in tests): a one-token request whose answer says whether the model is served and has quota right now.
+func (n *Node) launcherModelAnswers(ctx context.Context, launcher, model string) bool {
+	return assistantModelProbe(ctx, n, launcher, model)
+}
+
+// assistantModelProbe is the real probe; tests replace it with a scripted upstream. Only a 2xx answer counts as
+// available: a 429 (quota or throttle), a 5xx, a 404 (model not served), an auth failure or a connection error all keep
+// the conversation on its fallback. A 200 that the upstream ends with a refusal still proves the model is served and
+// has quota, so the conversation returns to it.
+var assistantModelProbe = func(ctx context.Context, n *Node, launcher, model string) bool {
+	base, key := n.launcherGateway(ctx, launcher)
+	if base == "" || key == "" || model == "" {
+		return false
+	}
+	root, err := rootURL(base)
+	if err != nil {
+		return false
+	}
+	body, _ := json.Marshal(map[string]any{
+		"model": n.resolvedLauncherModel(ctx, launcher, model), "max_tokens": 1,
+		"messages": []map[string]string{{"role": "user", "content": "ping"}},
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(root, "/v1")+"/v1/messages", bytes.NewReader(body))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("x-api-key", key)
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := modelProbeHTTPClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return probeStatusOK(resp.StatusCode)
+}
+
+// probeStatusOK is the probe's rule: only a 2xx proves the configured model is served and has quota right now.
+func probeStatusOK(status int) bool { return status >= 200 && status < 300 }
+
+// modelProbeHTTPClient sends availability probes; a gateway that hangs must not hold the probe loop.
+var modelProbeHTTPClient = &http.Client{Timeout: 15 * time.Second,
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+// launcherGateway is the gateway address and key launcher's agent sends with, layered as Claude Code layers them:
+// the launcher's --settings env wins, then the user settings of its config directory, then the process environment.
+// The key never leaves this machine and is never logged.
+func (n *Node) launcherGateway(ctx context.Context, launcher string) (base, key string) {
+	p, err := n.launcherProbe(ctx, launcher)
+	if err != nil {
+		return "", ""
+	}
+	flag := map[string]string{}
+	if arg := settingsArg(p.Args); arg != "" {
+		if s, err := readLauncherSettings(arg, n.home, n.home); err == nil {
+			flag = settingsEnv(s)
+		}
+	}
+	dir := p.Env["CLAUDE_CONFIG_DIR"]
+	if dir == "" {
+		dir = filepath.Join(n.home, ".claude")
+	}
+	user := map[string]string{}
+	if s, err := readLauncherSettings(filepath.Join(dir, "settings.json"), n.home, n.home); err == nil {
+		user = settingsEnv(s)
+	}
+	get := func(k string) string {
+		if v := flag[k]; v != "" {
+			return v
+		}
+		if v := user[k]; v != "" {
+			return v
+		}
+		return p.Env[k]
+	}
+	return firstNonEmpty(get("ANTHROPIC_BASE_URL"), get("OPENAI_BASE_URL")),
+		firstNonEmpty(get("ANTHROPIC_AUTH_TOKEN"), get("ANTHROPIC_API_KEY"), get("OPENAI_API_KEY"))
+}
+
+// settingsEnv is a Claude Code settings document's string env values.
+func settingsEnv(s map[string]any) map[string]string {
+	out := map[string]string{}
+	env, _ := s["env"].(map[string]any)
+	for k, v := range env {
+		if v, ok := v.(string); ok {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// resolvedLauncherModel is the concrete model an alias (opus, default…) stands for on launcher, so the probe asks the
+// gateway for the model the conversation actually runs; the model itself when the list does not say.
+func (n *Node) resolvedLauncherModel(ctx context.Context, launcher, model string) string {
+	list, err := assistantRecoveryModels(ctx, n, launcher)
+	if err != nil {
+		return model
+	}
+	if r := resolvedAssistantDefault(list, model); r != "" {
+		return r
+	}
+	for _, m := range list.Models {
+		if m.ID == model && m.Resolved != "" {
+			return m.Resolved
+		}
+	}
+	return model
+}
+
+func rootURL(base string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("bad gateway url %q", base)
+	}
+	return strings.TrimRight(u.String(), "/"), nil
+}
+
+// decorateModelRecovery projects the node-owned marker onto Session.model_fallback, the shape every shipped client
+// already renders as "switched to X" with "back to the configured model" (#2528, #5202). The runtime's own
+// ModelFallback always wins: it is first-hand evidence. An exhausted chain is projected too (RecoveryExhausted, no
+// FallbackModel), so the failure card can name the cause and reset time; the clients' fallback card stays hidden for
+// it because their gate needs a fallback model (#7824).
+func (n *Node) decorateModelRecovery(s *proto.Session) {
+	if s == nil || s.ModelFallback != nil {
+		return // no marker to show, or the runtime's own refusal fallback is the stronger record
+	}
+	r := n.modelRecovery(s.SessionID)
+	if r == nil {
+		return
+	}
+	f := &proto.ModelRefusal{
+		Subtype:           "model_refusal_fallback",
+		OriginalModel:     r.From,
+		Category:          r.Reason,
+		Scope:             "session",
+		Explanation:       ModelRecoveryExplanation(r.Reason),
+		RecoveryReset:     r.ResetsAt,
+		RecoveryExhausted: r.ChainExhausted,
+		RecoveryReturning: r.Returning,
+		RecoveryTried:     strings.Join(r.Tried, " → "),
+	}
+	if !r.ChainExhausted && r.To != "" && r.From != r.To {
+		f.FallbackModel = r.To
+	}
+	if f.FallbackModel == "" && !r.ChainExhausted {
+		return // nothing true to say yet
+	}
+	s.ModelFallback = f
+}
+
+// ModelRecoveryExplanation is the public, non-internal reason text for a recovery reason enum.
+func ModelRecoveryExplanation(reason string) string {
+	switch reason {
+	case proto.ModelRecoveryReasonSafeguards:
+		return "the model's safety classifier refused the request"
+	case proto.ModelRecoveryReasonQuota:
+		return "the account's quota was exhausted"
+	case proto.ModelRecoveryReasonRateLimit:
+		return "the model service was rate limited"
+	case proto.ModelRecoveryReasonUnavailable:
+		return "the model was not available on the gateway"
+	default:
+		return "the model service failed"
+	}
+}

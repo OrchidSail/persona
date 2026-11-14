@@ -394,6 +394,16 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 	}
 	if recovery == nil && id != "" {
 		execution = n.heldFallback(id, launcher, execution) // the fallback that answered, for a while (#3788)
+		// A protected conversation's fallback is temporary: once the configured model is reachable again, the next
+		// request runs on it instead of staying pinned to the cheaper model (#7824). Only a conversation the node's own
+		// recovery moved is touched; worker conversations, and ones with no marker, keep what they asked for.
+		if marker := n.modelRecovery(id); marker != nil && !marker.ChainExhausted && marker.From != "" &&
+			n.recoveryProtected(id) && n.returnToConfiguredAt(ctx, id, time.Now()) {
+			if marker.From != execution.Model {
+				execution.Model = marker.From
+			}
+			n.releaseModelRecovery(id, marker.From)
+		}
 	}
 	if execution.Model != "" {
 		if _, err := n.launcherModelCheck(ctx, launcher, execution.Model); err != nil {
@@ -520,7 +530,7 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 		}
 		n.noteModes(id, mode, effort)
 	}
-	if st, known := n.state.get(id); !known || st.Launcher != launcher || st.Cwd != cwd || st.Model != execution.Model || st.ModelFingerprint != execution.Fingerprint || st.ModelEffort != execution.Effort || st.Runtime != execution.Runtime || st.IsMain != execution.IsMain || st.ConfigDir != execution.ConfigDir {
+	if st, known := n.state.get(id); !known || st.Launcher != launcher || st.Cwd != cwd || st.Model != execution.Model || st.ModelFingerprint != execution.Fingerprint || st.ModelEffort != execution.Effort || st.Runtime != execution.Runtime || st.IsMain != execution.IsMain || st.ConfigDir != execution.ConfigDir || st.FollowsSetting != execution.FollowsSetting {
 		started := st.StartedAt
 		if started.IsZero() {
 			started = time.Now().UTC()
@@ -528,6 +538,7 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 		st.Launcher, st.Cwd, st.StartedAt = launcher, cwd, started
 		st.Model, st.ModelFingerprint, st.ModelEffort, st.Runtime = execution.Model, execution.Fingerprint, execution.Effort, execution.Runtime
 		st.IsMain = execution.IsMain
+		st.FollowsSetting = execution.FollowsSetting
 		st.ConfigDir = execution.ConfigDir
 		n.state.put(id, st)
 	}

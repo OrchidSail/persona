@@ -212,6 +212,9 @@ type Node struct {
 	fallbacks map[string]*assistantFallback
 	// unavailable: launcher + "\x00" + model a recovery found the gateway does not serve, and until when it is skipped.
 	unavailable map[string]time.Time
+	// recoveryMarks: the client-visible, node-owned record of each protected conversation's model recovery (#7824).
+	// The durable copy lives in session state (state.put); this map is the working one and its hydration source.
+	recoveryMarks map[string]*proto.ModelRecovery
 
 	// runtimes: agent runtimes without a terminal, connected on runtime.sock (runtimes.go); runtimeSock overrides the
 	// socket path (tests).
@@ -474,6 +477,7 @@ func (n *Node) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 	go n.runUsageWindows(ctx.Done())
 	go n.sampleMetrics(ctx)
 	go n.watchPorts(ctx)
+	go n.modelRecoveryLoop(ctx)
 	n.startTodoTokensReconciler(ctx)
 	defer n.starts.close()
 	defer n.switches().leave(n) // the records of a switch still running go to the next connection's Node
@@ -727,6 +731,7 @@ func (n *Node) handle(ctx context.Context, method string, params json.RawMessage
 		DismissLost    bool            `json:"dismiss_lost"`
 		ResumeOnly     bool            `json:"resume_only"`
 		IsMain         bool            `json:"is_main"`
+		FollowsSetting bool            `json:"follows_setting"`
 		Interject      bool            `json:"interject_background"`
 		AtItemID       string          `json:"at_item_id"`     // session.fork: the reply to branch off at
 		Refresh        bool            `json:"refresh"`        // launchers.models: ask again, not the kept list
@@ -1283,7 +1288,7 @@ func (n *Node) handle(ctx context.Context, method string, params json.RawMessage
 		_ = json.Unmarshal(params, &opts)
 		sctx = withClientMsgID(sctx, opts.ClientMsgID) // a runtime's message goes under it (assistant_runtime.go)
 		send := func() (string, error) {
-			return n.assistantSend(sctx, p.SessionID, p.Cwd, p.Launcher, p.Text, p.Images, p.PermissionMode, p.Effort, modelExecution{PlanThen: p.PlanThen, Model: p.Model, Effort: p.Effort, ServiceTier: p.ServiceTier, UseEffort: p.ModelFingerprint != "", Fingerprint: p.ModelFingerprint, Runtime: assistantRuntimeOf(p.Runtime), IsMain: p.IsMain, ConfigDir: p.ConfigDir, Interject: p.Interject})
+			return n.assistantSend(sctx, p.SessionID, p.Cwd, p.Launcher, p.Text, p.Images, p.PermissionMode, p.Effort, modelExecution{PlanThen: p.PlanThen, Model: p.Model, Effort: p.Effort, ServiceTier: p.ServiceTier, UseEffort: p.ModelFingerprint != "", Fingerprint: p.ModelFingerprint, Runtime: assistantRuntimeOf(p.Runtime), IsMain: p.IsMain, FollowsSetting: p.FollowsSetting, ConfigDir: p.ConfigDir, Interject: p.Interject})
 		}
 		if p.NewSessionID == "" && p.SessionID == "" && opts.ClientMsgID != "" {
 			// A new conversation's first message with its client_msg_id (one a person's own app opened, the manager's
@@ -1368,7 +1373,7 @@ func (n *Node) handle(ctx context.Context, method string, params json.RawMessage
 			}
 			return n.sendEchoed(p.SessionID, opts.ClientMsgID, p.Text, len(p.Images), after, func() error { // echo.go
 				if n.isAssistantSession(p.SessionID) {
-					_, err := n.assistantSend(withSkillOwner(withClientMsgID(ctx, opts.ClientMsgID), p.SkillOwner), p.SessionID, "", p.Launcher, p.Text, p.Images, "", "", modelExecution{PlanThen: p.PlanThen, Model: p.Model, Effort: p.Effort, UseEffort: p.ModelFingerprint != "", Fingerprint: p.ModelFingerprint, Runtime: n.sessionRuntime(p.SessionID, p.Runtime, p.ModelFingerprint != ""), IsMain: p.IsMain, ConfigDir: p.ConfigDir, Interject: p.Interject})
+					_, err := n.assistantSend(withSkillOwner(withClientMsgID(ctx, opts.ClientMsgID), p.SkillOwner), p.SessionID, "", p.Launcher, p.Text, p.Images, "", "", modelExecution{PlanThen: p.PlanThen, Model: p.Model, Effort: p.Effort, UseEffort: p.ModelFingerprint != "", Fingerprint: p.ModelFingerprint, Runtime: n.sessionRuntime(p.SessionID, p.Runtime, p.ModelFingerprint != ""), IsMain: p.IsMain, FollowsSetting: p.FollowsSetting, ConfigDir: p.ConfigDir, Interject: p.Interject})
 					return err
 				}
 				return n.send(ctx, p.SessionID, p.Text, p.Images, opts)
