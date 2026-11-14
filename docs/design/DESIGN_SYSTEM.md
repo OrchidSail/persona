@@ -1009,7 +1009,9 @@ chat (#5033), where the panel only offers models and says plainly which one the 
 - Apple main-chat equivalent (#6542, `AssistantModelSheet`): the composer's existing Model row opens a system sheet with
   medium and large detents and a visible drag indicator, reusing the assistant-eligible launcher list and the same
   conversation PUT/DELETE. Only the hub-named main conversation gets it, on the computer named by `main_machine_id` (or
-  `machine_id` on an older hub).
+  `machine_id` on an older hub). The composer's current-model entry shows a disclosure chevron; its first menu row is
+  explicitly **Change Model…**, with the effective model as its detail, so the conversation page itself shows how to
+  reach the sheet.
   Each launcher's catalog supplies its rows; an empty or older-node 404 catalog falls back to its configured model, a
   locked launcher keeps only its valid Default choice, and a Default row sends no model ID so it follows later default
   changes. Resolved aliases tick their real row. An existing Claude/Codex conversation marks the other engine as needing

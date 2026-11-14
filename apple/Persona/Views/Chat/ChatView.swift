@@ -5493,6 +5493,7 @@ struct Composer: View, Equatable {
                                  stop: status.isActive && model.session(key)?.canInterrupt == true ? { Task { await model.interrupt(key) } } : nil,
                                  voice: voiceEntry,
                                  modesTitle: modesTitle,
+                                 modesDisclosure: assistantModelPickAvailable,
                                  quotes: contexts,
                                  alwaysOpen: ChatComposerKind.macCard,
                                  history: key.path,

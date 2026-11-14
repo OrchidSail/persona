@@ -33084,6 +33084,29 @@
         }
       }
     },
+    "Change Model…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Change Model…"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "モデルを変更…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更改模型…"
+          }
+        }
+      }
+    },
     "Change Permissions…" : {
       "extractionState" : "manual",
       "localizations" : {
