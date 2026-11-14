@@ -95,10 +95,10 @@ struct CarPlayMicPermission: MicPermission {
     private static func resolve() async throws -> (SessionKey, String) {
         let api: APIClient
         let key: SessionKey
-        if let existing = AppModel.shared.assistantCurrent ?? AppModel.shared.assistantMain,
-           let client = AppModel.shared.api(existing.group) {
+        if let main = AppModel.shared.assistantMain,
+           let client = AppModel.shared.api(main.group) {
             api = client
-            key = existing
+            key = main
         } else {
             do {
                 api = try IntentSupport.client()

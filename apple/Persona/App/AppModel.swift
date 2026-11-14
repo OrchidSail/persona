@@ -1196,7 +1196,7 @@ final class AppModel {
     /// session ID is enough to recognize that current key. A deliberately opened side conversation stays where it is.
     static func followingMainRoute(current: SessionKey?, previous: SessionKey?, updated: SessionKey?,
                                    mainID: String? = nil) -> SessionKey? {
-        guard let current, let updated, current != updated else { return current }
+        guard let mainID, !mainID.isEmpty, let current, let updated, current != updated else { return current }
         let currentlyMain: Bool
         if let previous, previous.sessionID == current.sessionID { currentlyMain = true }
         else if previous == nil, current.sessionID == mainID { currentlyMain = true }
