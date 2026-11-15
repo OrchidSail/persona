@@ -897,8 +897,9 @@ On a direct route (same network or Tailscale), the live screen's video can ride 
 connection, so a lost packet delays only the frame it belongs to, usually by no round trip, and never slows the stream
 by itself ([#7873](https://github.com/nwverse/persona/issues/7873) has the design and the shaped-link numbers it rests
 on). The node's end is `internal/screenlink` (`udp.go`, `udp_wire.go`, `rs.go`); the shared cases are
-`spec/fixtures/screen-udp`. In place: the node's side, offered in `paths` as `"udp": 1`. The iPhone's side comes
-next; until then no phone opens a flow, and nothing changes for anyone.
+`spec/fixtures/screen-udp`. In place: the node's side, offered in `paths` as `"udp": 1`, and the iPhone's, off in
+release builds until the check on real devices (`ScreenRoutes.udpReleaseEnabled`; a DEBUG build launched with
+-showScreenUDP has it). No setting of its own: the Settings switch for direct routes covers it.
 
 - **What rides it**: only the video channel's bytes from the node to the phone, plus the phone's acknowledgements,
   requests to send again, give-ups and pings for it. RFB, the phone's video messages (`start`, `report`, `keyframe`,
@@ -923,19 +924,52 @@ next; until then no phone opens a flow, and nothing changes for anyone.
 - **Sending**: the node sends each video message whole from the phone's offset, cut into 1,146-byte shards, at most 128
   to a Reed-Solomon block (systematic, Cauchy, GF(2⁸)) with ⌈ratio × shards⌉ + 1 parity shards: the phone asks for the
   ratio in its pings (none by default, at most 40 %), and any `shards` of a block rebuild it. Packets are paced at the
-  rate the phone asks for, kept between 4 × the video's own rate (8 Mbit/s at least) and 150 Mbit/s, 40 Mbit/s until it
-  asks. The pong reports the bytes sent as data, parity and again, so the phone can count them against mobile data.
+  rate the phone asks for (from the rate its packets arrive at), kept between 1.25 × the video's own rate (1 Mbit/s
+  at least) and 150 Mbit/s, 40 Mbit/s until it asks. The pong reports the bytes sent as data, parity and again, so the phone can count them against mobile data.
 - **Recovering**: the phone asks again for the data shards a block still lacks (`nack`) and for messages it learned of
   only from a later one (`want`); the node sends them from the 512 KB window. Video left unacknowledged with nothing
   newer to send gets its newest message's last shard again after 50 ms (doubling to 800 ms), so a message lost whole
   at the end of a burst is found; the phone answers a shard it already has with its acknowledgement.
-- **Giving a frame up**: frames (and only frames) may be given up. On `skip`, the node drops the backlog's frames,
+- **Giving a frame up**: frames other than keyframes (and only those) may be given up; giving a keyframe up would ask
+  for another as large, and on a slow link the stream would fill with keyframes that never come whole. On `skip`, the node drops the backlog's frames,
   sends `reset` with where the stream goes on, asks Persona Screen for a keyframe and drops frames until it comes,
   as a move with an old backlog does; the backlog's other messages (`format`, `encoding`, …) still go out after the
   reset, so the keyframe decodes.
 - **Falling back**: when a flow is lost (silent, or its route gone), the video goes on over the flow's own TLS
   connection from what the phone acknowledged, or over its relay when the route went too. The node never moves RFB or
   link messages onto a flow, and moving the video onto one takes the phone's `use` on it.
+- **The phone's side** (`PersonaScreenKit`, tested with `swift test` against the shared cases): `ScreenUDPWire` (packets,
+  sealed with CryptoKit's AES-256-GCM, `ScreenUDPAESGCM`), `ReedSolomon`, `ScreenUDPReceiver` (blocks rebuilt from parity; a block still short asked for again
+  once all of it was sent, a message gone quiet for max(6 ms, 2 × jitter) counting as sent; again after max(10 ms,
+  1.5 round trips); a message known only from a later one asked for by its place; a frame that held the picture back
+  100 ms plus a round trip given up), `ScreenUDPParity` and `ScreenUDPLoss` (below). `ScreenLinkSession` asks for a
+  flow once a direct route attaches, takes its keys from the route's TLS exporter, has the app open the socket on the
+  route's interface (`openFlow`, `ScreenLinkUDPSocket`), proves its address, and moves the
+  video onto the flow once the route carries the session, from the start of the message it was in the middle of; the
+  video's bytes on other transports are ignored meanwhile. It pings the flow every second with the parity and pacing
+  it asks for (1.25 × the rate a message's packets arrive at, `ScreenUDPPace`; 150 Mbit/s on a LAN route, 40 on
+  Tailscale and 8 on cellular before it knows), and leaves the flow for the route's TLS connection, from
+  what the phone has, when the flow is silent for 1 s, gives more than 2 frames up in 10 s, or the phone's networks
+  change; a route asks again after 30 s, doubling to 5 min, and at once after a network change. Each move onto or off
+  the flow is a `PathChange` whose `LinkStats.transport` says `udp` or `tcp`, so the quality tiers look again.
+- **What people see**: no setting of its own. Connection Stats' Route row (off by default) says "Direct · LAN · UDP" or
+  "Direct · Tailscale · UDP" while the video rides a flow, with the flow's round trip and its loss before recovery;
+  otherwise as before. A DEBUG build shows it in the stats demo with `-showScreenStatsDemo` and `-showScreenUDP`.
+- **Not on cellular**: the phone opens no flow while its route, or its path under Tailscale, is cellular. On #7873's
+  shaped cellular-like link (40 ms, a 3 Mbit/s bottleneck with a short queue) a flow kept the picture going but brought
+  nothing over TCP: about the same bitrate, as many stalls or more, a worse tail. There the loss is a queue
+  overflowing, which parity and resends only add to. Before the fixes found there, it showed nothing at all: a
+  keyframe given up asked for another, and the node paced far above the bottleneck. A keyframe is now never given up
+  (the node never marks one droppable, and the phone reads its first shard), and 10 % loss or more over 2 s cuts the
+  cap given to the helper by half the loss, at most every 2 s, recovering 5 % a second below 2 %
+  (`ScreenUDPCongestion`); parity stays at 15 % or less meanwhile.
+- **Parity and mobile data**: the phone asks for three times the loss the packet numbers show (before recovery), from
+  5 % up to the cap: 40 % on Wi-Fi, 15 % on cellular (kept for when cellular gets flows); none under 0.2 %. Each block
+  gets one parity shard more than the ratio, a lot for the few-shard frames of a low bitrate, so the ratio is the
+  largest whose parity on the recent blocks stays within the cap's share, and none when even one shard per block would
+  not. On mobile data the cap the phone gives the helper is divided by one plus the flow's overhead (parity and resent
+  bytes per byte of video, from the node's pong counters, at least the parity asked for), so the bytes on the wire stay
+  within Data Saver's 1.5 Mbit/s or Clearer's 4, and the card's figures per hour hold.
 
 ### Pixel scrolling (#7775)
 
@@ -993,7 +1027,26 @@ scrolling stays on RFB's notches.
     so the phone never sends a record to a node that would pass it to Screen Sharing.
   - With the node signing setting the node runs its own signed copy (`~/.persona/bin/Persona Input.app`), as for Persona
     Screen. None of Persona Screen's node code changes for it.
-- Still to come on #7775: the phone saying hello and sending records.
+- **The phone** (`VNCPixelScroll`, `RFBSession`, `VNCScreenView`; the iOS app, which links `PersonaInputKit`; Vision
+  scrolls by notches):
+  - A two-finger touch scrolls by pixels when the Mac's status says its node reads records and Persona Input may post
+    them (`screen_input.permission` granted, read as the touch begins). As the page goes live on such a Mac it says
+    hello once a connection, so the helper is started before the first scroll.
+  - While scrolling by pixels: the Mac's pointer goes where the scroll began and stays there (as a trackpad's). One
+    record a display frame carries that frame's distance, by the same curve as the notches (slow fingers one to one,
+    quick ones up to 4×) but with no ceiling. The phases are `began`, `changed`, then `ended` at the lift. After a flick
+    comes the coast as momentum (`begin`, `continue`, `end`), with UIScrollView's normal deceleration, at most 6000
+    Mac points. A touch during the coast ends it, and its end goes too.
+  - Where the helper may not post yet and macOS was never asked (`permission` missing, `asked` false), the first
+    two-finger scroll of a connection says hello, so the node asks macOS once. A line under the page's bar, as the
+    video's fallback line, says what the window now on the Mac's screen is for ("To scroll more smoothly, allow Persona
+    Input on this Mac."). A tap on it gives the way through it in an alert (Open System Settings, then Persona Input
+    under Privacy & Security › Accessibility; scrolling still works meanwhile). The line goes once the Mac allows it or
+    the connection ends, and doesn't come back on later connections (macOS asks only once). Scrolling goes on by wheel
+    notches meanwhile, and for anyone who never allows it.
+  - Measuring: `VNCTests/testPixelScrolling` (mock `MOCK_SCREEN_INPUT=granted`) and `testPersonaInputNotice`
+    (`=missing`, with the notice's screenshots). The mock's relay takes records out as the node does and lists them as
+    `input`.
 
 ## Locking, preventing sleep and per-App approval (plan, #1507, decided)
 
