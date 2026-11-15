@@ -301,14 +301,13 @@ class MethodSizeTests(unittest.TestCase):
     def test_a_shrunk_release_that_keeps_everything_still_passes(self):
         self.assertEqual(shrink.method_size_problems(kept_release(), {}), ([], []))
 
-    def test_the_shipped_list_holds_settings_content_and_the_zxing_table(self):
+    def test_the_shipped_list_holds_the_zxing_table(self):
         known, notice = shrink.read_known(shrink.KNOWN_OVERSIZED)
         self.assertEqual(notice, "")
         self.assertEqual([(key.split("(")[0], size) for key, size in known.items()], [
-            ("persona.feature.settings.QuotaText.SettingsContent", 10642),
             ("com.google.zxing.pdf417.PDF417Common.<clinit>", 11178)])
-        # The whole signature, so the descriptor starts with "(" and the class name carries it.
-        self.assertTrue(next(iter(known)).endswith("Landroidx/compose/runtime/GapComposer;I)V"))
+        # The whole signature, so the class initializer keeps its name and "()V" descriptor.
+        self.assertEqual(next(iter(known)), "com.google.zxing.pdf417.PDF417Common.<clinit>()V")
         self.assertTrue((shrink.read_known("/nonexistent")[1]))
 
     def test_a_malformed_list_line_says_which_line(self):

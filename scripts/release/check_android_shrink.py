@@ -308,7 +308,7 @@ def method_size_problems(classes, known=None, list_name=KNOWN_OVERSIZED.name):
     persona.platform.phonetools.PhoneToolRegistry into androidx.compose.animation.TransformScopeImpl), so the package of
     the class holding a method says nothing about who wrote it, and a rule that skipped non-persona classes missed
     exactly the app's methods that ended up in a library class. What may stay over the limit is the list's business:
-    the third-party methods already there (PDF417Common.<clinit>, 11,178 units) and SettingsContent while it is split."""
+    it records known oversized methods, including library code such as zxing's generated PDF417 table."""
     known = dict(known or {})
     sizes = {}
     for name, item in classes.items():
