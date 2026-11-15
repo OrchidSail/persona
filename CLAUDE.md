@@ -189,7 +189,8 @@ People and Agents follow the same steps, each with their own GitHub account. Tem
 - Android: `scripts/app/android.sh [install|apk|test|lint|shots]` (`docs/android/android.md`).
 - Shared Rust core: `scripts/ci/core.sh` (needs rustup); a change to a wire type regenerates the clients' codecs (`native/app-core/README.md`).
 - HarmonyOS: from `harmony/`, run `node --test tests/*.test.mjs` and `node tests/run-domain.mjs` (Node.js 24+), then `devecocli build --build-mode release` with the API 26 SDK and locked native SSH core. Native device checks and fixture setup: `docs/harmony/harmony.md` ("Verification").
-- Web: `cd web && npm test && npm run build`; deploy with `scripts/deploy/deploy.sh web` (`docs/web/web.md`).
+- Web: `cd web && npm test && npm run build`, the build again after merging the latest `origin/main` (it prints the first screen's room under
+  `FIRST_SCREEN_BUDGET`; changes in flight share it); deploy with `scripts/deploy/deploy.sh web` (`docs/web/web.md`).
 - Docs: `python3 scripts/test/test_doc_paths.py`, `python3 scripts/test/test_doc_go_paths.py`, `python3 scripts/test/test_doc_sections.py`
   (a section name quoted after a doc path names a current heading) and `python3 scripts/test/test_doc_wire.py`
   (every WebSocket type, feature flag, extension point and manifest field has its row). Every change: `python3 scripts/privacy_check.py`.
@@ -269,7 +270,7 @@ Tokens live in `apple/Shared/Design` (also compiled for the watch and widgets); 
 | --- | --- |
 | `server/` | Go module: `personad` (hub / node / hook / mcp and helper commands), `persona-link`; `docs/server/server.md` |
 | `desktop/` | Electron desktop shell around the existing web app; native packaging and independently installed Link controls (`docs/desktop/desktop.md`) |
-| `apple/` | XcodeGen project (`apple/project.yml`): iOS, watchOS and visionOS (`Vision/`) apps, extensions, shared code in `Shared/`, tests; `apple/PersonaLink/` is the separate Mac menu bar app and Persona Screen helper until their independent Link migration (`docs/operations/link.md`) |
+| `apple/` | XcodeGen project (`apple/project.yml`): iOS, watchOS and visionOS (`Vision/`) apps, extensions, shared code in `Shared/`, tests; `apple/PersonaLink/` is the independent Link helper package's Persona Screen source, not a desktop UI (`docs/operations/link.md`) |
 | `android/` | Kotlin + Compose: `app`, `core/*`, `feature/*`, `platform/*` (`docs/android/android.md`) |
 | `web/` | Web app (Vite + React + Tailwind) served by the hub (`docs/web/web.md`) |
 | `integrations/` | Agent runtime integrations and the runtime SDK (`docs/integrations/runtimes.md`) |
