@@ -230,7 +230,7 @@ func (n *Node) clearAssistantRecovery(p *assistantProc, answered bool) {
 			// Answering on the configured model again ends the recovery marker; answering on the fallback keeps it so
 			// the apps keep naming the model that actually answers and why it switched (#7824). n.mu is already held,
 			// so do only the locked half; persist and notify after the unlock below (a reentrant lock would deadlock).
-			if r.from.Model != "" && r.from.Model == model.Model {
+			if r.from.Model == model.Model {
 				needPersist = n.releaseModelRecoveryLocked(p.id, r.from.Model)
 			}
 			// Write the hold after any release: a configured-model answer makes a from→from sticky record, which the
@@ -529,7 +529,8 @@ func (n *Node) runAssistantRecovery(p *assistantProc, r *assistantTurnRecovery, 
 		n.mu.Unlock()
 		// Make the node-driven switch visible: the marker names the configured model, the model now answering, why it
 		// switched and, when the upstream said so, when the configured model is available again (#7824).
-		n.recordRecoverySwitch(p.id, launcher, r.from.Model, next, ModelRecoveryReason(r.lastResult), r.lastReset, r.triedOrder)
+		n.recordRecoverySwitch(p.id, launcher, r.from.Model, resolvedAssistantDefault(list, r.from.Model), next,
+			ModelRecoveryReason(r.lastResult), r.lastReset, r.triedOrder)
 	}
 	err := assistantRecoverySend(withAssistantRecovery(ctx, r, !same), n, p, launcher, cwd, execution)
 	var pending *assistantPendingFailure

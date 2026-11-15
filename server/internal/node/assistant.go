@@ -395,26 +395,7 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 	if recovery == nil && id != "" {
 		askedModel := execution.Model
 		execution = n.heldFallback(id, launcher, execution) // the fallback that answered, for a while (#3788)
-		// A protected conversation's fallback is temporary: once the configured model is reachable again, the next
-		// request runs on it instead of staying pinned to the cheaper model (#7824). Only a conversation the node's own
-		// recovery moved is touched; worker conversations, and ones with no marker, keep what they asked for.
-		if marker := n.modelRecovery(id); marker != nil && !marker.ChainExhausted && marker.From != "" &&
-			n.recoveryProtected(id) {
-			// The hold expired on its own and already put the configured model back, or a probe/reset says it is back.
-			// Natural expiry clears only the marker: the two-hour sticky record must still skip a wasted same-model retry.
-			// A confirmed recovery or reset instead releases all recovery bookkeeping.
-			backViaHold := askedModel == marker.From && execution.Model == marker.From
-			if backViaHold || n.returnToConfiguredAt(ctx, id, time.Now()) {
-				if marker.From != execution.Model {
-					execution.Model = marker.From
-				}
-				if backViaHold {
-					n.clearModelRecovery(id)
-				} else {
-					n.releaseModelRecovery(id, marker.From)
-				}
-			}
-		}
+		execution = n.applyModelRecoveryReturn(ctx, id, askedModel, execution)
 	}
 	if execution.Model != "" {
 		if _, err := n.launcherModelCheck(ctx, launcher, execution.Model); err != nil {

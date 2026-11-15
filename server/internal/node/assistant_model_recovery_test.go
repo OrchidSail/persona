@@ -274,6 +274,122 @@ func TestRecoveryReturnsToTheConfiguredModelOnTheNextRequest(t *testing.T) {
 	}
 }
 
+// A launcher default keeps its requested execution (empty or literal "default") while ProbeFrom names the concrete
+// configured model. Recovery probes that concrete model, and the next send returns to the unchanged default request.
+func TestDefaultModelRecoveryReturnsAfterProbe(t *testing.T) {
+	const id = "11111111-2222-3333-4444-555555555555"
+	for _, requested := range []string{"", "default"} {
+		name := "empty"
+		if requested != "" {
+			name = "literal-default"
+		}
+		t.Run(name, func(t *testing.T) {
+			n, sent := recoveryTestNode(t, id, true, false)
+			assistantRecoveryModels = func(context.Context, *Node, string) (proto.LauncherModels, error) {
+				return proto.LauncherModels{Models: []proto.AgentModel{
+					{ID: "default", Resolved: "primary-model", Default: true},
+					{ID: "fallback-model"}, {ID: "last-model"},
+				}}, nil
+			}
+			st, _ := n.state.get(id)
+			st.Model = requested
+			n.state.put(id, st)
+			p := &assistantProc{id: id, agent: "claude", launcher: "claude", model: modelExecution{Model: requested}}
+			n.procs[id] = p
+			const failure = "API Error: 503 no eligible upstream account is currently available"
+			if !n.recoverAssistantResult(p, true, failure, "", assistantRecordKind) {
+				t.Fatal("the first default-model failure was not recovered")
+			}
+			if first := waitRecoverySend(t, sent); first.Model != requested {
+				t.Fatalf("the same-default retry used %q, want %q", first.Model, requested)
+			}
+			waitRecovery(t, "the same-default attempt to finish", func() bool {
+				n.mu.Lock()
+				defer n.mu.Unlock()
+				r := n.recoveries[id]
+				return r != nil && !r.running
+			})
+			if !n.recoverAssistantResult(p, true, failure, "", assistantRecordKind) {
+				t.Fatal("the second default-model failure was not recovered")
+			}
+			if next := waitRecoverySend(t, sent); next.Model != "fallback-model" {
+				t.Fatalf("the default-model recovery used %q", next.Model)
+			}
+			waitRecovery(t, "the default recovery marker", func() bool { return n.modelRecovery(id) != nil })
+			r := n.modelRecovery(id)
+			if r.From != requested || r.ProbeFrom != "primary-model" || r.To != "fallback-model" {
+				t.Fatalf("default marker %+v", r)
+			}
+			if st, _ := n.state.get(id); st.ModelRecovery == nil || st.ModelRecovery.From != requested || st.ModelRecovery.ProbeFrom != "primary-model" {
+				t.Fatalf("the default probe identity was not persisted: %+v", st.ModelRecovery)
+			}
+			fp := &assistantProc{id: id, agent: "claude", launcher: "claude", model: modelExecution{Model: "fallback-model"}}
+			n.mu.Lock()
+			n.procs[id] = fp
+			n.mu.Unlock()
+			n.clearAssistantRecovery(fp, true)
+			var probed string
+			assistantModelProbe = func(_ context.Context, _ *Node, _, model string) bool {
+				probed = model
+				return true
+			}
+			n.probeModelRecoveries(context.Background())
+			if probed != "primary-model" {
+				t.Fatalf("probed %q, want the concrete configured default", probed)
+			}
+			if r := n.modelRecovery(id); r == nil || !r.Returning {
+				t.Fatalf("the default did not enter Returning: %+v", r)
+			}
+			n.unavailable = map[string]time.Time{unavailableKey("claude", "primary-model"): time.Now().Add(time.Hour)}
+			asked := modelExecution{Model: requested, IsMain: true}
+			execution := n.heldFallback(id, "claude", asked)
+			execution = n.applyModelRecoveryReturn(context.Background(), id, asked.Model, execution)
+			if execution.Model != requested {
+				t.Fatalf("the return pinned execution model %q, want requested default %q", execution.Model, requested)
+			}
+			if n.modelRecovery(id) != nil {
+				t.Fatal("the default marker outlived the confirmed return")
+			}
+			if got := n.heldFallback(id, "claude", asked); got.Model != requested {
+				t.Fatalf("the fallback hold outlived the confirmed return: %q", got.Model)
+			}
+			n.mu.Lock()
+			_, unavailable := n.unavailable[unavailableKey("claude", "primary-model")]
+			n.mu.Unlock()
+			if unavailable {
+				t.Fatal("the concrete default's unavailable record outlived the return")
+			}
+		})
+	}
+}
+
+// Later switches and chain exhaustion retain the concrete probe identity of a launcher default.
+func TestDefaultModelRecoveryProbeFromSurvivesChainExhaustion(t *testing.T) {
+	const id = "11111111-2222-3333-4444-555555555555"
+	n, _ := recoveryTestNode(t, id, true, false)
+	n.recordRecoverySwitch(id, "claude", "", "primary-model", "fallback-model", proto.ModelRecoveryReasonServer, nil, []string{"primary-model", "fallback-model"})
+	n.recordRecoverySwitch(id, "claude", "", "", "last-model", proto.ModelRecoveryReasonServer, nil, []string{"primary-model", "fallback-model", "last-model"})
+	if r := n.modelRecovery(id); r == nil || r.From != "" || r.ProbeFrom != "primary-model" || r.To != "last-model" {
+		t.Fatalf("later switch lost the probe identity: %+v", r)
+	}
+	n.recordRecoveryExhausted(id, proto.ModelRecoveryReasonServer, nil, []string{"primary-model", "fallback-model", "last-model"})
+	r := n.modelRecovery(id)
+	if r == nil || !r.ChainExhausted || r.From != "" || r.ProbeFrom != "primary-model" || r.To != "last-model" {
+		t.Fatalf("exhaustion lost the probe identity: %+v", r)
+	}
+	b, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored proto.ModelRecovery
+	if err := json.Unmarshal(b, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.From != "" || restored.ProbeFrom != "primary-model" {
+		t.Fatalf("the probe identity did not survive persistence: %+v", restored)
+	}
+}
+
 // Publishing Returning replaces the marker instead of mutating a snapshot that session decoration may still be reading.
 func TestRecoveryProbePublishesReturningWithoutMutatingOldMarker(t *testing.T) {
 	const id = "11111111-2222-3333-4444-555555555555"
@@ -648,5 +764,44 @@ func TestClearAssistantRecoveryReleasesWithoutDeadlock(t *testing.T) {
 	n.mu.Unlock()
 	if f == nil || f.from.Model != "primary-model" || f.to.Model != "primary-model" || !sticky {
 		t.Fatalf("the configured-model answer lost its from→from sticky hold: %+v, sticky %v", f, sticky)
+	}
+}
+
+// An empty configured model is a valid launcher default, not a reason to skip configured-answer cleanup.
+func TestClearAssistantRecoveryAcceptsLauncherDefault(t *testing.T) {
+	const id = "11111111-2222-3333-4444-555555555555"
+	n, _ := recoveryTestNode(t, id, true, false)
+	n.putModelRecovery(id, &proto.ModelRecovery{From: "", ProbeFrom: "primary-model", To: "fallback-model", Reason: proto.ModelRecoveryReasonServer})
+	n.unavailable = map[string]time.Time{unavailableKey("claude", "primary-model"): time.Now().Add(time.Hour)}
+	p := &assistantProc{id: id, agent: "claude", launcher: "claude", model: modelExecution{Model: ""}}
+	n.procs[id] = p
+	n.recoveries = map[string]*assistantTurnRecovery{id: {
+		retried: map[string]bool{}, used: map[string]bool{}, launcher: "claude",
+		from: modelExecution{Model: ""}, switched: true}}
+	done := make(chan struct{})
+	go func() {
+		n.clearAssistantRecovery(p, true)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("clearAssistantRecovery deadlocked on a launcher default")
+	}
+	if n.modelRecovery(id) != nil {
+		t.Fatal("the default marker outlived a configured-default answer")
+	}
+	if st, _ := n.state.get(id); st.ModelRecovery != nil {
+		t.Fatal("the default marker remains persisted")
+	}
+	n.mu.Lock()
+	_, unavailable := n.unavailable[unavailableKey("claude", "primary-model")]
+	f := n.fallbacks[id]
+	n.mu.Unlock()
+	if unavailable {
+		t.Fatal("the concrete default's unavailable record was not released")
+	}
+	if f == nil || f.from.Model != "" || f.to.Model != "" {
+		t.Fatalf("the default answer did not preserve its sticky hold: %+v", f)
 	}
 }

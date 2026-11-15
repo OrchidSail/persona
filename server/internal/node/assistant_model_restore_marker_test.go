@@ -68,6 +68,46 @@ func TestRestoreModelHonorsTheNodeRecoveryMarker(t *testing.T) {
 	}
 }
 
+// A successful hub answer with a launcher and an empty model is a valid launcher default, not an unknown configuration.
+func TestRestoreModelHonorsLauncherDefaultRecovery(t *testing.T) {
+	const id = "11111111-2222-3333-4444-555555555555"
+	n := codexTestNode(t)
+	n.state.put(id, sessionState{Launcher: "claude", Cwd: t.TempDir(), Model: "", IsMain: true})
+	fh := withFakeHub(t, n)
+	fh.model = map[string]any{"launcher": "claude", "model": "", "is_main": true}
+	path := t.TempDir() + "/session.jsonl"
+	if err := os.WriteFile(path, []byte(`{"type":"user","message":{"role":"user","content":"hi"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	n.paths[id] = path
+	n.putModelRecovery(id, &proto.ModelRecovery{From: "", ProbeFrom: "primary-model", To: "fallback-model", Reason: proto.ModelRecoveryReasonServer})
+	n.fallbacks = map[string]*assistantFallback{id: {launcher: "claude", from: modelExecution{Model: ""},
+		to: modelExecution{Model: "fallback-model"}, at: time.Now(), until: time.Now().Add(assistantFallbackHold)}}
+	n.unavailable = map[string]time.Time{unavailableKey("claude", "primary-model"): time.Now().Add(time.Hour)}
+	p := &assistantProc{id: id, agent: "claude", launcher: "claude", stdin: &closeStub{},
+		cmd: &exec.Cmd{}, exited: make(chan struct{}), model: modelExecution{Model: "fallback-model"}}
+	n.procs[id] = p
+	out, err := n.restoreModel(context.Background(), id)
+	if err != nil {
+		t.Fatalf("restore refused a valid launcher default: %v", err)
+	}
+	if out["restore"] != proto.ModelRestoreNextStart || out["restore_to"] != "" || out["closed"] != true {
+		t.Fatalf("default restore answer %+v", out)
+	}
+	if n.modelRecovery(id) != nil {
+		t.Fatal("the default marker outlived manual restore")
+	}
+	if got := n.heldFallback(id, "claude", modelExecution{Model: ""}); got.Model != "" {
+		t.Fatalf("manual restore pinned or held the default: %+v", got)
+	}
+	n.mu.Lock()
+	_, unavailable := n.unavailable[unavailableKey("claude", "primary-model")]
+	n.mu.Unlock()
+	if unavailable {
+		t.Fatal("manual restore left the concrete default unavailable")
+	}
+}
+
 // A successful turn ends an exhausted chain's marker, so a later unrelated error does not show its stale cause.
 func TestSuccessfulTurnClearsAnExhaustedMarker(t *testing.T) {
 	const id = "11111111-2222-3333-4444-555555555555"

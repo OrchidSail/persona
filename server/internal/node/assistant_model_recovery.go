@@ -112,6 +112,24 @@ func (n *Node) modelRecovery(id string) *proto.ModelRecovery {
 	return nil
 }
 
+// modelRecoverySwitched says the marker is an active move to another model, not an exhausted or no-switch record.
+// From may legitimately be empty when the conversation follows the launcher default.
+func modelRecoverySwitched(r *proto.ModelRecovery) bool {
+	return r != nil && !r.ChainExhausted && r.To != "" && r.From != r.To
+}
+
+// modelRecoveryProbeFrom is the concrete model to probe. Explicit and older persisted records use From; a launcher
+// default keeps its requested From and carries its resolved identity separately.
+func modelRecoveryProbeFrom(r *proto.ModelRecovery) string {
+	if r == nil {
+		return ""
+	}
+	if r.ProbeFrom != "" {
+		return r.ProbeFrom
+	}
+	return r.From
+}
+
 // putModelRecovery stores the marker in memory and persists the session state so a node restart keeps it.
 func (n *Node) putModelRecovery(id string, r *proto.ModelRecovery) {
 	n.mu.Lock()
@@ -148,17 +166,23 @@ func (n *Node) persistModelRecovery(id string) {
 }
 
 // recordRecoverySwitch marks that recovery moved id from its configured model to the model that answers now. The
-// marker accumulates every model the chain tried and keeps the first failure's reason and reset time.
-func (n *Node) recordRecoverySwitch(id, launcher, from, to, reason string, resets *time.Time, tried []string) {
+// marker accumulates every model the chain tried and keeps the first failure's reason, reset time and probe identity.
+func (n *Node) recordRecoverySwitch(id, launcher, from, probeFrom, to, reason string, resets *time.Time, tried []string) {
 	if !n.recoveryProtected(id) {
 		return
 	}
 	prev := n.modelRecovery(id)
-	r := &proto.ModelRecovery{From: from, To: to, Reason: reason, At: time.Now().UTC(), Tried: append([]string{}, tried...)}
+	r := &proto.ModelRecovery{From: from, ProbeFrom: probeFrom, To: to, Reason: reason, At: time.Now().UTC(), Tried: append([]string{}, tried...)}
+	if prev != nil && prev.From == from {
+		if r.ProbeFrom == "" {
+			r.ProbeFrom = prev.ProbeFrom // a later model list must not strand an already resolved launcher default
+		}
+		if resets == nil {
+			r.ResetsAt = prev.ResetsAt // keep the first reset the upstream named for this configured model
+		}
+	}
 	if resets != nil {
 		r.ResetsAt = resets
-	} else if prev != nil && prev.From == from {
-		r.ResetsAt = prev.ResetsAt // keep the first reset the upstream named for this configured model
 	}
 	n.putModelRecovery(id, r)
 	n.notifySessions()
@@ -173,7 +197,7 @@ func (n *Node) recordRecoveryExhausted(id, reason string, resets *time.Time, tri
 	prev := n.modelRecovery(id)
 	r := &proto.ModelRecovery{Reason: reason, At: time.Now().UTC(), Tried: append([]string{}, tried...), ChainExhausted: true}
 	if prev != nil {
-		r.From, r.To = prev.From, prev.To
+		r.From, r.ProbeFrom, r.To = prev.From, prev.ProbeFrom, prev.To
 	}
 	if resets != nil {
 		r.ResetsAt = resets
@@ -214,7 +238,7 @@ func (n *Node) probeModelRecoveries(ctx context.Context) {
 	ids := map[string]bool{}
 	n.mu.Lock()
 	for id, r := range n.recoveryMarks {
-		if r != nil && !r.ChainExhausted && r.From != "" && r.From != r.To {
+		if modelRecoverySwitched(r) && modelRecoveryProbeFrom(r) != "" {
 			ids[id] = true
 		}
 	}
@@ -242,7 +266,7 @@ func (n *Node) probeModelRecoveries(ctx context.Context) {
 // configured model keeps the conversation on the fallback.
 func (n *Node) returnToConfiguredAt(ctx context.Context, id string, at time.Time) bool {
 	r := n.modelRecovery(id)
-	if r == nil || r.From == "" || r.From == r.To {
+	if !modelRecoverySwitched(r) {
 		return true
 	}
 	if r.ResetsAt != nil && at.After(*r.ResetsAt) {
@@ -252,6 +276,29 @@ func (n *Node) returnToConfiguredAt(ctx context.Context, id string, at time.Time
 		return true
 	}
 	return n.configuredModelAvailable(ctx, id)
+}
+
+// applyModelRecoveryReturn applies a protected conversation's temporary recovery to its next ordinary assistantSend.
+// askedModel is the request before heldFallback, so an empty or literal default remains distinguishable from a concrete
+// model. ProbeFrom is deliberately never copied into the execution.
+func (n *Node) applyModelRecoveryReturn(ctx context.Context, id, askedModel string, execution modelExecution) modelExecution {
+	marker := n.modelRecovery(id)
+	if !modelRecoverySwitched(marker) || !n.recoveryProtected(id) {
+		return execution
+	}
+	// Natural hold expiry already put the configured model back. Clear only the marker: the two-hour sticky record
+	// must still skip a wasted same-model retry. A confirmed recovery/reset releases all recovery bookkeeping.
+	backViaHold := askedModel == marker.From && execution.Model == marker.From
+	if !backViaHold && !n.returnToConfiguredAt(ctx, id, time.Now()) {
+		return execution
+	}
+	execution.Model = marker.From
+	if backViaHold {
+		n.clearModelRecovery(id)
+	} else {
+		n.releaseModelRecovery(id, marker.From)
+	}
+	return execution
 }
 
 // releaseModelRecovery clears every in-memory bookkeeping that would keep id off its configured model: the fallback
@@ -271,17 +318,23 @@ func (n *Node) releaseModelRecovery(id, configured string) {
 // marker was dropped. Caller must hold n.mu and must persist and notify only after releasing it (see
 // releaseModelRecovery and clearAssistantRecovery, which already holds n.mu).
 func (n *Node) releaseModelRecoveryLocked(id, configured string) (dropped bool) {
+	marker := n.recoveryMarks[id]
+	if marker == nil {
+		st, ok := n.state.get(id) // n.mu -> state.mu is the established order; a reconnect may have state only.
+		if ok {
+			marker = st.ModelRecovery
+		}
+	}
 	delete(n.fallbacks, id)
+	probeFrom := modelRecoveryProbeFrom(marker)
 	for k := range n.unavailable {
-		if _, model, ok := strings.Cut(k, "\x00"); ok && model == configured {
+		if _, model, ok := strings.Cut(k, "\x00"); ok &&
+			(model == configured || marker != nil && (model == marker.From || model == probeFrom)) {
 			delete(n.unavailable, k)
 		}
 	}
-	if n.recoveryMarks[id] == nil {
-		st, ok := n.state.get(id) // n.mu -> state.mu is the established order; a reconnect may have state only.
-		if !ok || st.ModelRecovery == nil {
-			return false
-		}
+	if marker == nil {
+		return false
 	}
 	n.putModelRecoveryLocked(id, nil)
 	return true
@@ -294,14 +347,15 @@ func unavailableKey(launcher, model string) string { return launcher + "\x00" + 
 // reachable: the model exists and is authenticated. A 429/5xx or a connection failure keeps the fallback in place.
 // Launchers without a reachable gateway answer false rather than guess, so the probe can never strand a conversation.
 func (n *Node) configuredModelAvailable(ctx context.Context, id string) bool {
-	// The configured model is the marker's From: session state's Model is what the process last ran, which a recovery
-	// send overwrites with the fallback, so it must not be what the probe asks for.
+	// Probe the concrete configured model, never session state's Model: a recovery send overwrites that with the
+	// fallback. For a launcher default, ProbeFrom carries that concrete identity without changing the requested From.
 	r := n.modelRecovery(id)
 	st, ok := n.state.get(id)
-	if r == nil || r.From == "" || !ok || st.Launcher == "" {
+	probeFrom := modelRecoveryProbeFrom(r)
+	if !modelRecoverySwitched(r) || probeFrom == "" || !ok || st.Launcher == "" {
 		return false
 	}
-	return n.launcherModelAnswers(ctx, st.Launcher, r.From)
+	return n.launcherModelAnswers(ctx, st.Launcher, probeFrom)
 }
 
 // launcherModelAnswers is one availability probe of model through launcher's gateway (assistantModelProbe, replaceable

@@ -258,7 +258,8 @@ type ModelRefusal struct {
 
 // ModelRestore is a pending "back to the configured model" (node session.restore_model, #2528): State
 // ModelRestoreNextStart says the session's idle headless process was closed (or none ran), so its next start asks for
-// To, the model the conversation is configured with as the node read it at At. Nothing about which model runs.
+// To, the model the conversation is configured with as the node read it at At. Empty To means the launcher default.
+// Nothing about which model runs.
 type ModelRestore struct {
 	State string    `json:"state"`
 	To    string    `json:"to,omitempty"`
@@ -274,9 +275,13 @@ const ModelRestoreNextStart = "next_start"
 // client-visible evidence before this. Main and leader/supervisor conversations recover automatically and return to
 // the configured model as soon as it is available again; worker Agents keep their own behavior.
 type ModelRecovery struct {
-	// From is the configured model the conversation asked for; To is the model that answers after the switch.
+	// From is the configured model the conversation asked for; empty and "default" both mean the launcher default.
+	// To is the model that answers after the switch.
 	From string `json:"from"`
 	To   string `json:"to"`
+	// ProbeFrom is the concrete configured default used only for availability probes and unavailable-cache cleanup.
+	// It never replaces From in the execution request, so returning does not pin a launcher default to a concrete model.
+	ProbeFrom string `json:"probe_from,omitempty"`
 	// Reason is one of the ModelRecoveryReason* values: why From could not answer.
 	Reason string `json:"reason"`
 	// At is when the node committed the switch to To.
