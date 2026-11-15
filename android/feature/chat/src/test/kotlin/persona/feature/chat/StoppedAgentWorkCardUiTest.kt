@@ -167,6 +167,27 @@ class StoppedAgentWorkCardUiTest {
         assertEquals(listOf(Resolution(answers = mapOf(firstPrompt to "Leave it", secondPrompt to "Leave it"))), sent)
     }
 
+    @Test fun stoppedWorkNextTurnsPageWithRetainedContinueAnswer() {
+        var blocked by mutableStateOf<String?>(null)
+        val sent = mutableListOf<Resolution>()
+        rule.setContent {
+            PersonaTheme(reduceMotion = true) {
+                InteractionPanel(listOf(multiWork), null, 600.dp, null, emptySet(), { _, resolution -> sent += resolution },
+                    null, {}, blockedReason = blocked)
+            }
+        }
+        val previous = resources.getString(R.string.chat_question_previous)
+        val next = resources.getString(R.string.chat_question_next)
+        // Retain a non-defer answer while the Agent runs, then return to that page after it stops.
+        rule.onNodeWithText("1. Handled, continue").performClick()
+        blocked = "The Agent has stopped"
+        rule.waitForIdle()
+        rule.onNodeWithText(previous).performClick()
+        rule.onNodeWithText(next).assertIsEnabled().performClick()
+        rule.onNodeWithText(secondPrompt).assertIsDisplayed()
+        assertTrue("Next only turns the page; it does not resolve the retained answer", sent.isEmpty())
+    }
+
     @Test fun stoppedWorkUnansweredPageMovesForwardAfterDeferPick() {
         val sent = mutableListOf<Resolution>()
         rule.setContent {
@@ -177,7 +198,7 @@ class StoppedAgentWorkCardUiTest {
         }
         val next = resources.getString(R.string.chat_question_next)
         val submit = resources.getString(R.string.chat_question_submit)
-        rule.onNodeWithText(next).assertIsNotEnabled()
+        rule.onNodeWithText(next).assertIsEnabled()
         rule.onNodeWithText("2. Leave it").assertIsEnabled().performClick()
         rule.onNodeWithText(secondPrompt).assertIsDisplayed()
         assertTrue("A single-choice defer pick moves forward without resolving", sent.isEmpty())

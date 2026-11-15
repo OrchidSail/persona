@@ -213,7 +213,6 @@ internal fun InteractionForm(
     val editable = !busy && !expired && !uncertain && !readOnly && !linkVisible && (!blocked || stoppedWork)
     fun act(action: AnswerAction, value: AnswerDraft = draft) {
         if (RequestExpiry.expired(interaction.expiresAt, Instant.now())) return
-        if (stoppedWork && !interaction.stoppedWorkAnswerAllowed(action, value)) return
         // A stopped card's page turn is navigation only, as on Web. AnswerBuilder may resolve Advance when every
         // question is answered, so only the last page's Submit may produce that Resolution (#6839).
         if (stoppedWork && action == AnswerAction.Advance) {
@@ -221,16 +220,17 @@ internal fun InteractionForm(
             update(value.copy(page = value.page + 1))
             return
         }
+        if (stoppedWork && !interaction.stoppedWorkAnswerAllowed(action, value)) return
         val result = AnswerBuilder.build(interaction, action, value, context)
         if (!result.allowed || (stoppedWork && !interaction.stoppedWorkResultAllowed(result))) return
         if (result.resolution == null) update(result.draft)
         else { password = ""; fieldValues = emptyMap(); onAnswer(action, result.draft, planRead) }
     }
     fun enabled(action: AnswerAction): Boolean {
-        if (stoppedWork && !interaction.stoppedWorkAnswerAllowed(action, draft)) return false
         if (stoppedWork && action == AnswerAction.Advance) {
             return editable && draft.page < interaction.questions.orEmpty().lastIndex
         }
+        if (stoppedWork && !interaction.stoppedWorkAnswerAllowed(action, draft)) return false
         val result = AnswerBuilder.build(interaction, action, draft, context)
         return result.allowed && (!stoppedWork || interaction.stoppedWorkResultAllowed(result))
     }
@@ -546,7 +546,7 @@ private fun CommandAskContent(ask: CommandAsk, now: Instant) {
     }
 }
 
-private val Interaction.isManagerWorkCard: Boolean
+internal val Interaction.isManagerWorkCard: Boolean
     get() = kind == "question" && toolName == "persona_triage"
 
 private fun Question.isDeferChoice(label: String): Boolean =
