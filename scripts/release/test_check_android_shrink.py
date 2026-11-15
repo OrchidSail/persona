@@ -349,6 +349,17 @@ class MethodSizeTests(unittest.TestCase):
                                ("persona.A.c(Lfoo<Bar>;)V 10001", "not a dex descriptor"),
                                ("persona.A.c()Lfoo(bar; 10001", "not a dex descriptor"),
                                ("persona.A.c(L[foo;)V 10001", "not a dex descriptor"),
+                               # Class descriptors use slash-separated, non-empty SimpleNames, not Java source dots
+                               # or other punctuation; leading, trailing and doubled slashes are not dex names.
+                               ("persona.A.c(Lfoo.bar;)V 10001", "not a dex descriptor"),
+                               ("persona.A.c(Lfoo:bar;)V 10001", "not a dex descriptor"),
+                               ("persona.A.c(Lfoo//bar;)V 10001", "not a dex descriptor"),
+                               ("persona.A.c(L;)V 10001", "not a dex descriptor"),
+                               ("persona.A.c(L/foo;)V 10001", "not a dex descriptor"),
+                               ("persona.A.c(Lfoo/;)V 10001", "not a dex descriptor"),
+                               # The list is whitespace-delimited, so a DEX 040 class-name space is rejected by
+                               # KNOWN_LINE before descriptor validation.
+                               ("persona.A.c(Lfoo bar;)V 10001", "expected `Class.method(descriptor) size`"),
                                # void is a return type of its own, never an array.
                                ("persona.A.c()[V 10001", "not a dex descriptor")):
             with self.subTest(line):
@@ -364,7 +375,8 @@ class MethodSizeTests(unittest.TestCase):
         path = Path(directory) / "list.txt"
         path.write_text("persona.A.a()V 10001\npersona.A.b(Lfoo;[I[[Ljava/lang/String;)J 10001\n"
                         "persona.A.c()Ljava/lang/String; 10001\npersona.A.d(Lfoo$Bar;)V 10001\n"
-                        "persona.A.e(I)Lfoo/Bar$Baz; 10001\npersona.A.f([[I)V 10001\n")
+                        "persona.A.e(I)Lfoo/Bar$Baz; 10001\npersona.A.f([[I)V 10001\n"
+                        "persona.A.g(Lfoo/bar$Baz;[Lfoo/bar;Lfoo/bar-baz_1;Lfoo/$lambda$2;)V 10001\n")
         self.assertEqual(shrink.read_known(path)[0], {
             "persona.A.a()V": 10001,
             "persona.A.b(Lfoo;[I[[Ljava/lang/String;)J": 10001,
@@ -372,6 +384,7 @@ class MethodSizeTests(unittest.TestCase):
             "persona.A.d(Lfoo$Bar;)V": 10001,
             "persona.A.e(I)Lfoo/Bar$Baz;": 10001,
             "persona.A.f([[I)V": 10001,
+            "persona.A.g(Lfoo/bar$Baz;[Lfoo/bar;Lfoo/bar-baz_1;Lfoo/$lambda$2;)V": 10001,
         })
 
     def test_a_list_line_at_or_under_the_limit_is_rejected(self):
