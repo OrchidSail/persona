@@ -21,6 +21,7 @@
     <string name="hub_remove_body">Remove this connection from the watch? Other connections will remain.</string>
     <string name="hub_partial">Some connections couldn’t update. Their saved tasks are read-only.</string>
     <string name="hub_added">Connection added</string>
-    <string name="hub_add_failed">Couldn’t add the connection. Check the address and pairing token.</string>
+    <string name="hub_add_failed">Couldn’t save the connection. Check the address; a new pairing link may be needed.</string>
+    <string name="hub_add_pending">Couldn’t finish adding the saved connection. Retry to restore it.</string>
     <string name="hub_duplicate">This connection is already saved.</string>
 </resources>

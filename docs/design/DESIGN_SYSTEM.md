@@ -1950,6 +1950,12 @@ settings. Complications display cached state and explicitly expire. Read-only ex
 watch tokens and do not turn provider actions, fields or arbitrary links into controls. Selecting a complication
 remains the user's watch-face choice; the app never replaces the face itself.
 
+Extension pie charts use proportional positive-value slices; donut charts use the same slices with the
+`ExtensionTokens.chartDonutHole` inner-radius ratio. Zero/nonpositive totals draw no fabricated slices, while
+the accessible value list retains the original values. Line, area, bar and readable OHLC presentations remain
+distinct rendering paths. Connection registration failures retain encrypted issued credentials for local retry;
+retrying a saved registration never redeems the one-time pairing token again.
+
 The independent Gradle build pins the watch to SDK 35, JVM 17, AGP 8.13.2 and Kotlin 2.1.20. The current phone
 Android dependency graph targets SDK 37 with AGP 9.5 and Kotlin 2.4.21, which the pinned watch toolchain cannot
 consume. The watch therefore shares the existing REST protocol and safety rules rather than importing that graph.

@@ -7,7 +7,7 @@ This document separates local checks, synthetic physical-device tests and real-H
 | Check | Recorded result | What it establishes |
 | --- | --- | --- |
 | App and test APK builds | Passed for `0.2.1` | Both packages compile; the test driver is separate from the app |
-| App unit tests | 97 passed | Parsing, permissions, scoping, drafts, rendering models and freshness rules |
+| App unit tests | 127 passed | Parsing, permissions, scoping, drafts, rendering models, freshness and review regressions |
 | Android Lint | Zero errors, 35 advisory warnings | Static analysis; warnings include dependency age, unused resources, accessibility/plural resources and intentionally pinned TLS handling |
 | Complication serialization | All five production timelines passed on-device | AndroidX wire conversion and Android `Parcel` round trips for three pet types and two extension types |
 | Rotation guard | Seven host-side checks passed | Preference restoration after success, failure and leaked charging rotation; unknown preferences are rejected |
@@ -27,6 +27,8 @@ node --test wear/tools/rotation-guard.test.mjs wear/tools/connect-watch.test.mjs
 ```
 
 The optional provider has its own [build and test instructions](qa/hub-status-extension/README.md#build-and-local-verification). Build/package success does not establish execution on every declared runtime.
+
+The PR #8554 review regressions add 30 host-side tests: nine registration fault/retry cases, eight shared-deadline boundaries, three removal completion cases, and ten chart drawing-plan checks. Registration tests model failed preferences commits that still change memory, restart recovery, cleanup failure and an unreadable saved credential. Chart tests exercise all six accepted kinds plus zero totals, single slices and donut geometry. These use the production registration/collection/completion/drawing logic; they do not establish Android Canvas pixels, Keystore behavior on a physical watch, or a new device acceptance run. A fresh Gradle run used `:app:assembleDebug :app:lintDebug :app:testDebugUnitTest --rerun-tasks`, with no unit failures or skips. The exchange-response-to-durable-credential gap remains outside local recovery, as described in [pairing](README.md#pairing-and-private-debug-provisioning).
 
 ## Physical-device checks with synthetic data
 

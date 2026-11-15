@@ -24,6 +24,7 @@ class ConnectionsActivity : Activity() {
     private lateinit var body: LinearLayout
     private var error = ""
     private var busy = false
+    private var recoveryFailed = false
     private var groups = emptyList<SavedHub>()
     private var primaryUrl: String? = null
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -33,9 +34,18 @@ class ConnectionsActivity : Activity() {
         busy = true
         render()
         io.execute {
-            val saved = directory.additional()
-            val primary = CredentialStore(this).load()?.baseUrl
-            main.post { if (!isDestroyed) { groups = saved; primaryUrl = primary; busy = false; render() } }
+            val recovery = runCatching { directory.recoverPending() }
+            val saved = runCatching { directory.additional() to CredentialStore(this).load()?.baseUrl }
+            main.post {
+                if (!isDestroyed) {
+                    recoveryFailed = recovery.isFailure
+                    if (saved.isFailure) error = getString(R.string.action_failed)
+                    else if (recoveryFailed) error = getString(R.string.hub_add_pending)
+                    else if (recovery.getOrNull() == true) error = getString(R.string.hub_added)
+                    saved.onSuccess { (rows, primary) -> groups = rows; primaryUrl = primary }
+                    busy = false; render()
+                }
+            }
         }
     }
     private fun render() {
@@ -45,6 +55,7 @@ class ConnectionsActivity : Activity() {
         body.addView(T.text(this, getString(R.string.hub_groups), T.title, bold = true))
         body.addView(T.text(this, getString(R.string.hub_primary), T.caption, T.secondary))
         if (error.isNotEmpty()) body.addView(T.text(this, error, T.caption, T.working))
+        if (recoveryFailed) button(R.string.retry) { reload() }
         groups.forEach { group ->
             body.addView(T.text(this, group.name, T.heading, bold = true))
             button(R.string.hub_remove) {
@@ -53,7 +64,13 @@ class ConnectionsActivity : Activity() {
                         busy = true; render()
                         io.execute {
                             val result = runCatching { directory.remove(group.id) }
-                            main.post { if (!isDestroyed) { if (result.isFailure) error = getString(R.string.action_failed); reload() } }
+                            main.post {
+                                if (!isDestroyed) {
+                                    completeConnectionRemoval(result,
+                                        showError = { error = getString(R.string.action_failed) },
+                                        reload = { reload() })
+                                }
+                            }
                         }
                     }.show()
             }
@@ -84,9 +101,7 @@ class ConnectionsActivity : Activity() {
             body.addView(T.text(this, getString(R.string.pairing), T.caption))
             io.execute {
                 val result = runCatching {
-                    val paired = HubClient(config).pair()
-                    // Persist before the first refresh: a one-time pairing token cannot be redeemed again.
-                    directory.add(title, paired)
+                    directory.add(title, config) { HubClient(it).pair() }
                 }
                 main.post { if (!isDestroyed) { error = getString(if (result.isSuccess) R.string.hub_added else R.string.hub_add_failed); reload() } }
             }

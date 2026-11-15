@@ -18,6 +18,8 @@ class CredentialStore(context: Context, namespace: String = "connection") {
     init { require(namespace == "connection" || namespace.matches(Regex("group_[a-f0-9-]{36}"))) }
     private val file = File(context.noBackupFilesDir, "$namespace.enc")
 
+    @Synchronized fun exists(): Boolean = file.exists()
+
     @Synchronized fun load(): HubConfig? {
         if (!file.exists()) return null
         return try {

@@ -23,7 +23,6 @@ import dev.persona.watch.ui.WatchTheme as T
 import java.text.NumberFormat
 import java.util.Locale
 import java.util.concurrent.Executors
-import kotlin.math.abs
 
 /** Wrist-sized, read-only extension projections. Provider actions never become Android controls. */
 class ExtensionWidgetsActivity : Activity() {
@@ -314,9 +313,10 @@ class ExtensionWidgetsActivity : Activity() {
         text(value.title, T.heading)
         value.series.forEach { series ->
             text(series.name, T.caption, T.secondary)
-            if (value.kind == "candlestick") series.points.take(4).forEach { text(pointText(it, value.unit, true), T.caption) }
+            val drawing = WidgetChartDrawing.from(value.kind, series.points)
+            if (drawing is WidgetChartDrawing.Values) drawing.points.forEach { text(pointText(it, value.unit, true), T.caption) }
             else if (series.points.isNotEmpty()) {
-                body.addView(WidgetChartView(this, value.kind, series.points).apply {
+                body.addView(WidgetChartView(this, drawing).apply {
                     contentDescription = series.points.joinToString("\n") { pointText(it, value.unit, false) }
                     importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
                 })
@@ -360,36 +360,51 @@ class ExtensionWidgetsActivity : Activity() {
 }
 
 /** Small-multiple plot; full labelled values remain available without relying on color or hover. */
-private class WidgetChartView(context: Context, private val kind: String, private val points: List<WidgetPoint>) : View(context) {
+private class WidgetChartView(context: Context, private val drawing: WidgetChartDrawing) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = T.ink; strokeWidth = T.dp(context, ExtensionTokens.chartLine).toFloat() }
     init { layoutParams = LinearLayout.LayoutParams(-1, T.dp(context, ExtensionTokens.chartHeight)) }
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        if (points.isEmpty() || width <= 0 || height <= 0) return
-        val line = kind in setOf("line", "area")
-        val scale = points.maxOf { abs(it.value) }.coerceAtLeast(1.0)
-        val normalized = points.map { it.value / scale }
-        val low = if (line) normalized.minOrNull()!! else minOf(0.0, normalized.minOrNull()!!)
-        val high = if (line) normalized.maxOrNull()!! else maxOf(0.0, normalized.maxOrNull()!!)
+        if (width <= 0 || height <= 0) return
         val inset = T.dp(context, T.lineGap).toFloat()
         val spanX = (width - inset * 2).coerceAtLeast(1f)
         val spanY = (height - inset * 2).coerceAtLeast(1f)
-        fun x(index: Int) = inset + (index + 0.5f) * spanX / points.size
-        fun y(value: Double) = inset + (if (high == low) 0.5 else 1.0 - (value - low) / (high - low)).toFloat() * spanY
+        fun x(point: WidgetChartDrawing.Position) = inset + point.x * spanX
+        fun y(value: Float) = inset + value * spanY
         paint.color = T.ink; paint.alpha = 255
-        if (line) {
-            val path = Path()
-            normalized.forEachIndexed { index, value -> if (index == 0) path.moveTo(x(index), y(value)) else path.lineTo(x(index), y(value)) }
-            if (kind == "area") {
-                val fill = Path(path).apply { lineTo(x(points.lastIndex), y(low)); lineTo(x(0), y(low)); close() }
-                paint.style = Paint.Style.FILL; paint.alpha = ExtensionTokens.chartFillAlpha; canvas.drawPath(fill, paint); paint.alpha = 255
+        when (val plot = drawing) {
+            is WidgetChartDrawing.Line -> {
+                if (plot.points.isEmpty()) return
+                val path = Path()
+                plot.points.forEachIndexed { index, point -> if (index == 0) path.moveTo(x(point), y(point.y)) else path.lineTo(x(point), y(point.y)) }
+                if (plot.filled) {
+                    val fill = Path(path).apply { lineTo(x(plot.points.last()), y(plot.baseline)); lineTo(x(plot.points.first()), y(plot.baseline)); close() }
+                    paint.style = Paint.Style.FILL; paint.alpha = ExtensionTokens.chartFillAlpha; canvas.drawPath(fill, paint); paint.alpha = 255
+                }
+                paint.style = Paint.Style.STROKE; canvas.drawPath(path, paint)
+                if (plot.points.size == 1) { paint.style = Paint.Style.FILL; canvas.drawCircle(x(plot.points[0]), y(plot.points[0].y), paint.strokeWidth, paint) }
             }
-            paint.style = Paint.Style.STROKE; canvas.drawPath(path, paint)
-            if (points.size == 1) { paint.style = Paint.Style.FILL; canvas.drawCircle(x(0), y(normalized[0]), paint.strokeWidth, paint) }
-        } else {
-            paint.style = Paint.Style.FILL
-            val half = minOf(T.dp(context, ExtensionTokens.chartBar).toFloat(), spanX / points.size * 0.7f) / 2
-            normalized.forEachIndexed { index, value -> canvas.drawRect(x(index) - half, minOf(y(value), y(0.0)), x(index) + half, maxOf(y(value), y(0.0)), paint) }
+            is WidgetChartDrawing.Bars -> {
+                if (plot.points.isEmpty()) return
+                paint.style = Paint.Style.FILL
+                val half = minOf(T.dp(context, ExtensionTokens.chartBar).toFloat(), spanX / plot.points.size * ExtensionTokens.chartBarFraction) / 2
+                plot.points.forEach { point -> canvas.drawRect(x(point) - half, minOf(y(point.y), y(plot.baseline)), x(point) + half, maxOf(y(point.y), y(plot.baseline)), paint) }
+            }
+            is WidgetChartDrawing.Circular -> {
+                val radius = minOf(spanX, spanY) / 2
+                val centerX = width / 2f
+                val centerY = height / 2f
+                val arc = plot.geometry(radius, ExtensionTokens.chartDonutHole)
+                paint.style = if (arc.useCenter) Paint.Style.FILL else Paint.Style.STROKE
+                paint.strokeWidth = arc.strokeWidth
+                val colors = intArrayOf(T.accent, T.positive, T.working, T.brand, T.secondary)
+                plot.slices.forEach { slice ->
+                    paint.color = colors[slice.pointIndex % colors.size]
+                    canvas.drawArc(centerX - arc.radius, centerY - arc.radius, centerX + arc.radius, centerY + arc.radius,
+                        slice.start, slice.sweep, arc.useCenter, paint)
+                }
+            }
+            is WidgetChartDrawing.Values -> Unit
         }
     }
 }
@@ -399,6 +414,8 @@ private object ExtensionTokens {
     const val chartHeight = 72
     const val chartLine = 2
     const val chartBar = 6
+    const val chartBarFraction = 0.7f
+    const val chartDonutHole = 0.55f
     const val chartFillAlpha = 42
     const val progressHeight = 8
     const val progressSteps = 1000

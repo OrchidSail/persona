@@ -21,6 +21,7 @@
     <string name="hub_remove_body">从手表移除这条连接？其他连接会保留。</string>
     <string name="hub_partial">部分连接未能更新，其缓存任务暂时只能查看。</string>
     <string name="hub_added">已添加连接</string>
-    <string name="hub_add_failed">无法添加连接。请检查地址和配对令牌。</string>
+    <string name="hub_add_failed">无法保存连接。请检查地址；可能需要新的配对链接。</string>
+    <string name="hub_add_pending">尚未完成保存的连接。请重试以恢复。</string>
     <string name="hub_duplicate">这条连接已保存。</string>
 </resources>

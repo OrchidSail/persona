@@ -46,6 +46,8 @@ The app's connection screen accepts a hub address and pairing credential, then e
 
 It also accepts a copied `persona://pair` link. A link's explicit TLS port and public-key pin are preserved; alternate origins are not followed. Settings → Connections adds or removes extra connections without changing the primary hub or other groups' drafts.
 
+Adding an extra connection journals its metadata before exchanging the pairing token. The issued watch credential is encrypted before the directory entry is committed. If that commit fails, opening Connections or choosing Retry finishes the saved registration, including after an app restart, without exchanging the one-time token again. An unreadable saved credential is retained for recovery rather than silently discarded. A crash, lost response or storage failure before the issued credential becomes durable cannot be recovered locally; a new pairing link may be needed in that case.
+
 For device development, a debug build additionally accepts `files/debug-pairing.json` in its private directory. The file contains `baseUrl`, `token`, and optional `fingerprint` and `deviceId`; use a watch-specific answer credential. The debug import is launched with `--ez import_pairing true`. It is not an exported token-reading service or a production onboarding mechanism. The app consumes the file and protects the stored credential.
 
 Keep the source configuration in a private local file outside version control. The repository's ignored `tmp/` is an option for temporary testing, but a private directory outside cloud-synced projects is preferable. Never paste its contents into logs, screenshots, issues, or chat.
