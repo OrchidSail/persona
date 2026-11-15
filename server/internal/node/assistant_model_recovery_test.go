@@ -294,7 +294,7 @@ func TestDefaultModelRecoveryReturnsAfterProbe(t *testing.T) {
 			st, _ := n.state.get(id)
 			st.Model = requested
 			n.state.put(id, st)
-			p := &assistantProc{id: id, agent: "claude", launcher: "claude", model: modelExecution{Model: requested}, replyModel: "primary-model"}
+			p := &assistantProc{id: id, agent: "claude", launcher: "claude", model: modelExecution{Model: requested}}
 			n.procs[id] = p
 			const failure = "API Error: 503 no eligible upstream account is currently available"
 			if !n.recoverAssistantResult(p, true, failure, "", assistantRecordKind) {
@@ -309,6 +309,11 @@ func TestDefaultModelRecoveryReturnsAfterProbe(t *testing.T) {
 				r := n.recoveries[id]
 				return r != nil && !r.running
 			})
+			// The first failure emitted no message_start. Only the retry names the concrete default; the existing
+			// recovery chain must capture it now rather than staying unprobeable or reading a later fallback's name.
+			p.mu.Lock()
+			p.replyModel = "primary-model"
+			p.mu.Unlock()
 			if !n.recoverAssistantResult(p, true, failure, "", assistantRecordKind) {
 				t.Fatal("the second default-model failure was not recovered")
 			}

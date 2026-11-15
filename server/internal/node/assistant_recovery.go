@@ -311,6 +311,10 @@ func (n *Node) recoverAssistantResultFor(p *assistantProc, expected *assistantTu
 
 	n.mu.Lock()
 	r := n.recoveries[p.id]
+	if r != nil && r.probeFrom == "" && (r.from.Model == "" || r.from.Model == "default") &&
+		(execution.Model == "" || execution.Model == "default") {
+		r.probeFrom = replyModel // a retry may be the first attempt that names the concrete launcher default
+	}
 	if n.recoveryClosed {
 		if r == nil {
 			owner := p.ownerOr(n)
