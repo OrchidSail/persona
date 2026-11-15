@@ -18,7 +18,7 @@ function hostOf(src: string): string {
 }
 
 const gateClass =
-  "my-0.5 inline-flex items-center gap-1.5 rounded-chip bg-inset px-2.5 py-1 text-[12.5px] text-ink-2 shadow-btn hover:bg-hover hover:text-ink";
+  "my-0.5 inline-flex items-center gap-1.5 rounded-chip bg-inset px-2.5 py-1 text-label text-ink-2 shadow-btn hover:bg-hover hover:text-ink";
 
 export function ExternalImage({ node: _node, src = "", alt = "", ...rest }: ComponentProps<"img"> & { node?: unknown }) {
   const [gate, setGate] = useState<GateState>("idle");
