@@ -37,6 +37,11 @@ func TestRestoreModelHonorsTheNodeRecoveryMarker(t *testing.T) {
 	n.paths[id] = path
 	// No transcript fallback: the only evidence is the node's own marker, exactly the 23:20 situation.
 	n.putModelRecovery(id, &proto.ModelRecovery{From: "primary-model", To: "fallback-model", Reason: proto.ModelRecoveryReasonSafeguards})
+	// A reconnect keeps the persisted marker and the keeper's hold, but not the recoveryMarks map.
+	n.recoveryMarks = nil
+	if r := n.modelRecovery(id); r == nil {
+		t.Fatal("the state-only marker is not visible before restore")
+	}
 	n.fallbacks = map[string]*assistantFallback{id: {launcher: "claude", from: modelExecution{Model: "primary-model"},
 		to: modelExecution{Model: "fallback-model"}, at: time.Now(), until: time.Now().Add(assistantFallbackHold)}}
 	// An idle process the restore closes (a proc with the seams stop() needs, like rsProc).
@@ -54,6 +59,9 @@ func TestRestoreModelHonorsTheNodeRecoveryMarker(t *testing.T) {
 	}
 	if n.modelRecovery(id) != nil {
 		t.Fatal("the marker outlived the restore")
+	}
+	if st, _ := n.state.get(id); st.ModelRecovery != nil {
+		t.Fatal("the state-only marker was not cleared from session state")
 	}
 	if got := n.heldFallback(id, "claude", modelExecution{Model: "primary-model"}); got.Model != "primary-model" {
 		t.Fatalf("the hold was not released: %+v", got)

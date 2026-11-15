@@ -384,6 +384,34 @@ func TestRecoveryMarkerClearsWhenTheHoldExpiresWithoutAProbe(t *testing.T) {
 	}
 }
 
+// A reconnect has the same expired hold and persisted marker, but no recoveryMarks map entry yet.
+func TestRecoveryStateOnlyMarkerClearsWhenTheHoldExpiresWithoutAProbe(t *testing.T) {
+	const id = "11111111-2222-3333-4444-555555555555"
+	n, _ := recoveryTestNode(t, id, true, false)
+	n.putModelRecovery(id, &proto.ModelRecovery{From: "primary-model", To: "fallback-model", Reason: proto.ModelRecoveryReasonQuota})
+	n.recoveryMarks = nil
+	n.fallbacks = map[string]*assistantFallback{id: {launcher: "claude",
+		from: modelExecution{Model: "primary-model"}, to: modelExecution{Model: "fallback-model"},
+		at: time.Now().Add(-assistantFallbackHold - time.Minute), until: time.Now().Add(-time.Minute)}}
+	if r := n.modelRecovery(id); r == nil {
+		t.Fatal("the state-only marker is not visible before assistantSend")
+	}
+	asked := modelExecution{Model: "primary-model"}
+	got := n.heldFallback(id, "claude", asked)
+	backViaHold := asked.Model == "primary-model" && got.Model == "primary-model"
+	if !backViaHold {
+		t.Fatalf("the expired hold did not reach assistantSend's backViaHold branch: %+v", got)
+	}
+	// Mirror assistantSend's natural-expiry branch.
+	n.releaseModelRecovery(id, "primary-model")
+	if n.modelRecovery(id) != nil {
+		t.Fatal("the state-only marker outlived the expired hold")
+	}
+	if st, _ := n.state.get(id); st.ModelRecovery != nil {
+		t.Fatal("the state-only marker was not cleared from session state")
+	}
+}
+
 // While the 30-minute hold is still active and the configured model has not answered a probe, the conversation stays
 // on its fallback: the natural-expiry release must not fire early (#7824).
 func TestActiveHoldIsNotReleasedEarly(t *testing.T) {
@@ -419,6 +447,11 @@ func TestClearAssistantRecoveryReleasesWithoutDeadlock(t *testing.T) {
 	const id = "11111111-2222-3333-4444-555555555555"
 	n, _ := recoveryTestNode(t, id, true, false)
 	n.putModelRecovery(id, &proto.ModelRecovery{From: "primary-model", To: "fallback-model", Reason: proto.ModelRecoveryReasonQuota})
+	// A reconnect keeps session state but starts with no in-memory recovery markers.
+	n.recoveryMarks = nil
+	if r := n.modelRecovery(id); r == nil {
+		t.Fatal("the state-only marker is not visible before the release")
+	}
 	// A recovery that switched, now answered on the configured model again.
 	p := &assistantProc{id: id, agent: "claude", launcher: "claude", model: modelExecution{Model: "primary-model"}}
 	n.procs[id] = p

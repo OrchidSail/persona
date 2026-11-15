@@ -50,7 +50,7 @@ func ModelRecoveryReason(result string) string {
 var (
 	// "an account becomes available again at 15:48 UTC (in 32m)" and the dated form
 	// "... available again at 2026-11-17 04:03 UTC (in 2d3h)". The words are a gateway's, so the match stays narrow.
-	gatewayAvailableRe     = regexp.MustCompile(`(?i)available again at (?:(\d{4})-(\d{2})-(\d{2})\s+)?(\d{2}):(\d{2})\s*UTC`)
+	gatewayAvailableRe      = regexp.MustCompile(`(?i)available again at (?:(\d{4})-(\d{2})-(\d{2})\s+)?(\d{2}):(\d{2})\s*UTC`)
 	modelRecoveryProbeEvery = time.Minute
 )
 
@@ -257,27 +257,30 @@ func (n *Node) releaseModelRecovery(id, configured string) {
 	n.mu.Lock()
 	had := n.releaseModelRecoveryLocked(id, configured)
 	n.mu.Unlock()
-	n.forgetFallback(id)
 	if had {
 		n.persistModelRecovery(id)
 		n.notifySessions()
 	}
 }
 
-// releaseModelRecoveryLocked does the n.mu-guarded half of a release and reports whether a marker was dropped.
-// Caller must hold n.mu and must persist and notify only after releasing it (see releaseModelRecovery and
-// clearAssistantRecovery, which already holds n.mu).
+// releaseModelRecoveryLocked does the n.mu-guarded half of a release and reports whether an in-memory or persisted
+// marker was dropped. Caller must hold n.mu and must persist and notify only after releasing it (see
+// releaseModelRecovery and clearAssistantRecovery, which already holds n.mu).
 func (n *Node) releaseModelRecoveryLocked(id, configured string) (dropped bool) {
+	delete(n.fallbacks, id)
 	for k := range n.unavailable {
 		if _, model, ok := strings.Cut(k, "\x00"); ok && model == configured {
 			delete(n.unavailable, k)
 		}
 	}
-	if n.recoveryMarks[id] != nil {
-		n.putModelRecoveryLocked(id, nil)
-		return true
+	if n.recoveryMarks[id] == nil {
+		st, ok := n.state.get(id) // n.mu -> state.mu is the established order; a reconnect may have state only.
+		if !ok || st.ModelRecovery == nil {
+			return false
+		}
 	}
-	return false
+	n.putModelRecoveryLocked(id, nil)
+	return true
 }
 
 func unavailableKey(launcher, model string) string { return launcher + "\x00" + model }
