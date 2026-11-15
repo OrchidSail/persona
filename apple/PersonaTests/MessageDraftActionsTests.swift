@@ -89,8 +89,8 @@ struct MessageDraftActionsTests {
         #expect(TasksStore.messageState(card("feed_2"), inbox: item, sentHere: false, refused: false) == .open)
         let store = TasksStore(toast: { _ in })
         store.later(dismissed.id)
-        #expect(store.laterMessages.contains(dismissed.id))
-        #expect(!store.laterMessages.contains("feed_2"))
+        #expect(store.isLater(dismissed))
+        #expect(!store.isLater(card("feed_2")))
     }
 
     @Test func refreshedSnapshotRestoresPersistedDismissalAndUndo() async throws {
