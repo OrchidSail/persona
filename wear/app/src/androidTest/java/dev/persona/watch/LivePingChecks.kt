@@ -1,0 +1,255 @@
+package dev.persona.watch
+
+import android.app.Activity
+import android.app.Instrumentation
+import android.content.Intent
+import android.graphics.Bitmap
+import android.os.Bundle
+import android.os.SystemClock
+import android.view.WindowManager
+import android.view.accessibility.AccessibilityNodeInfo
+import dev.persona.watch.data.HubClient
+import dev.persona.watch.data.HubConfig
+import dev.persona.watch.data.WatchMessage
+import dev.persona.watch.data.WatchSession
+import java.io.File
+import java.net.URI
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+
+/** Explicitly selected, pre-created acceptance chat only. Writes go through the visible Send button. */
+class LivePingChecks(private val instrumentation: Instrumentation) {
+    private val context get() = instrumentation.targetContext
+    private val automation get() = instrumentation.uiAutomation
+    private lateinit var config: HubConfig
+    private lateinit var client: HubClient
+    private lateinit var session: WatchSession
+    private var activity: Activity? = null
+    private var deadline = 0L
+
+    fun run(sessionId: String): Bundle {
+        check(BuildConfig.DEBUG) { "live_ping_requires_debug" }
+        check(sessionId.isNotBlank() && sessionId == sessionId.trim()) { "live_ping_explicit_session_required" }
+        config = checkNotNull(CredentialStore(context).load()) { "live_ping_not_paired" }.validated()
+        check(config.token != FIXTURE_TOKEN) { "live_ping_real_credential_required" }
+        check(URI(config.baseUrl).scheme == "https" && config.fingerprint != null) { "live_ping_pinned_tls_required" }
+        client = HubClient(config, "en")
+        val started = SystemClock.elapsedRealtime()
+        deadline = started + TOTAL_TIMEOUT_MS
+        session = checkNotNull(client.refresh().sessions.singleOrNull { it.sessionId == sessionId }) {
+            "live_ping_exact_unique_session_required"
+        }
+        check(session.machineId != "fixture") { "live_ping_real_session_required" }
+        val initial = client.messages(session)
+        verifyDedicatedChat(initial)
+        val alreadySent = initial.any { it.own && it.text == PING }
+        if (!alreadySent) check(session.canSend) { "live_ping_session_read_only" }
+        var clickedSend = false
+        var acknowledgedAt = 0L
+        var completedAt = 0L
+        var sendStarted = SystemClock.elapsedRealtime()
+        try {
+            status("guarded")
+            openSession()
+            if (!alreadySent) {
+                // Observe the same acceptance-chat marker in the production UI before editing its composer.
+                waitText(READY)
+                setReply()
+                sameCredential()
+                val beforeClick = client.messages(session)
+                verifyDedicatedChat(beforeClick)
+                if (beforeClick.none { it.own && it.text == PING }) {
+                    sendStarted = SystemClock.elapsedRealtime()
+                    clickSendOnce()
+                    clickedSend = true
+                    status("sent_via_ui")
+                }
+            }
+            val pollStarted = SystemClock.elapsedRealtime()
+            val pollEnd = minOf(deadline, pollStarted + REPLY_TIMEOUT_MS)
+            val reader = Executors.newSingleThreadExecutor()
+            var finalMessages = emptyList<WatchMessage>()
+            try {
+                while (SystemClock.elapsedRealtime() < pollEnd) {
+                    sameCredential()
+                    val remaining = pollEnd - SystemClock.elapsedRealtime()
+                    if (remaining <= 0) break
+                    val read = reader.submit<List<WatchMessage>> { client.messages(session) }
+                    val messages = try { read.get(remaining, TimeUnit.MILLISECONDS) }
+                    catch (_: Exception) {
+                        read.cancel(true)
+                        throw AssertionError("live_ping_reply_read_failed")
+                    }
+                    verifyDedicatedChat(messages)
+                    val pingCount = messages.count { it.own && it.text == PING }
+                    check(pingCount <= 1) { "live_ping_duplicate_ping" }
+                    if (pingCount == 1 && acknowledgedAt == 0L) acknowledgedAt = SystemClock.elapsedRealtime()
+                    if (pingCount == 1 && messages.any { isAssistant(it, PONG) }) {
+                        completedAt = SystemClock.elapsedRealtime()
+                        finalMessages = messages
+                        break
+                    }
+                    SystemClock.sleep(minOf(NETWORK_POLL_MS, (pollEnd - SystemClock.elapsedRealtime()).coerceAtLeast(0)))
+                }
+            } finally {
+                reader.shutdownNow()
+            }
+            check(completedAt > 0) { "live_ping_pong_timeout" }
+            // Re-enter through the production route, then actually reveal the returned assistant text.
+            openSession()
+            waitText(PONG)
+            screenshot()
+            status("pong_visible")
+            return Bundle().apply {
+                putBoolean("live_ping", true)
+                putBoolean("live_ping_sent_by_ui", clickedSend)
+                putBoolean("live_ping_reused_existing_ping", !clickedSend)
+                putInt("live_ping_own_ping_count", finalMessages.count { it.own && it.text == PING })
+                putInt("live_ping_pong_count", finalMessages.count { isAssistant(it, PONG) })
+                putInt("live_ping_transcript_messages", finalMessages.size)
+                putLong("live_ping_ack_ms", if (clickedSend) acknowledgedAt - sendStarted else 0)
+                putLong("live_ping_roundtrip_ms", if (clickedSend) completedAt - sendStarted else 0)
+                putLong("live_ping_elapsed_ms", SystemClock.elapsedRealtime() - started)
+                putString("live_ping_screenshot", "files/fixture-qa/real-pong.png")
+                putString("stream", "PASS: real watch UI to TLS hub to agent; PONG visible\n")
+            }
+        } finally {
+            clearKeepScreenOn()
+        }
+    }
+
+    private fun verifyDedicatedChat(messages: List<WatchMessage>) {
+        sameCredential()
+        val initial = messages.filter { it.own && it.text.contains(INITIAL_MARKER) && it.text.contains(PING) && it.text.contains(PONG) }
+        check(initial.size == 1) { "live_ping_initial_marker_required" }
+        check(messages.any { isAssistant(it, READY) || isAssistant(it, PONG) }) { "live_ping_ready_marker_required" }
+        check(messages.filter { it.own }.all { it === initial.single() || it.text == PING }) {
+            "live_ping_unrelated_chat_content"
+        }
+        check(messages.count { it.own && it.text == PING } <= 1) { "live_ping_duplicate_ping" }
+    }
+
+    private fun isAssistant(message: WatchMessage, value: String) =
+        !message.own && message.role == "assistant" && message.text.trim() == value
+
+    private fun sameCredential() {
+        check(CredentialStore(context).load() == config && config.token != FIXTURE_TOKEN) { "live_ping_credential_changed" }
+        check(SystemClock.elapsedRealtime() < deadline) { "live_ping_total_timeout" }
+    }
+
+    private fun openSession() {
+        sameCredential()
+        clearKeepScreenOn()
+        val current = instrumentation.startActivitySync(Intent(context, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            putExtra("screen", "session")
+            putExtra("session_id", session.sessionId)
+        })
+        activity = current
+        instrumentation.runOnMainSync { current.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+        waitUntil("app_window") { automation.rootInActiveWindow?.packageName?.toString() == context.packageName }
+        waitText(session.title)
+    }
+
+    private fun setReply() {
+        waitUntil("reply_field") {
+            val field = nodes().firstOrNull { it.isEditable && it.isEnabled && it.isVisibleToUser }
+            if (field == null) {
+                revealOrScroll { it.isEditable }
+                false
+            } else {
+                // Do not overwrite an unrelated draft, even inside the dedicated test conversation.
+                check(field.isShowingHintText || field.text.isNullOrEmpty() || field.text?.toString() == PING) { "live_ping_unrelated_draft" }
+                field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply {
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, PING)
+                })
+            }
+        }
+        waitUntil("reply_value") { nodes().any { it.isEditable && it.text?.toString() == PING } }
+    }
+
+    private fun clickSendOnce() {
+        val label = context.getString(R.string.send)
+        var button: AccessibilityNodeInfo? = null
+        waitUntil("send_visible") {
+            val found = nodes().firstOrNull { matches(it, label) && it.isVisibleToUser && it.isEnabled && it.isClickable }
+            if (found == null) { revealOrScroll { matches(it, label) }; false }
+            else { button = found; true }
+        }
+        sameCredential()
+        // Exactly one attempt. A false/uncertain UI result must never trigger another click automatically.
+        check(checkNotNull(button).performAction(AccessibilityNodeInfo.ACTION_CLICK)) { "live_ping_send_click_unconfirmed" }
+    }
+
+    private fun waitText(value: String) = waitUntil("text_visible") {
+        if (nodes().any { matches(it, value) && it.isVisibleToUser }) true
+        else { revealOrScroll { matches(it, value) }; false }
+    }
+
+    private fun revealOrScroll(match: (AccessibilityNodeInfo) -> Boolean) {
+        val current = nodes()
+        val hidden = current.firstOrNull(match)
+        if (hidden?.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id) == true) return
+        current.firstOrNull { it.isScrollable && it.isVisibleToUser }?.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+    }
+
+    private fun nodes(): List<AccessibilityNodeInfo> {
+        val root = automation.rootInActiveWindow ?: return emptyList()
+        if (root.packageName?.toString() != context.packageName) return emptyList()
+        val result = mutableListOf<AccessibilityNodeInfo>()
+        fun visit(node: AccessibilityNodeInfo, depth: Int) {
+            if (depth > 30 || result.size >= 1000) return
+            result += node
+            for (index in 0 until node.childCount) node.getChild(index)?.let { visit(it, depth + 1) }
+        }
+        visit(root, 0)
+        return result
+    }
+
+    private fun matches(node: AccessibilityNodeInfo, value: String) =
+        node.text?.toString() == value || node.contentDescription?.toString() == value
+
+    private fun waitUntil(reason: String, condition: () -> Boolean) {
+        val end = minOf(deadline, SystemClock.elapsedRealtime() + UI_TIMEOUT_MS)
+        while (SystemClock.elapsedRealtime() < end) {
+            sameCredential()
+            if (condition()) return
+            SystemClock.sleep(UI_POLL_MS)
+        }
+        throw AssertionError("live_ping_${reason}_timeout")
+    }
+
+    private fun screenshot() {
+        sameCredential()
+        check(nodes().any { matches(it, PONG) && it.isVisibleToUser }) { "live_ping_pong_not_visible" }
+        val bitmap = checkNotNull(automation.takeScreenshot()) { "live_ping_screenshot_failed" }
+        try {
+            val folder = File(context.filesDir, "fixture-qa").apply { mkdirs() }
+            File(folder, "real-pong.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        } finally { bitmap.recycle() }
+    }
+
+    private fun clearKeepScreenOn() {
+        activity?.let { current -> instrumentation.runOnMainSync {
+            if (!current.isDestroyed) current.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } }
+    }
+
+    private fun status(step: String) = instrumentation.sendStatus(0, Bundle().apply {
+        putString("live_ping_step", step)
+        putString("stream", "Live watch ping: $step\n")
+    })
+
+    companion object {
+        private const val FIXTURE_TOKEN = "persona-wear-fixture-only"
+        private const val INITIAL_MARKER = "Samsung Watch Persona"
+        private const val READY = "WATCH_READY"
+        private const val PING = "PING_WATCH"
+        private const val PONG = "PONG_WATCH"
+        private const val TOTAL_TIMEOUT_MS = 110_000L
+        private const val REPLY_TIMEOUT_MS = 45_000L
+        private const val UI_TIMEOUT_MS = 15_000L
+        private const val UI_POLL_MS = 200L
+        private const val NETWORK_POLL_MS = 1_000L
+    }
+}

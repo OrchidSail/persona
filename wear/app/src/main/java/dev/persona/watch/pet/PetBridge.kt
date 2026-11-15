@@ -1,0 +1,60 @@
+package dev.persona.watch.pet
+
+import android.content.ComponentName
+import android.content.Context
+import androidx.wear.watchface.complications.datasource.ComplicationDataSourceUpdateRequester
+import dev.persona.watch.data.HubConfig
+import dev.persona.watch.data.WatchSnapshot
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+
+/** MainActivity can publish its existing poll results; the pet adds no session polling in the background. */
+object PetBridge {
+    private val worker = Executors.newSingleThreadExecutor()
+    private val fetching = AtomicBoolean(false)
+
+    fun hasCached(context: Context, config: HubConfig): Boolean = PetPack(context.cacheDir, config).cached(false) != null
+
+    fun refresh(context: Context, config: HubConfig, snapshot: WatchSnapshot?, unreachable: Boolean = false, partlyUnreachable: Boolean = false) {
+        val app = context.applicationContext
+        publish(app, config, PetStatus.from(snapshot, unreachable, partlyUnreachable = partlyUnreachable), snapshot?.updatedAt ?: 0)
+        if (!fetching.compareAndSet(false, true)) return
+        worker.execute {
+            try {
+                val preferences = preferences(app, config)
+                val now = System.currentTimeMillis()
+                if (now - preferences.getLong("assets_attempt", 0) > ASSET_RETRY_MS) {
+                    preferences.edit().putLong("assets_attempt", now).apply()
+                    runCatching { PetPack(app.cacheDir, config).fetch() }.onSuccess { requestUpdate(app) }
+                }
+            } finally { fetching.set(false) }
+        }
+    }
+
+    fun publish(context: Context, config: HubConfig, status: PetStatus, updatedAt: Long) {
+        val preferences = preferences(context, config)
+        val changed = preferences.getString("state", "") != status.state.wire || preferences.getInt("count", 0) != status.count
+        val previousRequest = preferences.getLong("widget_requested_at", 0)
+        val now = System.currentTimeMillis()
+        preferences.edit().putString("state", status.state.wire).putInt("count", status.count)
+            .putLong("updated_at", updatedAt).apply()
+        if (changed || now - previousRequest > 20 * 60 * 1000) {
+            preferences.edit().putLong("widget_requested_at", now).apply()
+            requestUpdate(context)
+        }
+    }
+
+    fun read(context: Context, config: HubConfig): PetStoredStatus {
+        val preferences = preferences(context, config)
+        val state = PetState.entries.firstOrNull { it.wire == preferences.getString("state", "") } ?: PetState.OFFLINE
+        return PetStoredStatus(PetStatus(state, preferences.getInt("count", 0).coerceAtLeast(0)), preferences.getLong("updated_at", 0))
+    }
+
+    fun requestUpdate(context: Context) {
+        runCatching { ComplicationDataSourceUpdateRequester.create(context,
+            ComponentName(context, PetComplicationService::class.java)).requestUpdateAll() }
+    }
+
+    private fun preferences(context: Context, config: HubConfig) = context.getSharedPreferences("pet_" + PetPack.scope(config), Context.MODE_PRIVATE)
+    private const val ASSET_RETRY_MS = 60 * 60 * 1000L
+}
