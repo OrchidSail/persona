@@ -32,6 +32,8 @@ CLIENTS = {}
 WS_OBSERVATIONS = []  # Non-secret connection history for background/resident acceptance.
 FAULT_LOCK = threading.Lock()
 LOST_RECEIPT = False
+# The hub's low-distraction switch (GET / PUT /api/v1/push/ln-mode); MOCK_LN=1 starts with it on.
+LN_MODE = {"enabled": bool(os.environ.get("MOCK_LN"))}
 
 
 # MOCK_SESSIONS_CATALOG=1 (with MOCK_SESSIONS_LIST=1, docs/protocol/protocol.md "Projects and spaces"): the paged list
@@ -24517,9 +24519,9 @@ class H(BaseHTTPRequestHandler):
         if CASE and case_route(self, "GET", p, q, b""): return
         if preview_route and preview_route(self, "GET", p, q): return
         if p == "/api/v1/push/ln-mode":
-            return self.send_json({"enabled": bool(os.environ.get("MOCK_LN"))})
+            return self.send_json(LN_MODE)
         if p == "/api/v1/push/intercepts":
-            if not os.environ.get("MOCK_LN"):
+            if not LN_MODE["enabled"]:
                 return self.send_json({"intercepts": []})
             return self.send_json({"intercepts": [
                 {"at": ago(hours=3), "level": "P1", "reason": "ln_p1_held",
@@ -27176,6 +27178,9 @@ class H(BaseHTTPRequestHandler):
                 if st["key"] == body.get("key"):
                     st["value"] = body.get("value")
             return self.send_json({"settings": store[mid]})
+        if p == "/api/v1/push/ln-mode" and self.command == "PUT":  # Settings › Notifications › Low-distraction mode (#8157)
+            LN_MODE["enabled"] = json.loads(self.last_body or b"{}").get("enabled") is True
+            return self.send_json(LN_MODE)
         if p.startswith("/api/v1/devices/") and p.endswith("/prefs"):  # Settings › Notifications
             body = json.loads(self.last_body or b"{}")
             PREFS.update({k: v for k, v in body.items() if k in ("input", "done", "live_activity", "lock_details")})

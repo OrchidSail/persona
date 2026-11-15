@@ -126,6 +126,7 @@ export const SEARCH_INDEX: SearchGroup[] = [
   { tab: "notifications", group: t("settings-notifications.input"), anchor: "notify-input" },
   { tab: "notifications", group: t("settings-notifications.done_title"), anchor: "done" },
   { tab: "notifications", group: t("settings-notifications.quiet"), hint: words(t("settings-notifications.quiet_start"), t("settings-notifications.quiet_end")), anchor: "notify-quiet" },
+  { tab: "notifications", group: t("settings-notifications.low_distraction"), hint: t("settings-notifications.low_distraction_hint"), anchor: "notify-low-distraction" },
   // Connectors
   { tab: "connectors", group: t("settings-connectors.mail"), anchor: "mail" },
   { tab: "connectors", group: t("settings-connectors.lark"), anchor: "lark" },
