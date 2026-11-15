@@ -1,4 +1,5 @@
 import Foundation
+import PersonaWire
 
 // Tasks dispatched from an assistant conversation (docs/assistant/unified-entry.md, #930): a plan the assistant handed the user,
 // the todos it opened (one per task), and the items the hub inserted into the conversation (its feed). The hub's
@@ -478,9 +479,11 @@ nonisolated struct TodoItem: Codable, Hashable, Identifiable, Sendable {
     var manager: String?
     /// The round of a decision that waits on the owner (`decision_review`): what Later / Don't handle on its row refer to.
     var decisionReview: DecisionReview?
+    /// The knowledge-base project it belongs to (#2581, docs/assistant/todos.md "Project"): its slug; nil for none.
+    var project: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, title, notes, origin, agents, spaces, quiet, stage, supervision, priority, ask, delivery, manager, orphaned
+        case id, title, notes, origin, agents, spaces, quiet, stage, supervision, priority, ask, delivery, manager, orphaned, project
         case decisionReview = "decision_review"
         case doneAt = "done_at", createdAt = "created_at", updatedAt = "updated_at", reopenedAt = "reopened_at", seenAt = "seen_at", planID = "plan_id", startError = "start_error",
              doneBy = "done_by", doneReason = "done_reason", prURL = "pr_url", dueAt = "due_at", dueDate = "due_date",
@@ -493,7 +496,7 @@ nonisolated struct TodoItem: Codable, Hashable, Identifiable, Sendable {
          supervision: TaskSupervision? = nil, dueAt: Date? = nil, dueDate: String? = nil, remindAt: Date? = nil,
          remindedAt: Date? = nil, priority: String? = nil, ask: TodoAsk? = nil, reopenedAt: Date? = nil,
          delivery: TodoDelivery? = nil, manager: String? = nil, seenAt: Date? = nil, decisionReview: DecisionReview? = nil,
-         orphaned: TodoOrphaned? = nil) {
+         orphaned: TodoOrphaned? = nil, project: String? = nil) {
         self.id = id
         self.title = title
         self.notes = notes
@@ -523,6 +526,7 @@ nonisolated struct TodoItem: Codable, Hashable, Identifiable, Sendable {
         self.seenAt = seenAt
         self.decisionReview = decisionReview
         self.orphaned = orphaned
+        self.project = project
     }
 
     init(from decoder: Decoder) throws {
@@ -563,6 +567,8 @@ nonisolated struct TodoItem: Codable, Hashable, Identifiable, Sendable {
         decisionReview = (try? c.decodeIfPresent(DecisionReview.self, forKey: .decisionReview)) ?? nil
         // New (#3618): absent from older hubs; one that does not decode is as if there were none.
         orphaned = (try? c.decodeIfPresent(TodoOrphaned.self, forKey: .orphaned)) ?? nil
+        // New (#2581): absent with none and from older hubs; "" is none too.
+        project = ((try? c.decodeIfPresent(String.self, forKey: .project)) ?? nil).flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// An ended task cannot keep an old decision card alive.
@@ -798,10 +804,12 @@ nonisolated struct DockAgent: Hashable, Identifiable, Sendable {
     }
 
     /// The agents going on in a session list (Persona's own conversations are not agents): waiting for the user
-    /// first, then the newest. Only what a pill shows goes in, so it changes when a pill would. A subtask (a Codex
-    /// subagent, an agent another agent created) is left out while a session above it is going too, which stands for
-    /// it, as the Agents list folds it under that one (`CodexTasks`); one that waits for the user never is.
+    /// first, then the newest. Only what a pill shows goes in, so it changes when a pill would. A child the hub
+    /// folded under a listed parent is not a pill of its own (`ChildSessions`). A subtask the hub did not fold (a
+    /// Codex subagent, an agent another agent created) is left out while a session above it is going too, which
+    /// stands for it (`CodexTasks`); one that waits for the user never is.
     @MainActor static func going(_ sessions: [Session]) -> [DockAgent] {
+        let sessions = ChildSessions.fold(sessions)
         let goes = { (s: Session) in !s.assistant && (s.state == .needsYou || s.state == .working) }
         var going = sessions.filter(goes)
         if going.contains(where: \.isNestedSubtask), let parent = CodexTasks.parents(sessions, runs: goes) {
