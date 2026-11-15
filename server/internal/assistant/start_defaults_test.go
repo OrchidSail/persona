@@ -534,8 +534,22 @@ func TestStartDefaultsDroppedKeepsTheCallersModelAndUltracode(t *testing.T) {
 	if st["model"] != "gw-own" {
 		t.Fatalf("the caller's model was wiped: %v", st)
 	}
-	if st["ultracode"] != nil || st["launcher"] != "claude" || st["tier"] == "plain" {
+	// A task that names a model gets no preset, so its launcher is Model Settings' on both tries; without the policy
+	// the effort is Model Settings' again, not the policy's max.
+	if st["ultracode"] != nil || st["launcher"] != "gateway" || st["effort"] == "max" {
 		t.Fatalf("the retry kept policy values: %v", st)
+	}
+	// The explicit off is still the task's: a later policy asking ultracode on must not turn it on.
+	if task.Ultracode == nil || *task.Ultracode {
+		t.Fatalf("the caller's explicit ultracode off was lost: %v", task.Ultracode)
+	}
+	on := true
+	stubStartDefaults(s, func(StartFacts) (StartDefaults, bool) { return StartDefaults{Ultracode: &on}, true })
+	if _, _, err := s.startTaskAgent(context.Background(), &task, false); err != nil {
+		t.Fatal(err)
+	}
+	if st := startsOf(f)[2]; st["ultracode"] != nil {
+		t.Fatalf("a policy overrode the caller's explicit ultracode off: %v", st)
 	}
 }
 

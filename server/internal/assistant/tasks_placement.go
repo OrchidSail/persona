@@ -133,6 +133,7 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 	// in t, and a task read back from the store already carries its resolved launch, so this is never recomputed.
 	if t.callerPick == nil {
 		p := pickOf(params)
+		p.ultracode = t.Ultracode // the task's own tri-state (nil, or on / off as it asked)
 		t.callerPick = &p
 	}
 	caller := *t.callerPick
@@ -152,11 +153,7 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 		t.Ultracode, t.planFirst = caller.ultracode, false
 		params["launcher"], params["model"], params["effort"], params["tier"] =
 			caller.launcher, caller.model, caller.effort, caller.tier
-		if caller.ultracode != nil {
-			params["ultracode"] = *caller.ultracode
-		} else {
-			delete(params, "ultracode")
-		}
+		delete(params, "ultracode") // set below from t.Ultracode, as on any start
 		delete(params, "goal")
 	}
 	own, err := s.resolveStart(ctx, params)
