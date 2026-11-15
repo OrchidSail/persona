@@ -177,7 +177,7 @@ func TestSupervisedAgentFinishIsNotPushed(t *testing.T) {
 				sess := supAgentSession()
 				sess.LastText = last
 				driveAgentDone(e.fleetTest, sess)
-				time.Sleep(400 * time.Millisecond) // the finished delay is 50 ms; a card would have landed by now
+				e.s.fleet.settling.Wait() // the turn end's check is over, with any push and card it sent
 			}
 			if got := e.agentDoneCards(); len(got) != 0 {
 				t.Fatalf("posted %d finished cards, want none: %+v", len(got), got)
@@ -236,7 +236,7 @@ func TestSupervisedTaskClosedWhileThePushWaits(t *testing.T) {
 			if e.s.activeTodoOf("mac", supAgent) != "" {
 				t.Fatal("the Agent still works on an open to-do")
 			}
-			time.Sleep(700 * time.Millisecond)
+			e.s.fleet.settling.Wait() // the delayed check of the turn that ended it is over, with any push and card
 			if got := e.agentDoneCards(); len(got) != 0 {
 				t.Fatalf("posted %d finished cards, want none: %+v", len(got), got)
 			}
@@ -263,7 +263,7 @@ func TestSupervisorNotifyUserStillCopiedToLark(t *testing.T) {
 	e := newSupervisedEnv(t, true)
 	e.task("conv1", "conv1")
 	driveAgentDone(e.fleetTest, supAgentSession())
-	time.Sleep(400 * time.Millisecond)
+	e.s.fleet.settling.Wait()
 	raw, _ := json.Marshal(map[string]any{"title": "登录修好了", "body": "PR 已合并，等你看一眼。"})
 	if _, err := e.s.runTool(context.Background(), "server", "conv1", "notify_user", raw); err != nil {
 		t.Fatal(err)

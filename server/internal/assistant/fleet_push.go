@@ -214,7 +214,11 @@ func (s *Service) noteStop(machine, sid string, p map[string]any) {
 // is a timer: a goroutine asleep through it would hold a stack per pending turn end (#2472).
 func (s *Service) notifyFinished(machine, id string, gen int) {
 	t := s.notifyTimings()
-	time.AfterFunc(t.doneDelay(), func() { s.notifyFinishedNow(machine, id, gen, t) })
+	s.fleet.settling.Add(1)
+	time.AfterFunc(t.doneDelay(), func() {
+		defer s.fleet.settling.Done()
+		s.notifyFinishedNow(machine, id, gen, t)
+	})
 }
 
 // notifyFinishedNow is notifyFinished once its delay is over, with the timings it was read with.
@@ -315,11 +319,15 @@ func (s *Service) notifyFinishedNow(machine, id string, gen int, t fleetTimings)
 			text = counts
 		}
 	}
-	s.deliver(Notification{Kind: assistantwire.NotifyDone, DeviceID: machine, Subtitle: place, SessionID: id, Title: head,
-		Body: text, TookMS: took.Milliseconds(), LongMS: long.Milliseconds()})
+	s.deliverCounted(Notification{Kind: assistantwire.NotifyDone, DeviceID: machine, Subtitle: place, SessionID: id, Title: head,
+		Body: text, TookMS: took.Milliseconds(), LongMS: long.Milliseconds()}, &s.fleet.settling)
 	// The same finished turn's one Feishu card (#4674); the sender re-checks the pushes switch and the conversations
 	// with their own Feishu path (main, scheduled task, health).
-	go s.feishuAgentDone(machine, sess, head, text, place)
+	s.fleet.settling.Add(1)
+	go func() {
+		defer s.fleet.settling.Done()
+		s.feishuAgentDone(machine, sess, head, text, place)
+	}()
 	// And the topic of the todo this agent works on, if it has one (the same decision again, not a second one).
 	s.threadAgentDone(machine, sess)
 }
@@ -465,11 +473,20 @@ func (s *Service) notifyInteractionAt(ix proto.Interaction, machine string, cove
 }
 
 // deliver has the hub deliver a push the manager decided on (notify.request), off the caller's way.
-func (s *Service) deliver(n Notification) {
+func (s *Service) deliver(n Notification) { s.deliverCounted(n, nil) }
+
+// deliverCounted is deliver, counting the send in wg (when not nil) until it is over.
+func (s *Service) deliverCounted(n Notification, wg *sync.WaitGroup) {
 	if n.ID == "" {
 		n.ID = "ntf_" + randomHex(8)
 	}
+	if wg != nil {
+		wg.Add(1)
+	}
 	go func() {
+		if wg != nil {
+			defer wg.Done()
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if _, err := s.hub.NotifyRequest(ctx, NotifyRequest{Notification: n}); err != nil {

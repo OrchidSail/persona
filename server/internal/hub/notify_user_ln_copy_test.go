@@ -154,10 +154,7 @@ func TestNotifyUserFeishuCopyFollowsLowDistractionOverTheBus(t *testing.T) {
 			lnMode(st.ln)
 			lnOn = st.ln
 		}
-		answer := notify(st.session, st.title, st.lvl, st.key)
-		if !st.copied {
-			time.Sleep(500 * time.Millisecond) // a copy sent anyway would have been posted by now
-		}
+		answer := notify(st.session, st.title, st.lvl, st.key) // a copy is posted before the answer says it was
 		got, reason := posted(st.title), held(st.title)
 		t.Logf("ln=%v %s %q level=%q key=%q: Feishu copies %d, hub held %q; answer: %s", st.ln, st.session, st.title, st.lvl, st.key, got, reason, answer)
 		switch {
@@ -171,6 +168,12 @@ func TestNotifyUserFeishuCopyFollowsLowDistractionOverTheBus(t *testing.T) {
 		copied := strings.Contains(answer, "Copied to Feishu: delivered.") || strings.Contains(answer, "已抄送飞书，已送到。") // i18n-ignore: the answer in either language
 		if copied != st.copied {
 			t.Errorf("%q: answer %q, want it to say the Feishu copy was delivered: %v", st.title, answer, st.copied)
+		}
+	}
+	// A copy of a held notice sent late, off the answer's way, would have landed while the later steps ran.
+	for _, st := range steps {
+		if got := posted(st.title); !st.copied && got != 0 {
+			t.Errorf("%q: %d Feishu copies of a notice the hub held, after the other steps", st.title, got)
 		}
 	}
 }

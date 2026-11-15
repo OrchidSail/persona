@@ -32,7 +32,10 @@ import (
 
 // fleetBook is what the manager keeps of it.
 type fleetBook struct {
-	mu           sync.Mutex
+	mu sync.Mutex
+	// settling counts the turn ends whose delayed check (notifyFinished) is not over, with the push and the Lark card
+	// it sends: a test waits on it to see that a turn end sent nothing, rather than sleeping.
+	settling     sync.WaitGroup
 	interactions map[string]*pending
 	seen         map[[2]string]time.Time // (machine, session) -> when the user last looked at it
 	seenLoaded   bool                    // seen holds the table's times (loadSeen succeeded once)
