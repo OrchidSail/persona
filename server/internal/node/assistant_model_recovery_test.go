@@ -696,6 +696,75 @@ func TestRecoveryHoldExpiryKeepsStickyFallback(t *testing.T) {
 	}
 }
 
+// A probe/reset-confirmed return through the real assistantSend path releases the fallback hold, sticky record and
+// unavailable entry. Natural expiry above deliberately does less; confusing the two branches leaves either behavior broken.
+func TestRecoveryConfirmedReturnReleasesFallbackThroughAssistantSend(t *testing.T) {
+	const id = "11111111-2222-3333-4444-555555555555"
+	for _, tc := range []struct {
+		name      string
+		returning bool
+		reset     bool
+		probe     bool
+	}{{"returning", true, false, false}, {"reset", false, true, false}, {"probe", false, false, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, _ := recoveryTestNode(t, id, true, false)
+			marker := &proto.ModelRecovery{From: "primary-model", To: "fallback-model", Reason: proto.ModelRecoveryReasonQuota, Returning: tc.returning}
+			if tc.reset {
+				past := time.Now().Add(-time.Minute)
+				marker.ResetsAt = &past
+			}
+			n.putModelRecovery(id, marker)
+			n.recoveryMarks = nil // also exercise release when only session state carries the marker
+			n.fallbacks = map[string]*assistantFallback{id: {launcher: "claude",
+				from: modelExecution{Model: "primary-model"}, to: modelExecution{Model: "fallback-model"},
+				at: time.Now(), until: time.Now().Add(assistantFallbackHold)}}
+			n.unavailable = map[string]time.Time{unavailableKey("claude", "primary-model"): time.Now().Add(time.Hour)}
+			var probes atomic.Int32
+			assistantModelProbe = func(_ context.Context, _ *Node, _, model string) bool {
+				if model != "primary-model" {
+					t.Errorf("probed %q, want primary-model", model)
+				}
+				probes.Add(1)
+				return tc.probe
+			}
+			sentinel := errors.New("stop after confirmed assistantSend return")
+			probeKey := n.home + "\x00claude\x00primary-model"
+			modelProbeCache.Lock()
+			modelProbeCache.results[probeKey] = modelProbeResult{at: time.Now(), agent: "claude", err: sentinel}
+			modelProbeCache.Unlock()
+			t.Cleanup(func() {
+				modelProbeCache.Lock()
+				delete(modelProbeCache.results, probeKey)
+				modelProbeCache.Unlock()
+			})
+			st, _ := n.state.get(id)
+			_, err := n.assistantSend(context.Background(), id, st.Cwd, "claude", "next message", nil, "", "", modelExecution{Model: "primary-model", IsMain: true})
+			if !errors.Is(err, sentinel) {
+				t.Fatalf("assistantSend did not reach the configured-model check: %v", err)
+			}
+			if n.modelRecovery(id) != nil {
+				t.Fatal("the confirmed return left the recovery marker")
+			}
+			if st, _ := n.state.get(id); st.ModelRecovery != nil {
+				t.Fatal("the confirmed return left the persisted marker")
+			}
+			n.mu.Lock()
+			_, _, sticky := n.recentFallback(id)
+			_, unavailable := n.unavailable[unavailableKey("claude", "primary-model")]
+			n.mu.Unlock()
+			if sticky {
+				t.Fatal("the confirmed return left the fallback hold or sticky record")
+			}
+			if unavailable {
+				t.Fatal("the confirmed return left the unavailable entry")
+			}
+			if tc.probe && probes.Load() == 0 {
+				t.Fatal("the probe case returned without checking the configured model")
+			}
+		})
+	}
+}
+
 // While the 30-minute hold is still active and the configured model has not answered a probe, the conversation stays
 // on its fallback: the natural-expiry release must not fire early (#7824).
 func TestActiveHoldIsNotReleasedEarly(t *testing.T) {
