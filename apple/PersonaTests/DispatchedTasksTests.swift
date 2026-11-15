@@ -150,22 +150,28 @@ struct DispatchedTasksTests {
     }
 }
 
-/// A failed start says why once, on the receipt when the conversation has one for the task (the web's `withFailureBelow`).
+/// The hand-off card is the task's only card in the chat (#8237): a start that failed or a turn the model service cut off
+/// shows on it, in place, with why.
 @MainActor
 struct DispatchHandoffFailureTests {
-    private func feed(_ json: String) throws -> FeedItem { try JSON.decoder.decode(FeedItem.self, from: Data(json.utf8)) }
-
-    @Test func aFailedReceiptForTheTaskTakesTheReasonOffTheHandoffCard() throws {
-        let failed = try feed(#"{"id":"r1","conversation":"c","at":"2026-11-13T09:00:00Z","kind":"receipt","ref":"t1","body":{"state":"failed","title":"x"}}"#)
-        let done = try feed(#"{"id":"r2","conversation":"c","at":"2026-11-13T09:00:00Z","kind":"receipt","ref":"t2","body":{"state":"done","title":"x"}}"#)
-        #expect(DispatchHandoffCard.hasFailedReceipt([failed, done], todo: "t1"))
-        #expect(!DispatchHandoffCard.hasFailedReceipt([failed, done], todo: "t2"))
-        #expect(!DispatchHandoffCard.hasFailedReceipt([], todo: "t1"))
+    private func session(_ fields: String) throws -> Session {
+        try JSON.decoder.decode(Session.self, from: Data(#"{"machine_id":"mac","session_id":"s","title":"s","cwd":"/p","updated_at":"2026-11-13T09:00:00Z",\#(fields)}"#.utf8))
     }
 
-    @Test func aFailedStartWithAReceiptBelowIsOnlyDidntStart() {
-        #expect(DispatchHandoffCard.failedMeta("boom", receiptBelow: true) == .failedBelow)
-        #expect(DispatchHandoffCard.failedMeta("boom", receiptBelow: false) == .failed("boom"))
+    @Test func aTurnCutOffShowsOnTheCardWithWhy() throws {
+        let cut = try session(#""state":"idle","status":"idle","turn_error":"The model service did not answer""#)
+        #expect(DispatchHandoffCard.interruption(cut, closed: false) == "The model service did not answer")
+        #expect(DispatchHandoffCard.interruption(cut, closed: true) == nil)
+        // a usage limit has its own words on the card; an Agent at work again, or with no error, was not cut off
+        #expect(DispatchHandoffCard.interruption(try session(#""state":"idle","status":"idle","turn_error":"limit","turn_error_kind":"usage_limit""#), closed: false) == nil)
+        #expect(DispatchHandoffCard.interruption(try session(#""state":"working","status":"working","turn_error":"boom""#), closed: false) == nil)
+        #expect(DispatchHandoffCard.interruption(try session(#""state":"idle","status":"idle""#), closed: false) == nil)
+    }
+
+    @Test func theInterruptedLineSaysWhyWhenItCan() {
+        let word = String(localized: "Interrupted [Chat Layout]")
+        #expect(DispatchHandoffCardBody.interruptedLine("") == word)
+        #expect(DispatchHandoffCardBody.interruptedLine("Overloaded") == word + " · Overloaded")
     }
 
     @Test func theUsageLimitBranchNeedsAStoppedAgentAndAnOpenTaskThatDoesNotNeedYou() throws {

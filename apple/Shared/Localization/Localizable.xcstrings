@@ -145255,6 +145255,50 @@
       },
       "extractionState" : "manual"
     },
+    "Stopped, not done yet" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stopped, not done yet"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "止まったまま未完了"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停下了，还没完成"
+          }
+        }
+      }
+    },
+    "Stopped, not done yet · %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stopped, not done yet · %1$@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "止まったまま未完了 · %1$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "停下了，还没完成 · %1$@"
+          }
+        }
+      }
+    },
     "Stopping on your Apple Watch…" : {
       "extractionState" : "manual",
       "localizations" : {
