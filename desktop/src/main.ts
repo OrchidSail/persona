@@ -15,6 +15,7 @@ import type { UpdateMenuItem } from "./update-state.js";
 import { hubPartition } from "./sessions.js";
 import { installSmokeCapture } from "./smoke.js";
 import { installAutoUpdate } from "./updater.js";
+import { HubWindowLifecycle } from "./hub-window-lifecycle.js";
 import { desktopPresence } from "./presence.js";
 
 installSmokeCapture();
@@ -26,6 +27,7 @@ let pendingDeepLink: string | undefined;
 let setupWindow: BrowserWindow | undefined;
 let screenLocked = false;
 let presenceTimer: ReturnType<typeof setInterval> | undefined;
+const hubWindow = new HubWindowLifecycle();
 const store = () => JSONStore.inUserData(app.getPath("userData"));
 
 function navigateFromDeepLink(raw: string): void {
@@ -82,6 +84,7 @@ async function replaceMainWindow(next: HubAddress, close: (window: BrowserWindow
   if (inHub(next, previous.webContents.getURL()) && (() => { try { return parseHubAddress(previous.webContents.getURL()).url.href === next.url.href; } catch { return false; } })()) return;
   // Setting hub first lets closeToTray destroy this window without putting the old hub back on screen.
   hub = next;
+  hubWindow.replace();
   const closed = new Promise<void>(done => previous.once("closed", done));
   close(previous);
   await closed;
@@ -89,8 +92,16 @@ async function replaceMainWindow(next: HubAddress, close: (window: BrowserWindow
 }
 
 async function showMain(): Promise<void> {
+  await hubWindow.show(async () => {
+  const generation = hubWindow.generation;
+  const owner = hub;
+  if (!owner) {
+    if (!setupWindow || setupWindow.isDestroyed()) await showSetup();
+    return;
+  }
   if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); return; }
   const state = restoreWindow((await store().read<{ window?: unknown }>())?.window, screen.getAllDisplays().map(d => d.workArea));
+  if (owner !== hub || generation !== hubWindow.generation) return;
   const current = new BrowserWindow({
     ...DEFAULT_WINDOW,
     ...state,
@@ -111,7 +122,7 @@ async function showMain(): Promise<void> {
       webviewTag: false,
       backgroundThrottling: false,
       spellcheck: true,
-      ...(hub ? { partition: hubPartition(hub) } : {}),
+      ...(owner ? { partition: hubPartition(owner) } : {}),
     },
   });
   mainWindow = current;
@@ -134,7 +145,7 @@ async function showMain(): Promise<void> {
     // The partition is immutable, so derive authorization from this window's actual origin, never a later global hub.
     hub: () => {
       const url = current.webContents.getURL();
-      if (hub && inHub(hub, url)) return hub;
+      if (owner && inHub(owner, url)) return owner;
       try { return parseHubAddress(url); } catch { return undefined; }
     },
     presence: () => desktopPresence(powerMonitor.getSystemIdleTime(), screenLocked, Notification.isSupported()),
@@ -157,13 +168,30 @@ async function showMain(): Promise<void> {
   current.on("unmaximize", save);
   current.on("close", save);
   current.once("ready-to-show", () => {
+    if (owner !== hub || generation !== hubWindow.generation || current.isDestroyed()) return;
     if (state.maximized) current.maximize();
     current.show();
     if (pendingDeepLink) navigateFromDeepLink(pendingDeepLink);
     pendingDeepLink = undefined;
   });
   current.once("closed", () => { removeIPC(); if (mainWindow === current) mainWindow = undefined; });
-  if (hub) await current.loadURL(hub.url.href);
+  if (owner) {
+    try {
+      await current.loadURL(owner.url.href);
+    } catch (error) {
+      removeIPC();
+      if (mainWindow === current) mainWindow = undefined;
+      if (!current.isDestroyed()) current.destroy();
+      if (owner === hub && generation === hubWindow.generation) throw error;
+      return;
+    }
+    if (owner !== hub || generation !== hubWindow.generation || current.isDestroyed()) {
+      removeIPC();
+      if (mainWindow === current) mainWindow = undefined;
+      if (!current.isDestroyed()) current.destroy();
+    }
+  }
+  });
 }
 
 async function showSetup(): Promise<void> {
@@ -187,19 +215,24 @@ async function showSetup(): Promise<void> {
   setup.setMenu(null);
   setup.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   setup.webContents.on("will-navigate", event => event.preventDefault());
-  setup.once("closed", () => { removeIPC(); if (setupWindow === setup) setupWindow = undefined; if (!mainWindow) void showMain(); });
+  setup.once("closed", () => { removeIPC(); if (setupWindow === setup) setupWindow = undefined; if (!mainWindow) void showMain().catch(() => { if (!setupWindow || setupWindow.isDestroyed()) void showSetup().catch(() => {}); }); });
   const removeIPC = installSetupIPC(setup, {
     hub: () => hub,
     connect: async (raw: string) => {
       try {
         const next = parseHubAddress(raw);
-        await store().update({ hub: next.url.href });
         await replaceMainWindow(next, window => window.destroy());
         hub = next;
-        setup.close();
         await showMain();
+        await store().update({ hub: next.url.href });
+        setup.close();
         return { ok: true };
-      } catch { return { ok: false, error: "Enter a valid HTTP or HTTPS hub address." }; }
+      } catch (error) {
+        hub = undefined;
+        hubWindow.replace();
+        if (!hub) void showSetup().catch(() => {});
+        return { ok: false, error: error instanceof Error ? error.message : "Could not connect to the hub." };
+      }
     },
   });
   await setup.loadFile(join(import.meta.dirname, "setup.html"));
@@ -244,8 +277,8 @@ else {
     for (const scheme of ["persona", "jarvis"]) {
       if (!app.isDefaultProtocolClient(scheme)) app.setAsDefaultProtocolClient(scheme);
     }
-    if (hub) await showMain();
-    else await showSetup();
+    if (hub) await showMain().catch(() => { hub = undefined; hubWindow.replace(); });
+    if (!hub) await showSetup();
     tray = installTray({ open: strings.tray_open ?? "Open Persona", quit: strings.tray_quit ?? "Quit Persona" }, () => {
       if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); }
       else void showMain();

@@ -11,7 +11,8 @@ test("an explicit hub change closes the old window before making its own session
   assert.match(change, /parseHubAddress\(previous\.webContents\.getURL\(\)\)\.url\.href === next\.url\.href/);
   assert.match(change, /const closed = new Promise<void>\(done => previous\.once\("closed", done\)\);/);
   assert.ok(change.indexOf("await closed;") < change.indexOf("mainWindow = undefined;"));
-  assert.match(main, /await replaceMainWindow\(next, window => window\.destroy\(\)\);\s+hub = next;\s+setup\.close\(\);\s+await showMain\(\);/);
+  assert.match(main, /await replaceMainWindow\(next, window => window\.destroy\(\)\);\s+hub = next;\s+await showMain\(\);\s+await store\(\)\.update\(\{ hub: next\.url\.href \}\);\s+setup\.close\(\);/);
+  assert.match(main, /hubWindow\.replace\(\);/);
   assert.match(main, /hub: \(\) => \{\s+const url = current\.webContents\.getURL\(\);/);
   const ipc = await source("ipc.ts");
   assert.match(ipc, /inHub\(hub, event\.senderFrame\.url\)/);
