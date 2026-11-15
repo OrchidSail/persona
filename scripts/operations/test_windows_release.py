@@ -192,6 +192,8 @@ class WindowsReleaseTests(unittest.TestCase):
         self.assertEqual(kwargs["env"]["HOME"], kwargs["env"]["USERPROFILE"])
         self.assertEqual(Path(kwargs["env"]["PERSONA_HOME"]).parent, Path(kwargs["env"]["HOME"]))
         self.assertNotIn("PERSONA_CONFIG", kwargs["env"])
+        for name in ("PERSONA_TOKEN", "XDG_CONFIG_HOME", "HTTP_PROXY", "PGHOST"):
+            self.assertNotIn(name, kwargs["env"])
         program = Path(command[0]).name
         self.assertTrue(Path(command[0]).is_file())
         if command[1:] == ["node-update-check"]:
@@ -213,8 +215,14 @@ class WindowsReleaseTests(unittest.TestCase):
             paths.append(Path(argv[0]))
             return self.run_command(argv, **kwargs)
 
-        with self.native_context(), patch.object(release.subprocess, "run", side_effect=command) as run:
+        with self.native_context(), patch.dict(release.os.environ, {
+                "PERSONA_CONFIG": "fixture-profile-config", "PERSONA_TOKEN": "fixture-token",
+                "XDG_CONFIG_HOME": "fixture-config", "HTTP_PROXY": "https://proxy.example.com",
+                "PGHOST": "db.example.com"}), \
+                patch.object(release, "clean_environment", wraps=release.clean_environment) as cleaned, \
+                patch.object(release.subprocess, "run", side_effect=command) as run:
             report = release.verify_native(self.archive, VERSION, BUILD)
+        cleaned.assert_called_once()
         self.assertEqual(run.call_count, 4)
         self.assertEqual(report["outputs"], self.outputs)
         self.assertTrue(all(not path.exists() for path in paths))

@@ -13,8 +13,12 @@ import platform
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 import zipfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "test"))
+from server_test_env import clean_environment
 
 ARCHIVE = re.compile(r"Persona-([0-9A-Za-z][0-9A-Za-z._-]*)-windows-(amd64|arm64)\.zip\Z")
 ARCHIVE_FAMILY = re.compile(r"Persona-.*-windows-.*\.zip\Z", re.IGNORECASE)
@@ -195,8 +199,7 @@ def verify_native(path, version, build):
     with tempfile.TemporaryDirectory(prefix="persona-windows-release-check-") as directory:
         archive, members = inspect_archive(path, version, directory)
         link, node = (Path(directory) / name for name in PROGRAMS)
-        environment = {key: value for key, value in os.environ.items()
-                       if not key.startswith(("PERSONA_", "JARVIS_"))}
+        environment = clean_environment(os.environ)
         home = Path(directory) / "home"
         home.mkdir()
         for name in ("AppData", "LocalAppData"):
