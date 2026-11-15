@@ -213,6 +213,8 @@ type Node struct {
 	fallbacks map[string]*assistantFallback
 	// unavailable: launcher + "\x00" + model a recovery found the gateway does not serve, and until when it is skipped.
 	unavailable map[string]time.Time
+	// recoveryPersistMu serializes each recovery marker's snapshot with its session-state update and persist callback.
+	recoveryPersistMu sync.Mutex
 	// recoveryMarks: the client-visible, node-owned record of each protected conversation's model recovery (#7824).
 	// The durable copy lives in session state (state.put); this map is the working one and its hydration source.
 	recoveryMarks map[string]*proto.ModelRecovery

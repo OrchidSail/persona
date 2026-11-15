@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -117,6 +118,70 @@ func TestRecoverySwitchIsVisibleOnTheMainConversation(t *testing.T) {
 	// It never changes the configured model.
 	if st, _ := n.state.get(id); st.Model != "primary-model" {
 		t.Fatalf("the configured model changed to %q", st.Model)
+	}
+}
+
+// An older recovery write must not finish after a newer one and leave the durable store saying the old model.
+func TestModelRecoveryPersistenceSerializesConcurrentWriters(t *testing.T) {
+	const id = "11111111-2222-3333-4444-555555555555"
+	n, _ := recoveryTestNode(t, id, true, false)
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(releaseFirst) }) }
+	defer unblock()
+	var mu sync.Mutex
+	var durable *proto.ModelRecovery
+	n.state.persist = func(_ string, v sessionState) {
+		if v.ModelRecovery != nil && v.ModelRecovery.To == "first-model" {
+			close(firstStarted)
+			<-releaseFirst
+		}
+		mu.Lock()
+		durable = v.ModelRecovery
+		mu.Unlock()
+	}
+	firstDone := make(chan struct{})
+	go func() {
+		n.putModelRecovery(id, &proto.ModelRecovery{From: "primary-model", To: "first-model"})
+		close(firstDone)
+	}()
+	select {
+	case <-firstStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the first recovery write did not reach persistence")
+	}
+	secondDone := make(chan struct{})
+	go func() {
+		n.putModelRecovery(id, &proto.ModelRecovery{From: "primary-model", To: "second-model"})
+		close(secondDone)
+	}()
+	waitRecovery(t, "the newer in-memory marker", func() bool {
+		r := n.modelRecovery(id)
+		return r != nil && r.To == "second-model"
+	})
+	select {
+	case <-secondDone: // the old, unordered implementation can finish before the first
+	case <-time.After(100 * time.Millisecond): // the serialized implementation waits here
+	}
+	unblock()
+	for name, done := range map[string]chan struct{}{"first": firstDone, "second": secondDone} {
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("the %s recovery write did not finish", name)
+		}
+	}
+	if r := n.modelRecovery(id); r == nil || r.To != "second-model" {
+		t.Fatalf("in-memory marker %+v", r)
+	}
+	if st, _ := n.state.get(id); st.ModelRecovery == nil || st.ModelRecovery.To != "second-model" {
+		t.Fatalf("session marker %+v", st.ModelRecovery)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if durable == nil || durable.To != "second-model" {
+		t.Fatalf("durable marker %+v: an older write finished last", durable)
 	}
 }
 

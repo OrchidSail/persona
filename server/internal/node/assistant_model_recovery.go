@@ -131,17 +131,19 @@ func (n *Node) putModelRecoveryLocked(id string, r *proto.ModelRecovery) {
 	n.recoveryMarks[id] = r
 }
 
-// persistModelRecovery copies the in-memory marker into the session record. n.mu must not be held: it takes the
-// state lock and may notify over the peer.
+// persistModelRecovery copies the in-memory marker into just that field of the latest session record. The dedicated
+// mutex keeps an older snapshot from persisting after a newer one. n.mu must not be held: it is taken only for the
+// snapshot, before state.update takes the state lock and may notify over the peer.
 func (n *Node) persistModelRecovery(id string) {
-	st, ok := n.state.get(id)
-	if !ok {
-		return
-	}
+	n.recoveryPersistMu.Lock()
+	defer n.recoveryPersistMu.Unlock()
 	n.mu.Lock()
-	st.ModelRecovery = n.recoveryMarks[id]
+	r := n.recoveryMarks[id]
 	n.mu.Unlock()
-	n.state.put(id, st)
+	n.state.update(id, func(v *sessionState) bool {
+		v.ModelRecovery = r
+		return true
+	})
 }
 
 // recordRecoverySwitch marks that recovery moved id from its configured model to the model that answers now. The
