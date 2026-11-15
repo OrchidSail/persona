@@ -98,6 +98,7 @@ func (n *Node) recoveryProtected(id string) bool {
 }
 
 // modelRecovery is the node-owned switch record for a conversation, hydrated from persisted session state.
+// Returned markers are immutable snapshots: copy one before changing any field.
 func (n *Node) modelRecovery(id string) *proto.ModelRecovery {
 	n.mu.Lock()
 	r := n.recoveryMarks[id]
@@ -229,8 +230,9 @@ func (n *Node) probeModelRecoveries(ctx context.Context) {
 		if r == nil || r.Returning {
 			continue
 		}
-		r.Returning = true
-		n.putModelRecovery(id, r)
+		c := *r
+		c.Returning = true
+		n.putModelRecovery(id, &c)
 		n.notifySessions()
 	}
 }

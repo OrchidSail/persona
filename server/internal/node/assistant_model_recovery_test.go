@@ -274,6 +274,59 @@ func TestRecoveryReturnsToTheConfiguredModelOnTheNextRequest(t *testing.T) {
 	}
 }
 
+// Publishing Returning replaces the marker instead of mutating a snapshot that session decoration may still be reading.
+func TestRecoveryProbePublishesReturningWithoutMutatingOldMarker(t *testing.T) {
+	const id = "11111111-2222-3333-4444-555555555555"
+	n, _ := recoveryTestNode(t, id, true, false)
+	n.putModelRecovery(id, &proto.ModelRecovery{From: "primary-model", To: "fallback-model", Reason: proto.ModelRecoveryReasonQuota})
+	before := n.modelRecovery(id)
+	assistantModelProbe = func(context.Context, *Node, string, string) bool { return true }
+	n.probeModelRecoveries(context.Background())
+	current := n.modelRecovery(id)
+	if current == nil || !current.Returning || current == before {
+		t.Fatalf("the probe did not publish a returning replacement: before %p, current %+v", before, current)
+	}
+	if before.Returning {
+		t.Fatal("the probe mutated the previously published marker")
+	}
+	if st, _ := n.state.get(id); st.ModelRecovery == nil || !st.ModelRecovery.Returning {
+		t.Fatalf("the returning marker was not persisted: %+v", st.ModelRecovery)
+	}
+	s := proto.Session{SessionID: id}
+	n.decorateModelRecovery(&s)
+	if s.ModelFallback == nil || !s.ModelFallback.RecoveryReturning {
+		t.Fatalf("the returning marker is not visible: %+v", s.ModelFallback)
+	}
+}
+
+// Concurrent session decoration and probes are safe under -race: readers keep immutable snapshots throughout replacement.
+func TestRecoveryProbeConcurrentDecorate(t *testing.T) {
+	const id = "11111111-2222-3333-4444-555555555555"
+	n, _ := recoveryTestNode(t, id, true, false)
+	assistantModelProbe = func(context.Context, *Node, string, string) bool { return true }
+	stop := make(chan struct{})
+	var readers sync.WaitGroup
+	readers.Add(1)
+	go func() {
+		defer readers.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				s := proto.Session{SessionID: id}
+				n.decorateModelRecovery(&s)
+			}
+		}
+	}()
+	for i := 0; i < 500; i++ {
+		n.putModelRecovery(id, &proto.ModelRecovery{From: "primary-model", To: "fallback-model", Reason: proto.ModelRecoveryReasonQuota})
+		n.probeModelRecoveries(context.Background())
+	}
+	close(stop)
+	readers.Wait()
+}
+
 // A worker Agent's conversation keeps its own fallback behavior: no marker, no forced return.
 func TestRecoveryMarkerOnlyForMainAndLeaders(t *testing.T) {
 	const id = "11111111-2222-3333-4444-555555555555"
