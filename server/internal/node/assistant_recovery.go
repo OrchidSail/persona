@@ -24,10 +24,12 @@ type assistantTurnRecovery struct {
 	finished bool // a result completed while handover still owned the process; adopt must not migrate it
 	pending  *assistantPendingFailure
 	// launcher and from: what the conversation was asked to run when this chain began; switched: it moved to another
-	// model. A switched chain that answers holds the conversation there (assistant_fallback_hold.go). Under Node.mu.
-	launcher string
-	from     modelExecution
-	switched bool
+	// model. probeFrom is the first concrete identity of a requested launcher default, captured once for this chain.
+	// A switched chain that answers holds the conversation there (assistant_fallback_hold.go). Under Node.mu.
+	launcher  string
+	from      modelExecution
+	probeFrom string
+	switched  bool
 	// lastResult and lastReset are the most recent failure's words and any recovery time they named, kept so the
 	// model-recovery marker (#7824) can say why the chain switched and when the configured model is back.
 	lastResult string
@@ -39,8 +41,11 @@ type assistantTurnRecovery struct {
 // newAssistantRecovery is a conversation's chain begun by a failure of launcher running execution (key and current as
 // recoverAssistantResultFor has them), stored on n. Refused again soon after a fallback answered, the same-model retry
 // is spent already: a resend carries the refused turns again (#3788). n.mu is held.
-func (n *Node) newAssistantRecovery(id, launcher string, execution modelExecution, key, current string) *assistantTurnRecovery {
+func (n *Node) newAssistantRecovery(id, launcher string, execution modelExecution, key, current, replyModel string) *assistantTurnRecovery {
 	r := &assistantTurnRecovery{retried: map[string]bool{}, used: map[string]bool{}, launcher: launcher, from: execution}
+	if execution.Model == "" || execution.Model == "default" {
+		r.probeFrom = replyModel // an unresolved launcher default may still name its concrete model in message_start
+	}
 	if current != "" {
 		r.used[current] = true
 		r.triedOrder = append(r.triedOrder, current)
@@ -319,7 +324,7 @@ func (n *Node) recoverAssistantResultFor(p *assistantProc, expected *assistantTu
 				n.mu.Unlock()
 				return false
 			}
-			r = n.newAssistantRecovery(p.id, launcher, execution, key, current)
+			r = n.newAssistantRecovery(p.id, launcher, execution, key, current, replyModel)
 		}
 		if (expected != nil && r != expected) || (r.proc != nil && r.proc != p) {
 			n.mu.Unlock()
@@ -346,7 +351,7 @@ func (n *Node) recoverAssistantResultFor(p *assistantProc, expected *assistantTu
 		return false
 	}
 	if r == nil {
-		r = n.newAssistantRecovery(p.id, launcher, execution, key, current)
+		r = n.newAssistantRecovery(p.id, launcher, execution, key, current, replyModel)
 	}
 	r.proc = p
 	if r.running {
@@ -529,7 +534,10 @@ func (n *Node) runAssistantRecovery(p *assistantProc, r *assistantTurnRecovery, 
 		n.mu.Unlock()
 		// Make the node-driven switch visible: the marker names the configured model, the model now answering, why it
 		// switched and, when the upstream said so, when the configured model is available again (#7824).
-		n.recordRecoverySwitch(p.id, launcher, r.from.Model, resolvedAssistantDefault(list, r.from.Model), next,
+		if r.probeFrom == "" {
+			r.probeFrom = resolvedAssistantDefault(list, r.from.Model)
+		}
+		n.recordRecoverySwitch(p.id, launcher, r.from.Model, r.probeFrom, next,
 			ModelRecoveryReason(r.lastResult), r.lastReset, r.triedOrder)
 	}
 	err := assistantRecoverySend(withAssistantRecovery(ctx, r, !same), n, p, launcher, cwd, execution)

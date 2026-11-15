@@ -287,14 +287,14 @@ func TestDefaultModelRecoveryReturnsAfterProbe(t *testing.T) {
 			n, sent := recoveryTestNode(t, id, true, false)
 			assistantRecoveryModels = func(context.Context, *Node, string) (proto.LauncherModels, error) {
 				return proto.LauncherModels{Models: []proto.AgentModel{
-					{ID: "default", Resolved: "primary-model", Default: true},
+					{ID: "default", Default: true}, // unresolved defaults rely on the first reply's concrete model
 					{ID: "fallback-model"}, {ID: "last-model"},
 				}}, nil
 			}
 			st, _ := n.state.get(id)
 			st.Model = requested
 			n.state.put(id, st)
-			p := &assistantProc{id: id, agent: "claude", launcher: "claude", model: modelExecution{Model: requested}}
+			p := &assistantProc{id: id, agent: "claude", launcher: "claude", model: modelExecution{Model: requested}, replyModel: "primary-model"}
 			n.procs[id] = p
 			const failure = "API Error: 503 no eligible upstream account is currently available"
 			if !n.recoverAssistantResult(p, true, failure, "", assistantRecordKind) {
@@ -340,6 +340,11 @@ func TestDefaultModelRecoveryReturnsAfterProbe(t *testing.T) {
 			if r := n.modelRecovery(id); r == nil || !r.Returning {
 				t.Fatalf("the default did not enter Returning: %+v", r)
 			}
+			s := proto.Session{SessionID: id}
+			n.decorateModelRecovery(&s)
+			if s.ModelFallback == nil || s.ModelFallback.OriginalModel != "default" || !s.ModelFallback.RecoveryReturning {
+				t.Fatalf("an empty default's returning line would be hidden: %+v", s.ModelFallback)
+			}
 			n.unavailable = map[string]time.Time{unavailableKey("claude", "primary-model"): time.Now().Add(time.Hour)}
 			asked := modelExecution{Model: requested, IsMain: true}
 			execution := n.heldFallback(id, "claude", asked)
@@ -368,7 +373,7 @@ func TestDefaultModelRecoveryProbeFromSurvivesChainExhaustion(t *testing.T) {
 	const id = "11111111-2222-3333-4444-555555555555"
 	n, _ := recoveryTestNode(t, id, true, false)
 	n.recordRecoverySwitch(id, "claude", "", "primary-model", "fallback-model", proto.ModelRecoveryReasonServer, nil, []string{"primary-model", "fallback-model"})
-	n.recordRecoverySwitch(id, "claude", "", "", "last-model", proto.ModelRecoveryReasonServer, nil, []string{"primary-model", "fallback-model", "last-model"})
+	n.recordRecoverySwitch(id, "claude", "", "changed-model", "last-model", proto.ModelRecoveryReasonServer, nil, []string{"primary-model", "fallback-model", "last-model"})
 	if r := n.modelRecovery(id); r == nil || r.From != "" || r.ProbeFrom != "primary-model" || r.To != "last-model" {
 		t.Fatalf("later switch lost the probe identity: %+v", r)
 	}

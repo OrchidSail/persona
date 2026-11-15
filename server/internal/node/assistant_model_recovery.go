@@ -174,8 +174,8 @@ func (n *Node) recordRecoverySwitch(id, launcher, from, probeFrom, to, reason st
 	prev := n.modelRecovery(id)
 	r := &proto.ModelRecovery{From: from, ProbeFrom: probeFrom, To: to, Reason: reason, At: time.Now().UTC(), Tried: append([]string{}, tried...)}
 	if prev != nil && prev.From == from {
-		if r.ProbeFrom == "" {
-			r.ProbeFrom = prev.ProbeFrom // a later model list must not strand an already resolved launcher default
+		if prev.ProbeFrom != "" {
+			r.ProbeFrom = prev.ProbeFrom // the first configured identity wins throughout one recovery chain
 		}
 		if resets == nil {
 			r.ResetsAt = prev.ResetsAt // keep the first reset the upstream named for this configured model
@@ -508,9 +508,13 @@ func (n *Node) decorateModelRecovery(s *proto.Session) {
 	if r == nil {
 		return
 	}
+	original := r.From
+	if original == "" {
+		original = "default" // every client suppresses a returning line with an empty original; keep the default visible
+	}
 	f := &proto.ModelRefusal{
 		Subtype:           "model_refusal_fallback",
-		OriginalModel:     r.From,
+		OriginalModel:     original,
 		Category:          r.Reason,
 		Scope:             "session",
 		Explanation:       ModelRecoveryExplanation(r.Reason),
