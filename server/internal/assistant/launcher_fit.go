@@ -20,7 +20,11 @@ import (
 // (docs/server/launcher-health.md, "A launcher the computer doesn't have").
 
 // startPick is what a start's caller named itself, before a tier and Model configuration › Agents fill in the rest.
-type startPick struct{ launcher, effort, model, tier string }
+// ultracode is the tri-state the caller gave (nil: it said nothing, false: it explicitly asked for it off).
+type startPick struct {
+	launcher, effort, model, tier string
+	ultracode                     *bool
+}
 
 // pickOf is the caller's own pick in a start's params.
 func pickOf(params map[string]any) startPick {
@@ -28,8 +32,9 @@ func pickOf(params map[string]any) startPick {
 	e, _ := params["effort"].(string)
 	m, _ := params["model"].(string)
 	t, _ := params["tier"].(string)
+	u, _ := params["ultracode"].(*bool)
 	return startPick{launcher: strings.TrimSpace(l), effort: strings.TrimSpace(e),
-		model: strings.TrimSpace(m), tier: strings.TrimSpace(t)}
+		model: strings.TrimSpace(m), tier: strings.TrimSpace(t), ultracode: u}
 }
 
 // resolveStart fills params (a session.start's, with the caller's own launcher, model, effort and tier, if any) with

@@ -272,7 +272,14 @@ func (s *Service) taskStartDefaults(ctx context.Context, t *PlanTask) (StartDefa
 // permission and the launch fingerprint all follow). params' launcher, model and effort go back to the caller's own,
 // so a preset chosen by an earlier try does not pin this one. The returned note is for the task's why.
 func (s *Service) applyStartPreset(ctx context.Context, t *PlanTask, caller startPick, d StartDefaults, params map[string]any) string {
-	if len(d.Presets) == 0 || caller.launcher != "" || caller.model != "" || caller.tier != "" {
+	if caller.launcher != "" || caller.model != "" || caller.tier != "" {
+		return "" // a preset would override a launcher, model or tier the task named itself
+	}
+	// Start every try from what the task named, so a preset an earlier try picked cannot pin this one; only a new
+	// pick below changes it.
+	params["launcher"], params["model"], params["effort"], params["tier"] = "", "", caller.effort, ""
+	t.Tier = ""
+	if len(d.Presets) == 0 {
 		return ""
 	}
 	name, note, found := s.chooseStartPreset(ctx, t, d.Presets)
@@ -329,6 +336,10 @@ func (s *Service) chooseStartPreset(ctx context.Context, t *PlanTask, choices []
 	if p == nil || err != nil {
 		return "", "", false
 	}
+	// Read the machine's launcher list once per try; hidden launchers still start (#4661), and hiddenUsable says
+	// whether a hidden one runs, so no preset needs another launcher-list RPC.
+	list, listKnown := s.launchersHere(ctx, t.Machine)
+	hidden := s.hiddenLaunchers(ctx)
 	usable, skipped := make([]PresetChoice, 0, len(choices)), make([]string, 0)
 	for _, c := range choices {
 		if c.Name == "" {
@@ -339,10 +350,11 @@ func (s *Service) chooseStartPreset(ctx context.Context, t *PlanTask, choices []
 			skipped = append(skipped, c.Name+": unknown preset")
 			continue
 		}
-		// Hidden launchers still start (#4661): judge availability the way a start does, with this one put back, so
-		// the policy's choice agrees with GET /api/v1/assistant/worker-presets.
-		list, listKnown := s.launchersHere(withUnhidden(ctx, tier.Launcher), t.Machine)
+		// A hidden launcher is startable when its health check passes; a plain one must be in the machine's list.
 		has := !listKnown || slices.ContainsFunc(list, func(l proto.Launcher) bool { return l.Name == tier.Launcher })
+		if !has && slices.Contains(hidden, tier.Launcher) && s.hiddenUsable(ctx, t.Machine, tier.Launcher) {
+			has = true
+		}
 		if listKnown && !has {
 			skipped = append(skipped, c.Name+": this computer has no launcher "+tier.Launcher)
 			continue

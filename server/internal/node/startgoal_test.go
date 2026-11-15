@@ -173,6 +173,8 @@ func TestStartGoalRefusedBeforeAnythingStarts(t *testing.T) {
 		"codex":  {"cwd": cwd, "workspace_id": "w1", "prompt": "x", "launcher": "codex", "goal": "done"},
 		"resume": {"cwd": cwd, "workspace_id": "w1", "prompt": "x", "resume_session_id": sidA, "goal": "done"},
 		"long":   {"cwd": cwd, "workspace_id": "w1", "prompt": "x", "goal": strings.Repeat("y", proto.StartGoalMax+1)},
+		// The goal is set after the first message; an App's async start that sends its first message later has none.
+		"no prompt": {"cwd": cwd, "workspace_id": "w1", "async": true, "goal": "done"},
 	} {
 		_, err := request(t, n, "session.start", params)
 		var re *rpc.Error

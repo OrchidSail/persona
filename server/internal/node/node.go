@@ -729,7 +729,7 @@ func (n *Node) handle(ctx context.Context, method string, params json.RawMessage
 		Effort         string          `json:"effort"`
 		ServiceTier    string          `json:"service_tier"`
 		Ultracode      *bool           `json:"ultracode"`
-		Goal           string          `json:"goal"` // session.start: a /goal typed before the first message (startgoal.go)
+		Goal           string          `json:"goal"` // session.start: a /goal typed after the first message is in (startgoal.go)
 		DismissLost    bool            `json:"dismiss_lost"`
 		ResumeOnly     bool            `json:"resume_only"`
 		IsMain         bool            `json:"is_main"`
@@ -1182,7 +1182,8 @@ func (n *Node) handle(ctx context.Context, method string, params json.RawMessage
 				return nil, err
 			}
 		}
-		// A goal goes only where it can be typed before the first message: a new Claude Code in a terminal (startgoal.go).
+		// A goal is set after the first message is in, so a start without a first message cannot take one: a new
+		// Claude Code in a terminal is the only start that does (startgoal.go).
 		goal := cleanStartGoal(p.Goal)
 		if goal != "" {
 			kind := p.AgentType
@@ -1198,7 +1199,7 @@ func (n *Node) handle(ctx context.Context, method string, params json.RawMessage
 			if isDesktopLauncher(p.Launcher) || isCodexAppLauncher(p.Launcher) {
 				kind = "app"
 			}
-			if err := n.checkStartGoal(goal, kind, p.ResumeSessionID); err != nil {
+			if err := n.checkStartGoal(goal, kind, p.ResumeSessionID, p.Prompt); err != nil {
 				return nil, err
 			}
 		}

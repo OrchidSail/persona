@@ -30,7 +30,7 @@ type PlanInfo struct {
 // characters; the rest of the margin is for older versions).
 const StartGoalMax = 2000
 
-// CodeStartGoalUnsupported: a session.start's goal (a Claude Code /goal typed before the first message,
+// CodeStartGoalUnsupported: a session.start's goal (a Claude Code /goal typed after the first message is in,
 // docs/integrations/agent-goal.md "A goal set at the start") cannot be had there: a node too old for it, an agent
 // other than Claude Code, a resume, or a host that cannot type and read a screen. Nothing started; the caller may
 // start again without the goal.

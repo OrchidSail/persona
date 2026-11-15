@@ -66,7 +66,9 @@ func (n *Node) firstPrompt(ctx context.Context, pane, id, prompt string, a *host
 	n.firstWait.Add(1)
 	go func() {
 		defer n.firstWait.Done()
-		defer unlock()
+		var once sync.Once
+		release := func() { once.Do(unlock) }
+		defer release()
 		bctx, cancel := context.WithTimeout(parent,
 			firstPromptTries*firstPromptWait+(firstPromptTries-1)*firstPromptRecover+15*time.Second)
 		defer cancel()
@@ -76,7 +78,7 @@ func (n *Node) firstPrompt(ctx context.Context, pane, id, prompt string, a *host
 			n.notifySessions()
 			return // no goal without the task it is about
 		}
-		n.goalAfterFirst(parent, id, pane, goal)
+		n.goalAfterFirst(parent, id, pane, goal, release) // gives the lock back once /goal is typed
 	}()
 	return nil
 }
@@ -144,9 +146,10 @@ func (n *Node) firstAfterDialog(pane, id, prompt string, since time.Time, wait, 
 		}
 		why := n.typeFirstAfterDialog(pane, id, prompt)
 		if why == "" {
-			n.goalAfterFirst(context.Background(), id, pane, goal) // still under the lock, as after firstPrompt
+			n.goalAfterFirst(context.Background(), id, pane, goal, unlock) // gives the lock back once /goal is typed
+		} else {
+			unlock()
 		}
-		unlock()
 		if why == errDialogBack {
 			continue // another dialog came up first: wait for it too
 		}

@@ -294,8 +294,8 @@ func TestStartDefaultsPlanFirstGoesInThePrompt(t *testing.T) {
 	}
 }
 
-// A computer whose node cannot set a goal before the first message starts the agent without one, and the task says
-// why; with ultracode refused too, each goes in turn.
+// A computer whose node cannot set a start goal starts the agent without one, and the task says why; with ultracode
+// refused too, each goes in turn.
 func TestStartDefaultsGoalRefusedStartsWithoutIt(t *testing.T) {
 	s, f := defaultsHub(t)
 	f.refuseGoal = &rpc.Error{Code: proto.CodeStartGoalUnsupported, Message: "the node is too old"}
@@ -500,6 +500,42 @@ func TestStartDefaultsRoute(t *testing.T) {
 	}
 	if s.settings(context.Background()).StartDefaults != nil {
 		t.Fatal("not cleared")
+	}
+}
+
+// A task that names its own model and asks ultracode off keeps both when a later try finds no matching policy: the
+// policy's fill-in never replaces what the task named.
+func TestStartDefaultsDroppedKeepsTheCallersModelAndUltracode(t *testing.T) {
+	s, f := defaultsHub(t)
+	off := false
+	stubStartDefaults(s, func(StartFacts) (StartDefaults, bool) {
+		return StartDefaults{Effort: "max", Presets: []PresetChoice{{Name: "plain"}}}, true
+	})
+	task := defaultsTask()
+	task.Model = "gw-own"
+	task.Ultracode = &off
+	if _, _, err := s.startTaskAgent(context.Background(), &task, false); err != nil {
+		t.Fatal(err)
+	}
+	if task.startDefaulted != true {
+		t.Fatal("the first try did not take the policy")
+	}
+	// The policy may not override the caller's model or its explicit ultracode off.
+	st := startsOf(f)[0]
+	if st["model"] != "gw-own" || st["ultracode"] != nil {
+		t.Fatalf("the policy overrode the caller: %v", st)
+	}
+	// No rule applies on the second try: the model and ultracode off are still the caller's, the preset is gone.
+	s.startDefaultsFor = nil
+	if _, _, err := s.startTaskAgent(context.Background(), &task, false); err != nil {
+		t.Fatal(err)
+	}
+	st = startsOf(f)[1]
+	if st["model"] != "gw-own" {
+		t.Fatalf("the caller's model was wiped: %v", st)
+	}
+	if st["ultracode"] != nil || st["launcher"] != "claude" || st["tier"] == "plain" {
+		t.Fatalf("the retry kept policy values: %v", st)
 	}
 }
 

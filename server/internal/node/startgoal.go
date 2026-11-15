@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -26,9 +27,10 @@ const goalVerdictPoll = 200 * time.Millisecond
 // Why a start's goal cannot be had: refused before anything starts, in the words the node's other start refusals use
 // (ultracode.go), which the caller may put on the task.
 const (
-	goalNotClaude  = "只有新起的 Claude Code Agent 能在第一条消息前设目标"
-	goalResumed    = "恢复的会话不在第一条消息前设目标（会覆盖它原来的目标）"
+	goalNotClaude  = "只有新起的 Claude Code Agent 才能设开始时目标"
+	goalResumed    = "恢复的会话不设开始时目标（会覆盖它原来的目标）"
 	goalTooLong    = "目标太长，没有设 /goal"
+	goalNoPrompt   = "开始时目标要跟在第一条消息后面设，这次启动没有第一条消息"
 	goalScreenless = "这个会话所在的终端不能读屏或按键，没法设 /goal"
 )
 
@@ -49,11 +51,14 @@ func goalCommand(goal string) string { return "/goal " + goal }
 func cleanStartGoal(goal string) string { return strings.Join(strings.Fields(goal), " ") }
 
 // checkStartGoal refuses, before anything starts, a start whose goal (cleaned) cannot be had: kind is the agent the
-// start runs ("claude", or what the launcher, a runtime or an app makes it), resume the session it resumes.
-func (n *Node) checkStartGoal(goal, kind, resume string) error {
+// start runs ("claude", or what the launcher, a runtime or an app makes it), resume the session it resumes, prompt
+// the first message the goal is set after.
+func (n *Node) checkStartGoal(goal, kind, resume, prompt string) error {
 	switch {
 	case goal == "":
 		return nil
+	case strings.TrimSpace(prompt) == "":
+		return refusal(proto.CodeStartGoalUnsupported, goalNoPrompt, nil)
 	case utf8.RuneCountInString(goal) > proto.StartGoalMax:
 		return refusal(proto.CodeStartGoalUnsupported, goalTooLong, nil)
 	case resume != "":
@@ -95,9 +100,11 @@ func goalOutcome(before, shown string) (set bool, note string) {
 
 // goalAfterFirst sets the goal of a start whose first message the transcript has just shown, with a bound of its
 // own (the first message's check may have spent most of its own); nothing when goal is empty. The caller holds the
-// session's typing lock, so no other message is typed in between.
-func (n *Node) goalAfterFirst(parent context.Context, id, pane, goal string) {
+// session's typing lock while the command is typed, so no other message goes in between; unlock gives the lock back
+// as soon as the command is typed, and the answer is read without it, so the user's next message never waits on it.
+func (n *Node) goalAfterFirst(parent context.Context, id, pane, goal string, unlock func()) {
 	if goal == "" {
+		unlock()
 		return
 	}
 	if parent == nil {
@@ -105,17 +112,27 @@ func (n *Node) goalAfterFirst(parent context.Context, id, pane, goal string) {
 	}
 	ctx, cancel := context.WithTimeout(parent, goalVerdictWait+15*time.Second)
 	defer cancel()
-	if n.startGoal(ctx, id, pane, goal) {
+	if n.startGoalUnlocking(ctx, id, pane, goal, unlock) {
 		// Not seen to go in: it may still be in the box, where the next message's own check finds it as a draft and
 		// refuses rather than sending the two together.
 		n.logf("start %s: the /goal command may still be in the input box", id)
 	}
 }
 
-// startGoal types /goal <goal> into the Claude in pane and reads Claude Code's answer off the screen. It is the best
-// it can do; what it saw is logged. unsure: the command went to the terminal and is not known to have gone in, so it
-// may still sit in the input box.
+// startGoal types /goal <goal> into the Claude in pane and reads the answer off the screen, holding no lock of its
+// own (tests and callers that hold none). See startGoalUnlocking.
 func (n *Node) startGoal(ctx context.Context, id, pane, goal string) (unsure bool) {
+	return n.startGoalUnlocking(ctx, id, pane, goal, func() {})
+}
+
+// startGoalUnlocking types /goal <goal> into the Claude in pane (after its first message is in), calls unlock once
+// the command is typed (or nothing was), and then reads the answer off the screen. It is the best it can do; what it
+// saw is logged. unsure: the command went to the terminal and is not known to have gone in, so it may still sit in the
+// input box.
+func (n *Node) startGoalUnlocking(ctx context.Context, id, pane, goal string, unlock func()) (unsure bool) {
+	var once sync.Once
+	release := func() { once.Do(unlock) }
+	defer release()
 	// The same look the ultracode switch takes first: never type into a dialog (Enter would answer it) or onto a
 	// draft in the box (the two would go as one message).
 	if err := n.checkPane(ctx, pane, "claude", ""); err != nil {
@@ -123,7 +140,7 @@ func (n *Node) startGoal(ctx context.Context, id, pane, goal string) (unsure boo
 		return false
 	}
 	before, err := n.readPane(ctx, pane, "visible", 60)
-	if err != nil { // its answer could not be read: better no goal than a first message typed after a stuck command
+	if err != nil { // its answer could not be read: better no goal than a command whose fate is unknown
 		n.logf("start %s: goal not set: the screen cannot be read: %v", id, err)
 		return false
 	}
@@ -133,6 +150,7 @@ func (n *Node) startGoal(ctx context.Context, id, pane, goal string) (unsure boo
 		return deliveryRefusal(err) == nil // a refusal typed nothing; any other error may have typed it
 	}
 	n.typing.typed(pane, cmd)
+	release() // typed: another message may follow now, behind the command in Claude Code's own order
 	for deadline := time.Now().Add(goalVerdictWait); time.Now().Before(deadline); {
 		select {
 		case <-ctx.Done():

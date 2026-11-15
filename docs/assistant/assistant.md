@@ -1480,8 +1480,10 @@ What a task Agent starts with beyond what its caller named can come from an opti
 which thinking effort, whether ultracode is on, whether a goal is set from the task's acceptance criteria, and whether
 the prompt asks the Agent to plan first. With no policy stored, one past its expiry, or no rule that fits a task, the
 task starts exactly as it would without the feature. The owner and an extension granted the
-`assistant.start_defaults` hub scope read and write it with `GET`/`PUT /api/v1/assistant/start-defaults`; an
-extension-written policy must expire within one hour, so a stopped or uninstalled extension leaves nothing in force.
+`assistant.start_defaults` hub scope read and write it with `GET`/`PUT /api/v1/assistant/start-defaults` (the owner
+also as `start_defaults` in `PUT /api/v1/assistant`); an extension-written policy must expire within one hour, so a
+stopped or uninstalled extension leaves nothing in force. A rule must set something; a rule whose `then` names nothing
+is refused.
 `GET /api/v1/assistant/worker-presets?machine=<id>` (same scope) lists the presets a computer can start. The wire shape
 is in `docs/protocol/protocol.md` ("Start defaults").
 
@@ -1495,7 +1497,7 @@ is in `docs/protocol/protocol.md` ("Start defaults").
   ultracode and goal on Claude Code only. A caller's own effort, ultracode choice, tier, model or launcher is never
   replaced, and an effort the caller's tier gives wins over the policy's.
 - **The goal** is the task's `done_when` as one checkable sentence (`prompts/assistant/task_goal.md`), set by the node
-  before the first message ([agent-goal.md](../integrations/agent-goal.md), "A goal set at the start"). A computer
+  after the first message is in the transcript ([agent-goal.md](../integrations/agent-goal.md), "A goal set at the start"). A computer
   whose node cannot set it starts the Agent without it once, and the task's why says so, as for ultracode.
 - **Plan first** adds `prompts/agents/plan_first_task.md` to the prompt: for a launch whose model does not act on an
   effort setting, the prompt is the only lever.

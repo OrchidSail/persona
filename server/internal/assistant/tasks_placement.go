@@ -145,13 +145,18 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 	if withDefaults {
 		presetNote = s.applyStartPreset(ctx, t, caller, defaults, params)
 	} else if t.startDefaulted {
-		// An earlier try took defaults from a policy that no longer applies. The preset, effort, ultracode, goal and
-		// plan-first were the policy's, so they go back to what the task named; the launcher and model stay resolved
-		// by Model Settings and the fit below, exactly as a start with no policy would have them.
-		t.Effort, t.Tier, t.Ultracode, t.planFirst = caller.effort, caller.tier, nil, false
-		t.Model = "" // the policy's preset set it; the fit below fills the ordinary default model
-		params["effort"], params["tier"], params["model"] = caller.effort, caller.tier, ""
-		delete(params, "ultracode")
+		// An earlier try took defaults from a policy that no longer applies. What the policy filled in goes back to
+		// exactly what the task itself named (a task read from the store carries its resolved launch, which is then
+		// treated as its own): its launcher, model, effort, tier and ultracode, with no goal or plan-first this try.
+		t.Launcher, t.Model, t.Effort, t.Tier = caller.launcher, caller.model, caller.effort, caller.tier
+		t.Ultracode, t.planFirst = caller.ultracode, false
+		params["launcher"], params["model"], params["effort"], params["tier"] =
+			caller.launcher, caller.model, caller.effort, caller.tier
+		if caller.ultracode != nil {
+			params["ultracode"] = *caller.ultracode
+		} else {
+			delete(params, "ultracode")
+		}
 		delete(params, "goal")
 	}
 	own, err := s.resolveStart(ctx, params)
