@@ -108,7 +108,16 @@ internal fun docKindLabel(res: Resources, doc: InboxDocRef?): String =
 @Composable
 fun InboxItemDetailScreen(repository: InboxRepository, route: InboxItemDetailRoute, navigator: Navigator) {
     val inbox by repository.snapshot.collectAsStateWithLifecycle()
-    val record = inbox.records.inboxRecord(route.itemId)
+    val listedRecord = inbox.records.inboxRecord(route.itemId)
+    var lookup by remember(route.itemId) { mutableStateOf<InboxItemLookupResult?>(null) }
+    var lookupAttempt by remember(route.itemId) { mutableIntStateOf(0) }
+    LaunchedEffect(repository, route.itemId, listedRecord, lookupAttempt) {
+        if (listedRecord == null) {
+            lookup = null
+            lookup = readInboxItem(repository, route.itemId)
+        } else lookup = null
+    }
+    val record = listedRecord ?: (lookup as? InboxItemLookupResult.Found)?.record
     var contextRevision by remember { mutableIntStateOf(0) }
     var assistantContext by remember(record?.item, contextRevision) { mutableStateOf<String?>(null) }
     LaunchedEffect(repository, record?.item, contextRevision) {
@@ -123,15 +132,27 @@ fun InboxItemDetailScreen(repository: InboxRepository, route: InboxItemDetailRou
         onRefresh = {
             scope.launch {
                 refreshing = true
-                try { repository.refreshNow() } catch (e: CancellationException) { throw e } catch (_: Exception) { } finally {
+                try {
+                    repository.refreshNow()
+                    if (record == null) lookupAttempt++
+                } catch (e: CancellationException) { throw e } catch (_: Exception) { } finally {
                     refreshing = false
                     contextRevision++
                 }
             }
         }) {
         item("item-extension-notice") { InboxExtensionNotice(route.itemId, route) }
-        if (record == null) item("item-missing") { StatusText(stringResource(R.string.inbox_item_missing)) }
-        else inboxItemBody(record, assistantContext) { url -> open?.invoke(url, inbox.contentSource) }
+        if (record == null) {
+            when (val result = lookup) {
+                null -> item("item-loading") { JLoading(text = stringResource(R.string.inbox_loading)) }
+                is InboxItemLookupResult.Failed -> item("item-failed") {
+                    JNotice(stringResource(R.string.inbox_refresh_failed), actionLabel = stringResource(R.string.inbox_retry),
+                        onAction = { lookupAttempt++ })
+                }
+                InboxItemLookupResult.Missing -> item("item-missing") { StatusText(stringResource(R.string.inbox_item_missing)) }
+                is InboxItemLookupResult.Found -> Unit
+            }
+        } else inboxItemBody(record, assistantContext) { url -> open?.invoke(url, inbox.contentSource) }
     }
 }
 

@@ -27,6 +27,7 @@ import androidx.compose.ui.test.longClick
 import androidx.compose.ui.unit.dp
 import androidx.navigation3.runtime.NavKey
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.serialization.json.jsonObject
@@ -49,6 +50,7 @@ import persona.core.domain.inbox.InboxItem
 import persona.core.navigation.AppTab
 import persona.core.navigation.Navigator
 import java.io.File
+import java.io.IOException
 
 /** The assistant's own connector rows keep their conversation presentation rather than looking like external mail. */
 @RunWith(AndroidJUnit4::class)
@@ -66,10 +68,19 @@ class AssistantInboxRowsTest {
         connector = InboxConnectorRef("server/session-1", label = "Assistant", url = chatUrl),
     )
 
-    private class OneInbox(snapshot: InboxSnapshot, var context: String?) : InboxRepository {
+    private class OneInbox(snapshot: InboxSnapshot, var context: String?, var lookedUp: InboxRecord? = null) : InboxRepository {
         override val entries = MutableStateFlow(emptyList<InboxEntry>())
         override val snapshot = MutableStateFlow(snapshot)
         override val connectionState = flowOf(ConnectionState.Online)
+        val itemCalls = mutableListOf<String>()
+        var lookupGate: CompletableDeferred<Unit>? = null
+        var lookupFailure: IOException? = null
+        override suspend fun item(itemId: String): InboxRecord? {
+            itemCalls += itemId
+            lookupGate?.await()
+            lookupFailure?.let { throw it }
+            return lookedUp
+        }
         override suspend fun refresh() = Unit
         override suspend fun personaContext(itemId: String) = context
         override fun conversation(feedId: String, startPosition: Long?) = flowOf(LarkConversation())
@@ -124,6 +135,65 @@ class AssistantInboxRowsTest {
         }
         rule.onNodeWithText("Open the chat").performClick()
         assertEquals(listOf(chatUrl), opened)
+    }
+
+    @Test fun detailLoadsPagedBackAssistantRow() {
+        val inbox = OneInbox(InboxSnapshot(), "${record.item.title}\n$summary", lookedUp = record).apply {
+            lookupGate = CompletableDeferred()
+        }
+        val opened = mutableListOf<String>()
+        rule.setContent {
+            PersonaTheme(reduceMotion = true) {
+                CompositionLocalProvider(LocalLarkLinkOpener provides { url, _ -> opened += url }) {
+                    Box(Modifier.width(400.dp).height(900.dp).background(PersonaTheme.palette.background)) {
+                        InboxItemDetailScreen(inbox, InboxItemDetailRoute(record.item.id), navigator)
+                    }
+                }
+            }
+        }
+        rule.onNodeWithText("Loading the inbox").assertExists()
+        rule.onNodeWithText("Can't find this item. It may have been handled or removed.").assertDoesNotExist()
+
+        inbox.lookupGate?.complete(Unit)
+        rule.waitForIdle()
+        rule.onNodeWithText(record.item.title).assertExists()
+        rule.onNodeWithText("Open the chat").performClick()
+        assertEquals(listOf(chatUrl), opened)
+        assertEquals(listOf(record.item.id), inbox.itemCalls)
+    }
+
+    @Test fun detailRetriesFailedPagedBackLookup() {
+        val inbox = OneInbox(InboxSnapshot(), "${record.item.title}\n$summary", lookedUp = record).apply {
+            lookupFailure = IOException("offline")
+        }
+        rule.setContent {
+            PersonaTheme(reduceMotion = true) {
+                Box(Modifier.width(400.dp).height(900.dp).background(PersonaTheme.palette.background)) {
+                    InboxItemDetailScreen(inbox, InboxItemDetailRoute(record.item.id), navigator)
+                }
+            }
+        }
+        rule.onNodeWithText("Couldn't refresh the inbox. Try again.").assertExists()
+        rule.onNodeWithText("Can't find this item. It may have been handled or removed.").assertDoesNotExist()
+
+        inbox.lookupFailure = null
+        rule.onNodeWithText("Retry").performClick()
+        rule.waitForIdle()
+        rule.onNodeWithText(record.item.title).assertExists()
+        assertEquals(listOf(record.item.id, record.item.id), inbox.itemCalls)
+    }
+
+    @Test fun detailShowsMissingOnlyWhenPagedBackLookupReturnsNull() {
+        val inbox = OneInbox(InboxSnapshot(), null)
+        rule.setContent {
+            PersonaTheme(reduceMotion = true) {
+                Box(Modifier.width(400.dp).height(900.dp).background(PersonaTheme.palette.background)) {
+                    InboxItemDetailScreen(inbox, InboxItemDetailRoute(record.item.id), navigator)
+                }
+            }
+        }
+        rule.onNodeWithText("Can't find this item. It may have been handled or removed.").assertExists()
+        assertEquals(listOf(record.item.id), inbox.itemCalls)
     }
 
     @Test fun rowShowsSummaryOnceWithoutSenderPrefixOrHandOff() {
