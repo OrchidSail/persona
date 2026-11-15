@@ -31,6 +31,7 @@ import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.filter
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -261,6 +262,14 @@ class HomeChromeTest {
                 assertDoesNotOverlap(controls[i].second, controls[j].second,
                     "${controls[i].first} / ${controls[j].first}: $case")
             }
+            if (style == AppStyle.Glass) {
+                val badge = rule.onNodeWithTag("home-badge").getBoundsInRoot()
+                assertTrue("badge is horizontally clipped: $case / $pane / $badge",
+                    badge.left >= pane.left && badge.right <= pane.right)
+                for ((name, bounds) in controls.filter { it.first != "switcher" }) {
+                    assertDoesNotOverlap(badge, bounds, "badge / $name: $case")
+                }
+            }
             for ((name, bounds) in controls.filter { it.first != "switcher" }) {
                 assertEquals("$name lost its 48dp target: $case", 48.dp, bounds.right - bounds.left)
             }
@@ -337,6 +346,74 @@ class HomeChromeTest {
                 (pane.left.value + pane.right.value) / 2,
                 (switcher.left.value + switcher.right.value) / 2, 0.51f)
         }
+    }
+
+    @Test fun glassExactFitCompactBadgeClearsOneTrailingAction() = glassExactFitCompactBadgeClearsTrailingActions(1)
+
+    @Test fun glassExactFitCompactBadgeClearsTwoTrailingActions() = glassExactFitCompactBadgeClearsTrailingActions(2)
+
+    private fun glassExactFitCompactBadgeClearsTrailingActions(trailingActions: Int) {
+        var width by mutableStateOf(200.dp)
+        rule.setContent {
+            PersonaTheme(style = AppStyle.Glass, reduceMotion = true) {
+                Box(Modifier.width(width).height(140.dp).testTag("pane")) {
+                    HomeNavigation(
+                        items = listOf(
+                            NavItem("assistant", "Assistant", PhIcons.ChatCircle),
+                            NavItem("agents", "Agents", PhIcons.Robot, badge = 2),
+                        ),
+                        selected = "agents", onSelect = {},
+                        leading = { Box(Modifier.width(24.dp).height(48.dp).testTag("compact-leading")) },
+                        trailing = {
+                            JIconButton(PhIcons.NotePencil, "New session", {})
+                            if (trailingActions == 2) JIconButton(PersonaIcons.moreMenu, "List options", {})
+                        },
+                    )
+                }
+            }
+        }
+        var verified = false
+        for (w in 200..500) {
+            rule.runOnIdle { width = w.dp }
+            rule.waitForIdle()
+            if (rule.onAllNodesWithTag("home-level-gap-compact").fetchSemanticsNodes().isEmpty()) continue
+            verified = true
+            val case = "exact-fit compact width=$w trailing=$trailingActions"
+            val pane = rule.onNodeWithTag("pane").getBoundsInRoot()
+            val leading = rule.onNodeWithTag("compact-leading").getBoundsInRoot()
+            val switcher = rule.onNodeWithTag("home-switcher").getBoundsInRoot()
+            val badge = rule.onNodeWithTag("home-badge").getBoundsInRoot()
+            val trailing = rule.onNodeWithContentDescription("New session").getBoundsInRoot()
+            assertEquals("the first gap-compact width must be an exact fit: $case / $switcher / $trailing",
+                0f, trailing.left.value - switcher.right.value, 0.51f)
+            assertTrue("badge is clipped by the pane: $case / $pane / $badge",
+                badge.left >= pane.left && badge.right <= pane.right)
+            assertDoesNotOverlap(badge, leading, "badge / leading: $case")
+            assertDoesNotOverlap(badge, trailing, "badge / trailing: $case")
+            assertTrue("capsule reaches the trailing control: $case / $switcher / $trailing",
+                switcher.right <= trailing.left)
+            if (trailingActions == 2) {
+                val options = rule.onNodeWithContentDescription("List options").getBoundsInRoot()
+                assertDoesNotOverlap(badge, options, "badge / options: $case")
+            }
+            break
+        }
+        assertTrue("no exact-fit gap-compact case found for $trailingActions trailing actions", verified)
+    }
+
+    @Test fun homeSwitcherOccupiedBoundsUseTheMeasuredBadge() {
+        assertEquals("full badge outside the capsule",
+            HomeSwitcherOccupiedBounds(left = 0, right = 108),
+            homeSwitcherOccupiedBounds(capsuleWidth = 100, badgeWidth = 40, badgeOffset = 8))
+        assertEquals("compact badge inside the capsule",
+            HomeSwitcherOccupiedBounds(left = 0, right = 100),
+            homeSwitcherOccupiedBounds(capsuleWidth = 100, badgeWidth = 40, badgeOffset = 0))
+        assertEquals("a wide badge can occupy space before the capsule",
+            HomeSwitcherOccupiedBounds(left = -20, right = 100),
+            homeSwitcherOccupiedBounds(capsuleWidth = 100, badgeWidth = 120, badgeOffset = 0))
+        assertEquals("measured badge bounds can extend on both sides",
+            HomeSwitcherOccupiedBounds(left = -32, right = 108),
+            homeSwitcherOccupiedBounds(capsuleWidth = 100, badgeWidth = 140, badgeOffset = 8))
     }
 
     @Test fun glassStackedSwitcherStaysCenteredWithBadge() {
