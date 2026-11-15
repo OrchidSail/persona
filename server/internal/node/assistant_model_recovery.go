@@ -306,17 +306,23 @@ func (n *Node) applyModelRecoveryReturn(ctx context.Context, id, askedModel stri
 	// Only an existing hold that expired for this exact request counts as natural expiry. Its two-hour sticky record
 	// must still skip a wasted same-model retry. A confirmed recovery/reset releases all recovery bookkeeping.
 	backViaHold := holdExpired && askedModel == marker.From && execution.Model == marker.From
-	if !backViaHold && !n.returnToConfiguredAt(ctx, id, time.Now()) {
+	now := time.Now()
+	confirmed := marker.Returning || marker.ResetsAt != nil && now.After(*marker.ResetsAt)
+	if !confirmed && !backViaHold {
+		confirmed = n.returnToConfiguredAt(ctx, id, now)
+	}
+	switch {
+	case confirmed:
+		// Confirmed recovery is stronger than simultaneous natural expiry: release the hold and unavailable record too.
+		execution.Model = marker.From
+		n.releaseModelRecovery(id, marker.From)
+	case backViaHold:
+		execution.Model = marker.From
+		n.clearModelRecovery(id)
+	default:
 		if askedModel == marker.From && execution.Model == marker.From {
 			execution.Model = marker.To // a cold restart has no hold, but the persisted fallback still applies
 		}
-		return execution
-	}
-	execution.Model = marker.From
-	if backViaHold {
-		n.clearModelRecovery(id)
-	} else {
-		n.releaseModelRecovery(id, marker.From)
 	}
 	return execution
 }

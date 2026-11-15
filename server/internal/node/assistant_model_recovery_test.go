@@ -793,11 +793,16 @@ func TestRecoveryReturnHonorsNewModelChoice(t *testing.T) {
 func TestRecoveryConfirmedReturnReleasesFallbackThroughAssistantSend(t *testing.T) {
 	const id = "11111111-2222-3333-4444-555555555555"
 	for _, tc := range []struct {
-		name      string
-		returning bool
-		reset     bool
-		probe     bool
-	}{{"returning", true, false, false}, {"reset", false, true, false}, {"probe", false, false, true}} {
+		name               string
+		returning, reset   bool
+		probe, expiredHold bool
+	}{
+		{name: "returning", returning: true},
+		{name: "reset", reset: true},
+		{name: "probe", probe: true},
+		{name: "returning after hold expiry", returning: true, expiredHold: true},
+		{name: "reset after hold expiry", reset: true, expiredHold: true},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			n, _ := recoveryTestNode(t, id, true, false)
 			marker := &proto.ModelRecovery{From: "primary-model", To: "fallback-model", Reason: proto.ModelRecoveryReasonQuota, Returning: tc.returning}
@@ -807,9 +812,12 @@ func TestRecoveryConfirmedReturnReleasesFallbackThroughAssistantSend(t *testing.
 			}
 			n.putModelRecovery(id, marker)
 			n.recoveryMarks = nil // also exercise release when only session state carries the marker
+			at, until := time.Now(), time.Now().Add(assistantFallbackHold)
+			if tc.expiredHold {
+				at, until = time.Now().Add(-assistantFallbackHold-time.Minute), time.Now().Add(-time.Minute)
+			}
 			n.fallbacks = map[string]*assistantFallback{id: {launcher: "claude",
-				from: modelExecution{Model: "primary-model"}, to: modelExecution{Model: "fallback-model"},
-				at: time.Now(), until: time.Now().Add(assistantFallbackHold)}}
+				from: modelExecution{Model: "primary-model"}, to: modelExecution{Model: "fallback-model"}, at: at, until: until}}
 			n.unavailable = map[string]time.Time{unavailableKey("claude", "primary-model"): time.Now().Add(time.Hour)}
 			var probes atomic.Int32
 			assistantModelProbe = func(_ context.Context, _ *Node, _, model string) bool {
