@@ -545,6 +545,22 @@ func TestRecoveryMarkerSurvivesARestart(t *testing.T) {
 	if !restarted.recoveryProtected(id) {
 		t.Fatal("the main conversation lost its protection")
 	}
+	// The probe loop must include this state-only marker even before anything hydrates recoveryMarks.
+	var probed string
+	assistantModelProbe = func(_ context.Context, _ *Node, _, model string) bool {
+		probed = model
+		return true
+	}
+	restarted.probeModelRecoveries(context.Background())
+	if probed != "primary-model" {
+		t.Fatalf("after a restart, probed %q", probed)
+	}
+	if r := restarted.modelRecovery(id); r == nil || !r.Returning {
+		t.Fatalf("the state-only marker did not enter Returning: %+v", r)
+	}
+	if st, _ := restarted.state.get(id); st.ModelRecovery == nil || !st.ModelRecovery.Returning {
+		t.Fatalf("Returning was not persisted after a restart: %+v", st.ModelRecovery)
+	}
 }
 
 // Compacting a conversation summarizes the refused turns away: the temporary switch ends with them.

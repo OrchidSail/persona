@@ -242,6 +242,18 @@ func (n *Node) probeModelRecoveries(ctx context.Context) {
 			ids[id] = true
 		}
 	}
+	// A reconnect starts with an empty recoveryMarks map. Include markers that exist only in session state, with any
+	// live map entry winning over its persisted copy. n.mu -> state.mu is the established lock order.
+	n.state.mu.Lock()
+	for id, st := range n.state.Sessions {
+		if _, live := n.recoveryMarks[id]; live {
+			continue
+		}
+		if r := st.ModelRecovery; modelRecoverySwitched(r) && modelRecoveryProbeFrom(r) != "" {
+			ids[id] = true
+		}
+	}
+	n.state.mu.Unlock()
 	n.mu.Unlock()
 	for id := range ids {
 		cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
