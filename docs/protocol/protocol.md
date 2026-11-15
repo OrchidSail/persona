@@ -2038,8 +2038,8 @@ an expired one or no rule that fits, a task starts exactly as without the featur
 - `then`: every field optional. `presets` are Agent presets (the active model profile's tiers, see
   `GET /api/v1/assistant/worker-presets`) tried in order, the first one the task's computer can start winning, or one
   of the usable ones by weight when weights differ; `effort` one of `low` / `medium` / `high` / `xhigh` / `max`;
-  `ultracode` a boolean; `goal` only `done_when`; `plan_first` a boolean. Effort, ultracode and goal reach Claude Code
-  starts only.
+  `ultracode` a boolean (`true` turns it on for a task that did not set it; `false` asks for nothing); `goal` only
+  `done_when`; `plan_first` a boolean. Effort, ultracode and goal reach Claude Code starts only.
 - Rules are tried in order and the first that fits wins. A caller's own effort, ultracode, tier, model or launcher is
   never replaced.
 
