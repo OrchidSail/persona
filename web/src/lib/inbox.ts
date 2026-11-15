@@ -14,6 +14,7 @@ import { api, ApiError, enc, errorText, getToken } from "./api";
 import { BASE } from "./base";
 import type { AgentMutes } from "./agent-groups";
 import type { ContextRef } from "./links";
+import { agentName } from "./agent-kind";
 import { connectorOpenTitle } from "./connectors";
 import { contextBody } from "./context-body";
 import { larkPath } from "./lark-accounts";
@@ -147,6 +148,8 @@ export interface InboxItem {
   suggestion?: InboxSuggestion;
   /** Handling chain, oldest first. */
   chain?: ChainEntry[];
+  /** The rows merged into this one by hand (the hub hides them; #6480). */
+  merged_from?: { id: string; source: string; account_name?: string; title?: string }[];
   related?: InboxRelated[];
   /** The conversations it was handed to with "Hand to AI" (POST /inbox/{id}/handoff), oldest first: they may write back to it. */
   handoffs?: InboxHandoff[];
@@ -565,10 +568,11 @@ export function interactionMuted(ix: Interaction, sessions: Record<string, Sessi
   return Boolean(space && mutes.spaces.includes(`${ix.machine_id}/${space}`));
 }
 
-/** What it waits for: "Claude is asking you", "Plan waiting for your approval"…; Persona's ask_user and other agents by name. */
+/** What it waits for: "Claude is asking you", "Plan waiting for your approval"…; Persona's ask_user and other agents by
+ *  name: the card's own name for an agent the app doesn't know (a Paseo provider's label, "Grok", #8142), never its id. */
 export function interactionTitle(ix: Interaction): string {
   if (ix.tool_name === "ask_user") return t("lib-inbox.ix_persona_asks");
-  const name = ix.agent === "codex" ? "Codex" : ix.agent === "traex" ? "TRAEX" : ix.agent && ix.agent !== "claude" ? ix.agent : "";
+  const name = ix.agent && ix.agent !== "claude" ? agentName(ix.agent, ix.agent_label) : "";
   if (name && ix.kind === "question") return t("lib-inbox.ix_named_asks", { name });
   if (name && ix.kind === "permission") return t("lib-inbox.ix_named_permission", { name });
   if (ix.kind === "elicitation") return ix.elicitation?.mode === "url" ? t("lib-inbox.ix_elicitation_url") : t("lib-inbox.ix_elicitation_form");
@@ -1054,6 +1058,17 @@ function keepStamp(fresh: InboxItem, before: InboxItem): InboxItem {
  *  unstamped: `manager` says whose (the item's the request was about); none: the default's. */
 export function replaceItem(item: InboxItem, manager?: string) {
   if (item?.id) patchItem({ id: item.id, manager: item.manager ?? manager }, (before) => keepStamp(item, before));
+}
+
+/** Rows the hub changed or took out of the list (a merge, a to-do): its copies replace ours (`manager` says whose answer it is:
+ *  the default's answers carry no stamp), and `gone` ids leave the list (a merged row's members are hidden by the hub). */
+export function applyInboxChange(changed: InboxItem[], gone: string[], manager?: string) {
+  const fresh = new Map(changed.map((it) => [it.id, it]));
+  const out = new Set(gone);
+  const same = (it: InboxItem) => sameManager(it.manager, manager);
+  set({
+    items: withPending(state.items.filter((it) => !(same(it) && out.has(it.id))).map((it) => (same(it) && fresh.has(it.id) ? keepStamp(fresh.get(it.id)!, it) : it))),
+  });
 }
 
 /** A done / open mark still being sent: what the item shows until the hub answers. A mute's mark also carries its
@@ -1759,13 +1774,13 @@ export async function sendReply(item: InboxItem, text: string, changes: DocChang
 
 /** "Send" / "Start" / "Got it" / "Confirm", "Reject", "Say something" on the item's suggestion: the hub's item replaces ours. A suggestion that
  * changed meanwhile is not run: "Suggestion updated" and the item as it is now. Resolves to whether it went through. */
-export async function suggestionAct(item: InboxItem, action: SuggestionAction, text?: string): Promise<boolean> {
+export async function suggestionAct(item: InboxItem, action: SuggestionAction, text?: string, due?: string): Promise<boolean> {
   const s = item.suggestion;
   const key = itemKey(item);
   if (!s || state.sending.includes(key)) return false;
   set({ sending: [...state.sending, key] });
   try {
-    const r = await actOnSuggestion(itemPath(item.id), s.version, action, text, undefined, item.manager);
+    const r = await actOnSuggestion(itemPath(item.id), s.version, action, text, undefined, item.manager, due);
     if (r.ok) {
       if (r.item?.id === item.id) replaceItem(r.item, item.manager);
       toast(actedText(s, action), "ok");

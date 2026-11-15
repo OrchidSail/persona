@@ -64,12 +64,15 @@ func (n *Node) launcherModels(ctx context.Context, name, agentType string, refre
 	if isCodexAppLauncher(name) { // so does the Codex App (codexapp_new.go)
 		return proto.LauncherModels{Agent: "codex", Models: []proto.AgentModel{}, Locked: codexAppModelLocked}, nil
 	}
-	if res, ok := n.runtimeLauncherModels(name); ok { // a runtime's launcher: static advertisement or native discovery
-		return n.liveRuntimeModels(ctx, name, refresh, res)
+	// A runtime's launcher, as a start in ctx's host runs it (where that host's engine runs only its own launchers, its
+	// provider of the name, #8140): static advertisement or native discovery.
+	if h := n.runtimeOfIn(ctx, name); h != nil {
+		res, _ := launcherModelsOf(h, name)
+		return n.liveRuntimeModels(ctx, h, name, refresh, res)
 	}
 	if m, ok := n.managedLauncher(name); ok && m.AgentType() == "agy" {
 		if res, ok := n.agyRuntimeModels(); ok {
-			return n.liveRuntimeModels(ctx, "agy", refresh, res)
+			return n.liveRuntimeModels(ctx, n.runtimes.launcherRuntime("agy"), "agy", refresh, res)
 		}
 		return proto.LauncherModels{Agent: "agy", Models: []proto.AgentModel{}}, nil
 	}
@@ -411,13 +414,14 @@ func codexModelList(w io.Writer, r io.Reader) ([]proto.AgentModel, error) {
 		}
 		var res struct {
 			Data []struct {
-				Model         string `json:"model"`
-				ID            string `json:"id"`
-				DisplayName   string `json:"displayName"`
-				Description   string `json:"description"`
-				Hidden        bool   `json:"hidden"`
-				IsDefault     bool   `json:"isDefault"`
-				DefaultEffort string `json:"defaultReasoningEffort"`
+				Model         string              `json:"model"`
+				ID            string              `json:"id"`
+				DisplayName   string              `json:"displayName"`
+				Description   string              `json:"description"`
+				Hidden        bool                `json:"hidden"`
+				IsDefault     bool                `json:"isDefault"`
+				DefaultEffort string              `json:"defaultReasoningEffort"`
+				ServiceTiers  []proto.ServiceTier `json:"serviceTiers"`
 				Efforts       []struct {
 					Effort string `json:"reasoningEffort"`
 				} `json:"supportedReasoningEfforts"`
@@ -435,7 +439,7 @@ func codexModelList(w io.Writer, r io.Reader) ([]proto.AgentModel, error) {
 			if m.Hidden || id == "" {
 				continue
 			}
-			a := proto.AgentModel{ID: id, Name: m.DisplayName, Description: m.Description, Default: m.IsDefault, DefaultEffort: m.DefaultEffort}
+			a := proto.AgentModel{ID: id, Name: m.DisplayName, Description: m.Description, Default: m.IsDefault, DefaultEffort: m.DefaultEffort, ServiceTiers: m.ServiceTiers}
 			if a.Name == "" {
 				a.Name = id
 			}

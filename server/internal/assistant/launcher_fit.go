@@ -48,6 +48,13 @@ func (s *Service) resolveStart(ctx context.Context, params map[string]any) (star
 // same list, so a caller changing permissions by agent does not have to ask for it again.
 func (s *Service) fitLauncher(ctx context.Context, m Device, own startPick, params map[string]any) (note, agent string, err error) {
 	name, _ := params["launcher"].(string)
+	asked, _ := params["host"].(string)
+	if host := agentStartHost(m, asked); host != "" {
+		// Where the start's engine runs only its own launchers, plain claude and a managed launcher do not run either.
+		if note, agent, err, done := s.fitEngineLauncher(ctx, m, host, params); done {
+			return note, agent, err
+		}
+	}
 	if s.launcherEverywhere(ctx, name) {
 		if name == "" || name == "claude" {
 			return "", "claude", nil
@@ -61,7 +68,7 @@ func (s *Service) fitLauncher(ctx context.Context, m Device, own startPick, para
 	}
 	list, known := s.launchersHere(withUnhidden(ctx, name), m.ID) // a hidden default still runs (#4659)
 	if !known {
-		return "", "", nil
+		return "", s.lastSeenAgent(ctx, m.ID, name), nil
 	}
 	configured := make([]ConfiguredLauncher, 0, len(list))
 	for _, l := range list {
@@ -101,6 +108,38 @@ func (s *Service) fitLauncher(ctx context.Context, m Device, own startPick, para
 	})
 	current, _ := params["launcher"].(string)
 	return note, agentOf(current), nil
+}
+
+// lastSeenAgent is the agent type of launcher name on machine in the last launcher list the hub saw there (the
+// persisted snapshot, zshrcLaunchersLastSeen), with hub.json's launchers applied, for a start whose live list could
+// not be read (a slow or busy computer). Without it a Claude wrapper such as a relay script counted as an unknown
+// agent: its task fell back to the computer's Claude default mode, and when that read timed out too, to "default",
+// so the Agent stopped on its first Bash approval. "" when the snapshot does not name it: nothing is guessed.
+func (s *Service) lastSeenAgent(ctx context.Context, machine, name string) string {
+	if name == "" {
+		return ""
+	}
+	seen, _ := s.zshrcLaunchersLastSeen(ctx)
+	for _, z := range seen {
+		if z.MachineID != machine {
+			continue
+		}
+		var configured []ConfiguredLauncher
+		for _, l := range z.Launchers {
+			if l.Name == name {
+				configured = append(configured, ConfiguredLauncher{Launcher: l})
+			}
+		}
+		if len(configured) == 0 {
+			return ""
+		}
+		for _, l := range sessionLaunchers(configured, s.hello(ctx).Models.Launchers[machine]) {
+			if l.Name == name {
+				return l.AgentType
+			}
+		}
+	}
+	return ""
 }
 
 // launchersHere is what machine can start: machineLaunchers (its own launchers but the hidden ones, and the managed
