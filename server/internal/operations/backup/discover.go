@@ -111,7 +111,7 @@ func makeTarget(part, rawURL, container, defaultContainer string) (Target, error
 		return Target{}, fmt.Errorf("%s database URL is not configured", part)
 	}
 	u, err := url.Parse(rawURL)
-	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.Host == "" {
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
 		return Target{}, fmt.Errorf("%s database URL is not a postgres:// URL", part)
 	}
 	cfg, err := pgx.ParseConfig(rawURL)
@@ -134,7 +134,7 @@ func loopbackDatabaseHost(host string) bool {
 
 func withDatabase(rawURL, name string) (string, error) {
 	u, err := url.Parse(rawURL)
-	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.Host == "" || name == "" {
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || name == "" {
 		return "", errors.New("invalid database URL or name")
 	}
 	u.Path, u.RawPath = "/"+name, ""

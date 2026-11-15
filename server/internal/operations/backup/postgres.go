@@ -194,7 +194,7 @@ func (b *postgresBackend) Quiesced(ctx context.Context, target Target, database 
 	}
 	defer closeConn(ctx, conn)
 	var sessions int
-	if err := conn.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()`).Scan(&sessions); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_type = 'client backend'`).Scan(&sessions); err != nil {
 		return targetError(target, "check that writes are stopped", err)
 	}
 	if sessions != 0 {
