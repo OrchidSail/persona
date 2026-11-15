@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -437,9 +438,9 @@ func TestRecoveryMarkerClearsWhenTheHoldExpiresWithoutAProbe(t *testing.T) {
 	if !backViaHold {
 		t.Fatal("the natural-expiry condition should hold")
 	}
-	// Mirror assistantSend: the expired hold is enough to release, with no successful probe required.
+	// Mirror assistantSend: natural expiry clears only the marker, with no successful probe required.
 	if r := n.modelRecovery(id); r != nil {
-		n.releaseModelRecovery(id, r.From)
+		n.clearModelRecovery(id)
 	}
 	if n.modelRecovery(id) != nil {
 		t.Fatal("the marker outlived the expired hold")
@@ -467,13 +468,62 @@ func TestRecoveryStateOnlyMarkerClearsWhenTheHoldExpiresWithoutAProbe(t *testing
 	if !backViaHold {
 		t.Fatalf("the expired hold did not reach assistantSend's backViaHold branch: %+v", got)
 	}
-	// Mirror assistantSend's natural-expiry branch.
-	n.releaseModelRecovery(id, "primary-model")
+	// Mirror assistantSend's natural-expiry branch: clear the marker but keep the sticky fallback record.
+	n.clearModelRecovery(id)
 	if n.modelRecovery(id) != nil {
 		t.Fatal("the state-only marker outlived the expired hold")
 	}
 	if st, _ := n.state.get(id); st.ModelRecovery != nil {
 		t.Fatal("the state-only marker was not cleared from session state")
+	}
+}
+
+// Natural hold expiry clears the visible marker, but a new 429 inside the two-hour sticky window goes straight to the
+// fallback instead of paying for another same-model retry. This drives the real assistantSend branch and needs no zsh.
+func TestRecoveryHoldExpiryKeepsStickyFallback(t *testing.T) {
+	const id = "11111111-2222-3333-4444-555555555555"
+	n, sent := recoveryTestNode(t, id, true, false)
+	n.putModelRecovery(id, &proto.ModelRecovery{From: "primary-model", To: "fallback-model", Reason: proto.ModelRecoveryReasonQuota})
+	n.recoveryMarks = nil // reconnect-shaped: the marker exists only in session state
+	n.fallbacks = map[string]*assistantFallback{id: {launcher: "claude",
+		from: modelExecution{Model: "primary-model"}, to: modelExecution{Model: "fallback-model"},
+		at: time.Now().Add(-assistantFallbackHold - time.Minute), until: time.Now().Add(-time.Minute)}}
+	n.unavailable = map[string]time.Time{unavailableKey("claude", "primary-model"): time.Now().Add(time.Hour)}
+	p := &assistantProc{id: id, agent: "claude", launcher: "claude", model: modelExecution{Model: "primary-model"}}
+	n.procs[id] = p
+	sentinel := errors.New("stop after assistantSend chooses the configured model")
+	probeKey := n.home + "\x00claude\x00primary-model"
+	modelProbeCache.Lock()
+	modelProbeCache.results[probeKey] = modelProbeResult{at: time.Now(), agent: "claude", err: sentinel}
+	modelProbeCache.Unlock()
+	t.Cleanup(func() {
+		modelProbeCache.Lock()
+		delete(modelProbeCache.results, probeKey)
+		modelProbeCache.Unlock()
+	})
+	st, _ := n.state.get(id)
+	_, err := n.assistantSend(context.Background(), id, st.Cwd, "claude", "next message", nil, "", "", modelExecution{Model: "primary-model", IsMain: true})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("assistantSend did not reach the configured-model check: %v", err)
+	}
+	if n.modelRecovery(id) != nil {
+		t.Fatal("the state-only marker outlived natural hold expiry")
+	}
+	n.mu.Lock()
+	from, launcher, sticky := n.recentFallback(id)
+	_, unavailableKept := n.unavailable[unavailableKey("claude", "primary-model")]
+	n.mu.Unlock()
+	if !sticky || launcher != "claude" || from.Model != "primary-model" {
+		t.Fatalf("natural expiry destroyed the sticky fallback: %+v %q %v", from, launcher, sticky)
+	}
+	if !unavailableKept {
+		t.Fatal("natural expiry cleared the configured model's unavailable record")
+	}
+	if !n.recoverAssistantResult(p, true, "API Error: 429 Too many requests", "", assistantRecordKind) {
+		t.Fatal("the new 429 was not recovered")
+	}
+	if first := waitRecoverySend(t, sent); first.Model != "fallback-model" {
+		t.Fatalf("the first recovery send used %q, want the sticky fallback without a same-model retry", first.Model)
 	}
 }
 
@@ -538,5 +588,12 @@ func TestClearAssistantRecoveryReleasesWithoutDeadlock(t *testing.T) {
 	}
 	if st, _ := n.state.get(id); st.ModelRecovery != nil {
 		t.Fatal("the released marker is still persisted")
+	}
+	n.mu.Lock()
+	f := n.fallbacks[id]
+	_, _, sticky := n.recentFallback(id)
+	n.mu.Unlock()
+	if f == nil || f.from.Model != "primary-model" || f.to.Model != "primary-model" || !sticky {
+		t.Fatalf("the configured-model answer lost its from→from sticky hold: %+v, sticky %v", f, sticky)
 	}
 }

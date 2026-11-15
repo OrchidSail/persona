@@ -227,13 +227,15 @@ func (n *Node) clearAssistantRecovery(p *assistantProc, answered bool) {
 	if n.procs[p.id] == p { // a replaced process's late result cannot clear its replacement's recovery
 		r := n.recoveries[p.id]
 		if answered && r != nil && r.switched && r.launcher == launcher {
-			n.holdFallback(p.id, launcher, r.from, model)
 			// Answering on the configured model again ends the recovery marker; answering on the fallback keeps it so
 			// the apps keep naming the model that actually answers and why it switched (#7824). n.mu is already held,
 			// so do only the locked half; persist and notify after the unlock below (a reentrant lock would deadlock).
 			if r.from.Model != "" && r.from.Model == model.Model {
 				needPersist = n.releaseModelRecoveryLocked(p.id, r.from.Model)
 			}
+			// Write the hold after any release: a configured-model answer makes a from→from sticky record, which the
+			// release's fallback cleanup must not immediately delete (#3788).
+			n.holdFallback(p.id, launcher, r.from, model)
 		}
 		delete(n.recoveries, p.id)
 	}

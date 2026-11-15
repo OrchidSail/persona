@@ -401,14 +401,18 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 		if marker := n.modelRecovery(id); marker != nil && !marker.ChainExhausted && marker.From != "" &&
 			n.recoveryProtected(id) {
 			// The hold expired on its own and already put the configured model back, or a probe/reset says it is back.
-			// Without the hold-expiry branch the marker could linger after the conversation had effectively returned
-			// when no availability probe can run.
+			// Natural expiry clears only the marker: the two-hour sticky record must still skip a wasted same-model retry.
+			// A confirmed recovery or reset instead releases all recovery bookkeeping.
 			backViaHold := askedModel == marker.From && execution.Model == marker.From
 			if backViaHold || n.returnToConfiguredAt(ctx, id, time.Now()) {
 				if marker.From != execution.Model {
 					execution.Model = marker.From
 				}
-				n.releaseModelRecovery(id, marker.From)
+				if backViaHold {
+					n.clearModelRecovery(id)
+				} else {
+					n.releaseModelRecovery(id, marker.From)
+				}
 			}
 		}
 	}
