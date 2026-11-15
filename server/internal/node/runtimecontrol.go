@@ -29,6 +29,9 @@ type runtimeLauncher struct {
 	// PromptOptional: a Codex launcher the runtime starts with no first message too (Paseo's, #8140): the form need not
 	// ask for one (proto.Launcher.PromptOptional).
 	PromptOptional bool `json:"prompt_optional,omitempty"`
+	// AutoAccept: its agents' approval is a switch a start in bypassPermissions turns on (Paseo's Auto Accept), passed on
+	// in launchers.list (proto.Launcher.AutoAccept, #8141).
+	AutoAccept bool `json:"auto_accept,omitempty"`
 	// DisplayName and PermissionModes: what the apps call it (Paseo's label for the provider) and, when its agent is
 	// not Claude Code, the permission modes a start takes (proto.Launcher's, #8261).
 	DisplayName     string                  `json:"display_name,omitempty"`
@@ -104,6 +107,7 @@ func (h *runtimeConn) launcherList() []runtimeLauncher {
 				}
 				entry.Agent = l.Agent
 				entry.Models = l.Models
+				entry.AutoAccept = l.AutoAccept
 				entry.DisplayName, entry.PermissionModes = l.DisplayName, l.PermissionModes
 				break
 			}

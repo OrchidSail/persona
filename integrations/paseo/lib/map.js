@@ -147,8 +147,9 @@ export function formModel(m) {
 /**
  * The new-session form's launchers: one per provider that can start an agent (enabled, not failing, named like a
  * launcher), with the agent it starts, its models, its name in Paseo (display_name) and, for a provider that is not
- * Claude Code's, the permission modes a start takes (#8261). A Codex provider's says it starts with no first message
- * too (prompt_optional): Paseo creates an agent without one, where a Codex in a terminal used to need it.
+ * Claude Code's, the permission modes a start takes (#8261); `auto_accept` when its approval is Auto Accept (#8141). A
+ * Codex provider's says it starts with no first message too (prompt_optional): Paseo creates an agent without one,
+ * where a Codex in a terminal used to need it.
  */
 export function launchersOf(entries = [], roots = {}) {
   const out = []
@@ -161,6 +162,7 @@ export function launchersOf(entries = [], roots = {}) {
     const model = def?.name ?? e.label
     if (model) l.model = String(model)
     if (l.agent === 'codex') l.prompt_optional = true
+    if (AUTO_ACCEPT_ROOTS.has(root)) l.auto_accept = true
     const label = typeof e.label === 'string' ? e.label.trim() : ''
     if (label && label !== e.provider) l.display_name = label
     const modes = permissionModesOf(root)
@@ -829,6 +831,33 @@ function alwaysLabel(suggestions) {
   if (!rules) return undefined
   const where = s.destination === 'session' ? '本会话' : s.destination === 'userSettings' ? '所有项目' : '这个项目'
   return snippet(`${where}不再问：${rules}`)
+}
+
+/** Codex 0.167's MCP approval: `Allow the <server> MCP server to run tool "<tool>"?`. */
+const CODEX_MCP_TOOL = / to run tool "([^"\n]+)"\?/
+
+/**
+ * Whether a permission request asks for MCP tool `name` (`mcp__<server>__<tool>`), whichever provider asks (#8141):
+ * Claude Code by that name, OpenCode as `<server>_<tool>`, Codex in an approval of the server naming the tool, any
+ * other by the call its card shows (Grok's UseTool).
+ */
+export function asksForTool(request, name) {
+  const r = request ?? {}
+  const m = /^mcp__(.+?)__(.+)$/.exec(name ?? '')
+  if (!m || typeof r.name !== 'string') return false
+  const [, server, tool] = m
+  switch (r.provider) {
+    case 'claude':
+      return r.name === name
+    case 'opencode': {
+      const safe = (s) => s.replace(/[^a-zA-Z0-9_-]/g, '_')
+      return r.name === `${safe(server)}_${safe(tool)}`
+    }
+    case 'codex':
+      return r.name === 'CodexMcpElicitation' && r.metadata?.serverName === server && CODEX_MCP_TOOL.exec(r.description ?? '')?.[1] === tool
+  }
+  const input = r.input && typeof r.input === 'object' ? r.input : {}
+  return toolCall(r.name, r.detail ?? { type: 'unknown', input }).name === name
 }
 
 /**

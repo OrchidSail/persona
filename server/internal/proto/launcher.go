@@ -30,6 +30,11 @@ type Launcher struct {
 	PermissionModes PermissionModeSet `json:"permission_modes,omitempty"`
 	// Assistant: a runtime's launcher that may run the Persona assistant (docs/integrations/runtimes.md "Assistant"), whatever its agent.
 	Assistant bool `json:"assistant,omitempty"`
+	// AutoAccept: a runtime's launcher whose agents ask for approval unless a switch is on, which a start in
+	// bypassPermissions turns on (Paseo's Auto Accept: its ACP providers such as Grok, and OpenCode;
+	// docs/integrations/paseo.md). The Agents Persona itself starts on it run with the switch on, as Claude Code's run in
+	// bypassPermissions (#8141). Older nodes and runtimes leave it out.
+	AutoAccept bool `json:"auto_accept,omitempty"`
 	// DisplayName is what the apps call it: a Persona-managed provider's own name (the manager sets it,
 	// launcher_auto_name), or a runtime's name for a provider it runs (Paseo's label, "Grok"; #8261). Empty: Name.
 	DisplayName string `json:"display_name,omitempty"`
