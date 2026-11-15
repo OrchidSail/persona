@@ -59,6 +59,17 @@ export function autoAcceptOf(agent) {
   const f = (agent?.features ?? []).find((x) => x?.id === AUTO_ACCEPT && x.type === 'toggle')
   return f ? f.value === true : undefined
 }
+
+/**
+ * The permission modes of a provider that is not Claude Code's, in Persona's words (a launcher's and a row's
+ * permission_modes, #8261): its own approval (default, which a start sends as no mode), and Allow all
+ * (bypassPermissions) where Paseo has one for it: Auto Accept (autoAccept: the agent lists that switch) or Codex's
+ * full-access. Undefined for Claude Code's, whose five modes the apps know.
+ */
+export function permissionModesOf(root, autoAccept) {
+  if (root === 'claude') return undefined
+  return autoAccept || AUTO_ACCEPT_ROOTS.has(root) || root === 'codex' ? ['default', 'bypassPermissions'] : ['default']
+}
 /**
  * The bridge's own words in items and in a row's last words. Like the node's own lines they are Chinese, since neither
  * knows the reader's language, and the hub rewrites each of them, word for word, in the reader's: in items
@@ -135,8 +146,9 @@ export function formModel(m) {
 
 /**
  * The new-session form's launchers: one per provider that can start an agent (enabled, not failing, named like a
- * launcher), with the agent it starts and its models. A Codex provider's says it starts with no first message too
- * (prompt_optional): Paseo creates an agent without one, where a Codex in a terminal used to need it.
+ * launcher), with the agent it starts, its models, its name in Paseo (display_name) and, for a provider that is not
+ * Claude Code's, the permission modes a start takes (#8261). A Codex provider's says it starts with no first message
+ * too (prompt_optional): Paseo creates an agent without one, where a Codex in a terminal used to need it.
  */
 export function launchersOf(entries = [], roots = {}) {
   const out = []
@@ -144,10 +156,15 @@ export function launchersOf(entries = [], roots = {}) {
     if (!e?.enabled || e.status === 'unavailable' || e.status === 'error' || !LAUNCHER_NAME.test(e.provider ?? '')) continue
     const models = (e.models ?? []).filter((m) => m && m.id && m.isSelectable !== false).map(formModel)
     const def = models.find((m) => m.default) ?? models[0]
-    const l = { name: e.provider, agent: appAgent(roots[e.provider] ?? e.provider), models }
+    const root = roots[e.provider] ?? e.provider
+    const l = { name: e.provider, agent: appAgent(root), models }
     const model = def?.name ?? e.label
     if (model) l.model = String(model)
     if (l.agent === 'codex') l.prompt_optional = true
+    const label = typeof e.label === 'string' ? e.label.trim() : ''
+    if (label && label !== e.provider) l.display_name = label
+    const modes = permissionModesOf(root)
+    if (modes) l.permission_modes = modes
     out.push(l)
   }
   return out
@@ -452,7 +469,8 @@ export function agentRow(agent, o = {}) {
   if (row.agent === RUNTIME && o.labels?.[agent.provider]) row.agent_label = o.labels[agent.provider]
   const model = agent.model ?? agent.runtimeInfo?.model
   if (typeof model === 'string' && model) row.model = model
-  // Auto Accept on is Allow all; off says nothing, since the agent's own settings may still approve everything (Grok's can).
+  // Auto Accept on is Allow all; off says nothing, since the agent's own settings may still approve everything (Grok's
+  // can): the apps read no mode as its own where the row lists its permission_modes (below).
   const mode = personaMode(root, agent.currentModeId) ?? (autoAcceptOf(agent) ? 'bypassPermissions' : undefined)
   if (mode) row.permission_mode = mode
   const effort = agent.effectiveThinkingOptionId ?? agent.thinkingOptionId
@@ -467,9 +485,12 @@ export function agentRow(agent, o = {}) {
   // How far a rewind goes here: the node offers it, and the files with it, only where Paseo's provider can. Paseo
   // changes nothing of an agent it keeps archived (a rewind, a mode, an effort, a model: the bridge refuses them), so
   // that row takes all of them away, whatever the record it was archived with says (#8133); the node narrows them.
+  // The permission modes modes takes for an agent that is not Claude Code's: the apps' two-state switch (#8261).
   const rewind = rewindOf(agent)
   row.capabilities = o.archived ? { rewind: false, rewind_code: false, modes: false, model: false }
     : { rewind: rewind.conversation, rewind_code: rewind.code }
+  const modes = !o.archived && permissionModesOf(root, autoAcceptOf(agent) !== undefined)
+  if (modes) row.capabilities.permission_modes = modes
   const t = transcriptOf(agent, roots)
   if (t) row.transcript = t
   const thread = codexThreadOf(agent, roots)

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, enc, errorText, HubTimeoutError, pastHub, sessionPath } from "../../lib/api";
 import { ago, externalLink, resumeCommand, sessionCan, sessionTitle, shortPath } from "../../lib/format";
 import { openLink } from "../../lib/links";
-import { BYPASS_MODE, effortTitle, modeTitle, renameBody } from "../../lib/session-actions";
+import { BYPASS_MODE, effortTitle, listedModeOption, listedModesOf, modeTitle, renameBody } from "../../lib/session-actions";
 import { bypassRestarts } from "../../lib/header-mode";
 import { sessionLauncher } from "../../lib/model-switch";
 import { href, navigate } from "../../lib/router";
@@ -30,6 +30,9 @@ interface SessionInfo {
   output_tokens?: number;
   compactions?: number;
   turns?: number;
+  /** Nobody gives its counts (a runtime's session with no transcript on the computer, #8261): the zeros beside it stand
+   *  in for older apps and are not shown. */
+  usage_unknown?: boolean;
   started_at?: string;
   last_activity?: string;
 }
@@ -53,10 +56,14 @@ export function SessionInfoDialog({ session, machineName, open, onClose }: { ses
     };
   }, [open, session.machine_id, session.session_id]);
 
+  // counts nobody gives (#8261) are left out, not shown as zeros; a session that lists its own modes runs in one of them
+  const counted = info && !info.usage_unknown ? info : undefined;
+  const listed = listedModesOf(session);
+  const mode = listed ? listedModeOption(info?.permission_mode && listed.includes(info.permission_mode) ? info.permission_mode : "default").title : modeTitle(info?.permission_mode);
   const groups: { title: string; rows: [string, string | undefined, boolean?][] }[] = info
     ? [
-        { title: t("chat-sessiondialogs.group_run"), rows: [[t("chat-sessiondialogs.model"), info.model], [t("chat-sessiondialogs.launcher"), info.launcher || session.launcher], [t("chat-sessiondialogs.permission_mode"), modeTitle(info.permission_mode)], [t("chat-sessiondialogs.effort"), effortTitle(info.effort)], [t("chat-sessiondialogs.version"), info.version, true]] },
-        { title: t("chat-sessiondialogs.group_usage"), rows: [[t("chat-sessiondialogs.context"), count(info.context_tokens) && `${count(info.context_tokens)} tokens`], [t("chat-sessiondialogs.output"), count(info.output_tokens) && `${count(info.output_tokens)} tokens`], [t("chat-sessiondialogs.turns"), info.turns !== undefined ? String(info.turns) : ""], [t("chat-sessiondialogs.compaction"), info.compactions ? t("chat-sessiondialogs.compactions", { count: info.compactions }) : ""], [t("chat-sessiondialogs.started"), info.started_at && ago(info.started_at)], [t("chat-sessiondialogs.last_activity"), info.last_activity && ago(info.last_activity)]] },
+        { title: t("chat-sessiondialogs.group_run"), rows: [[t("chat-sessiondialogs.model"), info.model], [t("chat-sessiondialogs.launcher"), info.launcher || session.launcher], [t("chat-sessiondialogs.permission_mode"), mode], [t("chat-sessiondialogs.effort"), effortTitle(info.effort)], [t("chat-sessiondialogs.version"), info.version, true]] },
+        { title: t("chat-sessiondialogs.group_usage"), rows: [[t("chat-sessiondialogs.context"), count(counted?.context_tokens) && `${count(counted?.context_tokens)} tokens`], [t("chat-sessiondialogs.output"), count(counted?.output_tokens) && `${count(counted?.output_tokens)} tokens`], [t("chat-sessiondialogs.turns"), counted?.turns !== undefined ? String(counted.turns) : ""], [t("chat-sessiondialogs.compaction"), counted?.compactions ? t("chat-sessiondialogs.compactions", { count: counted.compactions }) : ""], [t("chat-sessiondialogs.started"), info.started_at && ago(info.started_at)], [t("chat-sessiondialogs.last_activity"), info.last_activity && ago(info.last_activity)]] },
         { title: t("chat-sessiondialogs.group_location"), rows: [[t("chat-sessiondialogs.machine"), machineName], [t("chat-sessiondialogs.folder"), info.cwd ? shortPath(info.cwd) : undefined, true], [t("chat-sessiondialogs.branch"), info.git_branch, true], [t("chat-sessiondialogs.transcript"), info.transcript_path ? shortPath(info.transcript_path) : undefined, true]] },
       ]
     : [];
