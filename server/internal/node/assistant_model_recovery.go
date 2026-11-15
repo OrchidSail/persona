@@ -293,15 +293,23 @@ func (n *Node) returnToConfiguredAt(ctx context.Context, id string, at time.Time
 // applyModelRecoveryReturn applies a protected conversation's temporary recovery to its next ordinary assistantSend.
 // askedModel is the request before heldFallback, so an empty or literal default remains distinguishable from a concrete
 // model. ProbeFrom is deliberately never copied into the execution.
-func (n *Node) applyModelRecoveryReturn(ctx context.Context, id, askedModel string, execution modelExecution) modelExecution {
+func (n *Node) applyModelRecoveryReturn(ctx context.Context, id, askedModel string, execution modelExecution, holdExpired bool) modelExecution {
 	marker := n.modelRecovery(id)
 	if !modelRecoverySwitched(marker) || !n.recoveryProtected(id) {
 		return execution
 	}
-	// Natural hold expiry already put the configured model back. Clear only the marker: the two-hour sticky record
+	if askedModel != marker.From && askedModel != marker.To {
+		// A newer explicit model choice wins over an automatic return. End the old marker without rewriting the request.
+		n.clearModelRecovery(id)
+		return execution
+	}
+	// Only an existing hold that expired for this exact request counts as natural expiry. Its two-hour sticky record
 	// must still skip a wasted same-model retry. A confirmed recovery/reset releases all recovery bookkeeping.
-	backViaHold := askedModel == marker.From && execution.Model == marker.From
+	backViaHold := holdExpired && askedModel == marker.From && execution.Model == marker.From
 	if !backViaHold && !n.returnToConfiguredAt(ctx, id, time.Now()) {
+		if askedModel == marker.From && execution.Model == marker.From {
+			execution.Model = marker.To // a cold restart has no hold, but the persisted fallback still applies
+		}
 		return execution
 	}
 	execution.Model = marker.From

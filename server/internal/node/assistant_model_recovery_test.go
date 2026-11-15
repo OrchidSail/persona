@@ -352,8 +352,8 @@ func TestDefaultModelRecoveryReturnsAfterProbe(t *testing.T) {
 			}
 			n.unavailable = map[string]time.Time{unavailableKey("claude", "primary-model"): time.Now().Add(time.Hour)}
 			asked := modelExecution{Model: requested, IsMain: true}
-			execution := n.heldFallback(id, "claude", asked)
-			execution = n.applyModelRecoveryReturn(context.Background(), id, asked.Model, execution)
+			execution, expired := n.heldFallbackWithExpiry(id, "claude", asked)
+			execution = n.applyModelRecoveryReturn(context.Background(), id, asked.Model, execution, expired)
 			if execution.Model != requested {
 				t.Fatalf("the return pinned execution model %q, want requested default %q", execution.Model, requested)
 			}
@@ -719,6 +719,72 @@ func TestRecoveryHoldExpiryKeepsStickyFallback(t *testing.T) {
 	}
 	if first := waitRecoverySend(t, sent); first.Model != "fallback-model" {
 		t.Fatalf("the first recovery send used %q, want the sticky fallback without a same-model retry", first.Model)
+	}
+}
+
+// A cold restart has the persisted marker but no in-memory hold. That is not natural expiry: keep the fallback until
+// the configured model answers a probe, then return to the unchanged requested model.
+func TestRecoveryRestartWithoutHoldKeepsFallbackUntilProbe(t *testing.T) {
+	const id = "11111111-2222-3333-4444-555555555555"
+	for _, requested := range []string{"primary-model", ""} {
+		t.Run("requested="+requested, func(t *testing.T) {
+			n, _ := recoveryTestNode(t, id, true, false)
+			n.putModelRecovery(id, &proto.ModelRecovery{From: requested, ProbeFrom: "primary-model", To: "fallback-model", Reason: proto.ModelRecoveryReasonQuota})
+			n.recoveryMarks = nil
+			var available atomic.Bool
+			var probes atomic.Int32
+			assistantModelProbe = func(_ context.Context, _ *Node, _, model string) bool {
+				if model != "primary-model" {
+					t.Errorf("probed %q", model)
+				}
+				probes.Add(1)
+				return available.Load()
+			}
+			asked := modelExecution{Model: requested, IsMain: true}
+			execution, expired := n.heldFallbackWithExpiry(id, "claude", asked)
+			if expired {
+				t.Fatal("a missing hold after restart was mistaken for natural expiry")
+			}
+			execution = n.applyModelRecoveryReturn(context.Background(), id, asked.Model, execution, expired)
+			if execution.Model != "fallback-model" {
+				t.Fatalf("an unavailable configured model was retried after restart: %q", execution.Model)
+			}
+			if n.modelRecovery(id) == nil || probes.Load() == 0 {
+				t.Fatal("restart skipped the availability probe or cleared the marker")
+			}
+			available.Store(true)
+			execution, expired = n.heldFallbackWithExpiry(id, "claude", asked)
+			execution = n.applyModelRecoveryReturn(context.Background(), id, asked.Model, execution, expired)
+			if execution.Model != requested {
+				t.Fatalf("the confirmed return used %q, want %q", execution.Model, requested)
+			}
+			if n.modelRecovery(id) != nil {
+				t.Fatal("the confirmed return left the marker")
+			}
+		})
+	}
+}
+
+// A newer explicit model choice wins even when the old configured model has already entered Returning.
+func TestRecoveryReturnHonorsNewModelChoice(t *testing.T) {
+	const id = "11111111-2222-3333-4444-555555555555"
+	for _, requested := range []string{"primary-model", "", "default"} {
+		t.Run("requested="+requested, func(t *testing.T) {
+			n, _ := recoveryTestNode(t, id, true, false)
+			n.putModelRecovery(id, &proto.ModelRecovery{From: requested, ProbeFrom: "primary-model", To: "fallback-model", Returning: true})
+			n.fallbacks = map[string]*assistantFallback{id: {launcher: "claude",
+				from: modelExecution{Model: requested}, to: modelExecution{Model: "fallback-model"},
+				at: time.Now(), until: time.Now().Add(assistantFallbackHold)}}
+			other := modelExecution{Model: "other-model", IsMain: true}
+			execution, expired := n.heldFallbackWithExpiry(id, "claude", other)
+			execution = n.applyModelRecoveryReturn(context.Background(), id, other.Model, execution, expired)
+			if execution.Model != "other-model" {
+				t.Fatalf("automatic return overrode the newer model choice with %q", execution.Model)
+			}
+			if n.modelRecovery(id) != nil {
+				t.Fatal("the old recovery marker outlived the newer model choice")
+			}
+		})
 	}
 }
 

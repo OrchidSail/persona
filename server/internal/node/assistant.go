@@ -394,8 +394,8 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 	}
 	if recovery == nil && id != "" {
 		askedModel := execution.Model
-		execution = n.heldFallback(id, launcher, execution) // the fallback that answered, for a while (#3788)
-		execution = n.applyModelRecoveryReturn(ctx, id, askedModel, execution)
+		execution, holdExpired := n.heldFallbackWithExpiry(id, launcher, execution) // the fallback that answered (#3788)
+		execution = n.applyModelRecoveryReturn(ctx, id, askedModel, execution, holdExpired)
 	}
 	if execution.Model != "" {
 		if _, err := n.launcherModelCheck(ctx, launcher, execution.Model); err != nil {
