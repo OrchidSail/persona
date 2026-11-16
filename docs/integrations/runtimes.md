@@ -184,6 +184,9 @@ Not in the SDK (used by only one runtime, or the two read different things): eac
   node rejects a second process with the same id (`runtime_conflict`). If a runtime changes its id but still runs the same kind of Agent, set `agent` to that Agent (a renamed DSH sets `dsh`), and session rows carry `agent_label`.
 - Session ids are unique on the machine, at most 128 characters, and can't be paths. `launcher` names shouldn't clash with launchers in `~/.zshrc` (on a clash the shell's wins and the runtime's isn't listed, except where every start goes to the runtime as an engine with `caps.same_kind`: there its own wins);
   if two runtimes' launchers clash, only the one that connected first provides it.
+  The ordinary `agy` executable discovered on PATH is a terminal fallback, not an explicit shell override: its connected
+  companion supplies the launcher, models and assistant support. An actual alias, function or helper definition of that
+  name keeps shell precedence. Discovery provenance stays inside the node and adds no wire field (#9181).
 
 ## Minimal example
 
@@ -289,11 +292,13 @@ workspace catalog lists them with or without sessions in them, its sessions sit 
 worktree as one of them. It implements `createWorkspace` and `prepareWorkspace` (the SDK then declares `caps.workspaces`)
 and calls `rt.workspacesChanged(list)` with the whole list whenever it changes (`docs/protocol/protocol.md` ("Runtime ↔ node")).
 
-- **A row** is `{workspace_id, title?, cwd, kind, branch?, space_id?, space_name?, repo_root?, owned?}`. `workspace_id` is
+- **A row** is `{workspace_id, title?, cwd, kind, branch?, space_id?, space_name?, repo_root?, owned?, pinned_at?}`. `workspace_id` is
   what its sessions name in their own `workspace_id` (the session id rule); `cwd` is absolute; `kind` is `checkout` (a
   repository's main checkout), `worktree` (a linked worktree) or `folder` (no repository; anything else counts as one);
   `space_id` / `space_name` are the space its sessions are grouped in; `repo_root` is the repository's main checkout;
-  `owned` says the runtime made the checkout and removes it with the workspace. At most 2000 rows; invalid ones are dropped.
+  `owned` says the runtime made the checkout and removes it with the workspace. Optional `pinned_at` is the host's native
+  workspace pin time (RFC3339), separate from Persona's session/project pins; absent, cleared or invalid means unpinned.
+  A changed timestamp or an unpin is part of the next full push. At most 2000 rows; invalid ones are dropped.
 - **Only an engine's count**: the node uses the list while the runtime is one of the computer's enabled engines (Paseo) on
   its own socket; a runtime that is connected but not enabled makes, lists and deletes no workspaces. Its rows are then `workspaces.list` rows whose `source` is the runtime id (`project_id` its `space_id`, `is_main`
   true for a checkout, `workspace_kind` `git` or `folder`), and its session rows keep their `workspace_id`. Any other
@@ -345,7 +350,8 @@ To avoid going to the computer and clicking every time, the plugin is split into
 - **Flow**: hello carries `package: {name, hash}`; when node carries a package with the same name and a different hash, the reply includes `update: {name, hash, version}`.
   The SDK passes it to `onUpdate`; the loader fetches the files with `runtime.package`, checks paths, sizes and hashes, and writes them to `<store>/<hash>/` (written alongside and then renamed, so there's never a half-written version).
   It then **waits until the phone has no cards from this runtime** (`rt.busy()`, at most 2 hours), stops the old one, imports the new one and starts it. If the new one fails to start, it goes back to the old one
-  and doesn't retry this hash in this process. When the new one connects to node, hello reports the new hash and node stops offering it.
+  and doesn't retry this hash in this process. When the new one connects to node, hello reports the new hash and node stops offering it. If the `current.json` receipt cannot be saved, the loader stops the new version
+  before restarting the previous one and doesn't retry the failed hash in this process. Removing older stored versions is best-effort: a cleanup failure is logged and the new version stays running.
 - **Which wins**: whatever node carries is what runs; versions aren't compared as newer/older (if node rolls back, the plugin rolls back too). One exception: if the bundled files were replaced by someone (a new copy installed by hand),
   their hash differs from what `current.json` records, so the hand-installed copy runs first, and node offers its own if different.
 - **Security**: only runtimes connected over the local `runtime.sock` (same user as node) can get packages. Daemons can't (the link doesn't forward `package`,
@@ -422,6 +428,7 @@ end to end in `integrations/dsh/e2e/assistant.mjs`.
 | pi (`pi-<pid>`, `pi-web`, `pi-files`) | `integrations/pi`: pi extension (one connection per pi process) + pi-web companion process | `docs/integrations/pi.md` |
 | omp (`omp-<pid>`) | `integrations/omp`: the pi host under omp's identity (agent and name `omp`); no companion and no auto-update | `docs/integrations/omp.md` |
 | opencode (`opencode-<pid>`) | `integrations/opencode`: opencode plugin (one connection per opencode server process; list and chats read from opencode.db, live updates over the event stream, control through the plugin API) | `docs/integrations/opencode.md` |
+| Grok CLI (`grok-chat`) | `integrations/grok/companion.mjs`: optional standalone ACP companion with assistant tools, permission hooks, native renaming and restart recovery | `integrations/grok/README.md` |
 | Antigravity CLI (`antigravity`) | `integrations/antigravity/companion.mjs`: companion process; reads CLI transcripts and runs terminal-less Agent and assistant sessions through `agy acp` | "Antigravity CLI" below |
 | echo (example) | `integrations/runtime-sdk/examples/echo-runtime.mjs` (with `--listen <port>` it's a daemon) | "Minimal example" in this doc, `docs/integrations/daemons.md` |
 

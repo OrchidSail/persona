@@ -1,7 +1,6 @@
 #if os(iOS)
 import Foundation
 import Observation
-import PersonaWire
 
 /// Asking Persona during a meeting it attends (#2981; docs/assistant/meeting-minutes.md「Asking」). Only by a tap: there is
 /// no wake phrase. A typed question, or none: then the question is what was just said in the room (the open segment is
@@ -120,7 +119,7 @@ final class MeetingAsk {
     /// `roomMissing`: an older manager took the room meeting with Persona off (`RecordingSync.roomMissing`), so an ask
     /// would only force a whole upload and fail; it can be asked again once a `200` carries `room`. The one rule for the
     /// meeting page, its bar, the Live Activity and `ask` / `retry` (#3862).
-    nonisolated static func canAsk(_ entry: RecordingEntry, roomMissing: Bool) -> Bool { entry.attended && !roomMissing }
+    nonisolated static func canAsk(_ entry: RecordingEntry, roomMissing: Bool) -> Bool { entry.answered && !roomMissing }
 
     /// Asks about `entry`'s meeting: `text` typed (or, `spoken`, said while Talk was held and transcribed on this phone,
     /// #3862 phase 4), or nil to ask about what was just said. Nothing when Persona can't be asked about it (`canAsk`).
@@ -445,3 +444,4 @@ nonisolated extension MeetingAskWire.Heard {
     }
 }
 #endif
+import PersonaWire
