@@ -10,6 +10,24 @@ class NonvoiceProtocolTest {
     private val inbox = InboxItem("mail/a b", "Sample", "Preview", "mail", true, manager = "group/a b")
     private val screen = WatchInteraction("screen", "fixture", "session", "screen", "", "", canAnswer = true)
 
+    @Test fun pendingAndUnknownInboxRepliesRetainTheOriginalOperationForRetry() {
+        for (state in listOf("pending", "unknown")) {
+            val operations = mutableListOf<String?>()
+            var attempts = 0
+            val client = HubClient(config, transport = HubTransport { _, _, path, body, headers ->
+                assertEquals("/api/v1/inbox/mail%2Fa%20b/reply?manager=group%2Fa%20b", path)
+                assertEquals("Sample reply", JSONObject(body!!).getString("text"))
+                operations += headers["X-Persona-Op-Id"]
+                if (attempts++ == 0) HubResponse(202, JSONObject().put("state", state).toString())
+                else HubResponse(200, """{"state":"sent"}""")
+            })
+            val failure = assertThrows(HubException::class.java) { client.reply(inbox, "Sample reply", "same-operation") }
+            assertEquals("delivery_unconfirmed", failure.code)
+            client.reply(inbox, "Sample reply", "same-operation")
+            assertEquals(listOf("same-operation", "same-operation"), operations)
+        }
+    }
+
     @Test fun draftUsesOwningManagerAndDoesNotSendOrMarkDone() {
         val paths = mutableListOf<String>()
         val client = HubClient(config, transport = HubTransport { _, method, path, body, _ ->

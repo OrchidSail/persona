@@ -101,14 +101,13 @@ object PetAnimation {
     fun decode(bytes: ByteArray, expectedFrames: Int): List<Bitmap> {
         val source = parse(bytes, expectedFrames)
         val working = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(working)
-        val clear = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) }
-        val paint = Paint(Paint.FILTER_BITMAP_FLAG)
-        val side = PetTokens.decodedSidePixels
-        val factor = minOf(1f, side.toFloat() / maxOf(source.width, source.height))
-        val output = ArrayList<Bitmap>(source.frames.size)
         try {
-            source.frames.forEach { frame ->
+            val canvas = Canvas(working)
+            val clear = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) }
+            val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+            val side = PetTokens.decodedSidePixels
+            val factor = minOf(1f, side.toFloat() / maxOf(source.width, source.height))
+            return collectPetFrames(source.frames.size, Bitmap::recycle) { output -> source.frames.forEach { frame ->
                 val previous = if (frame.dispose == 2) working.copy(Bitmap.Config.ARGB_8888, false) else null
                 var part: Bitmap? = null
                 try {
@@ -125,10 +124,8 @@ object PetAnimation {
                         2 -> { canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR); canvas.drawBitmap(previous!!, 0f, 0f, paint) }
                     }
                 } finally { part?.recycle(); previous?.recycle() }
-            }
-            return output
-        } catch (failure: Exception) { output.forEach(Bitmap::recycle); throw failure }
-        finally { working.recycle() }
+            } }
+        } finally { working.recycle() }
     }
 
     private fun chunk(target: ByteArrayOutputStream, type: String, data: ByteArray) {

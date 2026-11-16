@@ -24,18 +24,19 @@ fun interface HubTransport {
 
 class UrlConnectionTransport : HubTransport {
     override fun request(config: HubConfig, method: String, path: String, body: String?, headers: Map<String, String>): HubResponse {
+        val validated = config.validated()
         if (!path.startsWith("/api/v1/") || path.contains("\r") || path.contains("\n")) throw HubException("invalid_address")
-        val connection = URL(config.baseUrl + path).openConnection() as HttpURLConnection
+        val connection = URL(validated.baseUrl + path).openConnection() as HttpURLConnection
         try {
             connection.instanceFollowRedirects = false
             connection.connectTimeout = 8000
             connection.readTimeout = when { method == "GET" -> 15000; path.substringBefore('?').endsWith("/draft") -> 90000; else -> 60000 }
             connection.requestMethod = method
-            connection.setRequestProperty("Authorization", "Bearer ${config.token}")
+            connection.setRequestProperty("Authorization", "Bearer ${validated.token}")
             connection.setRequestProperty("Accept", "application/json")
             headers.forEach { (name, value) -> connection.setRequestProperty(name, value) }
-            if (connection is HttpsURLConnection && config.fingerprint != null) {
-                val trust = PinTrust(config.fingerprint)
+            if (connection is HttpsURLConnection && validated.fingerprint != null) {
+                val trust = PinTrust(validated.fingerprint)
                 connection.sslSocketFactory = SSLContext.getInstance("TLS").apply { init(null, arrayOf(trust), null) }.socketFactory
                 // An explicit pairing pin authenticates the public key, including the hub's self-signed LAN certificate.
                 connection.hostnameVerifier = javax.net.ssl.HostnameVerifier { _, session ->
@@ -169,7 +170,8 @@ class HubClient(
     fun reply(item: InboxItem, text: String, operationId: String) {
         if (!item.canReply) throw HubException("read_only")
         checkText(text)
-        request("POST", inboxPath(item, "reply"), JSONObject().put("text", text), operationId)
+        val receipt = request("POST", inboxPath(item, "reply"), JSONObject().put("text", text), operationId)
+        if (receipt.text("state") in setOf("pending", "unknown")) throw HubException("delivery_unconfirmed")
     }
 
     /** Generate a suggestion only. Sending remains a separate, explicit user action. */

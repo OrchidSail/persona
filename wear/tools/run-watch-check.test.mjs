@@ -1,0 +1,208 @@
+import assert from 'node:assert/strict';
+import { spawnSync, spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import test from 'node:test';
+import { automationActive, hasOwnedInstrumentation, runInstrumentation, runWatchCheck } from './run-watch-check.mjs';
+
+const processes = 'ACTIVITY MANAGER RUNNING PROCESSES (dumpsys activity processes)\n';
+const accessibility = 'ACCESSIBILITY MANAGER (dumpsys accessibility)\ncurrentUserId=0\n';
+const own = `${processes}  Active instrumentation:\n  Instrumentation #0: ActiveInstrumentation{sample}\n`
+  + '    mClass=ComponentInfo{dev.persona.watch.test/dev.persona.watch.WatchSmokeRunner}\n'
+  + '    mTargetProcesses=[dev.persona.watch]\n';
+const unrelated = own.replaceAll('dev.persona.watch', 'example.other');
+const pass = { status: 0, stdout: 'INSTRUMENTATION_RESULT: stream=PASS: fixture\nINSTRUMENTATION_CODE: -1\n', stderr: '' };
+
+async function mock({ result = pass, needsTargetStop = false, unrelatedSession = false, neverEnds = false, unknown = false, failedProbe = false } = {}) {
+  const events = [];
+  const errors = [];
+  let clock = 0;
+  let rotation = '0';
+  let instrumented = false;
+  let stopped = false;
+  let probes = 0;
+  const spawn = (executable, args) => {
+    assert.equal(executable, 'FAKE_ADB');
+    assert.deepEqual(args.slice(0, 2), ['-s', 'TESTWATCH']);
+    const cmd = args.slice(2);
+    const ok = text => ({ status: 0, stdout: Buffer.from(text), stderr: Buffer.alloc(0) });
+    if (cmd[1] === 'wm') {
+      if (cmd.length === 3) { events.push('read rotation'); return ok(`lock ${rotation}`); }
+      events.push('restore rotation');
+      rotation = cmd[4];
+      return ok('');
+    }
+    if (cmd[1] === 'settings') return ok(cmd[4] === 'user_rotation' ? rotation : '0');
+    if (cmd[1] === 'am' && cmd[2] === 'instrument') {
+      events.push('instrument'); instrumented = true; rotation = '1'; return result;
+    }
+    if (cmd[1] === 'am' && cmd[2] === 'force-stop') {
+      events.push(`stop ${cmd[3]}`);
+      if (cmd[3] === 'dev.persona.watch' || !needsTargetStop) stopped = true;
+      return ok('');
+    }
+    if (cmd[1] === 'dumpsys' && cmd[2] === 'activity') {
+      events.push('probe instrumentation');
+      if (failedProbe) return { status: 1, stdout: Buffer.alloc(0) };
+      if (unknown) return ok('Unknown command');
+      return ok(unrelatedSession ? unrelated : instrumented && (neverEnds || needsTargetStop && !stopped) ? own : processes);
+    }
+    if (cmd[1] === 'dumpsys' && cmd[2] === 'accessibility') {
+      probes++;
+      const active = neverEnds || unrelatedSession || result !== pass && probes < 3;
+      events.push(active ? 'UiAutomation active' : 'UiAutomation gone');
+      return ok(accessibility + (active ? 'Ui Automation[eventTypes=TYPE_VIEW_CLICKED]' : ''));
+    }
+    throw new Error(`Unexpected mock command ${JSON.stringify(cmd)}`);
+  };
+  const status = await runWatchCheck(['--adb', 'FAKE_ADB', '--device', 'TESTWATCH'], {
+    spawn, stdout: () => {}, stderr: text => errors.push(text),
+    cleanup: { now: () => clock, wait: delay => { clock += delay; }, timeoutMs: 400 },
+  });
+  return { status, events, errors, rotation };
+}
+
+test('successful instrumentation waits for teardown before restoring rotation', async () => {
+  const result = await mock();
+  assert.equal(result.status, 0);
+  assert.equal(result.rotation, '0');
+  assert.ok(result.events.indexOf('UiAutomation gone') < result.events.indexOf('restore rotation'));
+  assert.equal(result.events.some(event => event.startsWith('stop ')), false);
+});
+
+test('ETIMEDOUT with an already exited child stops test, then identified target, and waits before restore', async () => {
+  const result = await mock({ result: { status: 0, error: Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }), stdout: '' }, needsTargetStop: true });
+  assert.equal(result.status, 1);
+  assert.equal(result.rotation, '0');
+  const events = result.events;
+  assert.ok(events.indexOf('stop dev.persona.watch.test') < events.indexOf('probe instrumentation'));
+  assert.ok(events.indexOf('probe instrumentation') < events.indexOf('stop dev.persona.watch'));
+  assert.ok(events.indexOf('stop dev.persona.watch') < events.indexOf('UiAutomation gone'));
+  assert.ok(events.indexOf('UiAutomation gone') < events.indexOf('restore rotation'));
+  assert.match(result.errors.join(''), /interrupted or timed out/);
+});
+
+test('a signalled instrumentation result also cleans up and fails', async () => {
+  const result = await mock({ result: { status: null, signal: 'SIGTERM', stdout: '' } });
+  assert.equal(result.status, 1);
+  assert.ok(result.events.includes('stop dev.persona.watch.test'));
+  assert.equal(result.rotation, '0');
+});
+
+for (const output of ['INSTRUMENTATION_CODE: 0\n', 'INSTRUMENTATION_RESULT: stream=FAIL: fixture\nINSTRUMENTATION_CODE: -1\n']) {
+  test(`failure output is nonzero even if adb exits zero: ${output.split('\n')[0]}`, async () => {
+    const result = await mock({ result: { status: 0, stdout: output } });
+    assert.equal(result.status, 1);
+    assert.ok(result.events.includes('stop dev.persona.watch.test'));
+    assert.equal(result.rotation, '0');
+  });
+}
+
+test('persistent automation prevents every rotation restoration write', async () => {
+  const result = await mock({ result: { status: 1, stdout: '' }, neverEnds: true });
+  assert.equal(result.status, 1);
+  assert.equal(result.rotation, '1');
+  assert.equal(result.events.includes('restore rotation'), false);
+  assert.equal(result.events.filter(event => event === 'read rotation').length, 1);
+  assert.match(result.errors.join(''), /shutdown could not be confirmed/);
+});
+
+for (const options of [{ unknown: true }, { failedProbe: true }]) {
+  test(`unverifiable teardown fails closed: ${JSON.stringify(options)}`, async () => {
+    const result = await mock(options);
+    assert.equal(result.status, 1);
+    assert.equal(result.events.includes('restore rotation'), false);
+  });
+}
+
+test('unrelated active instrumentation is never force-stopped or overwritten by restoration', async () => {
+  const result = await mock({ result: { status: 1, stdout: '' }, unrelatedSession: true });
+  assert.equal(result.status, 1);
+  assert.equal(result.events.includes('stop dev.persona.watch'), false);
+  assert.equal(result.events.some(event => event.includes('example.other')), false);
+  assert.equal(result.events.includes('restore rotation'), false);
+});
+
+test('target cleanup requires the exact runner and target in the same instrumentation record', async () => {
+  assert.equal(hasOwnedInstrumentation(own), true);
+  assert.equal(hasOwnedInstrumentation(unrelated), false);
+  const mismatched = own.replace('[dev.persona.watch]', '[example.other]')
+    + unrelated.replace('Instrumentation #0:', 'Instrumentation #1:').replace('[example.other]', '[dev.persona.watch]');
+  assert.equal(hasOwnedInstrumentation(mismatched), false);
+  assert.equal(hasOwnedInstrumentation(own.replace('WatchSmokeRunner', 'OtherRunner')), false);
+});
+
+test('status probes require recognized dumps and both lifecycle surfaces to be idle', async () => {
+  assert.equal(automationActive(processes, accessibility), false);
+  assert.equal(automationActive(own, accessibility), true);
+  assert.equal(automationActive(processes, accessibility + 'Ui Automation[eventTypes=0]'), true);
+  assert.equal(automationActive(processes, accessibility + 'mUiAutomationService=null'), false);
+  assert.throws(() => automationActive('', ''), /Unrecognized/);
+});
+
+test('invalid options fail before any ADB operation', async () => {
+  const errors = [];
+  assert.equal(await runWatchCheck(['--device', 'TESTWATCH', '--timeout-ms', '0'], {
+    spawn: () => assert.fail('No command should run'), stderr: value => errors.push(value),
+  }), 1);
+  assert.match(errors.join(''), /timeout/);
+});
+
+test('ETIMEDOUT plus child status zero produces nonzero process exit with no live handles', async () => {
+  const module = new URL('./run-watch-check.mjs', import.meta.url).href;
+  const source = `import { runWatchCheck } from ${JSON.stringify(module)};
+    const spawn = (_file, args) => {
+      const command = args.slice(2);
+      const ok = text => ({ status: 0, stdout: Buffer.from(text) });
+      if (command[1] === 'wm') return ok('lock 0');
+      if (command[1] === 'settings') return ok('0');
+      if (command[2] === 'instrument') return { status: 0, stdout: '', error: Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }) };
+      if (command[2] === 'force-stop') return ok('');
+      if (command[2] === 'activity') return ok(${JSON.stringify(processes)});
+      if (command[2] === 'accessibility') return ok(${JSON.stringify(accessibility)});
+      throw new Error('Unexpected fake command');
+    };
+    process.exitCode = await runWatchCheck(['--device', 'TESTWATCH'], { spawn, stdout: () => {} });`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', source], { encoding: 'utf8', windowsHide: true });
+  assert.equal(child.status, 1);
+  assert.match(child.stderr, /interrupted or timed out/);
+});
+
+test('the former exitCode catch also exits nonzero without remaining handles', async () => {
+  const child = spawnSync(process.execPath, ['-e', "try { throw new Error('ETIMEDOUT'); } catch (error) { console.error(error.message); process.exitCode = 1; }"],
+    { encoding: 'utf8', windowsHide: true });
+  assert.equal(child.status, 1);
+  assert.match(child.stderr, /ETIMEDOUT/);
+});
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  test(`${signal} interrupts a real mock host child before cleanup can begin`, async () => {
+    const signals = new EventEmitter();
+    let childClosed = false;
+    const result = await runInstrumentation(process.execPath,
+      ['-e', "process.stdout.write('READY'); setInterval(() => {}, 1000);"],
+      { timeout: 5000, maxBuffer: 1024 }, {
+        signals,
+        spawnChild: (file, args, options) => {
+          const child = spawn(file, args, options);
+          child.stdout.once('data', () => signals.emit(signal));
+          child.once('close', () => { childClosed = true; });
+          return child;
+        },
+      });
+    assert.equal(result.error.code, 'EINTR');
+    assert.equal(childClosed, true);
+    assert.equal(signals.listenerCount('SIGINT'), 0);
+    assert.equal(signals.listenerCount('SIGTERM'), 0);
+  });
+}
+
+test('an async timeout remains a failure when the mock child subsequently exits zero', async () => {
+  const signals = new EventEmitter();
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+  child.kill = () => { queueMicrotask(() => child.emit('close', 0, null)); return true; };
+  const result = await runInstrumentation('FAKE_ADB', [], { timeout: 1, maxBuffer: 1024 },
+    { signals, spawnChild: () => child });
+  assert.equal(result.status, 0);
+  assert.equal(result.error.code, 'ETIMEDOUT');
+});

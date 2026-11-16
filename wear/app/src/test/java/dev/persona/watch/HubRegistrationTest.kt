@@ -12,29 +12,29 @@ class HubRegistrationTest {
     private class Store : HubRegistrationStore {
         var rows = emptyList<SavedHub>()
         var durableRows = emptyList<SavedHub>()
-        var journal: PendingHubRegistration? = null
-        var durableJournal: PendingHubRegistration? = null
+        var journal = emptyList<PendingHubRegistration>()
+        var durableJournal = emptyList<PendingHubRegistration>()
         val credentials = mutableMapOf<String, HubConfig>()
         var primary: String? = null
         var failPublish = false
         var failPrepare = false
         var failCleanup = false
         var failCredential = false
-        var unreadableCredential = false
+        val unreadableCredentials = mutableSetOf<String>()
         var saves = 0
         var publications = 0
         val events = mutableListOf<String>()
         override fun groups() = rows
         override fun primaryUrl() = primary
         override fun pending() = journal
-        override fun writePending(pending: PendingHubRegistration?) {
+        override fun writePending(pending: List<PendingHubRegistration>) {
             journal = pending // Like SharedPreferences, memory changes even if disk commit fails.
-            events += if (pending == null) "cleanup" else "prepare"
-            check(if (pending == null) !failCleanup else !failPrepare)
+            events += if (pending.isEmpty()) "cleanup" else "prepare"
+            check(if (pending.isEmpty()) !failCleanup else !failPrepare)
             durableJournal = pending
         }
         override fun credential(id: String): HubConfig? {
-            check(!unreadableCredential || id !in credentials)
+            check(id !in unreadableCredentials || id !in credentials)
             return credentials[id]
         }
         override fun saveCredential(id: String, config: HubConfig) {
@@ -63,14 +63,14 @@ class HubRegistrationTest {
         var exchanges = 0
         fails { engine(store).add("Sample Hub", input) { exchanges++; store.events += "exchange"; issued } }
         assertTrue(store.durableRows.isEmpty())
-        assertEquals(id, store.durableJournal?.id)
+        assertEquals(id, store.durableJournal.single().id)
         assertEquals(issued, store.credentials[id])
         assertEquals(listOf("prepare", "exchange", "credential", "publish"), store.events)
         store.restart()
         store.failPublish = false
         assertTrue(engine(store).recover())
         assertEquals(listOf(SavedHub(id, "Sample Hub", issued)), store.durableRows)
-        assertNull(store.durableJournal)
+        assertTrue(store.durableJournal.isEmpty())
         assertEquals(1, exchanges)
         assertEquals(1, store.saves)
         assertFalse(engine(store).recover())
@@ -93,7 +93,7 @@ class HubRegistrationTest {
         repeat(3) {
             store.restart()
             fails { engine(store).recover() }
-            assertEquals(issued, store.credentials[store.durableJournal?.id])
+            assertEquals(issued, store.credentials[store.durableJournal.single().id])
         }
         store.failPublish = false
         assertTrue(engine(store).recover())
@@ -105,20 +105,20 @@ class HubRegistrationTest {
         val store = Store().apply { failCleanup = true }
         fails { engine(store).add("Sample Hub", input) { issued } }
         assertEquals(1, store.durableRows.size)
-        assertNotNull(store.durableJournal)
+        assertTrue(store.durableJournal.isNotEmpty())
         store.restart()
         store.failCleanup = false
         assertTrue(engine(store).recover())
         assertEquals(1, store.durableRows.size)
         assertEquals(1, store.saves)
-        assertNull(store.durableJournal)
+        assertTrue(store.durableJournal.isEmpty())
     }
 
     @Test fun failureToPrepareJournalDoesNotConsumeTheToken() {
         val store = Store().apply { failPrepare = true }
         fails { engine(store).add("Sample Hub", input) { throw AssertionError("Must prepare before exchange") } }
         assertTrue(store.credentials.isEmpty())
-        assertNull(store.durableJournal)
+        assertTrue(store.durableJournal.isEmpty())
         store.failPrepare = false
         var exchanges = 0
         engine(store).add("Sample Hub", input) { exchanges++; issued }
@@ -132,7 +132,7 @@ class HubRegistrationTest {
         store.restart()
         assertFalse(engine(store).recover())
         assertTrue(store.durableRows.isEmpty())
-        assertNotNull(store.durableJournal)
+        assertTrue(store.durableJournal.isEmpty())
         // A crash/write failure before issued credentials become durable cannot be locally recovered.
     }
 
@@ -163,22 +163,99 @@ class HubRegistrationTest {
         assertEquals(listOf(other, SavedHub(id, "Sample Hub", issued)), store.durableRows)
     }
 
-    @Test fun unreadableSavedCredentialKeepsItsJournalAndPreventsAnotherExchange() {
+    @Test fun unreadableSavedCredentialKeepsItsJournalAndPreventsExchangeForTheSameHub() {
         val store = Store().apply { failPublish = true }
         fails { engine(store).add("Sample Hub", input) { issued } }
         store.restart()
         store.failPublish = false
-        store.unreadableCredential = true
+        store.unreadableCredentials += id
         fails { engine(store).recover() }
         fails {
-            engine(store).add("Other", input.copy(baseUrl = "http://other.local")) {
+            engine(store).add("Sample Hub", input) {
                 throw AssertionError("Unreadable saved credential must not be abandoned")
             }
         }
-        assertEquals(id, store.durableJournal?.id)
+        assertEquals(id, store.durableJournal.single().id)
         assertEquals(1, store.saves)
-        store.unreadableCredential = false
+        store.unreadableCredentials.clear()
         assertTrue(engine(store).recover())
         assertEquals(listOf(SavedHub(id, "Sample Hub", issued)), store.durableRows)
+    }
+
+    @Test fun failedCredentialSaveDoesNotBlockANewHubOrRedeemTheOriginalToken() {
+        val store = Store().apply { failCredential = true }
+        var oldExchanges = 0
+        fails { engine(store).add("Sample Hub", input) { oldExchanges++; issued } }
+        store.restart()
+        store.failCredential = false
+        val next = input.copy(baseUrl = "http://other.local", token = "other-pairing-token")
+        val nextIssued = next.copy(token = "other-issued-token")
+        HubRegistration(store) { "22222222-2222-2222-2222-222222222222" }.add("Other", next) {
+            assertEquals(next, it)
+            nextIssued
+        }
+        assertEquals(1, oldExchanges)
+        assertEquals(nextIssued, store.durableRows.single().config)
+        assertTrue(store.durableJournal.isEmpty())
+        assertFalse(id in store.credentials)
+    }
+
+    @Test fun pendingIssuedHubDoesNotGateDifferentNewHubAndRecoversIndependently() {
+        val store = Store().apply { failPublish = true }
+        fails { engine(store).add("Sample Hub", input) { issued } }
+        store.restart()
+        store.failPublish = false
+        // The old Hub cannot publish while it duplicates the primary; the different Hub remains valid.
+        store.primary = input.baseUrl
+        val next = input.copy(baseUrl = "http://other.local", token = "other-pairing-token")
+        HubRegistration(store) { "22222222-2222-2222-2222-222222222222" }.add("Other", next) { it.copy(token = "other-issued-token") }
+        assertEquals(listOf("http://other.local"), store.durableRows.map { it.config?.baseUrl })
+        assertEquals(id, store.durableJournal.single().id)
+        store.primary = null
+        assertTrue(engine(store).recover())
+        assertEquals(setOf(input.baseUrl, next.baseUrl), store.durableRows.map { it.config?.baseUrl }.toSet())
+        assertEquals(2, store.saves)
+        assertTrue(store.durableJournal.isEmpty())
+    }
+
+    @Test fun unreadableOldHubDoesNotBlockNewPairingAndOtherRecovery() {
+        val store = Store().apply { failPublish = true }
+        fails { engine(store).add("Sample Hub", input) { issued } }
+        store.restart()
+        store.failPublish = false
+        store.unreadableCredentials += id
+        val next = input.copy(baseUrl = "http://other.local", token = "other-pairing-token")
+        HubRegistration(store) { "22222222-2222-2222-2222-222222222222" }.add("Other", next) { it.copy(token = "other-issued-token") }
+        assertEquals(id, store.durableJournal.single().id)
+        assertEquals(next.baseUrl, store.durableRows.single().config?.baseUrl)
+        store.unreadableCredentials.clear()
+        assertTrue(engine(store).recover())
+        assertEquals(2, store.durableRows.size)
+    }
+
+    @Test fun oneUnreadableJournalDoesNotPreventAnotherPendingHubFromRecovering() {
+        val store = Store()
+        val nextId = "22222222-2222-2222-2222-222222222222"
+        val nextIssued = issued.copy(baseUrl = "http://other.local", token = "other-issued-token")
+        store.journal = listOf(PendingHubRegistration(id, "Sample", input.baseUrl), PendingHubRegistration(nextId, "Other", nextIssued.baseUrl))
+        store.durableJournal = store.journal
+        store.credentials[id] = issued
+        store.credentials[nextId] = nextIssued
+        store.unreadableCredentials += id
+        fails { engine(store).recover() }
+        assertEquals(listOf(nextId), store.durableRows.map { it.id })
+        assertEquals(listOf(id), store.durableJournal.map { it.id })
+        assertEquals(issued, store.credentials[id])
+    }
+
+    @Test fun legacySingleEntryJournalMigratesWithoutPublishingCredentials() {
+        val legacy = """{"id":"$id","name":"Sample","baseUrl":"${input.baseUrl}"}"""
+        val pending = PendingHubJournal.decode(legacy)
+        assertEquals(listOf(PendingHubRegistration(id, "Sample", input.baseUrl)), pending)
+        val serialized = PendingHubJournal.encode(pending)
+        assertEquals(pending, PendingHubJournal.decode(serialized))
+        assertFalse(serialized.contains(input.token))
+        assertFalse(serialized.contains(issued.token))
+        assertTrue(PendingHubJournal.decode(null).isEmpty())
     }
 }

@@ -14,16 +14,22 @@ function equal(a, b) {
   return a.policy === b.policy && a.accelerometer === b.accelerometer && a.rotation === b.rotation;
 }
 
-export function withPreservedRotation(run, operation) {
+function prepareRotation(run) {
   const original = readRotationPreference(run);
   const free = original.policy === 'free';
   if (original.accelerometer !== (free ? '1' : '0') || (!free && original.policy !== `lock ${original.rotation}`)) {
     throw new Error('Rotation preference is changing; retry after the watch settles.');
   }
-  let value;
-  let failure;
-  try { value = operation(); }
-  catch (error) { failure = error; }
+  return original;
+}
+
+function finishRotation(run, original, value, failure, beforeRestore) {
+  const free = original.policy === 'free';
+  try { beforeRestore(); }
+  catch (cleanupFailure) {
+    throw new AggregateError([failure, cleanupFailure].filter(Boolean),
+      'Automation shutdown could not be confirmed; rotation was not restored.');
+  }
   try {
     if (!equal(readRotationPreference(run), original)) {
       // Set the stored fallback before freeing sensor rotation. Restoring only "free"
@@ -38,4 +44,22 @@ export function withPreservedRotation(run, operation) {
   }
   if (failure) throw failure;
   return value;
+}
+
+export function withPreservedRotation(run, operation, beforeRestore = () => {}) {
+  const original = prepareRotation(run);
+  let value;
+  let failure;
+  try { value = operation(); }
+  catch (error) { failure = error; }
+  return finishRotation(run, original, value, failure, beforeRestore);
+}
+
+export async function withPreservedRotationAsync(run, operation, beforeRestore = () => {}) {
+  const original = prepareRotation(run);
+  let value;
+  let failure;
+  try { value = await operation(); }
+  catch (error) { failure = error; }
+  return finishRotation(run, original, value, failure, beforeRestore);
 }

@@ -57,6 +57,14 @@ class MainActivity : Activity() {
     private val transcripts = mutableMapOf<String, List<WatchMessage>>()
     private val picks = mutableMapOf<String, MutableSet<String>>()
     private val drafts by lazy { getSharedPreferences("watch_drafts", MODE_PRIVATE) }
+    private val ledger by lazy { DraftLedger(object : DraftStorage {
+        override fun get(key: String) = drafts.getString(key, null)
+        override fun put(values: Map<String, String?>) {
+            drafts.edit().apply { values.forEach { (key, value) -> if (value == null) remove(key) else putString(key, value) } }.apply()
+        }
+    }) }
+    private val generatedSuggestions = mutableMapOf<String, String>()
+    private val primaryPairing = PrimaryPairing()
     private var page = "home"
     private var selectedSession: WatchSession? = null
     private var selectedInteraction: WatchInteraction? = null
@@ -64,10 +72,11 @@ class MainActivity : Activity() {
     private var previousPage = "home"
     private var notice = ""
     private var error = ""
-    private var busy = false
-    private var refreshing = false
+    private val work = ActivityWork()
+    private val busy get() = work.busy
+    private val refreshing get() = work.refreshing
     private var foreground = false
-    private var generation = 0
+    private val generation get() = work.generation
     private var composer: EditText? = null
     private var dictationDraftKey: String? = null
     private lateinit var scroll: ScrollView
@@ -136,8 +145,7 @@ class MainActivity : Activity() {
                     credentials.save(imported)
                     WidgetUpdates.request(this)
                     config = imported
-                    generation++
-                    refreshing = false
+                    work.connectionsChanged()
                     snapshot = null
                     groupCache = emptyMap()
                     transcripts.clear()
@@ -170,11 +178,18 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        val currentPrimary = credentials.load()
         val currentGroups = HubDirectory(this).additional()
-        if (currentGroups != additionalHubs) {
+        if (currentGroups != additionalHubs || currentPrimary != config) {
+            val primaryChanged = currentPrimary != config
+            config = currentPrimary
+            client = currentPrimary?.let { HubClient(it, language()) }
             additionalHubs = currentGroups
-            groupCache = groupCache.filterKeys { it.isEmpty() || currentGroups.any { group -> group.id == it } }
-            generation++; refreshing = false
+            groupCache = if (primaryChanged) emptyMap() else groupCache.filterKeys { it.isEmpty() || currentGroups.any { group -> group.id == it } }
+            work.connectionsChanged()
+            snapshot = null; transcripts.clear(); clearSelection()
+            page = if (config == null && additionalHubs.isEmpty()) "settings" else "home"
+            notice = ""; error = ""; render()
         }
         foreground = true
         handler.removeCallbacks(poll)
@@ -183,11 +198,13 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         foreground = false
+        work.pause()
         handler.removeCallbacks(poll)
         super.onPause()
     }
 
     override fun onDestroy() {
+        work.connectionsChanged()
         unregisterSystemBack?.invoke()
         unregisterSystemBack = null
         handler.removeCallbacksAndMessages(null)
@@ -218,17 +235,15 @@ class MainActivity : Activity() {
     private fun refresh() {
         val hub = client
         if (hub == null && additionalHubs.isEmpty()) return
-        if (refreshing || busy || isDestroyed) return
-        refreshing = true
+        if (isDestroyed || !foreground) return
+        val ticket = work.beginRefresh() ?: return
         updateStatus()
-        val requestGeneration = generation
         val groups = additionalHubs.toList()
         val previousCache = groupCache.toMap()
         refreshCoordinator.execute {
             val result = runCatching { loadGroups(hub, groups, previousCache) }
             handler.post {
-                if (isDestroyed || generation != requestGeneration) return@post
-                refreshing = false
+                if (isDestroyed || !work.finishRefresh(ticket)) return@post
                 result.fold({ loaded ->
                     val fresh = loaded.snapshot
                     groupCache = loaded.cache
@@ -463,21 +478,23 @@ class MainActivity : Activity() {
             body.addView(container)
         }
         if (session.canSend) {
-            compose("session:${session.key}") { text, id ->
+            compose("session:${session.key}", session.groupId) { submission ->
                 val current = snapshot?.sessions?.firstOrNull { it.key == session.key }
                 if (current?.canSend != true) { error = getString(R.string.permission_failed); updateStatus(); return@compose }
-                perform(R.string.processing, owner = current.groupId, task = { it.send(current, text, id) }) {
-                    clearDraft("session:${session.key}")
+                perform(R.string.processing, owner = current.groupId,
+                    task = { it.send(current, submission.text, submission.operationId) },
+                    settled = { ledger.acknowledge(submission) }) {
                     loadMessages(session)
                 }
             }
         } else paragraph(getString(R.string.read_only), compact = true)
         if (session.canSend) action(R.string.continue_action) {
             val current = snapshot?.sessions?.firstOrNull { it.key == session.key }
+            val stored = "operation:${hash("continue:${session.key}", session.groupId)}"
+            val operation = operationId(stored)
             if (current?.canSend == true) perform(R.string.processing, owner = current.groupId, task = {
-                it.send(current, getString(R.string.continue_action), operationId("continue:${session.key}"))
-            }) {
-                drafts.edit().remove("operation:${hash("continue:${session.key}")}").apply()
+                it.send(current, getString(R.string.continue_action), operation)
+            }, settled = { clearOperation(stored, operation) }) {
                 loadMessages(current)
             }
         }
@@ -631,10 +648,12 @@ class MainActivity : Activity() {
             return
         }
         val opKey = "resolve:${item.key}:${resolution}"
+        val stored = "operation:${hash(opKey, item.groupId)}"
+        val operation = operationId(stored)
         var outcome = ResolveResult()
-        perform(R.string.handled, owner = item.groupId, task = { outcome = it.resolve(item, resolution, operationId(opKey)) }) {
+        perform(R.string.handled, owner = item.groupId, task = { outcome = it.resolve(item, resolution, operation) },
+            settled = { clearOperation(stored, operation) }) {
             if (outcome.already || outcome.gone) notice = getString(R.string.request_gone)
-            drafts.edit().remove("operation:${hash(opKey)}").apply()
             selectedInteraction = null
             page = "home"
         }
@@ -642,6 +661,7 @@ class MainActivity : Activity() {
 
     private fun renderInbox() {
         heading(getString(R.string.inbox))
+        if (client == null) { paragraph(getString(R.string.inbox_unavailable), T.working); return }
         if (snapshot?.inboxUnavailable == true) paragraph(getString(
             if (snapshot?.inbox.isNullOrEmpty()) R.string.inbox_unavailable else R.string.inbox_stale), T.working)
         else if (snapshot?.inbox.isNullOrEmpty()) paragraph(getString(if (snapshot == null) R.string.loading else R.string.no_inbox))
@@ -650,6 +670,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderInboxItem() {
+        if (client == null) return paragraph(getString(R.string.read_only), T.working)
         val item = selectedInbox ?: return paragraph(getString(R.string.unknown_item))
         heading(item.title)
         if (item.accountName.isNotBlank()) paragraph(item.accountName, compact = true)
@@ -657,22 +678,35 @@ class MainActivity : Activity() {
         val draftKey = "inbox:${item.manager.orEmpty()}:${item.id}"
         val storageKey = "draft:${hash(draftKey)}"
         val prefilledKey = "prefilled:${hash(draftKey + item.suggestedReply)}"
-        if (item.canReply && item.suggestedReply.isNotBlank() && !drafts.contains(storageKey) && !drafts.getBoolean(prefilledKey, false))
-            drafts.edit().putString(storageKey, item.suggestedReply.take(16000)).putBoolean(prefilledKey, true).apply()
+        if (item.canReply && item.suggestedReply.isNotBlank() && !drafts.contains(storageKey) && !drafts.getBoolean(prefilledKey, false)) {
+            ledger.save(hash(draftKey), item.suggestedReply.take(16000))
+            drafts.edit().putBoolean(prefilledKey, true).apply()
+        }
         val canReply = item.canReply && "" !in failedGroups
         if (!canReply && item.canReply) paragraph(getString(R.string.read_only), compact = true)
-        if (canReply) compose(draftKey) { text, id ->
-            perform(R.string.saved, { it.reply(item, text, id) }) { clearDraft(draftKey) }
+        if (canReply) compose(draftKey) { submission ->
+            perform(R.string.saved, { it.reply(item, submission.text, submission.operationId) },
+                settled = { ledger.acknowledge(submission) })
         }
         if (canReply) action(R.string.inbox_ai_reply) {
             val makeDraft = {
+                val version = ledger.version(hash(draftKey))
                 var suggestion = ""
-                perform(R.string.inbox_draft_ready, { suggestion = it.draftReply(item) }) {
-                    drafts.edit().putString(storageKey, suggestion).apply()
-                }
+                perform(R.string.inbox_draft_ready, { suggestion = it.draftReply(item) }, settled = {
+                    if (!ledger.suggest(version, suggestion)) generatedSuggestions[version.hash] = suggestion
+                })
             }
             if (drafts.getString(storageKey, "").isNullOrBlank()) makeDraft()
             else confirm(getString(R.string.inbox_replace_draft_body), getString(R.string.inbox_ai_reply), call = makeDraft)
+        }
+        generatedSuggestions[hash(draftKey)]?.let { suggestion ->
+            paragraph(suggestion, compact = true)
+            action(R.string.inbox_use_suggestion) {
+                val target = hash(draftKey)
+                confirm(getString(R.string.inbox_replace_draft_body), getString(R.string.inbox_use_suggestion)) {
+                    ledger.save(target, suggestion); generatedSuggestions.remove(target); render(true)
+                }
+            }
         }
         action(R.string.mark_done, enabled = "" !in failedGroups) {
             confirm(getString(R.string.mark_done_body), getString(R.string.mark_done)) {
@@ -681,31 +715,34 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun compose(key: String, send: (String, String) -> Unit) {
+    private fun compose(key: String, owner: String = "", send: (DraftLedger.Submission) -> Unit) {
         section(getString(R.string.reply))
-        val field = input(getString(R.string.reply_hint), drafts.getString("draft:${hash(key)}", "").orEmpty())
+        val draftHash = hash(key, owner)
+        val primaryUrl = config?.baseUrl.orEmpty()
+        val field = input(getString(R.string.reply_hint), ledger.text(draftHash))
         field.setSingleLine(false)
         field.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
         field.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                drafts.edit().putString("draft:${hash(key)}", s.toString()).apply()
+                ledger.save(draftHash, s.toString())
             }
             override fun afterTextChanged(s: Editable?) = Unit
         })
         composer = field
-        action(R.string.dictate) { dictate(key) }
+        action(R.string.dictate) { dictate(draftHash) }
         action(R.string.send, primary = true) {
             val text = field.text.toString().trim()
-            if (text.isNotEmpty()) send(text, operationId("send:$key:$text"))
+            if (text.isNotEmpty()) send(ledger.submit(draftHash, "operation:${DraftScope.ownedHash(primaryUrl, owner, "send:$key:$text")}"))
         }
     }
 
     // A self-hosted hub's one-time pairing credential, not an account password. Keep it masked;
     // normal deployment provisions it through the private debug file without typing on the watch.
     @SuppressLint("WearPasswordInput")
-    private fun input(hint: String, value: String = "", secret: Boolean = false): EditText {
+    private fun input(hint: String, value: String = "", secret: Boolean = false, label: String? = null): EditText {
         val field = EditText(this).apply {
+            id = View.generateViewId()
             setText(value)
             this.hint = hint
             textSize = T.body
@@ -713,11 +750,13 @@ class MainActivity : Activity() {
             setHintTextColor(T.secondary)
             backgroundTintList = android.content.res.ColorStateList.valueOf(T.accent)
             minimumHeight = dp(T.touch)
+            minHeight = dp(T.touch)
             setPadding(dp(T.lineGap), dp(T.lineGap), dp(T.lineGap), dp(T.lineGap))
             inputType = if (secret) InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD else InputType.TYPE_CLASS_TEXT
             if (secret) transformationMethod = PasswordTransformationMethod.getInstance()
             importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
         }
+        label?.let { body.addView(T.text(this, it, T.caption, T.secondary).apply { labelFor = field.id }) }
         body.addView(field, LinearLayout.LayoutParams(-1, -2))
         return field
     }
@@ -726,61 +765,44 @@ class MainActivity : Activity() {
         action(R.string.hub_groups) { startActivity(Intent(this, ConnectionsActivity::class.java)) }
         heading(getString(R.string.pair_title))
         paragraph(getString(R.string.pair_body), compact = true)
-        section(getString(R.string.pair_link_or_address))
-        val address = input(getString(R.string.hub_hint), config?.baseUrl.orEmpty()).apply {
+        val address = input(getString(R.string.hub_hint), config?.baseUrl.orEmpty(), label = getString(R.string.pair_link_or_address)).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         }
-        section(getString(R.string.pair_token))
-        val token = input(getString(if (config == null) R.string.pair_token else R.string.token_saved), secret = true)
+        val token = input(getString(if (config == null) R.string.pair_token else R.string.token_saved), secret = true, label = getString(R.string.pair_token))
         action(R.string.show_token) {
             val show = token.transformationMethod != null
             token.transformationMethod = if (show) null else PasswordTransformationMethod.getInstance()
             token.setSelection(token.text.length)
         }
         action(R.string.connect, primary = true) {
-            val old = config
-            val enteredToken = token.text.toString().trim()
-            val enteredAddress = address.text.toString().trim()
-            val pairingLink = enteredAddress.startsWith("persona:")
-            if (!pairingLink && old != null && enteredToken.isBlank() && enteredAddress.trimEnd('/') != old.baseUrl) {
-                error = getString(R.string.new_address_token); updateStatus(); return@action
+            val request = runCatching { PrimaryPairing.prepare(config, address.text.toString(), token.text.toString()) }.getOrElse {
+                error = if ((it as? HubException)?.code == "new_address_token") getString(R.string.new_address_token) else getString(R.string.invalid_connection)
+                updateStatus(); return@action
             }
-            val usedToken = enteredToken.ifBlank { old?.token.orEmpty() }
-            val candidate = runCatching { if (pairingLink) PairingInput.parse(enteredAddress, enteredToken) else HubConfig(enteredAddress, usedToken,
-                if (enteredAddress.trimEnd('/') == old?.baseUrl) old.fingerprint else null,
-                if (enteredToken.isBlank()) old?.deviceId else null).validated() }.getOrElse {
-                error = getString(R.string.invalid_connection); updateStatus(); return@action
-            }
-            busy = true
+            val ticket = work.beginMutation() ?: return@action
             notice = getString(R.string.pairing)
             error = ""
             updateStatus()
             network.execute {
-                var accepted: HubConfig? = null
                 val result = runCatching {
-                    val paired = if (!pairingLink && enteredToken.isBlank() && old?.baseUrl == candidate.baseUrl) candidate else HubClient(candidate, language()).pair()
-                    credentials.save(paired)
-                    WidgetUpdates.request(this)
-                    accepted = paired
-                    val fresh = HubClient(paired, language()).refresh()
-                    paired to fresh
+                    primaryPairing.authenticate(request, pair = { HubClient(it, language()).pair() },
+                        refresh = { HubClient(it, language()).refresh() })
                 }
                 handler.post {
-                    if (isDestroyed) return@post
-                    busy = false
-                    result.fold({ (paired, fresh) ->
+                    if (isDestroyed || !work.finishMutation(ticket)) return@post
+                    result.fold({ verified ->
+                        val publication = runCatching { primaryPairing.publish(verified) { credentials.save(it) } }
+                        if (publication.isFailure) { error = errorText(publication.exceptionOrNull()!!); notice = ""; updateStatus(); return@fold }
+                        val paired = verified.config
+                        val fresh = verified.snapshot
                         groupCache = emptyMap(); failedGroups = emptySet()
                         config = paired; client = HubClient(paired, language()); snapshot = fresh
-                        generation++; refreshing = false; transcripts.clear(); clearSelection(); page = "home"
+                        work.connectionsChanged(); transcripts.clear(); clearSelection(); page = "home"
+                        WidgetUpdates.request(this)
                         notice = getString(R.string.connection_saved); error = ""; render()
                     }, {
-                        accepted?.let { paired ->
-                            groupCache = emptyMap(); failedGroups = emptySet()
-                            config = paired; client = HubClient(paired, language()); snapshot = null
-                            generation++; refreshing = false; transcripts.clear(); clearSelection(); page = "home"
-                        }
                         error = errorText(it); notice = ""
-                        if (accepted != null) render() else updateStatus()
+                        updateStatus()
                     })
                 }
             }
@@ -790,7 +812,7 @@ class MainActivity : Activity() {
                 credentials.clear(); config = null; client = null; snapshot = null
                 WidgetUpdates.request(this)
                 groupCache = emptyMap(); failedGroups = emptySet()
-                generation++; refreshing = false; transcripts.clear(); clearSelection()
+                work.connectionsChanged(); transcripts.clear(); clearSelection()
                 error = ""; notice = ""; page = "settings"; render()
             }
         }
@@ -798,20 +820,21 @@ class MainActivity : Activity() {
         paragraph(getString(R.string.watch_version, BuildConfig.VERSION_NAME), compact = true)
     }
 
-    private fun perform(success: Int, task: (HubClient) -> Any?, owner: String = "", done: () -> Unit = {}) {
+    private fun perform(success: Int, task: (HubClient) -> Any?, owner: String = "", settled: () -> Unit = {}, done: () -> Unit = {}) {
         if (owner in failedGroups) { error = getString(R.string.connection_failed); updateStatus(); return }
         val hub = hubFor(owner) ?: return
-        if (busy) return
-        busy = true
+        val ticket = work.beginMutation() ?: return
         notice = getString(R.string.sending)
         error = ""
         render(true)
-        val requestGeneration = generation
         mutations.execute {
             val result = runCatching { task(hub) }
             handler.post {
-                if (isDestroyed || requestGeneration != generation) return@post
-                busy = false
+                // Reconcile only captured draft/operation keys, even if the visible connections changed.
+                if (result.isSuccess) settled()
+                val current = work.finishMutation(ticket)
+                if (isDestroyed) return@post
+                if (!current) { render(true); return@post }
                 result.fold({
                     notice = getString(success)
                     done()
@@ -900,7 +923,7 @@ class MainActivity : Activity() {
         "permission" -> R.string.approval; "screen" -> R.string.screen; else -> R.string.request
     })
     private fun dp(value: Int) = T.dp(this, value)
-    private fun hash(value: String) = DraftScope.hash(config?.baseUrl.orEmpty(), additionalHubs.map { it.id }.toSet(), value)
+    private fun hash(value: String, owner: String = "") = DraftScope.ownedHash(config?.baseUrl.orEmpty(), owner, value)
     private fun clearSelection() {
         selectedSession = null
         selectedInteraction = null
@@ -908,17 +931,15 @@ class MainActivity : Activity() {
         confirmation = null
         picks.clear()
     }
-    private fun operationId(key: String): String {
-        val stored = "operation:${hash(key)}"
+    private fun operationId(stored: String): String {
         return drafts.getString(stored, null) ?: UUID.randomUUID().toString().also { drafts.edit().putString(stored, it).apply() }
     }
-    private fun clearDraft(key: String) {
-        val old = drafts.getString("draft:${hash(key)}", "").orEmpty().trim()
-        drafts.edit().remove("draft:${hash(key)}").remove("operation:${hash("send:$key:$old")}").apply()
+    private fun clearOperation(stored: String, operation: String) {
+        if (drafts.getString(stored, null) == operation) drafts.edit().remove(stored).apply()
     }
 
-    private fun dictate(key: String) {
-        dictationDraftKey = key
+    private fun dictate(draftHash: String) {
+        dictationDraftKey = draftHash
         try {
             startActivityForResult(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -936,7 +957,7 @@ class MainActivity : Activity() {
         if (requestCode != DICTATION_REQUEST || resultCode != RESULT_OK) return
         val text = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull() ?: return
         val key = dictationDraftKey ?: return
-        drafts.edit().putString("draft:${hash(key)}", text).apply()
+        ledger.save(key, text)
         render(true)
         notice = getString(R.string.draft_unsent)
         updateStatus()

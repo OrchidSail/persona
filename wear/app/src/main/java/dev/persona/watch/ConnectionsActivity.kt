@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.text.InputType
 import android.text.method.PasswordTransformationMethod
+import android.view.View
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -109,8 +110,16 @@ class ConnectionsActivity : Activity() {
         button(R.string.cancel) { render() }
     }
     private fun input(label: Int): EditText {
-        body.addView(T.text(this, getString(label), T.caption, T.secondary))
-        return EditText(this).apply { setTextColor(T.ink); setHintTextColor(T.secondary); textSize = T.body; body.addView(this) }
+        val field = EditText(this).apply {
+            id = View.generateViewId()
+            hint = getString(label)
+            minHeight = dp(T.touch)
+            minimumHeight = dp(T.touch)
+            setTextColor(T.ink); setHintTextColor(T.secondary); textSize = T.body
+        }
+        body.addView(T.text(this, getString(label), T.caption, T.secondary).apply { labelFor = field.id })
+        body.addView(field)
+        return field
     }
     private fun button(label: Int, action: () -> Unit) {
         body.addView(T.button(this, getString(label)) { if (!busy) action() }.apply { isEnabled = !busy })

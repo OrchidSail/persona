@@ -6,29 +6,33 @@ This document separates local checks, synthetic physical-device tests and real-H
 
 | Check | Recorded result | What it establishes |
 | --- | --- | --- |
-| App and test APK builds | Passed for `0.2.1` | Both packages compile; the test driver is separate from the app |
-| App unit tests | 127 passed | Parsing, permissions, scoping, drafts, rendering models, freshness and review regressions |
+| App and test APK builds | Passed in the 2026-11-16 stage-one rerun | Both packages compile; instrumentation was not executed in this stage |
+| App unit tests | 195 passed, zero failures/errors/skips | Parsing, permissions, scoping, drafts, rendering models, freshness and review regressions |
 | Android Lint | Zero errors, 35 advisory warnings | Static analysis; warnings include dependency age, unused resources, accessibility/plural resources and intentionally pinned TLS handling |
 | Complication serialization | All five production timelines passed on-device | AndroidX wire conversion and Android `Parcel` round trips for three pet types and two extension types |
-| Rotation guard | Seven host-side checks passed | Preference restoration after success, failure and leaked charging rotation; unknown preferences are rejected |
+| Rotation guard | Nine host-side checks passed | Preference restoration and asynchronous teardown ordering; unknown preferences are rejected |
 | TLS-debug discovery | Eleven host-side checks passed | Identity checks, stale advertisements, renamed services and refusal to select an unrelated device |
-| Optional Hub Status provider | Go tests and package checks passed | SDK/UI contracts, three widget families, locales, permissions, malformed responses and declared platform packaging |
+| Instrumentation runner | Seventeen host-side checks passed | Mocked timeout, interruption, teardown, failure exits and refusal to restore before quiescence; no ADB invocation |
+| Optional Hub Status provider | Seven Go tests and six subtests passed with `-count=1 -v` | SDK/UI contracts, three widget families, locales, permissions and malformed responses; packaging was verified in the earlier acceptance |
+| Documentation checks | `test_doc_wire.py`: 13 passed; `test_doc_sections.py`: four passed | Documentation references and required section structure |
 
 Build and rerun the app checks from `wear/` with the toolchain described in [README](README.md#build):
 
 ```powershell
-.\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest :app:testDebugUnitTest :app:lintDebug --console=plain
+.\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug :app:testDebugUnitTest --rerun-tasks --console=plain
 ```
 
 Run the host helper checks from the repository root:
 
 ```powershell
-node --test wear/tools/rotation-guard.test.mjs wear/tools/connect-watch.test.mjs
+node --test wear/tools/*.test.mjs
 ```
 
 The optional provider has its own [build and test instructions](qa/hub-status-extension/README.md#build-and-local-verification). Build/package success does not establish execution on every declared runtime.
 
-The PR #8554 review regressions add 30 host-side tests: nine registration fault/retry cases, eight shared-deadline boundaries, three removal completion cases, and ten chart drawing-plan checks. Registration tests model failed preferences commits that still change memory, restart recovery, cleanup failure and an unreadable saved credential. Chart tests exercise all six accepted kinds plus zero totals, single slices and donut geometry. These use the production registration/collection/completion/drawing logic; they do not establish Android Canvas pixels, Keystore behavior on a physical watch, or a new device acceptance run. A fresh Gradle run used `:app:assembleDebug :app:lintDebug :app:testDebugUnitTest --rerun-tasks`, with no unit failures or skips. The exchange-response-to-durable-credential gap remains outside local recovery, as described in [pairing](README.md#pairing-and-private-debug-provisioning).
+The earlier PR #8554 review at `f9133c14ff` added 30 host-side tests: nine registration fault/retry cases, eight shared-deadline boundaries, three removal completion cases, and ten chart drawing-plan checks. Chart tests exercise all six accepted kinds plus zero totals, single slices and donut geometry. The 2026-11-16 stage-one revision adds another 68 JVM tests for independent registration and removal recovery, primary publication, pinned origins, draft ownership/revisions, callback generations, fixture isolation, protocol delivery, pet lifecycle and widget cache deadlines. The final Gradle run executed all 82 tasks with `--rerun-tasks`, including both APK builds and lint, and passed all 195 tests. The first full attempt had one failure in a newly added test's malformed JSON fixture before the production parser ran; replacing that fixture with JSON builders fixed it. This was a new test defect, not an upstream baseline failure. The complete rerun passed. The Node suite passed all 37 checks with no skips or cancellations.
+
+These checks use production helpers but do not establish Android Canvas pixels, actual Keystore behavior, TalkBack semantics on a watch, current-head screenshots or a new device acceptance run. The added field-label/minimum-height instrumentation and every fixture scenario compile; they were not run on a device. The exchange-response-to-durable-credential gap remains outside local recovery, as described in [pairing](README.md#pairing-and-private-debug-provisioning).
 
 ## Physical-device checks with synthetic data
 
@@ -99,3 +103,36 @@ After a temporary test, restore the saved connection, face, provider assignments
 - User-specific watch-face changes and system-orientation troubleshooting are outside this module's portable acceptance. Test helpers must preserve observed settings rather than infer an original preference.
 
 See [the Apple Watch capability comparison](PARITY.md) for the remaining platform differences.
+
+## Watch & Network Scope Review
+
+The 2026-11-16 stage-one review of PR #8554 used a separate Codex reviewer to inspect the working tree after the ordinary upstream merge. It was a source review, not a human security review or physical-device acceptance. The reviewer had authored the pet fixes; a second Codex reviewer separately inspected those changes. No ADB, watch connection, rotation, deployment or live-Hub action was performed for this review. Automated results are recorded separately above and in the PR; the test references below describe coverage, not an additional test run.
+
+The production network inventory is limited to the paired Hub. Path identifiers are encoded; pet asset paths are additionally restricted to validated manifest filenames. The following paths are relative to `/api/v1`:
+
+| Method and path | Scope and effect |
+| --- | --- |
+| `POST /auth/tokens` | Exchange the pairing credential with `kind=watch`; require an answer-role response with a device ID and token |
+| `GET /sessions`, `/interactions`, `/machines`, `/inbox?sources=all` | Foreground snapshots; additional-Hub refreshes also read Inbox, but only the primary Hub's Inbox is merged or actionable |
+| `GET /sessions/{machine}/{session}/items` | Conversation history and explicitly expanded work; expansion has a bounded page count |
+| `POST /sessions/{machine}/{session}/messages`, `/interrupt`, `/seen` | Explicit session actions against the owning Hub; sending carries the captured operation ID |
+| `POST /interactions/{id}/resolve` | Validated watch resolutions only; protected requests cannot gain an approval through fabricated terminal options |
+| `POST /inbox/{id}/reply`, `/draft`, `/done` | Explicit primary-Hub actions, with an encoded manager selector when present; AI drafting is also an explicit request |
+| `GET /personas/nwverse/pet/pet.json`, `/personas/nwverse/pet/{asset}.png` | Bounded manifest and verified SHA-256 art; no arbitrary asset origin |
+| `GET /extensions/-/widgets`; `POST /extensions/{owner}/-/widget/{widget}` | Catalogue and read-only widget projections; the POST supplies presentation context, not an extension action |
+
+`HubClient`, `ExtensionClient` and `AssetTransport` use the validated paired origin and refuse redirects. JSON transport responses are capped at 4 MiB, with a stricter 1 MiB extension parser limit; binary requests have a bounded size, with a maximum permitted cap of 8 MiB. Connect/read timeouts bound individual requests, and `HubGroupReader` uses one monotonic 40-second deadline for all groups, cancelling unfinished futures at expiry. Cancellation does not establish immediate termination of every underlying socket.
+
+An explicit TLS pin authenticates the SHA-256 public key of the leaf certificate, including a Hub's self-signed certificate. HTTPS without a pin retains platform trust and hostname checks. A final HTTP configuration carrying a pin is now rejected before either JSON or asset transport can send a credential. Pairing links can upgrade local HTTP to pinned HTTPS only with an explicit TLS port; an already-HTTPS link retains its origin and pin. Unpinned local HTTP remains intentionally supported and does not provide TLS confidentiality or server authentication. Remote HTTP, URL credentials, fragments and query strings in the configured base are refused.
+
+The review found two defects during this stage: primary pairing could persist a worker result before its lifecycle ticket was accepted, and a directly supplied HTTP configuration could silently ignore a pin. The final source separates network authentication from publication, checks the accepted UI ticket before saving, and rejects pinned HTTP at configuration validation. `PrimaryPairingTest` covers rejected publication, failed publication and same-form retry; `PinnedOriginTest` covers configuration, client and both direct transport entrances. The short encrypted publication remains synchronous on the UI thread; its production latency has not been measured. Issued primary credentials are retained for same-form retry in the current process, not across process death. A lost issuance response or death before durable storage can still require a new pairing token; consuming a one-time token is not undone by deleting local state.
+
+Credential storage uses AES-GCM with a non-exportable Android Keystore key, a synchronized temporary-file write and rename, and private `noBackupFilesDir` namespaces. Backup and device-transfer extraction are disabled. Keystore loss returns no partial credential. Additional-Hub registration has recoverable metadata plus encrypted issued credentials. Missing-credential metadata is pruned; issued or temporarily unreadable credentials retain independent recovery records without blocking an unrelated Hub. Failed post-removal credential deletion leaves retryable cleanup. `HubRegistrationTest` and `HubRemovalTest` exercise failure and recovery through the production transaction helpers. These host tests do not simulate a real Keystore loss or prove filesystem durability under power loss. Drafts and display caches are private application data; this review does not claim that all cached content is encrypted. The private debug pairing-file import is debug-only and requires an already appropriate credential; it is not release onboarding.
+
+Multi-Hub identifiers, cached projections and callbacks were traced to their owning connection. Session actions keep their group UUID; Inbox and its drafts explicitly retain primary scope even when extra groups exist. Draft text and operation IDs use the same owner and revision: delayed send success clears only its captured version, and delayed AI output cannot silently replace a later edit. `DraftScopeTest`, `DraftLedgerTest`, `ActivityWorkTest` and `HubGroupsTest` cover these boundaries. A group change invalidates old work and releases busy state; pause invalidates the refresh slot. Pet state uses exact credential identity and its original one-hour freshness deadline, while immutable art may be shared by origin and pin. Widget memory and disk projections enforce their original cache/provider deadlines. Complication services read local state rather than initiating Hub requests, require the system provider permission, and use immutable tap intents; widget binding and navigation retain connection identity.
+
+`WatchResolution` validates supported kinds, capabilities and exact payload shapes before submission. It refuses protected permission approval, secret input, arbitrary terminal text and persistent grants; legacy raw choices are accepted only for actual screen interactions. Pending or unknown delivery keeps the draft and operation ID. The Hub's `devicetokens.go` also assigns `answer` to watch enrollment. This source inspection is not a new end-to-end server authorization test. `WatchResolutionTest`, `LegacyScreenTest`, `NonvoiceProtocolTest` and the guarded fixture cases provide regression coverage. Every fixture entry checks its synthetic primary credential and an empty additional-Hub list, and rechecks connection identity during the run.
+
+The optional Hub Status provider is a separate server-side extension: its declared permissions are `agents.read` and `machines.read`, and its code only GETs the three aggregate source lists. It has no packaged credential, arbitrary request target, redirect-following or watch-side installation path. Production Wear has no audio recording permission, background polling service or WebSocket client. System dictation remains the separately documented unverified feature.
+
+This review does not close the maintainer's acceptance blockers. Current-head dark/light and largest-font evidence for every changed screen, physical credential-loss/recovery and protected-approval cases, measured production timings, and the broader device/network matrix remain incomplete. Labels and minimum touch heights have source and fixture checks, but no new physical accessibility run was performed. The PR remains Draft for those decisions and evidence; historical captures and host tests are not substituted for them.

@@ -22,6 +22,6 @@
     <string name="hub_partial">一部の接続先を更新できません。保存済みのタスクは閲覧のみ可能です。</string>
     <string name="hub_added">接続先を追加しました</string>
     <string name="hub_add_failed">接続先を保存できません。アドレスを確認してください。新しいペアリングリンクが必要な場合があります。</string>
-    <string name="hub_add_pending">保存済みの接続先の追加を完了できません。再試行して復元してください。</string>
+    <string name="hub_add_pending">保存済みの接続先の変更を完了できません。再試行してください。</string>
     <string name="hub_duplicate">この接続先は保存済みです。</string>
 </resources>

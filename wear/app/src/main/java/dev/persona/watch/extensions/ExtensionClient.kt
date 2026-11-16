@@ -20,7 +20,7 @@ class ExtensionClient(
     private val locale = locale.takeIf { it.matches(Regex("[A-Za-z-]{2,35}")) } ?: "en"
     private val timeZone = runCatching { ZoneId.of(timeZone).id }.getOrDefault("UTC")
     private var catalog: List<ExtensionWidget>? = null
-    private val cache = mutableMapOf<String, ExtensionWidgetView>()
+    private val cache = mutableMapOf<String, CachedWidget>()
 
     fun widgets(): List<ExtensionWidget> {
         val found = ExtensionParser.catalog(request("GET", "/api/v1/extensions/-/widgets"))
@@ -31,17 +31,20 @@ class ExtensionClient(
 
     /** Only a widget from this client's current catalogue can be projected; never a full extension page. */
     fun widget(widget: ExtensionWidget, force: Boolean = false, family: String = widget.family): ExtensionWidgetView {
-        if (catalog?.none { it == widget } != false) throw ExtensionException(ExtensionProblem.UNAVAILABLE)
+        if (!canProject(widget)) throw ExtensionException(ExtensionProblem.UNAVAILABLE)
         if (family !in widget.families || family !in ExtensionParser.FAMILIES) throw ExtensionException(ExtensionProblem.UNAVAILABLE)
         val key = "${widget.key}|$family"
-        if (!force) cache[key]?.takeIf { it.expiresAtMs > now() }?.let { return it }
+        if (!force) cache[key]?.takeIf { it.fresh(now()) }?.let { return it.view }
         val context = JSONObject().put("size", family).put("tz", timeZone).put("locale", locale)
             .put("platform", "android").put("ui_version", 3)
         val answer = ExtensionParser.view(request("POST", "/api/v1/extensions/${encode(widget.owner)}/-/widget/${encode(widget.id)}",
             JSONObject().put("context", context)), family)
-        cache[key] = answer
+        cache[key] = CachedWidget(widget, family, answer, now())
         return answer
     }
+
+    /** A disk catalogue cannot grant this capability; only a successful discovery by this client can. */
+    internal fun canProject(widget: ExtensionWidget): Boolean = catalog?.any { it == widget } == true
 
     private fun request(method: String, path: String, body: JSONObject? = null): JSONObject {
         val response = try { transport.request(config, method, path, body?.toString(), mapOf("Accept-Language" to locale)) }

@@ -27,7 +27,7 @@ object PairingInput {
             if (origin.scheme == "http" && pin != null) {
                 val port = values["tls"]?.toIntOrNull()?.takeIf { it in 1..65535 } ?: throw HubException("invalid_address")
                 // Validate before rebuilding so userinfo, query and fragments cannot disappear during normalization.
-                HubConfig(origin.toString(), token, pin).validated()
+                HubConfig(origin.toString(), token).validated()
                 origin = URI("https", null, origin.host, port, origin.path, null, null)
             }
             return HubConfig(origin.toString(), token, pin).validated()

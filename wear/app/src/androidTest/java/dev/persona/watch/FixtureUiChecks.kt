@@ -25,6 +25,7 @@ class FixtureUiChecks(private val instrumentation: Instrumentation) {
     private val automation get() = instrumentation.uiAutomation
     private lateinit var config: HubConfig
     private lateinit var client: HubClient
+    private lateinit var isolation: FixtureIsolation
     private var activity: Activity? = null
     private var deadline = 0L
     private var currentStep = "guard"
@@ -34,6 +35,8 @@ class FixtureUiChecks(private val instrumentation: Instrumentation) {
         check(BuildConfig.DEBUG) { "fixture_requires_debug" }
         config = checkNotNull(CredentialStore(context).load()) { "fixture_not_paired" }.validated()
         check(config.token == FIXTURE_TOKEN) { "fixture_credential_required" }
+        isolation = FixtureIsolation(config, FIXTURE_TOKEN)
+        isolation.verify(config, HubDirectory(context).additional())
         client = HubClient(config, "en")
         val started = SystemClock.elapsedRealtime()
         val names = if (scenario.isNullOrBlank() || scenario == "all") SCENARIOS else scenario.split(',').map { it.trim() }
@@ -61,7 +64,9 @@ class FixtureUiChecks(private val instrumentation: Instrumentation) {
                     "recovery" -> recovery()
                     "cancel_stale" -> cancelStale()
                     "nonvoice" -> nonvoice()
+                    "form_accessibility" -> formAccessibility()
                 }
+                sameFixtureCredential()
                 passed += name
                 status("PASS", name)
             }
@@ -92,9 +97,24 @@ class FixtureUiChecks(private val instrumentation: Instrumentation) {
         check(snapshot.sessions.isNotEmpty() && snapshot.sessions.all { it.machineId == "fixture" }) { "fixture_sessions_required" }
     }
 
+    private fun formAccessibility() {
+        open("settings")
+        instrumentation.runOnMainSync { InputAccessibilityChecks.verify(checkNotNull(activity), 2) }
+        sameFixtureCredential()
+        val current = instrumentation.startActivitySync(Intent(context, ConnectionsActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
+        activity = current
+        waitText(text(R.string.hub_add))
+        click(text(R.string.hub_add))
+        instrumentation.runOnMainSync { InputAccessibilityChecks.verify(current, 3) }
+        // No pairing token is entered or exchanged; this scenario checks the native form structure only.
+        click(text(R.string.cancel))
+    }
+
     private fun sameFixtureCredential(checkDeadline: Boolean = true) {
         val current = CredentialStore(context).load()
-        check(current?.token == FIXTURE_TOKEN && current == config) { "fixture_credential_changed" }
+        isolation.verify(current, HubDirectory(context).additional())
         if (checkDeadline) check(SystemClock.elapsedRealtime() < deadline) { "fixture_total_timeout" }
     }
 
@@ -276,8 +296,6 @@ class FixtureUiChecks(private val instrumentation: Instrumentation) {
     }
 
     private fun nonvoice() {
-        // Production UI may combine multiple hubs. Never let a synthetic driver navigate live connections.
-        check(HubDirectory(context).additional().isEmpty()) { "fixture_extra_connections_not_allowed" }
         fixtureControl(JSONObject().put("reset", true).put("scenario", "nonvoice").put("clearEvents", true))
         verifyFixture()
 
@@ -555,7 +573,10 @@ class FixtureUiChecks(private val instrumentation: Instrumentation) {
     private fun waitUntil(reason: String, condition: () -> Boolean) {
         val end = minOf(deadline, SystemClock.elapsedRealtime() + STEP_TIMEOUT_MS)
         while (SystemClock.elapsedRealtime() < end) {
-            if (condition()) return
+            sameFixtureCredential()
+            val complete = condition()
+            sameFixtureCredential()
+            if (complete) return
             SystemClock.sleep(POLL_MS)
         }
         throw AssertionError("fixture_${currentStep}_${reason}_timeout")
@@ -584,7 +605,7 @@ class FixtureUiChecks(private val instrumentation: Instrumentation) {
     companion object {
         private const val FIXTURE_TOKEN = "persona-wear-fixture-only"
         private val SCENARIOS = listOf("question", "plan", "permission", "screen", "protected", "chat", "inbox")
-        private val REGRESSIONS = listOf("recovery", "cancel_stale")
+        private val REGRESSIONS = listOf("recovery", "cancel_stale", "form_accessibility")
         private const val TOTAL_TIMEOUT_MS = 95_000L
         private const val REGRESSION_TIMEOUT_MS = 60_000L
         private const val NONVOICE_TIMEOUT_MS = 120_000L

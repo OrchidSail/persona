@@ -46,7 +46,15 @@ class ExtensionWidgetsActivity : Activity() {
     private var unregisterSystemBack: (() -> Unit)? = null
     @Volatile private var foreground = false
     @Volatile private var generation = 0
-    private val expire = Runnable { if (foreground) render(true) }
+    private var expiryDeadline: Long? = null
+    private val expire = object : Runnable {
+        override fun run() {
+            if (!foreground) return
+            val deadline = expiryDeadline ?: return
+            val delay = WidgetExpiry.nextDelay(deadline, System.currentTimeMillis())
+            if (delay == null) render(true) else main.postDelayed(this, delay)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -124,7 +132,7 @@ class ExtensionWidgetsActivity : Activity() {
         problem = null
         val previousWidgets = widgets
         val previousProjection = projection
-        val previousSelectedKey = selected?.key
+        val previousSelectedKey = selected?.key ?: selectedKey
         val requestedKey = previousSelectedKey ?: selectedKey
         // Hide cached private content until the connection identity has been checked off the UI thread.
         widgets = emptyList(); projection = null
@@ -166,10 +174,16 @@ class ExtensionWidgetsActivity : Activity() {
                     }, { failure ->
                         problem = problemOf(failure)
                         val mayKeep = problem == ExtensionProblem.RETRYABLE
-                        widgets = if (mayKeep) loaded.savedWidgets.ifEmpty { if (loaded.same) previousWidgets else emptyList() } else emptyList()
-                        projection = if (mayKeep) loaded.savedView ?: previousProjection.takeIf { loaded.same } else null
-                        selected = if (mayKeep) loaded.savedWidget ?: selected.takeIf { loaded.same } else null
+                        val recovered = recoverWidgetSelection(mayKeep, loaded.same, requestedKey,
+                            previousWidgets, previousSelectedKey, previousProjection,
+                            loaded.savedWidgets, loaded.savedWidget, loaded.savedView)
+                        widgets = recovered.widgets; selected = recovered.selected
+                        selectedKey = recovered.selectedKey; projection = recovered.projection
+                        // An earlier successful catalogue on this same client can authorize a retry.
+                        // Otherwise show the selected cached/retry detail without trusting a disk snapshot.
+                        catalogReady = mayKeep && loaded.same && selected?.let(loaded.client::canProject) == true
                         render()
+                        if (catalogReady) selected?.let { loadWidget(it, force = false) }
                     })
                 }, { failure ->
                     problem = problemOf(failure)
@@ -236,6 +250,7 @@ class ExtensionWidgetsActivity : Activity() {
     private fun render(preserveScroll: Boolean = false) {
         val old = if (preserveScroll && ::scroll.isInitialized) scroll.scrollY else 0
         main.removeCallbacks(expire)
+        expiryDeadline = null
         scroll = ScrollView(this).apply { setBackgroundColor(T.background); isFillViewport = true }
         body = T.column(this).apply { setPadding(dp(T.screenInset), dp(T.roundEndInset), dp(T.screenInset), dp(T.roundEndInset)) }
         scroll.addView(body); setContentView(scroll)
@@ -252,9 +267,10 @@ class ExtensionWidgetsActivity : Activity() {
         } else if (selected != null) {
             projection?.let { view ->
                 if (view.title.isNotBlank() && view.title != selected?.title) text(view.title, T.heading, bold = true)
-                if (problem == ExtensionProblem.RETRYABLE || view.expiresAtMs <= System.currentTimeMillis())
+                val delay = WidgetExpiry.nextDelay(view.expiresAtMs, System.currentTimeMillis())
+                if (problem == ExtensionProblem.RETRYABLE || delay == null)
                     text(getString(R.string.extension_stale), T.caption, T.working)
-                else main.postDelayed(expire, (view.expiresAtMs - System.currentTimeMillis()).coerceAtMost(86_400_000L))
+                else if (foreground) { expiryDeadline = view.expiresAtMs; main.postDelayed(expire, delay) }
                 if (view.items.isEmpty()) text(getString(R.string.extension_no_content), T.body, T.secondary)
                 view.items.forEach(::item)
             }

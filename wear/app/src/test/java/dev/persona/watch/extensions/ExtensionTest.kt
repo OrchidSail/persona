@@ -153,6 +153,38 @@ class ExtensionTest {
         assertEquals(3, draws)
     }
 
+    @Test fun memoryProjectionExpiresAtOneHourEvenWithFarFutureProviderExpiry() {
+        var clock = 1_000L
+        var draws = 0
+        val client = ExtensionClient(config, transport = HubTransport { _, method, _, _, _ ->
+            if (method == "GET") HubResponse(200, catalog) else { draws++; HubResponse(200, answer) }
+        }, now = { clock })
+        val widget = client.widgets().single()
+        client.widget(widget)
+        clock += CachedWidget.MAX_AGE_MS - 1
+        client.widget(widget)
+        assertEquals(1, draws)
+        clock++
+        client.widget(widget)
+        assertEquals(2, draws)
+        clock += CachedWidget.MAX_AGE_MS
+        client.widget(widget)
+        assertEquals(3, draws)
+    }
+
+    @Test fun memoryProjectionDoesNotReuseFutureDatedFetchAfterClockRollback() {
+        var clock = 10_000L
+        var draws = 0
+        val client = ExtensionClient(config, transport = HubTransport { _, method, _, _, _ ->
+            if (method == "GET") HubResponse(200, catalog) else { draws++; HubResponse(200, answer) }
+        }, now = { clock })
+        val widget = client.widgets().single()
+        client.widget(widget)
+        clock--
+        client.widget(widget)
+        assertEquals(2, draws)
+    }
+
     @Test fun cacheDoesNotReuseFullProjectionForAnAccessoryFamily() {
         val placements = mutableListOf<String>()
         val client = ExtensionClient(config, transport = HubTransport { _, method, _, body, _ ->

@@ -26,4 +26,15 @@ class PairingInputTest {
     @Test fun neverDowngradesAPinnedLinkWithoutATlsPort() {
         try { PairingInput.parse(link().replace("&tls=18662", ""), ""); fail("Pinned link was sent over plaintext") } catch (_: HubException) { }
     }
+    @Test fun pinnedRemoteHttpsNeedsNoUpgradePort() {
+        val config = PairingInput.parse(link("https://hub.example.com:8443/prefix").replace("&tls=18662", ""), "")
+        assertEquals("https://hub.example.com:8443/prefix", config.baseUrl)
+        assertEquals(pin, config.fingerprint)
+        assertEquals("sample-token", config.token)
+    }
+    @Test fun anHttpsOriginIsNotRewrittenByAnHttpUpgradeHint() {
+        val config = PairingInput.parse(link("https://hub.example.com:8443"), "")
+        assertEquals("https://hub.example.com:8443", config.baseUrl)
+        assertEquals(pin, config.fingerprint)
+    }
 }

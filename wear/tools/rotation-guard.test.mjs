@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { withPreservedRotation } from './rotation-guard.mjs';
+import { withPreservedRotation, withPreservedRotationAsync } from './rotation-guard.mjs';
 
 function watch(mode = 'lock 0', rotation = '0', accelerometer = '0') {
   const state = { mode, rotation, accelerometer, writes: [] };
@@ -58,4 +58,27 @@ test('failed restoration is reported instead of claiming a successful capture', 
     return run(args);
   }, leak), /Rotation restoration failed/);
   assert.equal(state.mode, 'lock 1');
+});
+
+test('failed automation teardown prevents rotation reads and writes after the operation', () => {
+  const { state, run, leak } = watch();
+  assert.throws(() => withPreservedRotation(run, leak, () => { throw new Error('UiAutomation still active'); }),
+    /shutdown could not be confirmed/);
+  assert.equal(state.mode, 'lock 1');
+  assert.deepEqual(state.writes, []);
+});
+
+test('async rotation guard waits for the operation and teardown gate before restoration', async () => {
+  const { state, run, leak } = watch();
+  let release;
+  let gated = false;
+  const pending = withPreservedRotationAsync(run, () => new Promise(resolve => { leak(); release = resolve; }),
+    () => { gated = true; assert.equal(state.mode, 'lock 1'); });
+  await Promise.resolve();
+  assert.equal(gated, false);
+  assert.deepEqual(state.writes, []);
+  release('completed');
+  assert.equal(await pending, 'completed');
+  assert.equal(gated, true);
+  assert.equal(state.mode, 'lock 0');
 });

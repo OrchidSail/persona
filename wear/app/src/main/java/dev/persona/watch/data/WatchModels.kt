@@ -21,7 +21,7 @@ data class HubConfig(
             uri.rawPath.orEmpty().split('/').any { it == "." || it == ".." } || uri.rawPath.orEmpty().contains('%')) {
             throw HubException("invalid_address")
         }
-        if (uri.scheme == "http" && !isLocalHost(uri.host)) throw HubException("https_required")
+        if (uri.scheme == "http" && (fingerprint != null || !isLocalHost(uri.host))) throw HubException("https_required")
         if (token.isBlank() || token.length > 4096 || token.any { it.code < 33 || it.code > 126 }) throw HubException("invalid_token")
         if (fingerprint != null && !fingerprint.matches(Regex("[A-Za-z0-9_-]{43}"))) throw HubException("invalid_fingerprint")
         return copy(baseUrl = uri.toASCIIString().trimEnd('/'))
@@ -145,6 +145,17 @@ object WatchParser {
             val kind = o.text("kind")
             if (kind == "elicitation") return@mapNotNull null
             val dialog = o.optJSONObject("dialog")
+            val protectedInput = o.optBoolean("secret") || o.optJSONArray("fields").let { it != null && it.length() > 0 } ||
+                o.text("tool_name") in setOf("secret_run", "secret_handoff", "secrets_run", "secrets_handoff") ||
+                o.text("tool_name").startsWith("secret_")
+            val legacyScreen = kind == "screen" && dialog == null && !protectedInput
+            val screenOptions = when {
+                legacyScreen -> rawScreenOptions(o.text("screen"))
+                kind == "screen" && dialog != null && !protectedInput -> dialog.optJSONArray("options").objects().filter { it.text("kind").isEmpty() }.map {
+                    DialogOption(it.text("key"), it.text("label"), it.optBoolean("checked"))
+                }
+                else -> emptyList()
+            }
             val questions = o.optJSONArray("questions").objects().map { q ->
                 WatchQuestion(q.text("question"), q.optJSONArray("options").objects().map { opt ->
                     QuestionOption(opt.text("label"), opt.text("description"))
@@ -154,14 +165,11 @@ object WatchParser {
                 o.text("task_title").ifBlank { o.text("session_title").ifBlank { owner?.title.orEmpty() } },
                 o.text("summary").ifBlank { questions.firstOrNull()?.question ?: o.text("tool_title").ifBlank { o.text("tool_name") } },
                 questions, o.text("plan"), o.text("screen"),
-                if (dialog == null) rawScreenOptions(o.text("screen")) else dialog.optJSONArray("options").objects().filter { it.text("kind").isEmpty() }.map {
-                    DialogOption(it.text("key"), it.text("label"), it.optBoolean("checked"))
-                }, dialog?.optBoolean("multi") == true,
-                o.optBoolean("secret") || o.optJSONArray("fields").let { it != null && it.length() > 0 } ||
-                    o.text("tool_name") in setOf("secret_run", "secret_handoff", "secrets_run", "secrets_handoff") ||
-                    o.text("tool_name").startsWith("secret_"),
-                (session.isEmpty() || owner?.canApprove == true) && kind in setOf("question", "plan", "permission", "screen"),
-                o.optBoolean("can_cancel"), rawOptions = kind == "screen" && dialog == null)
+                screenOptions, kind == "screen" && !protectedInput && dialog?.optBoolean("multi") == true,
+                protectedInput,
+                (session.isEmpty() || owner?.canApprove == true) && kind in setOf("question", "plan", "permission", "screen") &&
+                    (!protectedInput || kind == "permission"),
+                o.optBoolean("can_cancel"), rawOptions = legacyScreen && screenOptions.isNotEmpty())
         }
     }
 
