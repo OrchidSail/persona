@@ -158,7 +158,8 @@ type turn struct {
 var gates sync.Map // gateKey → *gate
 
 func gateKey(baseURL, key string) string {
-	for _, suffix := range []string{"/chat/completions", "/responses", "/messages"} {
+	baseURL = trimMessagesEndpointPath(baseURL)
+	for _, suffix := range []string{"/chat/completions", "/responses"} {
 		baseURL = trimEndpointSuffix(baseURL, suffix)
 	}
 	sum := sha256.Sum256([]byte(key))

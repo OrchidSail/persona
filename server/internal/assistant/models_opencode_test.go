@@ -42,6 +42,16 @@ func TestSavingStripsPastedEndpointSuffixes(t *testing.T) {
 			`"base_url":"https://opencode.ai/inference/go/anthropic/v1/messages"`,
 			"https://opencode.ai/inference/go/anthropic",
 		},
+		{
+			"messages-prefix",
+			`"base_url":"https://relay.example.net/messages/v1/messages"`,
+			"https://relay.example.net/messages",
+		},
+		{
+			"v1-v1-chat",
+			`"kind":"api","api":"chat","base_url":"https://api.example.com/v1/v1/chat/completions"`,
+			"https://api.example.com/v1/v1",
+		},
 	}
 	for _, tc := range cases {
 		body := `{"name":"` + tc.name + `",` + tc.body + `,"model":"glm-5","api_key":"` + fakeKey + `"}`

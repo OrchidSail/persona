@@ -292,9 +292,40 @@ func trimEndpointSuffix(base, suffix string) string {
 	}
 }
 
+// trimMessagesEndpointPath drops a pasted /v1/messages endpoint suffix while keeping the preceding /v1 (and leaving a
+// bare /messages deployment prefix untouched so "https://gw/messages" still builds "https://gw/messages/v1/messages").
+func trimMessagesEndpointPath(base string) string {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	u, err := url.Parse(base)
+	if err != nil || u.Host == "" || u.Opaque != "" || u.RawQuery != "" || u.Fragment != "" {
+		return base
+	}
+	authority := strings.Index(base, "//") + len("//")
+	slash := strings.IndexByte(base[authority:], '/')
+	if slash < 0 {
+		return base
+	}
+	root, path := base[:authority+slash], base[authority+slash:]
+	for {
+		rest, ok := strings.CutSuffix(path, "/messages")
+		if !ok {
+			return root + path
+		}
+		rest = strings.TrimRight(rest, "/")
+		if !strings.HasSuffix(rest, "/v1") {
+			return root + path
+		}
+		path = rest
+	}
+}
+
 // apiEndpoint preserves deployment prefixes, strips a pasted endpoint suffix, and accepts bases with or without /v1.
 func apiEndpoint(base, path string) string {
-	base = trimEndpointSuffix(base, "/"+path)
+	if path == "messages" {
+		base = trimMessagesEndpointPath(base)
+	} else {
+		base = trimEndpointSuffix(base, "/"+path)
+	}
 	if !strings.HasSuffix(base, "/v1") {
 		base += "/v1"
 	}

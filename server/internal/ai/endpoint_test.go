@@ -37,12 +37,16 @@ func TestDirectAPIEndpointWithVersionedAndPastedBases(t *testing.T) {
 	}{
 		{"messages versioned", "messages", "/prefix/v1/", "/prefix/v1/messages"},
 		{"messages full v1", "messages", "/prefix/v1/messages", "/prefix/v1/messages"},
-		{"messages full bare", "messages", "/prefix/messages/", "/prefix/v1/messages"},
+		{"messages prefix named messages", "messages", "/messages", "/messages/v1/messages"},
+		{"messages prefix named messages v1", "messages", "/messages/v1", "/messages/v1/messages"},
+		{"messages prefix named messages full", "messages", "/messages/v1/messages", "/messages/v1/messages"},
+		{"messages double v1 full", "messages", "/v1/v1/messages", "/v1/v1/messages"},
 		{"responses versioned", "responses", "/prefix/v1/", "/prefix/v1/responses"},
 		{"responses full v1", "responses", "/prefix/v1/responses/", "/prefix/v1/responses"},
 		{"responses full bare", "responses", "/prefix/responses", "/prefix/v1/responses"},
 		{"chat versioned", "chat", "/inference/go/openai/v1", "/inference/go/openai/v1/chat/completions"},
 		{"chat full v1", "chat", "/inference/go/openai/v1/chat/completions", "/inference/go/openai/v1/chat/completions"},
+		{"chat double v1 full", "chat", "/v1/v1/chat/completions", "/v1/v1/chat/completions"},
 		{"chat full slash", "chat", "/zen/go/v1/chat/completions/", "/zen/go/v1/chat/completions"},
 		{"chat full bare", "chat", "/chat/completions", "/v1/chat/completions"},
 	}

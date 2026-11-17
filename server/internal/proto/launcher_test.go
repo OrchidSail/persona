@@ -18,9 +18,12 @@ func TestMessagesBaseURL(t *testing.T) {
 		"https://relay.example.net/v10":              "https://relay.example.net/v10",
 		"https://relay.example.net/api/v1beta":                 "https://relay.example.net/api/v1beta",
 		"https://relay.example.net/apiv1":                      "https://relay.example.net/apiv1",
-		"https://relay.example.net/v1/team":                    "https://relay.example.net/v1/team",
-		"https://relay.example.net/v1/messages":                "https://relay.example.net",
-		"https://relay.example.net/messages":                   "https://relay.example.net",
+		"https://relay.example.net/v1/team":                      "https://relay.example.net/v1/team",
+		"https://relay.example.net/v1/messages":                  "https://relay.example.net",
+		"https://relay.example.net/v1//messages/":                "https://relay.example.net",
+		"https://relay.example.net/messages":                     "https://relay.example.net/messages",
+		"https://relay.example.net/messages/v1":                  "https://relay.example.net/messages",
+		"https://relay.example.net/messages/v1/messages":         "https://relay.example.net/messages",
 		"https://opencode.ai/inference/go/anthropic/v1/messages": "https://opencode.ai/inference/go/anthropic",
 		"https://v1":                                           "https://v1", // a host named v1 is not a path
 		"https://messages":                                     "https://messages",
@@ -105,8 +108,20 @@ func TestAPIBaseURLAndLaunchBaseURL(t *testing.T) {
 			"https://api.example.com/v1",
 		},
 		{
+			ManagedLauncher{Kind: "api", API: "chat", BaseURL: "https://api.example.com/v1/v1/chat/completions"},
+			"https://api.example.com/v1/v1",
+		},
+		{
 			ManagedLauncher{Kind: "api", API: "responses", BaseURL: "https://api.openai.com/v1/responses"},
 			"https://api.openai.com/v1",
+		},
+		{
+			ManagedLauncher{Kind: "api", API: "responses", BaseURL: "https://api.openai.com/v1/v1/responses"},
+			"https://api.openai.com/v1/v1",
+		},
+		{
+			ManagedLauncher{Kind: "api", API: "responses", BaseURL: "https://api.openai.com/responses/v1/responses"},
+			"https://api.openai.com/responses/v1",
 		},
 		{
 			ManagedLauncher{Kind: "api", API: "responses", BaseURL: "https://api.openai.com/responses/"},

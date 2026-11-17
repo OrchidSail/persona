@@ -392,54 +392,78 @@ func AnthropicAPI(base string) bool {
 }
 
 // APIBaseURL normalizes a gateway Base URL for api ("messages"/empty, "responses", or "chat"), stripping a pasted
-// trailing endpoint path while keeping /v1 on OpenAI-compatible bases.
+// trailing endpoint path while keeping /v1 on OpenAI-compatible bases ("https://host/v1/v1/chat/completions" →
+// "https://host/v1/v1").
 func APIBaseURL(base, api string) string {
 	switch api {
 	case "", "messages":
 		return MessagesBaseURL(base)
 	case "chat":
-		return trimBasePathSuffixes(base, "/chat/completions")
+		return trimBasePathSuffix(base, "/chat/completions")
 	case "responses":
-		return trimBasePathSuffixes(base, "/responses")
+		return trimBasePathSuffix(base, "/responses")
 	default:
 		return strings.TrimRight(strings.TrimSpace(base), "/")
 	}
 }
 
-// MessagesBaseURL is a gateway address as ANTHROPIC_BASE_URL takes it. Claude Code and the Anthropic SDKs add
-// /v1/messages themselves, so a trailing /messages or /v1 many gateways put at the end of their documented address
-// would make /v1/v1/messages or /v1/messages/v1/messages: trailing /messages and /v1 segments go with any trailing
-// slashes, while a deployment prefix before them stays ("https://gw/prefix/v1/" → "https://gw/prefix"). It is
-// idempotent: the hub stores its result and the node applies it again at launch, and both must reach what Test
-// connection called. Anything else (no host, a query) is only trimmed.
+// MessagesBaseURL is a gateway address as ANTHROPIC_BASE_URL takes it. Unlike APIBaseURL for "chat" and "responses",
+// MessagesBaseURL produces an ANTHROPIC_BASE_URL without a trailing /v1: Claude Code (node/launcherenv.go) and
+// connection probes (assistant/models_probe.go) unconditionally append /v1/messages themselves, and saving plus
+// launch-time re-application require strict idempotence (MessagesBaseURL(got) == got; a run of /v1 goes whole).
+//
+// Normalization runs in two ordered phases: first strip a pasted /v1/messages endpoint suffix (only /messages
+// preceded by /v1, never a /messages deployment prefix), then strip any trailing /v1 segments so
+// "https://gw/prefix/v1/" → "https://gw/prefix" and both "https://gw/messages/v1" and
+// "https://gw/messages/v1/messages" → "https://gw/messages". Anything else (no host, a query) is only trimmed.
 func MessagesBaseURL(base string) string {
-	return trimBasePathSuffixes(base, "/messages", "/v1")
+	return trimBasePathSuffix(trimMessagesEndpointSuffix(base), "/v1")
 }
 
-func trimBasePathSuffixes(base string, suffixes ...string) string {
+func splitBaseURLPath(base string) (root, path string, ok bool) {
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	u, err := url.Parse(base)
 	if err != nil || u.Host == "" || u.Opaque != "" || u.RawQuery != "" || u.Fragment != "" {
-		return base
+		return base, "", false
 	}
 	authority := strings.Index(base, "//") + len("//")
 	slash := strings.IndexByte(base[authority:], '/')
 	if slash < 0 {
-		return base // no path
+		return base, "", false // no path
 	}
-	root, path := base[:authority+slash], base[authority+slash:]
+	return base[:authority+slash], base[authority+slash:], true
+}
+
+func trimMessagesEndpointSuffix(base string) string {
+	root, path, ok := splitBaseURLPath(base)
+	if !ok {
+		return root
+	}
 	for {
-		trimmed := false
-		for _, suffix := range suffixes {
-			if rest, ok := strings.CutSuffix(path, suffix); ok {
-				path = strings.TrimRight(rest, "/")
-				trimmed = true
-				break
-			}
-		}
-		if !trimmed {
+		rest, hasMessages := strings.CutSuffix(path, "/messages")
+		if !hasMessages {
 			return root + path
 		}
+		rest = strings.TrimRight(rest, "/")
+		beforeV1, hasV1 := strings.CutSuffix(rest, "/v1")
+		if !hasV1 {
+			return root + path
+		}
+		path = strings.TrimRight(beforeV1, "/")
+	}
+}
+
+func trimBasePathSuffix(base, suffix string) string {
+	root, path, ok := splitBaseURLPath(base)
+	if !ok {
+		return root
+	}
+	for {
+		rest, found := strings.CutSuffix(path, suffix)
+		if !found {
+			return root + path
+		}
+		path = strings.TrimRight(rest, "/")
 	}
 }
 
