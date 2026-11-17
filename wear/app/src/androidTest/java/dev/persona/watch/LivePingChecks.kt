@@ -47,59 +47,43 @@ class LivePingChecks(private val instrumentation: Instrumentation) {
         check(session.machineId != "fixture") { "live_ping_real_session_required" }
         val initial = client.messages(session)
         verifyDedicatedChat(initial)
-        val alreadySent = initial.any { it.own && it.text == PING }
-        if (!alreadySent) check(session.canSend) { "live_ping_session_read_only" }
+        val exchange = LivePingExchange(initial, PING, PONG, SystemClock.elapsedRealtime())
+        if (exchange.shouldSend) check(session.canSend) { "live_ping_session_read_only" }
         var clickedSend = false
-        var acknowledgedAt = 0L
-        var completedAt = 0L
         var sendStarted = SystemClock.elapsedRealtime()
         try {
             status("guarded")
             openSession()
-            if (!alreadySent) {
+            if (exchange.shouldSend) {
                 // Observe the same acceptance-chat marker in the production UI before editing its composer.
                 waitText(READY)
                 setReply()
                 sameCredential()
                 val beforeClick = client.messages(session)
                 verifyDedicatedChat(beforeClick)
-                if (beforeClick.none { it.own && it.text == PING }) {
+                exchange.observe(beforeClick, SystemClock.elapsedRealtime())
+                clickedSend = exchange.sendIfMissing {
                     sendStarted = SystemClock.elapsedRealtime()
                     clickSendOnce()
-                    clickedSend = true
-                    status("sent_via_ui")
                 }
+                if (clickedSend) status("sent_via_ui")
             }
-            val pollStarted = SystemClock.elapsedRealtime()
-            val pollEnd = minOf(deadline, pollStarted + REPLY_TIMEOUT_MS)
             val reader = Executors.newSingleThreadExecutor()
-            var finalMessages = emptyList<WatchMessage>()
-            try {
-                while (SystemClock.elapsedRealtime() < pollEnd) {
-                    sameCredential()
-                    val remaining = pollEnd - SystemClock.elapsedRealtime()
-                    if (remaining <= 0) break
-                    val read = reader.submit<List<WatchMessage>> { client.messages(session) }
-                    val messages = try { read.get(remaining, TimeUnit.MILLISECONDS) }
-                    catch (_: Exception) {
-                        read.cancel(true)
-                        throw AssertionError("live_ping_reply_read_failed")
-                    }
-                    verifyDedicatedChat(messages)
-                    val pingCount = messages.count { it.own && it.text == PING }
-                    check(pingCount <= 1) { "live_ping_duplicate_ping" }
-                    if (pingCount == 1 && acknowledgedAt == 0L) acknowledgedAt = SystemClock.elapsedRealtime()
-                    if (pingCount == 1 && messages.any { isAssistant(it, PONG) }) {
-                        completedAt = SystemClock.elapsedRealtime()
-                        finalMessages = messages
-                        break
-                    }
-                    SystemClock.sleep(minOf(NETWORK_POLL_MS, (pollEnd - SystemClock.elapsedRealtime()).coerceAtLeast(0)))
-                }
+            val finalMessages = try {
+                exchange.awaitReply(deadline, now = SystemClock::elapsedRealtime, verify = ::sameCredential,
+                    read = { remaining ->
+                        val read = reader.submit<List<WatchMessage>> { client.messages(session) }
+                        val messages = try { read.get(remaining, TimeUnit.MILLISECONDS) }
+                        catch (_: Exception) {
+                            read.cancel(true)
+                            throw AssertionError("live_ping_reply_read_failed")
+                        }
+                        verifyDedicatedChat(messages)
+                        messages
+                    }, wait = SystemClock::sleep)
             } finally {
                 reader.shutdownNow()
             }
-            check(completedAt > 0) { "live_ping_pong_timeout" }
             // Re-enter through the production route, then actually reveal the returned assistant text.
             openSession()
             waitText(PONG)
@@ -112,8 +96,8 @@ class LivePingChecks(private val instrumentation: Instrumentation) {
                 putInt("live_ping_own_ping_count", finalMessages.count { it.own && it.text == PING })
                 putInt("live_ping_pong_count", finalMessages.count { isAssistant(it, PONG) })
                 putInt("live_ping_transcript_messages", finalMessages.size)
-                putLong("live_ping_ack_ms", if (clickedSend) acknowledgedAt - sendStarted else 0)
-                putLong("live_ping_roundtrip_ms", if (clickedSend) completedAt - sendStarted else 0)
+                putLong("live_ping_ack_ms", if (clickedSend) checkNotNull(exchange.acknowledgedAt) - sendStarted else 0)
+                putLong("live_ping_roundtrip_ms", if (clickedSend) checkNotNull(exchange.completedAt) - sendStarted else 0)
                 putLong("live_ping_elapsed_ms", SystemClock.elapsedRealtime() - started)
                 putString("live_ping_screenshot", "files/fixture-qa/real-pong.png")
                 putString("stream", "PASS: real watch UI to TLS hub to agent; PONG visible\n")
@@ -253,9 +237,7 @@ class LivePingChecks(private val instrumentation: Instrumentation) {
         private const val PING = "PING_WATCH"
         private const val PONG = "PONG_WATCH"
         private const val TOTAL_TIMEOUT_MS = 110_000L
-        private const val REPLY_TIMEOUT_MS = 45_000L
         private const val UI_TIMEOUT_MS = 15_000L
         private const val UI_POLL_MS = 200L
-        private const val NETWORK_POLL_MS = 1_000L
     }
 }

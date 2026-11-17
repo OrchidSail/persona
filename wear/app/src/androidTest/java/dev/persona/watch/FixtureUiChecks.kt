@@ -15,8 +15,6 @@ import dev.persona.watch.data.UrlConnectionTransport
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
-import java.net.URI
-import java.net.URL
 import java.security.MessageDigest
 
 /** Synthetic mode only. User actions use visible controls; optional fault injection uses the loopback fixture. */
@@ -439,13 +437,9 @@ class FixtureUiChecks(private val instrumentation: Instrumentation) {
     /** Test controls are never sent to LAN hosts or the real hub, even with an accidentally reused token. */
     private fun fixtureControl(body: JSONObject? = null, cleanup: Boolean = false): JSONObject {
         sameFixtureCredential(checkDeadline = !cleanup)
-        val origin = URI(config.baseUrl)
-        check(origin.scheme == "http" && origin.host in setOf("127.0.0.1", "localhost", "[::1]", "::1") &&
-            origin.path.orEmpty() in setOf("", "/") && origin.userInfo == null && origin.query == null && origin.fragment == null) {
-            "fixture_control_requires_loopback_root"
-        }
+        val origin = FixtureControlOrigin.parse(config.baseUrl)
         fun request(path: String, payload: JSONObject?): JSONObject {
-            val connection = URL("${origin.scheme}://${origin.rawAuthority}$path").openConnection() as HttpURLConnection
+            val connection = origin.url(path).openConnection() as HttpURLConnection
             try {
                 connection.instanceFollowRedirects = false
                 connection.connectTimeout = 2_000

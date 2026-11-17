@@ -7,7 +7,7 @@ This document separates local checks, synthetic physical-device tests and real-H
 | Check | Recorded result | What it establishes |
 | --- | --- | --- |
 | App and test APK builds | Passed in the 2026-11-17 follow-up rerun | Both packages compile; instrumentation was not executed in this stage |
-| App unit tests | 227 passed, zero failures/errors/skips | Parsing, permissions, scoping, drafts, rendering models, freshness and review regressions |
+| App unit tests | 243 passed, zero failures/errors/skips | Parsing, permissions, scoping, drafts, rendering models, freshness and review regressions |
 | Android Lint | Zero errors, 35 advisory warnings | Static analysis; warnings include dependency age, unused resources, accessibility/plural resources and intentionally pinned TLS handling |
 | Complication serialization | All five production timelines passed on-device | AndroidX wire conversion and Android `Parcel` round trips for three pet types and two extension types |
 | Rotation guard | Nine host-side checks passed | Preference restoration and asynchronous teardown ordering; unknown preferences are rejected |
@@ -20,7 +20,7 @@ This document separates local checks, synthetic physical-device tests and real-H
 Build and rerun the app checks from `wear/` with the toolchain described in [README](README.md#build):
 
 ```powershell
-.\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug :app:testDebugUnitTest --rerun-tasks --console=plain
+.\gradlew.bat :app:assembleDebug :app:compileDebugAndroidTestKotlin :app:assembleDebugAndroidTest :app:lintDebug :app:testDebugUnitTest --rerun-tasks --console=plain
 ```
 
 Run the host helper checks from the repository root:
@@ -39,7 +39,11 @@ Connection-removal failures now survive automatic reload; URL normalization appl
 
 Widget catalogue refresh restores identity-checked memory/disk content before the network request, and retryable errors retain that projection without falsely labelling it stale. The original provider/cache deadlines survive client, page and disk reuse. The live-write probe requires exactly one primary Hub and rechecks the absence of extra connections before actions. Discovery tests reuse verified online IP transports without advertisements; teardown tests distinguish explicit null-service metadata from active or unknown automation records. Unknown formats fail closed. Fixture receipt tests start only a synthetic loopback server; all ADB calls are mocked. No instrumentation, watch connection, screen, rotation, real-Hub action or deployment was performed in this follow-up.
 
-These checks use production helpers but do not establish Android Canvas pixels, actual Keystore behavior, TalkBack semantics on a watch, current-head screenshots or a new device acceptance run. The added field-label/minimum-height instrumentation and every fixture scenario compile; they were not run on a device. The exchange-response-to-durable-credential gap remains outside local recovery, as described in [pairing](README.md#pairing-and-private-debug-provisioning).
+The subsequent review 5932028956 scanned an older head and raised two instrumentation findings. Existing pings already entered the common reply poll; the follow-up extracts that logic into a debug-only helper and distinguishes an observed ping without an agent reply from an unobserved ping after a UI send attempt. Eleven deterministic tests cover existing/new pings, the complete 45-second reply window, shorter or expired total deadlines, retained acknowledgements, at-most-once sends and separate read/isolation failures. Fixture controls now validate the complete loopback authority, bracketed IPv6 and effective port before constructing a request or assigning its token. Only an absent port or the expected fixture port is accepted; five tests cover accepted origins, reconstructed URLs and rejected port/authority boundaries.
+
+This two-comment follow-up passed the complete command above, explicitly including `compileDebugAndroidTestKotlin`: all 82 tasks executed, both APKs built, all 243 JVM tests passed and lint remained at zero errors / 35 warnings. The pre-existing nullable Java interop warning in `PetModelsTest` remains unchanged. Node passed all 47 tests, and the provider passed seven Go tests plus six subtests. No required build or test failed in this stage. Separate source reviewers checked the polling integration and the fixture request boundary. These changes affect the debug/test harness, not release network behavior; no instrumentation, watch/ADB action or real-Hub message was executed in this stage.
+
+These checks use production and debug-harness helpers but do not establish Android Canvas pixels, actual Keystore behavior, TalkBack semantics on a watch, current-head screenshots or a new device acceptance run. The added field-label/minimum-height instrumentation and every fixture scenario compile; they were not run on a device. The exchange-response-to-durable-credential gap remains outside local recovery, as described in [pairing](README.md#pairing-and-private-debug-provisioning).
 
 ## Physical-device checks with synthetic data
 
