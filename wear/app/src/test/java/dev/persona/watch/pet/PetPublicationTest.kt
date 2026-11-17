@@ -16,6 +16,44 @@ class PetPublicationTest {
         assertNotEquals(petStatusPreferencesName(config), petStatusPreferencesName(replacement))
     }
 
+    @Test fun changedAccountCannotReadOldCountsEvenWhenItsArtworkIsReusable() {
+        val now = 10_000_000L
+        val original = HubConfig("https://hub.example", "sample-old", "A".repeat(43), "sample-device-old")
+        val oldState = PetStoredStatus(PetStatus(PetState.NEEDS_YOU, 42), now)
+        val empty = PetStoredStatus(PetStatus(PetState.OFFLINE), 0)
+        val manifest = PetManifest(emptyMap(), emptyMap(), "{}")
+        val namespaces = mutableMapOf(petStatusPreferencesName(original) to oldState)
+        // These are the same credential-scoped names used by PetBridge's preference reads/writes.
+        fun read(config: HubConfig) = namespaces[petStatusPreferencesName(config)] ?: empty
+        val replacements = listOf(original.copy(token = "sample-new"), original.copy(deviceId = "sample-device-new"),
+            original.copy(token = "sample-new", deviceId = "sample-device-new"))
+        for (next in replacements) {
+            assertEquals(PetPack.scope(original), PetPack.scope(next))
+            assertEquals(oldState, read(original))
+            assertEquals(empty, read(next))
+            val page = PetPageState()
+            page.resume(original, read(original), now)
+            val oldTicket = page.generation
+            page.resume(next, read(next), now)
+            assertTrue(page.acceptManifest(page.generation, manifest))
+            assertFalse(page.acceptRefresh(oldTicket, manifest, null, 1, now))
+            assertEquals(empty, page.stored)
+            assertTrue(page.acceptRefresh(page.generation, manifest, null, 1, now))
+            assertEquals(empty, page.stored) // Artwork or a failed read does not authenticate old task state.
+        }
+    }
+
+    @Test fun lateOldCredentialPublicationCannotOverwriteTheNewIdentityNamespace() {
+        val first = HubConfig("https://hub.example", "sample-old", deviceId = "sample-device")
+        val next = first.copy(token = "sample-new")
+        val nextState = PetStoredStatus(PetStatus(PetState.WORKING, 1), 10_000)
+        val namespaces = mutableMapOf(petStatusPreferencesName(next) to nextState)
+        namespaces[petStatusPreferencesName(first)] = stored
+        assertEquals(nextState, namespaces[petStatusPreferencesName(next)])
+        assertEquals(stored, namespaces[petStatusPreferencesName(first)])
+        assertEquals(2, namespaces.size)
+    }
+
     @Test fun successfulCommitPrecedesNotificationAndRestoreBackupCleanup() {
         val calls = mutableListOf<String>()
         val result = commitPetPublication(stored, commit = {

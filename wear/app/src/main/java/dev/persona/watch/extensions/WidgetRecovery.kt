@@ -34,6 +34,13 @@ internal fun retainWidgetProjection(widget: ExtensionWidget?, sameConnection: Bo
 /** A bounded wake checks the original absolute deadline, never a newly extended expiry. */
 internal object WidgetExpiry {
     const val MAX_WAIT_MS = 86_400_000L
+    fun wake(deadline: Long, now: Long, schedule: (Long) -> Unit, publish: () -> Unit, render: () -> Unit) {
+        val delay = nextDelay(deadline, now)
+        if (delay != null) schedule(delay) else {
+            publish()
+            render()
+        }
+    }
     fun nextDelay(deadline: Long, now: Long): Long? {
         if (deadline <= now) return null
         // The positive difference can overflow only across widely separated signed timestamps.

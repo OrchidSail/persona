@@ -51,8 +51,10 @@ class ExtensionWidgetsActivity : Activity() {
         override fun run() {
             if (!foreground) return
             val deadline = expiryDeadline ?: return
-            val delay = WidgetExpiry.nextDelay(deadline, System.currentTimeMillis())
-            if (delay == null) render(true) else main.postDelayed(this, delay)
+            WidgetExpiry.wake(deadline, System.currentTimeMillis(),
+                schedule = { main.postDelayed(this, it) },
+                publish = { ExtensionComplications.changed(this@ExtensionWidgetsActivity) },
+                render = { render(true) })
         }
     }
 

@@ -36,11 +36,21 @@ data class PetStoredStatus(val status: PetStatus, val updatedAt: Long) {
         return (updatedAt + STALE_MS).takeIf { now < it }
     }
 
+    /** Refreshing the provider does not discard the already-valid part of this observation. */
+    internal fun freshInterval(now: Long): PetFreshInterval? {
+        if (status.state == PetState.OFFLINE) return null
+        val until = freshUntil(now) ?: return null
+        // Preserve visible()'s small clock-skew tolerance without a gap at the current instant.
+        return PetFreshInterval(minOf(updatedAt, now), until)
+    }
+
     companion object {
         const val STALE_MS = 60 * 60 * 1000L
         private const val FUTURE_SKEW_MS = 60_000L
     }
 }
+
+internal data class PetFreshInterval(val startMs: Long, val endExclusiveMs: Long)
 
 data class PetAsset(val file: String, val hash: String)
 data class PetClip(val asset: PetAsset, val fps: Double, val frames: Int, val still: Int)

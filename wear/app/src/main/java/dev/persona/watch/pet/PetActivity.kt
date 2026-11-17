@@ -46,9 +46,8 @@ class PetActivity : Activity() {
     private lateinit var stateLabel: TextView
     private lateinit var dateLabel: TextView
     private lateinit var notice: TextView
-    private val poll = object : Runnable {
-        override fun run() { if (foreground) { if (interactive()) refresh(false); handler.postDelayed(this, PetTokens.pollMs) } }
-    }
+    private val poll = PetForegroundPoll(foreground = { foreground }, interactive = ::interactive,
+        refresh = { refresh(false) }, schedule = { task, delay -> handler.postDelayed(task, delay) })
     private val expire = Runnable {
         if (foreground) {
             val changed = showState()

@@ -40,10 +40,10 @@ class PetComplicationService : ComplicationDataSourceService() {
         val cached = cached() ?: return null
         val offline = data(type, cached, PetStatus(PetState.OFFLINE))
         val now = System.currentTimeMillis()
-        val until = cached.stored.freshUntil(now)
-        val entries = if (until == null || cached.stored.status.state == PetState.OFFLINE) emptyList() else {
-            val start = Instant.ofEpochMilli(now)
-            val expiry = Instant.ofEpochMilli(until)
+        val interval = cached.stored.freshInterval(now)
+        val entries = if (interval == null) emptyList() else {
+            val start = Instant.ofEpochMilli(interval.startMs)
+            val expiry = Instant.ofEpochMilli(interval.endExclusiveMs)
             // TimeRange includes its end; TimeInterval excludes it. Also bound a flattened fresh value.
             val fresh = data(type, cached, cached.stored.status, TimeRange.between(start, expiry.minusMillis(1)))
             // AndroidX caches wire objects: reusing the default as an entry creates a parcel cycle.

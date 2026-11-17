@@ -268,6 +268,12 @@ class MainActivity : Activity() {
                     if (!isFirst && fresh.interactions.any { it.key !in oldIds }) {
                         scroll.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                     }
+                    var redrawInbox = true
+                    selectedInbox?.takeIf { page == "inbox_item" || page == "confirm" && previousPage == "inbox_item" }?.let { item ->
+                        val current = InboxSelection.review(item, fresh, hub != null && "" !in failedGroups)
+                        redrawInbox = current.shouldRedraw(composer?.hasFocus() == true)
+                        showInboxReview(current)
+                    }
                     val beforeDebugPage = page
                     applyDebugPage()
                     val previousSession = selectedSession
@@ -282,6 +288,7 @@ class MainActivity : Activity() {
                         if (notice == getString(R.string.processing) && latest.state !in setOf("working", "needs_you")) notice = ""
                     }
                     if (page != beforeDebugPage || page in setOf("home", "agents", "assistant", "inbox")) render(preserveScroll = true)
+                    else if (page == "inbox_item" && redrawInbox) render(true)
                     else if (page == "session" && sessionUiNeedsRefresh && composer?.hasFocus() != true) render(true)
                     else updateStatus()
                     if (page == "session") selectedSession?.let { loadMessages(it) }
@@ -682,19 +689,24 @@ class MainActivity : Activity() {
             ledger.save(hash(draftKey), item.suggestedReply.take(16000))
             drafts.edit().putBoolean(prefilledKey, true).apply()
         }
-        val canReply = item.canReply && "" !in failedGroups
-        if (!canReply && item.canReply) paragraph(getString(R.string.read_only), compact = true)
+        val canAct = InboxSelection.review(item, snapshot, "" !in failedGroups).state == InboxSelection.State.CURRENT
+        val canReply = item.canReply && canAct
+        if (!canAct) paragraph(getString(R.string.inbox_stale), compact = true)
         if (canReply) compose(draftKey) { submission ->
-            perform(R.string.saved, { it.reply(item, submission.text, submission.operationId) },
-                settled = { ledger.acknowledge(submission) })
+            withCurrentInbox(item) {
+                perform(R.string.saved, { it.reply(item, submission.text, submission.operationId) },
+                    settled = { ledger.acknowledge(submission) })
+            }
         }
         if (canReply) action(R.string.inbox_ai_reply) {
             val makeDraft = {
-                val version = ledger.version(hash(draftKey))
-                var suggestion = ""
-                perform(R.string.inbox_draft_ready, { suggestion = it.draftReply(item) }, settled = {
-                    if (!ledger.suggest(version, suggestion)) generatedSuggestions[version.hash] = suggestion
-                })
+                withCurrentInbox(item) {
+                    val version = ledger.version(hash(draftKey))
+                    var suggestion = ""
+                    perform(R.string.inbox_draft_ready, { suggestion = it.draftReply(item) }, settled = {
+                        if (!ledger.suggest(version, suggestion)) generatedSuggestions[version.hash] = suggestion
+                    })
+                }
             }
             if (drafts.getString(storageKey, "").isNullOrBlank()) makeDraft()
             else confirm(getString(R.string.inbox_replace_draft_body), getString(R.string.inbox_ai_reply), call = makeDraft)
@@ -708,12 +720,33 @@ class MainActivity : Activity() {
                 }
             }
         }
-        action(R.string.mark_done, enabled = "" !in failedGroups) {
+        action(R.string.mark_done, enabled = canAct) {
             confirm(getString(R.string.mark_done_body), getString(R.string.mark_done)) {
-                perform(R.string.saved, { it.markDone(item) }) { page = "inbox" }
+                withCurrentInbox(item) {
+                    perform(R.string.saved, { it.markDone(item) }) { selectedInbox = null; page = "inbox" }
+                }
             }
         }
     }
+
+    private fun showInboxReview(review: InboxSelection.Review) {
+        selectedInbox = review.item
+        if (review.state == InboxSelection.State.CURRENT) {
+            if (notice == getString(R.string.inbox_stale)) notice = ""
+            return
+        }
+        confirmation = null
+        page = if (review.item == null) "inbox" else "inbox_item"
+        notice = getString(when (review.state) {
+            InboxSelection.State.REMOVED -> R.string.unknown_item
+            InboxSelection.State.UNAVAILABLE -> R.string.inbox_stale
+            else -> R.string.request_changed
+        })
+    }
+
+    private fun withCurrentInbox(item: InboxItem, action: () -> Unit) =
+        InboxSelection.act(item, snapshot, client != null && "" !in failedGroups,
+            rejected = { showInboxReview(it); render(true) }, action = action)
 
     private fun compose(key: String, owner: String = "", send: (DraftLedger.Submission) -> Unit) {
         section(getString(R.string.reply))

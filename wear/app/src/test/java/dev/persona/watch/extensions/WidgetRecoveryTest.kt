@@ -106,6 +106,35 @@ class WidgetRecoveryTest {
         assertEquals(day, WidgetExpiry.nextDelay(Long.MAX_VALUE, Long.MIN_VALUE))
     }
 
+    @Test fun expiredWakeRequestsFaceUpdateBeforeRenderingForProviderAndCacheDeadlines() {
+        val providerBound = cached.copy(view = view.copy(expiresAtMs = cached.savedAtMs + 5_000))
+        val cacheBound = cached.copy(view = view.copy(expiresAtMs = Long.MAX_VALUE))
+        for (projection in listOf(providerBound, cacheBound)) {
+            for (now in listOf(projection.freshUntilMs, projection.freshUntilMs + 5_000)) {
+                val events = mutableListOf<String>()
+                WidgetExpiry.wake(projection.freshUntilMs, now,
+                    schedule = { fail("Expired content must not schedule another fresh interval") },
+                    publish = { assertFalse(projection.fresh(now)); events += "publish" },
+                    render = { events += "render" })
+                assertEquals(listOf("publish", "render"), events)
+            }
+        }
+    }
+
+    @Test fun earlyWakeOnlyReschedulesUntilTheOriginalDeadlineThenPublishes() {
+        val events = mutableListOf<String>()
+        val start = 1_000L
+        val deadline = start + WidgetExpiry.MAX_WAIT_MS + 5_000
+        fun wake(now: Long) = WidgetExpiry.wake(deadline, now,
+            schedule = { events += "wait:$it" }, publish = { events += "publish" }, render = { events += "render" })
+        wake(start)
+        wake(start + WidgetExpiry.MAX_WAIT_MS)
+        wake(deadline - 1)
+        assertEquals(listOf("wait:${WidgetExpiry.MAX_WAIT_MS}", "wait:5000", "wait:1"), events)
+        wake(deadline)
+        assertEquals(listOf("wait:${WidgetExpiry.MAX_WAIT_MS}", "wait:5000", "wait:1", "publish", "render"), events)
+    }
+
     @Test fun freshProjectionSurvivesCatalogAndProjectionRetryFailuresWithoutRenewingItsAge() {
         var offline = false
         var time = 1_000L
