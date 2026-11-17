@@ -35,10 +35,11 @@ var errNotConfigured = errors.New("还没有能直接调用的模型：在 设�
 func IsNotConfigured(err error) bool { return errors.Is(err, errNotConfigured) }
 
 type Client struct {
-	cfg     Config
-	http    *http.Client
-	resolve func(context.Context) (*Client, error)
-	run     func(context.Context, Request) (Reply, error)
+	cfg       Config
+	sessionID string
+	http      *http.Client
+	resolve   func(context.Context) (*Client, error)
+	run       func(context.Context, Request) (Reply, error)
 }
 
 // NewResolved resolves the execution configuration at the start of every request.
@@ -55,11 +56,16 @@ func New(cfg Config) *Client {
 
 // NewWith is New sending its requests through transport (nil: this machine's network).
 func NewWith(cfg Config, transport http.RoundTripper) *Client {
-	return &Client{cfg: cfg, http: &http.Client{Timeout: 60 * time.Second, Transport: transport, CheckRedirect: checkRedirect}}
+	return &Client{
+		cfg:       cfg,
+		sessionID: modelhttp.OpenCodeSessionID(""),
+		http:      &http.Client{Timeout: 60 * time.Second, Transport: transport, CheckRedirect: checkRedirect},
+	}
 }
 
 // net/http copies headers from the first request on every redirect, so check the entire chain before retaining its
-// potentially private User-Agent. Once a chain leaves its original origin, all later hops use Persona's identity.
+// potentially private User-Agent or gateway session header. Once a chain leaves its original origin, all later hops
+// use Persona's identity and drop gateway-scoped session headers.
 func checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= 10 {
 		return errors.New("stopped after 10 redirects")
@@ -67,11 +73,13 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 	origin := via[0].URL
 	if !sameOrigin(origin, req.URL) {
 		req.Header.Set("User-Agent", modelhttp.UserAgent())
+		modelhttp.ClearOpenCodeSession(req.Header)
 		return nil
 	}
 	for _, previous := range via[1:] {
 		if !sameOrigin(origin, previous.URL) {
 			req.Header.Set("User-Agent", modelhttp.UserAgent())
+			modelhttp.ClearOpenCodeSession(req.Header)
 			break
 		}
 	}
@@ -149,6 +157,19 @@ type Request struct {
 	// BoundOutput also enforces MaxTokens on Responses. Cost-sensitive background calls
 	// fail closed when a relay refuses the bound; legacy callers keep their existing behavior.
 	BoundOutput bool
+	// SessionID optionally scopes session-routed gateways (such as OpenCode Go) across turns; empty falls back to ctx
+	// (WithSessionID) or the client's stable session identifier.
+	SessionID string
+}
+
+type sessionIDKey struct{}
+
+// WithSessionID attaches a stable session identifier to ctx for gateways that require session routing.
+func WithSessionID(ctx context.Context, sessionID string) context.Context {
+	if s := strings.TrimSpace(sessionID); s != "" {
+		return context.WithValue(ctx, sessionIDKey{}, s)
+	}
+	return ctx
 }
 
 // Usage is what one request spent, as the upstream counted it (zero where it did not say).
@@ -248,9 +269,32 @@ func (c *Client) Chat(ctx context.Context, r Request) (Reply, error) {
 // errUnwound is what the gate is told of a request a panic unwound through: it ended, with no answer to read.
 var errUnwound = errors.New("ai: the request did not return")
 
-// apiEndpoint preserves deployment prefixes and accepts bases with or without /v1.
+// trimEndpointSuffix drops a pasted endpoint path from the URL path of base (leaving scheme, host, query and fragment
+// intact) so a full endpoint pasted into BaseURL is not appended a second time.
+func trimEndpointSuffix(base, suffix string) string {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	u, err := url.Parse(base)
+	if err != nil || u.Host == "" || u.Opaque != "" || u.RawQuery != "" || u.Fragment != "" {
+		return base
+	}
+	authority := strings.Index(base, "//") + len("//")
+	slash := strings.IndexByte(base[authority:], '/')
+	if slash < 0 {
+		return base
+	}
+	root, path := base[:authority+slash], base[authority+slash:]
+	for {
+		rest, ok := strings.CutSuffix(path, suffix)
+		if !ok {
+			return root + path
+		}
+		path = strings.TrimRight(rest, "/")
+	}
+}
+
+// apiEndpoint preserves deployment prefixes, strips a pasted endpoint suffix, and accepts bases with or without /v1.
 func apiEndpoint(base, path string) string {
-	base = strings.TrimRight(base, "/")
+	base = trimEndpointSuffix(base, "/"+path)
 	if !strings.HasSuffix(base, "/v1") {
 		base += "/v1"
 	}
@@ -263,6 +307,26 @@ func (c *Client) setUserAgent(req *http.Request) {
 		req.Header.Set("User-Agent", *c.cfg.UserAgent)
 	}
 	modelhttp.SetDefaultUserAgent(req.Header)
+}
+
+func (c *Client) openCodeSessionID(ctx context.Context, r Request) string {
+	if s := strings.TrimSpace(r.SessionID); s != "" {
+		return modelhttp.OpenCodeSessionID(s)
+	}
+	if ctx != nil {
+		if s, _ := ctx.Value(sessionIDKey{}).(string); strings.TrimSpace(s) != "" {
+			return modelhttp.OpenCodeSessionID(s)
+		}
+	}
+	if c.sessionID != "" {
+		return c.sessionID
+	}
+	return modelhttp.OpenCodeSessionID("")
+}
+
+func (c *Client) setGatewayHeaders(ctx context.Context, req *http.Request, r Request) {
+	c.setUserAgent(req)
+	modelhttp.SetOpenCodeSession(req.Header, req.URL.String(), c.openCodeSessionID(ctx, r))
 }
 
 // messages calls the Messages API; answered is whether the upstream said 200, Truncated whether the reply stopped at
@@ -289,7 +353,7 @@ func (c *Client) messages(ctx context.Context, hc *http.Client, key string, r Re
 		req.Header.Set("x-api-key", key)
 	}
 	req.Header.Set("anthropic-version", "2023-06-01")
-	c.setUserAgent(req)
+	c.setGatewayHeaders(ctx, req, r)
 	resp, err := hc.Do(req)
 	if err != nil {
 		return reply, false, fmt.Errorf("ai: %w", err)
@@ -605,7 +669,7 @@ func (c *Client) respond(ctx context.Context, hc *http.Client, key string, r Req
 	hreq.Header.Set("content-type", "application/json")
 	hreq.Header.Set("accept", "text/event-stream")
 	hreq.Header.Set("authorization", "Bearer "+key)
-	c.setUserAgent(hreq)
+	c.setGatewayHeaders(ctx, hreq, r)
 	resp, err := hc.Do(hreq)
 	if err != nil {
 		return reply, false, fmt.Errorf("ai: %w", err)

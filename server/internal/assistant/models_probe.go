@@ -73,14 +73,21 @@ func launchAuth(auth string) string {
 
 // probeTarget is a resolved gateway: everything needed for one request.
 type probeTarget struct {
-	base, key, headers, model, effort, proxy, noProxy, api, kind, via string
-	models                                                            []proto.ProviderModel
+	base, key, headers, model, effort, proxy, noProxy, api, kind, via, sessionID string
+	models                                                                       []proto.ProviderModel
 	// agent is the agent the request names, else a stored provider's (AgentType); "" for neither.
 	agent string
 	// through sends the requests through via's node (models_via.go).
 	through http.RoundTripper
 	// auth is the credential header(s) the requests send (probeAuth*); send settles auto on the first request.
 	auth string
+}
+
+func sameProbeGateway(a, b, api string) bool {
+	if messagesAPI(api) {
+		return proto.MessagesBaseURL(a) == proto.MessagesBaseURL(b)
+	}
+	return proto.APIBaseURL(a, api) == proto.APIBaseURL(b, api)
 }
 
 func (s *Service) probeTarget(ctx context.Context, in probeInput) (probeTarget, error) {
@@ -125,8 +132,8 @@ func (s *Service) probeTarget(ctx context.Context, in probeInput) (probeTarget, 
 	}
 	if b := strings.TrimSpace(in.BaseURL); b != "" {
 		// The stored key and headers only go to the stored gateway: another address gets just what the request brings.
-		// A trailing /v1 is the same gateway (saving drops it from a Messages base); the host never differs.
-		if in.Name != "" && proto.MessagesBaseURL(b) != proto.MessagesBaseURL(t.base) {
+		// A trailing /v1 or pasted endpoint suffix is the same gateway (saving drops it); the host never differs.
+		if in.Name != "" && !sameProbeGateway(b, t.base, cmp.Or(in.API, t.api)) {
 			t.key, t.headers = "", ""
 		}
 		t.base = b
@@ -203,7 +210,12 @@ func (s *Service) probeTarget(ctx context.Context, in probeInput) (probeTarget, 
 	if err := checkHeaders(t.headers); err != nil {
 		return t, err
 	}
-	t.base = strings.TrimRight(strings.TrimSpace(t.base), "/")
+	if t.api == "chat" || t.api == "responses" {
+		t.base = proto.APIBaseURL(t.base, t.api)
+	} else {
+		t.base = strings.TrimRight(strings.TrimSpace(t.base), "/")
+	}
+	t.sessionID = modelhttp.OpenCodeSessionID("")
 	if t.via != "" {
 		t.through = viaNode{s: s, machine: t.via}
 	}
@@ -213,16 +225,17 @@ func (s *Service) probeTarget(ctx context.Context, in probeInput) (probeTarget, 
 	return t, nil
 }
 
-// endpoint is <base>/v1/<path>, a base already ending in /v1 not doubled. A Messages base is read as the node hands it
-// to Claude Code (proto.MessagesBaseURL), so a test passes for the address Agents will call.
+// endpoint is <base>/v1/<path>, a base already ending in /v1 or a pasted endpoint path not doubled. A Messages base is
+// read as the node hands it to Claude Code (proto.MessagesBaseURL), so a test passes for the address Agents will call.
 func (t probeTarget) endpoint(path string) string {
 	if messagesAPI(t.api) {
 		return proto.MessagesBaseURL(t.base) + "/v1/" + path
 	}
-	if strings.HasSuffix(t.base, "/v1") {
-		return t.base + "/" + path
+	base := proto.APIBaseURL(t.base, t.api)
+	if strings.HasSuffix(base, "/v1") {
+		return base + "/" + path
 	}
-	return t.base + "/v1/" + path
+	return base + "/v1/" + path
 }
 
 // modelsEndpoint keeps discovery separate from the inference protocol. DeepSeek documents /models at the
@@ -300,6 +313,7 @@ func (t probeTarget) do(ctx context.Context, method, endpoint string, body []byt
 		req.Header.Set(hd[0], hd[1])
 	}
 	modelhttp.SetDefaultUserAgent(req.Header)
+	modelhttp.SetOpenCodeSession(req.Header, endpoint, t.sessionID)
 	if req.Header.Get("anthropic-version") == "" {
 		req.Header.Set("anthropic-version", "2023-06-01")
 	}

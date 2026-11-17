@@ -42,7 +42,7 @@ func (c *Client) chatCompletions(ctx context.Context, hc *http.Client, key strin
 		req.Header.Set("content-type", "application/json")
 		req.Header.Set("accept", "text/event-stream")
 		req.Header.Set("authorization", "Bearer "+key)
-		c.setUserAgent(req)
+		c.setGatewayHeaders(ctx, req, r)
 		resp, err := hc.Do(req)
 		if err != nil {
 			return Reply{}, false, fmt.Errorf("ai: %w", err)

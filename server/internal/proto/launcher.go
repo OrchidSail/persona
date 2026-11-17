@@ -364,12 +364,19 @@ func (l ManagedLauncher) MessagesBase() bool {
 	return l.API == "" || l.API == "messages"
 }
 
-// LaunchBaseURL is the Base URL as the provider's agent takes it: a Messages base through MessagesBaseURL, any other as
-// stored. The hub stores and delivers it, and the node launches with it, so a provider saved before the hub dropped a
-// trailing /v1 still reaches what Test connection called.
+// LaunchBaseURL is the Base URL as the provider's agent or direct API takes it: a Messages base through
+// MessagesBaseURL, a Chat Completions or Responses base through APIBaseURL, and any other as stored. The hub stores
+// and delivers it, and the node launches with it, so a provider saved before the hub dropped a trailing /v1 or pasted
+// endpoint path still reaches what Test connection called.
 func (l ManagedLauncher) LaunchBaseURL() string {
 	if l.MessagesBase() {
 		return MessagesBaseURL(l.BaseURL)
+	}
+	if l.AgentType() == "codex" {
+		return APIBaseURL(l.BaseURL, "responses")
+	}
+	if l.API == "chat" || l.API == "responses" {
+		return APIBaseURL(l.BaseURL, l.API)
 	}
 	return l.BaseURL
 }
@@ -384,13 +391,32 @@ func AnthropicAPI(base string) bool {
 	return err == nil && strings.EqualFold(u.Hostname(), AnthropicAPIHost)
 }
 
+// APIBaseURL normalizes a gateway Base URL for api ("messages"/empty, "responses", or "chat"), stripping a pasted
+// trailing endpoint path while keeping /v1 on OpenAI-compatible bases.
+func APIBaseURL(base, api string) string {
+	switch api {
+	case "", "messages":
+		return MessagesBaseURL(base)
+	case "chat":
+		return trimBasePathSuffixes(base, "/chat/completions")
+	case "responses":
+		return trimBasePathSuffixes(base, "/responses")
+	default:
+		return strings.TrimRight(strings.TrimSpace(base), "/")
+	}
+}
+
 // MessagesBaseURL is a gateway address as ANTHROPIC_BASE_URL takes it. Claude Code and the Anthropic SDKs add
-// /v1/messages themselves, so the /v1 many gateways put at the end of their documented address would make
-// /v1/v1/messages: the /v1 ending the path goes with any trailing slashes, a deployment prefix before it stays
-// ("https://gw/prefix/v1/" → "https://gw/prefix"). It is idempotent (a run of /v1 goes whole): the hub stores its
-// result and the node applies it again at launch, and both must reach what Test connection called. Anything else (no
-// host, a query) is only trimmed.
+// /v1/messages themselves, so a trailing /messages or /v1 many gateways put at the end of their documented address
+// would make /v1/v1/messages or /v1/messages/v1/messages: trailing /messages and /v1 segments go with any trailing
+// slashes, while a deployment prefix before them stays ("https://gw/prefix/v1/" → "https://gw/prefix"). It is
+// idempotent: the hub stores its result and the node applies it again at launch, and both must reach what Test
+// connection called. Anything else (no host, a query) is only trimmed.
 func MessagesBaseURL(base string) string {
+	return trimBasePathSuffixes(base, "/messages", "/v1")
+}
+
+func trimBasePathSuffixes(base string, suffixes ...string) string {
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	u, err := url.Parse(base)
 	if err != nil || u.Host == "" || u.Opaque != "" || u.RawQuery != "" || u.Fragment != "" {
@@ -403,11 +429,17 @@ func MessagesBaseURL(base string) string {
 	}
 	root, path := base[:authority+slash], base[authority+slash:]
 	for {
-		rest, ok := strings.CutSuffix(path, "/v1")
-		if !ok {
+		trimmed := false
+		for _, suffix := range suffixes {
+			if rest, ok := strings.CutSuffix(path, suffix); ok {
+				path = strings.TrimRight(rest, "/")
+				trimmed = true
+				break
+			}
+		}
+		if !trimmed {
 			return root + path
 		}
-		path = strings.TrimRight(rest, "/")
 	}
 }
 

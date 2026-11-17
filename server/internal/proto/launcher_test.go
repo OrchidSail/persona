@@ -16,10 +16,14 @@ func TestMessagesBaseURL(t *testing.T) {
 		"https://relay.example.net/v1/v1":            "https://relay.example.net",
 		"https://relay.example.net/v1//v1/":          "https://relay.example.net",
 		"https://relay.example.net/v10":              "https://relay.example.net/v10",
-		"https://relay.example.net/api/v1beta":       "https://relay.example.net/api/v1beta",
-		"https://relay.example.net/apiv1":            "https://relay.example.net/apiv1",
-		"https://relay.example.net/v1/messages":      "https://relay.example.net/v1/messages",
-		"https://v1":                                 "https://v1", // a host named v1 is not a path
+		"https://relay.example.net/api/v1beta":                 "https://relay.example.net/api/v1beta",
+		"https://relay.example.net/apiv1":                      "https://relay.example.net/apiv1",
+		"https://relay.example.net/v1/team":                    "https://relay.example.net/v1/team",
+		"https://relay.example.net/v1/messages":                "https://relay.example.net",
+		"https://relay.example.net/messages":                   "https://relay.example.net",
+		"https://opencode.ai/inference/go/anthropic/v1/messages": "https://opencode.ai/inference/go/anthropic",
+		"https://v1":                                           "https://v1", // a host named v1 is not a path
+		"https://messages":                                     "https://messages",
 		"https://relay.example.net/v1?team=a":        "https://relay.example.net/v1?team=a",
 		"https://relay.example.net/v1#top":           "https://relay.example.net/v1#top",
 		"relay.example.net/v1":                       "relay.example.net/v1",
@@ -75,6 +79,54 @@ func TestPiAPI(t *testing.T) {
 	} {
 		if got := c.l.PiAPI(); got != c.want {
 			t.Errorf("%+v: PiAPI() = %q, want %q", c.l, got, c.want)
+		}
+	}
+}
+
+func TestAPIBaseURLAndLaunchBaseURL(t *testing.T) {
+	for _, c := range []struct {
+		l    ManagedLauncher
+		want string
+	}{
+		{
+			ManagedLauncher{Kind: "api", API: "chat", BaseURL: "https://opencode.ai/inference/go/openai/v1/chat/completions"},
+			"https://opencode.ai/inference/go/openai/v1",
+		},
+		{
+			ManagedLauncher{Kind: "api", API: "chat", BaseURL: "https://opencode.ai/zen/go/v1/chat/completions/"},
+			"https://opencode.ai/zen/go/v1",
+		},
+		{
+			ManagedLauncher{Kind: "api", API: "chat", BaseURL: "https://api.example.com/chat/completions"},
+			"https://api.example.com",
+		},
+		{
+			ManagedLauncher{Kind: "api", API: "chat", BaseURL: "https://api.example.com/v1"},
+			"https://api.example.com/v1",
+		},
+		{
+			ManagedLauncher{Kind: "api", API: "responses", BaseURL: "https://api.openai.com/v1/responses"},
+			"https://api.openai.com/v1",
+		},
+		{
+			ManagedLauncher{Kind: "api", API: "responses", BaseURL: "https://api.openai.com/responses/"},
+			"https://api.openai.com",
+		},
+		{
+			ManagedLauncher{Agent: "codex", BaseURL: "https://api.openai.com/v1/responses"},
+			"https://api.openai.com/v1",
+		},
+		{
+			ManagedLauncher{Kind: "api", API: "messages", BaseURL: "https://opencode.ai/inference/go/anthropic/v1/messages"},
+			"https://opencode.ai/inference/go/anthropic",
+		},
+	} {
+		got := c.l.LaunchBaseURL()
+		if got != c.want {
+			t.Errorf("%+v: LaunchBaseURL() = %q, want %q", c.l, got, c.want)
+		}
+		if again := (ManagedLauncher{Kind: c.l.Kind, Agent: c.l.Agent, API: c.l.API, BaseURL: got}).LaunchBaseURL(); again != got {
+			t.Errorf("not idempotent: %q → %q", got, again)
 		}
 	}
 }

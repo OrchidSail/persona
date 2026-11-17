@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"github.com/nwverse/persona/server/internal/lazyre"
+	"github.com/nwverse/persona/server/internal/modelhttp"
 	"github.com/nwverse/persona/server/internal/proto"
 )
 
@@ -585,7 +586,16 @@ func providerEnv(l proto.ManagedLauncher, model, effort string, mainConversation
 	// Claude Code puts CLAUDE_CODE_EFFORT_LEVEL above --effort and /effort, which would override the caller's
 	// choice and lock the session's effort control (#2307). A default effort goes to the command line (--effort)
 	// instead, and the environment variable is set only when the provider's own env sets it explicitly.
-	set("ANTHROPIC_CUSTOM_HEADERS", l.Headers)
+	headers := l.Headers
+	if modelhttp.OpenCodeGo(effectiveBaseURL) && !modelhttp.HasOpenCodeSessionHeader(headers) {
+		line := modelhttp.OpenCodeSessionHeader + ": " + modelhttp.OpenCodeSessionID("launcher:"+cmp.Or(l.Name, effectiveBaseURL))
+		if strings.TrimSpace(headers) == "" {
+			headers = line
+		} else {
+			headers = strings.TrimRight(headers, "\n") + "\n" + line
+		}
+	}
+	set("ANTHROPIC_CUSTOM_HEADERS", headers)
 	// Both spellings: Node's fetch reads the lower-case one first, so an upper-case value alone would lose to a lower-case
 	// one in the user's settings env.
 	if l.Proxy != "" {
