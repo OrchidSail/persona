@@ -41,17 +41,13 @@ class ComplicationParcelChecks(private val instrumentation: Instrumentation) {
         val pet = attach(PetComplicationService())
         val extension = attach(ExtensionComplicationService())
         try {
-            val petTimeline = PetComplicationService::class.java.getDeclaredMethod("timeline", ComplicationType::class.java)
-                .apply { isAccessible = true }
-            val extensionTimeline = ExtensionComplicationService::class.java.getDeclaredMethod("timeline", ComplicationRequest::class.java)
-                .apply { isAccessible = true }
             var bytes = 0
             for (type in listOf(ComplicationType.SHORT_TEXT, ComplicationType.LONG_TEXT, ComplicationType.SMALL_IMAGE)) {
-                bytes += parcel(checkNotNull(petTimeline.invoke(pet, type) as? ComplicationDataTimeline), type)
+                bytes += parcel(checkNotNull(pet.timeline(type, config)), type)
             }
             for ((binding, type) in listOf(short to ComplicationType.SHORT_TEXT, long to ComplicationType.LONG_TEXT)) {
                 val request = ComplicationRequest(binding.instanceId, type, false)
-                bytes += parcel(checkNotNull(extensionTimeline.invoke(extension, request) as? ComplicationDataTimeline), type)
+                bytes += parcel(checkNotNull(extension.timeline(request)), type)
             }
             check(CredentialStore(context).load() == config) { "parcel_connection_changed" }
             return Bundle().apply {

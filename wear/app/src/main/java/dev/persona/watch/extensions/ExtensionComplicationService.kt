@@ -44,7 +44,7 @@ class ExtensionComplicationService : ComplicationDataSourceService() {
         else -> null
     }
 
-    private fun timeline(request: ComplicationRequest): ComplicationDataTimeline? {
+    internal fun timeline(request: ComplicationRequest): ComplicationDataTimeline? {
         val kind = when (request.complicationType) { ComplicationType.SHORT_TEXT -> WidgetFaceKind.SHORT; ComplicationType.LONG_TEXT -> WidgetFaceKind.LONG; else -> return null }
         val store = ExtensionComplications.store(this)
         val binding = store.binding(request.complicationInstanceId)?.takeIf { it.kind == kind } ?: return null
@@ -60,12 +60,12 @@ class ExtensionComplicationService : ComplicationDataSourceService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val stale = data(kind, FaceWords(widget.title, getString(R.string.extension_face_refresh), getString(R.string.extension_face_refresh_detail)), tap)
         val now = System.currentTimeMillis()
-        val words = cached?.takeIf { it.fresh(now) }?.let { WidgetFaceText.words(it.view, widget.title) }
-        val entries = if (words == null || cached == null) emptyList() else {
-            val start = Instant.ofEpochMilli(cached.savedAtMs)
-            val expiry = Instant.ofEpochMilli(cached.freshUntilMs)
+        val projection = cached?.faceProjection(now)
+        val entries = if (projection == null) emptyList() else {
+            val start = Instant.ofEpochMilli(projection.startMs)
+            val expiry = Instant.ofEpochMilli(projection.endExclusiveMs)
             // TimeRange's inclusive end must precede the exclusive timeline boundary.
-            val fresh = data(kind, words, tap, TimeRange.between(start, expiry.minusMillis(1)))
+            val fresh = data(kind, projection.words, tap, TimeRange.between(start, expiry.minusMillis(1)))
             // AndroidX caches wire objects: reusing the default as an entry creates a parcel cycle.
             val expired = data(kind, FaceWords(widget.title, getString(R.string.extension_face_refresh), getString(R.string.extension_face_refresh_detail)), tap)
             listOf(

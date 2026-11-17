@@ -557,17 +557,18 @@ class MainActivity : Activity() {
 
     private fun renderInteraction() {
         val item = selectedInteraction ?: return paragraph(getString(R.string.unknown_item))
+        val canAnswer = WatchResolution.canResolve(item, failedGroups)
         heading(kindText(item.kind))
         paragraph(item.title, T.ink)
         if (item.groupName.isNotBlank()) paragraph(item.groupName, compact = true)
-        if (!item.canAnswer) paragraph(getString(R.string.requires_phone), T.working)
+        if (!canAnswer) paragraph(getString(R.string.requires_phone), T.working)
         when (item.kind) {
             "question" -> {
                 item.questions.forEach { question ->
                     section(question.question)
                     val key = "${item.key}:${question.question}"
                     question.options.forEach { option ->
-                        choice(option.label, option.description, picks[key]?.contains(option.label) == true, item.canAnswer) {
+                        choice(option.label, option.description, picks[key]?.contains(option.label) == true, canAnswer) {
                             val current = picks.getOrPut(key) { mutableSetOf() }
                             if (question.multiSelect) {
                                 if (!current.add(option.label)) current.remove(option.label)
@@ -576,7 +577,7 @@ class MainActivity : Activity() {
                         }
                     }
                 }
-                action(R.string.submit, primary = true, enabled = item.canAnswer && item.questions.isNotEmpty()) {
+                action(R.string.submit, primary = true, enabled = canAnswer && item.questions.isNotEmpty()) {
                     val answers = item.questions.associate { it.question to picks["${item.key}:${it.question}"].orEmpty().toSet() }
                     if (answers.values.any { it.isEmpty() }) { notice = getString(R.string.select_answer); updateStatus() }
                     else resolve(item, WatchResolution.question(item, answers))
@@ -584,41 +585,41 @@ class MainActivity : Activity() {
             }
             "plan" -> {
                 paragraph(WatchParser.plainText(item.plan.ifBlank { item.summary }), T.ink)
-                action(R.string.approve, primary = true, enabled = item.canAnswer) {
+                action(R.string.approve, primary = true, enabled = canAnswer) {
                     confirm(getString(R.string.approve_body), getString(R.string.approve)) { resolve(item, WatchResolution.plan(item, true)) }
                 }
-                action(R.string.send_back, enabled = item.canAnswer) { resolve(item, WatchResolution.plan(item, false, getString(R.string.plan_feedback))) }
+                action(R.string.send_back, enabled = canAnswer) { resolve(item, WatchResolution.plan(item, false, getString(R.string.plan_feedback))) }
             }
             "permission" -> {
                 paragraph(item.summary, T.ink)
                 if (item.requiresInput) paragraph(getString(R.string.requires_phone), T.working)
-                else action(R.string.allow, primary = true, enabled = item.canAnswer) {
+                else action(R.string.allow, primary = true, enabled = canAnswer) {
                     confirm(item.summary + "\n\n" + getString(R.string.allow_body), getString(R.string.allow)) { resolve(item, WatchResolution.permission(item, true)) }
                 }
-                action(R.string.deny, enabled = item.canAnswer) { resolve(item, WatchResolution.permission(item, false)) }
+                action(R.string.deny, enabled = canAnswer) { resolve(item, WatchResolution.permission(item, false)) }
             }
             "screen" -> {
                 paragraph(item.screen.ifBlank { item.summary }, T.ink)
                 val key = item.key
                 if (key !in picks) picks[key] = item.options.filter { it.checked }.map { it.key }.toMutableSet()
                 item.options.forEach { option ->
-                    choice(option.label, "", picks[key]?.contains(option.key) == true, item.canAnswer) {
+                    choice(option.label, "", picks[key]?.contains(option.key) == true, canAnswer) {
                         val current = picks.getOrPut(key) { mutableSetOf() }
                         if (item.multiSelect) { if (!current.add(option.key)) current.remove(option.key) }
                         else { current.clear(); current.add(option.key) }
                         render(true)
                     }
                 }
-                action(R.string.submit, primary = true, enabled = item.canAnswer && item.options.isNotEmpty()) {
+                action(R.string.submit, primary = true, enabled = canAnswer && item.options.isNotEmpty()) {
                     val selected = picks[key].orEmpty()
                     if (selected.isEmpty()) { notice = getString(R.string.select_answer); updateStatus() }
                     else resolve(item, WatchResolution.screen(item, selected))
                 }
                 if (item.options.isEmpty()) paragraph(getString(R.string.requires_phone), T.working)
-                action(R.string.screen_escape, enabled = item.canAnswer) {
+                action(R.string.screen_escape, enabled = canAnswer) {
                     resolve(item, JSONObject().put("keys", org.json.JSONArray().put("esc")))
                 }
-                action(R.string.screen_enter, enabled = item.canAnswer) {
+                action(R.string.screen_enter, enabled = canAnswer) {
                     confirm(getString(R.string.screen_enter_body), getString(R.string.screen_enter)) {
                         resolve(item, JSONObject().put("keys", org.json.JSONArray().put("enter")))
                     }
@@ -626,7 +627,7 @@ class MainActivity : Activity() {
             }
             else -> paragraph(item.summary, T.ink)
         }
-        if (item.canAnswer && item.kind in setOf("question", "plan", "permission", "screen")) {
+        if (canAnswer && item.kind in setOf("question", "plan", "permission", "screen")) {
             action(R.string.handle_elsewhere) { resolve(item, WatchResolution.dismiss(item)) }
         }
     }
@@ -655,6 +656,12 @@ class MainActivity : Activity() {
             page = if (current == null) "home" else "interaction"
             notice = getString(if (current == null) R.string.request_gone else R.string.request_changed)
             render()
+            return
+        }
+        if (!WatchResolution.canResolve(item, failedGroups)) {
+            confirmation = null
+            error = getString(if (item.groupId in failedGroups) R.string.connection_failed else R.string.requires_phone)
+            render(true)
             return
         }
         val opKey = "resolve:${item.key}:${resolution}"

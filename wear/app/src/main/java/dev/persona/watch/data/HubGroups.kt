@@ -11,7 +11,8 @@ object HubGroups {
                 canApprove = session.canApprove && group.reachable, state = if (group.reachable) session.state else "offline")
         } }
         val interactions = groups.flatMap { group -> group.snapshot?.interactions.orEmpty().map { interaction ->
-            interaction.copy(groupId = group.id, groupName = group.name, canAnswer = interaction.canAnswer && group.reachable)
+            interaction.copy(groupId = group.id, groupName = group.name,
+                canAnswer = interaction.canAnswer && group.reachable, canCancel = interaction.canCancel && group.reachable)
         } }
         val primary = groups.firstOrNull { it.id.isEmpty() }
         return WatchSnapshot(sessions, interactions,

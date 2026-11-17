@@ -5,6 +5,26 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class WatchResolutionTest {
+    @Test fun failedOwnerBlocksControlsAndFinalResolutionEvenBeforeItsCachedFlagsChange() {
+        for (kind in listOf("question", "plan", "permission", "screen")) {
+            val primary = WatchInteraction("same", "m", "s", kind, "", "", canAnswer = true, canCancel = true)
+            val secondary = primary.copy(groupId = "secondary")
+            assertTrue(WatchResolution.canResolve(secondary, emptySet()))
+            // An open confirmation may still hold this exact original object after reachability changes.
+            assertFalse(WatchResolution.canResolve(secondary, setOf("secondary")))
+            assertTrue(WatchResolution.canResolve(primary, setOf("secondary")))
+            assertTrue(WatchResolution.canResolve(secondary, emptySet()))
+        }
+    }
+
+    @Test fun reachableOwnerDoesNotOverrideInteractionReadOnlyOrProtectedState() {
+        val item = WatchInteraction("q", "m", "s", "permission", "", "", canAnswer = true)
+        assertFalse(WatchResolution.canResolve(item.copy(canAnswer = false), emptySet()))
+        assertFalse(WatchResolution.canResolve(item.copy(muted = true), emptySet()))
+        assertFalse(WatchResolution.canResolve(item.copy(delegating = true), emptySet()))
+        assertFalse(WatchResolution.canResolve(item.copy(kind = "unknown"), emptySet()))
+    }
+
     private val question = WatchInteraction("q", "m", "s", "question", "", "", questions = listOf(
         WatchQuestion("Choose first", listOf(QuestionOption("One (Recommended)"), QuestionOption("Two"))),
         WatchQuestion("Choose many", listOf(QuestionOption("Red, green"), QuestionOption("Blue")), true)

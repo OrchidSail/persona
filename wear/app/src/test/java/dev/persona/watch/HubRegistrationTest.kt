@@ -393,4 +393,89 @@ class HubRegistrationTest {
         assertEquals(id, store.durableJournal.single().id)
         assertEquals(issued, store.credentials[id])
     }
+
+    private fun fullDirectoryAfterThirdRegistrationCleanupFailure(): Store {
+        val store = Store()
+        store.rows = listOf(
+            SavedHub("22222222-2222-2222-2222-222222222222", "Second Hub", input.copy(baseUrl = "http://second.local", token = "second-issued-token")),
+            SavedHub("33333333-3333-3333-3333-333333333333", "Third Hub", input.copy(baseUrl = "http://third.local", token = "third-issued-token")),
+        )
+        store.durableRows = store.rows
+        store.rows.forEach { store.credentials[it.id] = checkNotNull(it.config) }
+        store.primary = "http://primary.local"
+        store.failCleanup = true
+        fails { engine(store).add("Sample Hub", input) { store.events += "exchange"; issued } }
+        assertEquals(3, store.durableRows.size)
+        assertEquals(id, store.durableJournal.single().id)
+        store.restart() // Failed preference cleanup changed memory but left the durable journal intact.
+        store.failCleanup = false
+        return store
+    }
+
+    @Test fun journalCleanupFailureAtThreeRowsRecoversRepeatedlyWithoutClaimingAFourthSlot() {
+        val store = fullDirectoryAfterThirdRegistrationCleanupFailure()
+        val originalRows = store.durableRows
+        val originalCredentials = store.credentials.toMap()
+        repeat(2) {
+            store.failCleanup = true
+            fails { engine(store).recover() }
+            assertEquals(originalRows, store.durableRows)
+            assertEquals(id, store.durableJournal.single().id)
+            assertEquals(originalCredentials, store.credentials)
+            store.restart()
+        }
+        store.failCleanup = false
+        assertTrue(engine(store).recover())
+        assertFalse(engine(store).recover())
+        assertEquals(originalRows, store.durableRows)
+        assertEquals(3, store.durableRows.map { it.id }.distinct().size)
+        assertTrue(store.durableJournal.isEmpty())
+        assertEquals(originalCredentials, store.credentials)
+        assertEquals(1, store.saves)
+        assertEquals(1, store.events.count { it == "exchange" })
+    }
+
+    @Test fun matchingPendingAddAtThreeRowsReusesItsSlotAndIssuedCredential() {
+        val store = fullDirectoryAfterThirdRegistrationCleanupFailure()
+        val originalRows = store.durableRows
+        val originalCredentials = store.credentials.toMap()
+        engine(store).add("Sample Hub", input.copy(baseUrl = "HTTP://HUB.local:80/")) {
+            throw AssertionError("A pending third registration must not exchange its token again")
+        }
+        assertEquals(originalRows, store.durableRows)
+        assertEquals(3, store.durableRows.map { it.id }.distinct().size)
+        assertEquals(originalCredentials, store.credentials)
+        assertTrue(store.durableJournal.isEmpty())
+        assertFalse(engine(store).recover())
+        assertEquals(1, store.saves)
+        assertEquals(1, store.events.count { it == "exchange" })
+    }
+
+    @Test fun replayingAnOwnedSlotAtCapacityStillRejectsOtherOrPrimaryDuplicateOrigins() {
+        for (replay in listOf("recover", "add")) for (duplicate in listOf("primary", "additional")) {
+            val store = fullDirectoryAfterThirdRegistrationCleanupFailure()
+            if (duplicate == "primary") store.primary = "HTTP://HUB.local:80/"
+            else {
+                store.rows = store.rows.map { row ->
+                    if (row.id == id) row else if (row.id.startsWith("2222"))
+                        row.copy(config = issued.copy(baseUrl = "HTTP://HUB.local:80/")) else row
+                }
+                store.rows.forEach { store.credentials[it.id] = checkNotNull(it.config) }
+                store.durableRows = store.rows
+            }
+            val originalRows = store.durableRows
+            val originalPending = store.durableJournal
+            val originalCredentials = store.credentials.toMap()
+            val originalPublications = store.publications
+            assertThrows(IllegalArgumentException::class.java) {
+                if (replay == "recover") engine(store).recover()
+                else engine(store).add("Sample Hub", input) { throw AssertionError("Duplicate must not exchange") }
+            }
+            assertEquals(originalRows, store.durableRows)
+            assertEquals(originalPending, store.durableJournal)
+            assertEquals(originalCredentials, store.credentials)
+            assertEquals(originalPublications, store.publications)
+            assertEquals(1, store.saves)
+        }
+    }
 }

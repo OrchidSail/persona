@@ -5,6 +5,11 @@ import org.json.JSONObject
 
 /** The watch never supplies arbitrary terminal input, secret fields or an Always grant. */
 object WatchResolution {
+    /** Used by both the displayed controls and the final tap, including an already-open confirmation. */
+    fun canResolve(interaction: WatchInteraction, failedGroups: Set<String>): Boolean =
+        interaction.groupId !in failedGroups && interaction.canAnswer && !interaction.muted && !interaction.delegating &&
+            interaction.kind in setOf("question", "plan", "permission", "screen")
+
     fun question(interaction: WatchInteraction, picks: Map<String, Set<String>>): JSONObject {
         requireKind(interaction, "question")
         val answers = JSONObject()

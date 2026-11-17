@@ -2,6 +2,8 @@ package dev.persona.watch.pet
 
 import dev.persona.watch.HubGroupRead
 import dev.persona.watch.data.HubConfig
+import dev.persona.watch.data.HubGroupSnapshot
+import dev.persona.watch.data.HubGroups
 import dev.persona.watch.data.WatchInteraction
 import dev.persona.watch.data.WatchSession
 import dev.persona.watch.data.WatchSnapshot
@@ -36,6 +38,55 @@ class PetGroupFreshnessTest {
         assertEquals(PetState.OFFLINE, PetFreshness.groups(empty, result, 2, now, 12).status.state)
         assertEquals(PetReachability(true, false), PetReachability.from(null, 2))
         assertEquals(PetState.OFFLINE, PetFreshness.groups(empty, null, 2, now, 12).status.state)
+    }
+
+    @Test fun anUnavailablePrimaryInboxDoesNotHideUnreadTasksBehindAHealthyIdleAdditionalHub() {
+        val unread = snapshot(now - 100).copy(
+            sessions = listOf(WatchSession("machine", "completed", "Sample completed task", "unread")),
+            inboxUnavailable = true)
+        val idle = snapshot(now).copy(sessions = listOf(WatchSession("machine", "idle", "Sample idle task", "idle")))
+        val cache = mapOf("" to unread, "additional" to idle)
+        val merged = HubGroups.merge(listOf(HubGroupSnapshot("", "Primary", unread, true),
+            HubGroupSnapshot("additional", "Additional", idle, true)), now)
+        assertTrue(merged.inboxUnavailable)
+        val result = HubGroupRead(merged, cache, emptySet())
+        assertEquals(PetReachability(false, false), PetReachability.from(result, 2))
+        val expected = PetStoredStatus(PetStatus(PetState.DONE, 1), unread.updatedAt)
+        assertEquals(expected, PetFreshness.groups(empty, result, 2, now, 12))
+        val page = PetPageState()
+        page.resume(primary, empty, now)
+        assertTrue(page.acceptRefresh(page.generation, manifest, result, 2, now))
+        assertEquals(expected, page.stored)
+        assertEquals(expected, page.publication())
+    }
+
+    @Test fun anActualHubFailureRemainsOfflineInsteadOfClaimingAllRetainedWorkIsDone() {
+        val unread = snapshot(now - 100).copy(
+            sessions = listOf(WatchSession("machine", "completed", "Sample completed task", "unread")),
+            inboxUnavailable = true)
+        val idle = snapshot(now).copy(sessions = emptyList())
+        for (failed in listOf(setOf(""), setOf("additional"), setOf("", "additional"))) {
+            val result = read(mapOf("" to unread, "additional" to idle), failed)
+            assertTrue(PetReachability.from(result, 2).partlyFailed)
+            assertEquals(PetState.OFFLINE, PetFreshness.groups(empty, result, 2, now, 12).status.state)
+        }
+    }
+
+    @Test fun unreadTasksWithAnUnavailableInboxExpireAtTheirOwnExclusiveDeadline() {
+        val old = now - PetStoredStatus.STALE_MS + 100
+        val unread = snapshot(old).copy(
+            sessions = listOf(WatchSession("machine", "completed", "Sample completed task", "unread")),
+            inboxUnavailable = true)
+        val idle = snapshot(now).copy(sessions = emptyList())
+        val result = read(mapOf("" to unread, "additional" to idle), emptySet())
+        val retained = PetFreshness.groups(empty, result, 2, now, 12)
+        assertEquals(PetStoredStatus(PetStatus(PetState.DONE, 1), old), retained)
+        assertEquals(PetState.DONE, retained.visible(now + 99).state)
+        assertEquals(PetState.OFFLINE, retained.visible(now + 100).state)
+        assertEquals(retained, PetFreshness.groups(retained, result, 2, now + 99, 12))
+        val expired = PetFreshness.groups(retained, result, 2, now + 100, 12)
+        assertEquals(PetStoredStatus(PetStatus(PetState.IDLE), now), expired)
+        assertEquals(PetState.OFFLINE, PetFreshness.groups(expired, result, 2, now + PetStoredStatus.STALE_MS, 12).status.state)
     }
 
     @Test fun expiredFailedPrimaryCannotBorrowAdditionalHubsFreshTimestamp() {

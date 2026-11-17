@@ -6,7 +6,7 @@ import org.junit.Test
 class HubGroupsTest {
     private fun sample() = WatchSnapshot(
         listOf(WatchSession("computer", "same-session", "Sample", "working", canSend = true, canInterrupt = true, canApprove = true)),
-        listOf(WatchInteraction("same-request", "computer", "same-session", "plan", "Sample plan", "Review", canAnswer = true)),
+        listOf(WatchInteraction("same-request", "computer", "same-session", "plan", "Sample plan", "Review", canAnswer = true, canCancel = true)),
         listOf(WatchMachine("computer", "Sample computer", true)),
         listOf(InboxItem("mail", "Sample item", "Preview", "mail", true)), 20)
 
@@ -28,6 +28,9 @@ class HubGroupsTest {
         assertFalse(lost.canSend); assertFalse(lost.canInterrupt); assertFalse(lost.canApprove)
         assertEquals("Sample", lost.title)
         assertFalse(merged.interactions.last().canAnswer)
+        assertFalse(merged.interactions.last().canCancel)
+        assertTrue(merged.interactions.first().canAnswer)
+        assertTrue(merged.interactions.first().canCancel)
         assertFalse(merged.machines.last().online)
         assertFalse(merged.inboxUnavailable)
     }

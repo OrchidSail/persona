@@ -40,7 +40,7 @@ class PetComplicationService : ComplicationDataSourceService() {
         data(type, cached, cached.stored.visible())
     }.getOrElse { NoDataComplicationData() }
 
-    private fun timeline(type: ComplicationType, config: HubConfig): ComplicationDataTimeline? {
+    internal fun timeline(type: ComplicationType, config: HubConfig): ComplicationDataTimeline? {
         if (type !in setOf(ComplicationType.SHORT_TEXT, ComplicationType.LONG_TEXT, ComplicationType.SMALL_IMAGE)) return null
         val cached = cached(config) ?: return null
         val offline = data(type, cached, PetStatus(PetState.OFFLINE))

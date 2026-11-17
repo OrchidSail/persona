@@ -183,4 +183,31 @@ class HubGroupReaderTest {
         assertEquals(900L, partial.snapshot.updatedAt)
         assertEquals(1, partial.snapshot.sessions.size)
     }
+
+    @Test fun healthyPrimaryAndFailedSecondaryKeepCachedApprovalsCompletelyReadOnly() {
+        val request = WatchInteraction("same", "computer", "session", "permission", "Approval", "Review",
+            canAnswer = true, canCancel = true)
+        val old = sample(100).copy(interactions = listOf(request))
+        val fresh = old.copy(updatedAt = 200)
+        val result = collect(Clock(), listOf(Request({ fresh }), Request({ throw TimeoutException() })),
+            mapOf("1" to old))
+        val displayed = result.displayAfter(old, 2)!!
+        assertEquals(setOf("1"), result.failed)
+        val healthy = displayed.interactions.single { it.groupId == "" }
+        val failed = displayed.interactions.single { it.groupId == "1" }
+        assertTrue(healthy.canAnswer); assertTrue(healthy.canCancel)
+        assertFalse(failed.canAnswer); assertFalse(failed.canCancel)
+        assertEquals(request.title, failed.title)
+        assertEquals(100L, displayed.updatedAt)
+        assertFalse(WatchResolution.canResolve(failed, result.failed))
+        assertTrue(WatchResolution.canResolve(healthy, result.failed))
+        // All permissions, including Deny and dismiss/Handle elsewhere, fail the network client's validator.
+        for (resolution in listOf(WatchResolution.permission(request, true), WatchResolution.permission(request, false),
+                WatchResolution.dismiss(request))) {
+            assertEquals("read_only", assertThrows(HubException::class.java) {
+                WatchResolution.validate(failed, resolution)
+            }.code)
+            WatchResolution.validate(healthy, resolution)
+        }
+    }
 }
