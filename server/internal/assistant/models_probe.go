@@ -83,11 +83,29 @@ type probeTarget struct {
 	auth string
 }
 
-func sameProbeGateway(a, b, api string) bool {
-	if messagesAPI(api) {
-		return proto.MessagesBaseURL(a) == proto.MessagesBaseURL(b)
+// sameProbeGateway reports whether a probe's base_url override still points to stored's own gateway so stored
+// credentials may be sent. It never strips endpoint suffixes (/v1/messages, /chat/completions, /responses) from
+// override: "/team/v1/messages" or "/v1/chat/completions" could be a distinct deployment prefix on the same host,
+// and must not receive stored's API key or custom headers. Only exact matches against the stored or published
+// LaunchBaseURL (plus #4886's trailing-/v1 equivalence when both stored and the request speak Messages) qualify.
+func sameProbeGateway(stored proto.ManagedLauncher, override, reqAPI string, reqAgent *string) bool {
+	b := strings.TrimRight(strings.TrimSpace(override), "/")
+	raw := strings.TrimRight(strings.TrimSpace(stored.BaseURL), "/")
+	launch := strings.TrimRight(strings.TrimSpace(stored.LaunchBaseURL()), "/")
+	if b == raw || b == launch {
+		return true
 	}
-	return proto.APIBaseURL(a, api) == proto.APIBaseURL(b, api)
+	eff := stored
+	if reqAPI != "" {
+		eff.API = reqAPI
+	}
+	if reqAgent != nil {
+		eff.Agent = strings.TrimSpace(*reqAgent)
+	}
+	if stored.MessagesBase() && eff.MessagesBase() {
+		return proto.TrimTrailingV1(b) == launch
+	}
+	return false
 }
 
 func (s *Service) probeTarget(ctx context.Context, in probeInput) (probeTarget, error) {
@@ -98,6 +116,7 @@ func (s *Service) probeTarget(ctx context.Context, in probeInput) (probeTarget, 
 		return t, i18n.Err("assistant-models_launchers.err_auth")
 	}
 	auth := in.Auth
+	var stored *proto.ManagedLauncher
 	if in.Name != "" {
 		list := s.storedLaunchers(ctx)
 		i := slices.IndexFunc(list, func(l storedLauncher) bool { return l.Name == in.Name })
@@ -105,6 +124,7 @@ func (s *Service) probeTarget(ctx context.Context, in probeInput) (probeTarget, 
 			return t, i18n.Err("assistant-models_probe.err_no_provider", i18n.Args{"name": in.Name})
 		}
 		l := list[i]
+		stored = &l.ManagedLauncher
 		key, err := s.openLauncherKey(ctx, l.KeySealed, l.Name, "")
 		if err != nil {
 			if _, ref := s.keyReference(l.KeySealed); ref {
@@ -132,8 +152,7 @@ func (s *Service) probeTarget(ctx context.Context, in probeInput) (probeTarget, 
 	}
 	if b := strings.TrimSpace(in.BaseURL); b != "" {
 		// The stored key and headers only go to the stored gateway: another address gets just what the request brings.
-		// A trailing /v1 or pasted endpoint suffix is the same gateway (saving drops it); the host never differs.
-		if in.Name != "" && !sameProbeGateway(b, t.base, cmp.Or(in.API, t.api)) {
+		if stored != nil && !sameProbeGateway(*stored, b, in.API, in.Agent) {
 			t.key, t.headers = "", ""
 		}
 		t.base = b

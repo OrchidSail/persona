@@ -1,6 +1,7 @@
 package node
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -43,5 +44,42 @@ func TestProviderEnvOpenCodeGoCustomHeaders(t *testing.T) {
 	other := proto.ManagedLauncher{Name: "other", BaseURL: "https://notopencode.ai/inference/go/anthropic", APIKey: "sk-test", Model: "m"}
 	if got := providerEnv(other, "", "", false)["ANTHROPIC_CUSTOM_HEADERS"]; strings.Contains(got, modelhttp.OpenCodeSessionHeader) {
 		t.Fatalf("unexpected header on non-opencode gateway: %q", got)
+	}
+}
+
+func TestCodexManagedEnvAndLaunchArgsStripLegacyResponsesSuffix(t *testing.T) {
+	legacy := proto.ManagedLauncher{
+		Name:    "legacy-codex",
+		Agent:   "codex",
+		BaseURL: "https://gw.example/v1/responses",
+		APIKey:  "sk-codex",
+		Model:   "gpt-5.4",
+	}
+	env := managedEnv(legacy)
+	wantEnv := []string{"OPENAI_BASE_URL=https://gw.example/v1", "OPENAI_API_KEY=sk-codex"}
+	if !slices.Equal(env, wantEnv) {
+		t.Fatalf("managedEnv = %v, want %v", env, wantEnv)
+	}
+
+	argv := launchArgv("codex", []string{"exec", "hi"}, nil, "", "gpt-5.4", env, "")
+	wantArgv := []string{
+		"codex",
+		"-c", `model_provider="persona-launcher"`,
+		"-c", `model_providers.persona-launcher={name="Persona launcher",base_url="https://gw.example/v1",wire_api="responses",env_key="OPENAI_API_KEY"}`,
+		"-m", "gpt-5.4",
+		"exec", "hi",
+	}
+	if !slices.Equal(argv, wantArgv) {
+		t.Fatalf("launchArgv = %v, want %v", argv, wantArgv)
+	}
+
+	catIn, ok := codexCatalogInputOf(legacy)
+	if !ok || catIn.base != "https://gw.example/v1" {
+		t.Fatalf("codexCatalogInputOf = %+v, %v", catIn, ok)
+	}
+
+	piProv, ok := piProviderOf(legacy)
+	if !ok || piProv.BaseURL != "https://gw.example/v1" {
+		t.Fatalf("piProviderOf = %+v, %v", piProv, ok)
 	}
 }

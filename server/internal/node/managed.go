@@ -209,8 +209,8 @@ func managedEnv(l proto.ManagedLauncher) []string {
 	switch l.AgentType() {
 	case "codex":
 		var env []string
-		if l.BaseURL != "" {
-			env = append(env, "OPENAI_BASE_URL="+l.BaseURL)
+		if base := l.LaunchBaseURL(); base != "" {
+			env = append(env, "OPENAI_BASE_URL="+base)
 		}
 		if l.APIKey != "" {
 			env = append(env, "OPENAI_API_KEY="+l.APIKey)

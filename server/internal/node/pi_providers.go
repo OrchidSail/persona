@@ -173,7 +173,7 @@ func piProviderOf(l proto.ManagedLauncher) (piProvider, bool) {
 		p.BaseURL = cmp.Or(l.LaunchBaseURL(), "https://api.anthropic.com")
 		p.AuthHeader = l.BearerAuth() // the same key as Authorization: Bearer as well
 	} else {
-		p.BaseURL = cmp.Or(strings.TrimRight(l.BaseURL, "/"), "https://api.openai.com/v1")
+		p.BaseURL = cmp.Or(strings.TrimRight(l.LaunchBaseURL(), "/"), "https://api.openai.com/v1")
 	}
 	var ids []string
 	add := func(id string) {

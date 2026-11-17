@@ -174,3 +174,54 @@ func TestOpenCodeGoProbeCheckAndLegacyStoredEndpoint(t *testing.T) {
 		t.Fatal("key leaked in check output")
 	}
 }
+
+func TestProbeCredentialScopingRejectsEndpointSuffixOverrides(t *testing.T) {
+	s, mux := launcherTestService(t)
+	if code, out := postLauncher(t, s, "en", `{"name":"msg-team","base_url":"https://gw.example/team","model":"m","api_key":"`+fakeKey+`","headers":"X-Team: secret-team"}`); code != 200 {
+		t.Fatalf("save msg-team: %d %v", code, out)
+	}
+	if code, out := postLauncher(t, s, "en", `{"name":"chat-v1","kind":"api","api":"chat","base_url":"https://gw.example/v1","model":"m","api_key":"`+fakeKey+`"}`); code != 200 {
+		t.Fatalf("save chat-v1: %d %v", code, out)
+	}
+	if code, out := postLauncher(t, s, "en", `{"name":"resp-v1","kind":"api","api":"responses","base_url":"https://gw.example/v1","model":"m","api_key":"`+fakeKey+`"}`); code != 200 {
+		t.Fatalf("save resp-v1: %d %v", code, out)
+	}
+
+	var gotAPIKey, gotBearer, gotTeam string
+	interceptProbe(t, func(r *http.Request) (*http.Response, error) {
+		gotAPIKey = r.Header.Get("x-api-key")
+		gotBearer = r.Header.Get("Authorization")
+		gotTeam = r.Header.Get("X-Team")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/chat/completions"):
+			return probeResponse(r, http.StatusOK, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"), nil
+		case strings.HasSuffix(r.URL.Path, "/responses"):
+			return probeResponse(r, http.StatusOK, "data: {\"type\":\"response.completed\"}\n\n"), nil
+		default:
+			return probeResponse(r, http.StatusOK, `{"type":"message","content":[]}`), nil
+		}
+	})
+
+	// Exact and #4886 /v1 representations keep credentials on a Messages provider.
+	for _, allowed := range []string{"https://gw.example/team", "https://gw.example/team/v1"} {
+		gotAPIKey, gotBearer, gotTeam = "", "", ""
+		_ = probeResult(t, mux, "/api/v1/launchers/test", `{"name":"msg-team","base_url":"`+allowed+`"}`)
+		if gotAPIKey != fakeKey || gotTeam != "secret-team" {
+			t.Fatalf("%s lost stored credentials: key=%q team=%q", allowed, gotAPIKey, gotTeam)
+		}
+	}
+
+	// Endpoint-shaped or protocol-switched overrides must never receive stored credentials.
+	for _, blocked := range []string{
+		`{"name":"msg-team","base_url":"https://gw.example/team/v1/messages"}`,
+		`{"name":"msg-team","api":"chat","base_url":"https://gw.example/team/v1"}`,
+		`{"name":"chat-v1","base_url":"https://gw.example/v1/chat/completions"}`,
+		`{"name":"resp-v1","base_url":"https://gw.example/v1/responses"}`,
+	} {
+		gotAPIKey, gotBearer, gotTeam = "", "", ""
+		_ = probeResult(t, mux, "/api/v1/launchers/test", blocked)
+		if gotAPIKey != "" || gotBearer != "" || gotTeam != "" {
+			t.Fatalf("override %s leaked stored credentials: x-api-key=%q auth=%q team=%q", blocked, gotAPIKey, gotBearer, gotTeam)
+		}
+	}
+}
