@@ -94,4 +94,80 @@ class PrimaryPairingTest {
                 { throw AssertionError("No refresh") }, { throw AssertionError("No replacement") })
         }
     }
+
+    @Test fun additionalOriginIsRejectedBeforeTokenExchangeOrRefresh() {
+        val aliases = listOf("https://hub.example", "HTTPS://HUB.example:443/", "https://Hub.Example/")
+        for (saved in aliases) {
+            for (address in aliases) {
+                val flow = PrimaryPairing { listOf(null, "https://unrelated.example", saved) }
+                val request = PrimaryPairing.prepare(old, address, "sample-once")
+                val failure = assertThrows(HubException::class.java) {
+                    flow.connect(request, { throw AssertionError("Must not consume the pairing token") },
+                        { throw AssertionError("Must not read a duplicate Hub") }, { throw AssertionError("Must not replace the primary") })
+                }
+                assertEquals("duplicate_connection", failure.code)
+            }
+        }
+    }
+
+    @Test fun additionalOriginIsAlsoRejectedForPairingLinksAndSavedPrimaryReuse() {
+        val flow = PrimaryPairing { listOf("HTTPS://OLD.example:443/") }
+        val encoded = URLEncoder.encode(old.baseUrl, "UTF-8")
+        val requests = listOf(PrimaryPairing.prepare(old, "persona://pair?url=$encoded&token=sample-once", ""),
+            PrimaryPairing.prepare(old, old.baseUrl, ""))
+        for (request in requests) {
+            val failure = assertThrows(HubException::class.java) {
+                flow.connect(request, { throw AssertionError("No exchange") },
+                    { throw AssertionError("No refresh") }, { throw AssertionError("No publication") })
+            }
+            assertEquals("duplicate_connection", failure.code)
+        }
+    }
+
+    @Test fun additionalOriginAddedAfterPreparationIsReadBeforeAuthentication() {
+        var additional = emptyList<String?>()
+        val flow = PrimaryPairing { additional }
+        val request = PrimaryPairing.prepare(old, "https://new.example", "sample-once")
+        additional = listOf("HTTPS://NEW.example:443/")
+        val failure = assertThrows(HubException::class.java) {
+            flow.authenticate(request, { throw AssertionError("Do not consume a token after the directory changes") },
+                { throw AssertionError("No refresh") })
+        }
+        assertEquals("duplicate_connection", failure.code)
+    }
+
+    @Test fun publicationRereadsAdditionalOriginsAndKeepsIssuedCredentialForRetry() {
+        var additional = emptyList<String?>()
+        var reads = 0
+        val flow = PrimaryPairing { reads++; additional }
+        val request = PrimaryPairing.prepare(old, "https://new.example", "sample-once")
+        var saved = old
+        var exchanges = 0
+        val verified = flow.authenticate(request, { exchanges++; it.copy(token = "sample-issued", deviceId = "sample-device-new") }, { snapshot() })
+        additional = listOf("HTTPS://NEW.example:443/")
+        val failure = assertThrows(HubException::class.java) { flow.publish(verified) { saved = it } }
+        assertEquals("duplicate_connection", failure.code)
+        assertEquals(old, saved)
+        assertEquals(2, reads)
+        // A retry while the conflict remains must not refresh or redeem again.
+        assertThrows(HubException::class.java) {
+            flow.authenticate(request, { throw AssertionError("No repeat exchange") }, { throw AssertionError("No duplicate refresh") })
+        }
+        additional = emptyList()
+        val retry = flow.authenticate(request, { throw AssertionError("Reuse the issued credential") }, { snapshot() })
+        flow.publish(retry) { saved = it }
+        assertEquals(verified.config, saved)
+        assertEquals(1, exchanges)
+        assertEquals(5, reads)
+    }
+
+    @Test fun unrelatedAdditionalOriginsAndUnreadableEntriesDoNotBlockPrimaryPairing() {
+        val flow = PrimaryPairing { listOf(null, "https://new.example:444", "https://other.example") }
+        val request = PrimaryPairing.prepare(old, "https://new.example", "sample-once")
+        var saved = old
+        var exchanges = 0
+        val result = flow.connect(request, { exchanges++; it.copy(token = "sample-issued") }, { snapshot() }, { saved = it })
+        assertEquals(result.first, saved)
+        assertEquals(1, exchanges)
+    }
 }

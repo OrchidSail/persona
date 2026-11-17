@@ -2,6 +2,7 @@ package dev.persona.watch
 
 import android.content.Context
 import dev.persona.watch.data.HubConfig
+import dev.persona.watch.data.PrimaryPairing
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -46,6 +47,8 @@ class HubDirectory(private val context: Context) {
         runCatching { removal.recover() }
         readGroups()
     }
+    // Primary publication must not interleave with an additional registration or its recovery.
+    internal fun primaryPairing() = PrimaryPairing(publicationLock = lock) { additional().map { it.config?.baseUrl } }
     private fun readGroups(): List<SavedHub> {
         val rows = runCatching { JSONArray(preferences.getString("groups", "[]")) }.getOrElse { JSONArray() }
         return (0 until rows.length()).mapNotNull { index ->

@@ -26,8 +26,7 @@ class ExtensionComplicationConfigActivity : Activity() {
     private var kind: WidgetFaceKind? = null
     private var group: SavedHub? = null
     private var groups = emptyList<SavedHub>()
-    private var client: ExtensionClient? = null
-    private var widgets = emptyList<ExtensionWidget>()
+    private val catalog = WidgetConfigCatalog()
     private var selected: ExtensionWidget? = null
     private var selectedView: ExtensionWidgetView? = null
     private var busy = false
@@ -58,7 +57,7 @@ class ExtensionComplicationConfigActivity : Activity() {
 
     private fun loadGroups() {
         val ticket = ++generation
-        group = null; selected = null; selectedView = null; widgets = emptyList(); busy = true; message = ""; render()
+        group = null; selected = null; selectedView = null; catalog.clear(); busy = true; message = ""; render()
         io.execute {
             val result = runCatching {
                 listOfNotNull(CredentialStore(this).load()?.let { SavedHub("", getString(R.string.hub_primary), it) }) +
@@ -77,30 +76,31 @@ class ExtensionComplicationConfigActivity : Activity() {
     private fun loadCatalog(connection: SavedHub) {
         val config = connection.config ?: return
         val ticket = ++generation
-        group = connection; selected = null; selectedView = null; widgets = emptyList(); busy = true; message = ""; render()
+        group = connection; selected = null; selectedView = null; catalog.clear(); busy = true; message = ""; render()
         io.execute {
             val result = runCatching {
                 same(connection.id, config)
                 val api = ExtensionClient(config, language())
-                val found = api.widgets()
+                val found = WidgetConfigCatalog.Loaded.discover(api, checkNotNull(kind))
                 same(connection.id, config)
-                ExtensionComplications.store(this).saveCatalog(connection.id, config, found)
+                ExtensionComplications.store(this).saveCatalog(connection.id, config, found.allWidgets)
                 ExtensionComplications.changed(this)
-                api to found.filter { it.familyFor(checkNotNull(kind)) != null }
+                found
             }.onFailure { invalidateRevoked(connection.id, config, it) }
             main.post {
                 if (!accept(ticket)) return@post
                 busy = false
-                result.fold({ (api, found) -> client = api; widgets = found }, { message = getString(problemText(it)) })
+                result.fold({ catalog.publish(it) }, { message = getString(problemText(it)) })
                 render()
             }
         }
     }
 
     private fun preview(widget: ExtensionWidget) {
-        val api = client ?: return
         val connection = group ?: return
         val config = connection.config ?: return
+        // A revoked or aged client must rediscover support before another preview can be requested.
+        val api = catalog.clientFor(widget) ?: run { loadCatalog(connection); return }
         val family = widget.familyFor(checkNotNull(kind)) ?: return
         val ticket = ++generation
         selected = widget; selectedView = null; busy = true; message = ""; render()
@@ -159,14 +159,14 @@ class ExtensionComplicationConfigActivity : Activity() {
                 text(getString(R.string.extension_face_refresh_detail), T.caption)
                 if (selectedView != null) button(R.string.extension_use_widget) { useSelection() }
                 else if (!busy) button(R.string.retry) { preview(widget) }
-                button(R.string.back, true) { generation++; busy = false; selected = null; selectedView = null; render() }
+                button(R.string.back, true) { loadCatalog(checkNotNull(connection)) }
             }
             connection != null -> {
                 text(connection.name, T.caption)
-                if (!busy && widgets.isEmpty()) text(getString(R.string.extension_face_empty))
-                widgets.forEach { entry -> button(entry.title) { preview(entry) } }
+                if (!busy && catalog.widgets.isEmpty()) text(getString(R.string.extension_face_empty))
+                catalog.widgets.forEach { entry -> button(entry.title) { preview(entry) } }
                 if (!busy) button(R.string.refresh) { loadCatalog(connection) }
-                if (groups.size > 1) button(R.string.hub_groups, true) { generation++; busy = false; group = null; render() }
+                if (groups.size > 1) button(R.string.hub_groups, true) { loadGroups() }
             }
             else -> {
                 if (!busy && groups.isEmpty()) text(getString(R.string.extension_unpaired))

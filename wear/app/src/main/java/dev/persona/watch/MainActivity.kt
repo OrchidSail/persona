@@ -64,7 +64,7 @@ class MainActivity : Activity() {
         }
     }) }
     private val generatedSuggestions = mutableMapOf<String, String>()
-    private val primaryPairing = PrimaryPairing()
+    private val primaryPairing by lazy { HubDirectory(this).primaryPairing() }
     private var page = "home"
     private var selectedSession: WatchSession? = null
     private var selectedInteraction: WatchInteraction? = null
@@ -895,6 +895,7 @@ class MainActivity : Activity() {
     }
 
     private fun errorText(cause: Throwable): String = getString(when ((cause as? HubException)?.code) {
+        "duplicate_connection" -> R.string.hub_duplicate
         "unauthorized", "invalid_token", "authentication_failed", "pairing_expired", "invalid_watch_credential" -> R.string.authentication_failed
         "forbidden", "unsupported_action", "cannot_answer", "requires_input", "requires_phone", "read_only", "unsupported_interaction" -> R.string.permission_failed
         "gone", "not_found" -> R.string.request_gone

@@ -100,20 +100,28 @@ class HubClientTest {
 
     @Test fun foldedWorkIsFetchedOnlyOnDemandAndPagesProgress() {
         val paths = mutableListOf<String>()
-        val client = HubClient(config, transport = HubTransport { _, _, path, _, _ ->
+        val expected = listOf(
+            "/api/v1/sessions/computer%2Fa/thread%20with%20space/items?turns=2&limit=80&lazy_images=1&fold_work=1",
+            "/api/v1/sessions/computer%2Fa/thread%20with%20space/items?from_seq=2&through_seq=3&limit=1000&lazy_images=1",
+            "/api/v1/sessions/computer%2Fa/thread%20with%20space/items?from_seq=3&through_seq=3&limit=1000&lazy_images=1",
+        )
+        val client = HubClient(config, transport = HubTransport { _, method, path, body, _ ->
+            assertEquals("GET", method)
+            assertNull(body)
+            assertTrue("Unexpected extra folded-work request: $path", paths.size < expected.size)
+            assertEquals(expected[paths.size], path)
             paths += path
-            when {
-                "from_seq=2" in path -> HubResponse(200, """{"items":[{"id":"tool","seq":2,"kind":"tool_use","tool_name":"Read","text":"Read a file"}],"more":true}""")
-                "from_seq=3" in path -> HubResponse(200, """{"items":[{"id":"result","seq":3,"kind":"tool_result","text":"Found the result"}],"more":false}""")
-                else -> HubResponse(200, """{"items":[{"id":"fold:f","seq":2,"kind":"fold","role":"assistant","fold":{"items":2,"through_seq":3}},{"id":"a","kind":"text","role":"assistant","text":"Answer"}]}""")
+            when (path) {
+                expected[0] -> HubResponse(200, """{"items":[{"id":"fold:f","seq":2,"kind":"fold","role":"assistant","fold":{"items":2,"through_seq":3}},{"id":"a","kind":"text","role":"assistant","text":"Answer"}]}""")
+                expected[1] -> HubResponse(200, """{"items":[{"id":"tool","seq":2,"kind":"tool_use","tool_name":"Read","text":"Read a file"}],"more":true}""")
+                expected[2] -> HubResponse(200, """{"items":[{"id":"result","seq":3,"kind":"tool_result","text":"Found the result"}],"more":false}""")
+                else -> throw AssertionError("Unexpected folded-work route: $path")
             }
         })
         val message = client.messages(session).single()
-        assertEquals(1, paths.size)
-        assertTrue(paths.single().contains("fold_work=1"))
+        assertEquals(expected.take(1), paths)
         assertEquals(listOf("Read\nRead a file", "Found the result"), client.work(session, message))
-        assertEquals(3, paths.size)
-        assertTrue(paths[1].contains("through_seq=3"))
+        assertEquals(expected, paths)
     }
 
     @Test fun networkFailureDoesNotAutomaticallyRepeatMutation() {
