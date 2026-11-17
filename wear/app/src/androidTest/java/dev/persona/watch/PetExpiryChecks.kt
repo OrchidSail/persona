@@ -1,7 +1,6 @@
 package dev.persona.watch
 
 import android.app.Instrumentation
-import android.content.Context
 import android.os.Bundle
 import dev.persona.watch.data.HubClient
 import dev.persona.watch.data.HubConfig
@@ -49,10 +48,8 @@ class PetExpiryChecks(private val instrumentation: Instrumentation) {
         sameConnection(config)
         val expires = System.currentTimeMillis() + OBSERVATION_WINDOW_MS
         val seeded = PetStoredStatus(PetStatus(PetState.NEEDS_YOU, 42), expires - PetStoredStatus.STALE_MS)
-        PetBridge.publish(context, config, seeded.status, seeded.updatedAt)
-        flushPublished(config)
+        PetBridge.publishDurably(context, config, seeded.status, seeded.updatedAt)
         check(PetBridge.read(context, config) == seeded) { "pet_expiry_seed_not_saved" }
-        PetBridge.requestUpdate(context)
         return Bundle().apply {
             putBoolean("pet_expiry_seeded", true)
             putInt("pet_expiry_count", 42)
@@ -75,10 +72,8 @@ class PetExpiryChecks(private val instrumentation: Instrumentation) {
         check(count >= 0) { "pet_expiry_invalid_backup" }
         val previous = PetStoredStatus(PetStatus(state, count), saved.getLong("updated_at"))
         sameConnection(config)
-        PetBridge.publish(context, config, previous.status, previous.updatedAt)
-        flushPublished(config)
-        check(PetBridge.read(context, config) == previous) { "pet_expiry_restore_not_saved" }
-        PetBridge.requestUpdate(context)
+        val restored = PetBridge.publishDurably(context, config, previous.status, previous.updatedAt)
+        check(PetBridge.read(context, config) == restored) { "pet_expiry_restore_not_saved" }
         check(backup.delete()) { "pet_expiry_backup_cleanup_failed" }
         return Bundle().apply {
             putBoolean("pet_expiry_restored", true)
@@ -117,13 +112,6 @@ class PetExpiryChecks(private val instrumentation: Instrumentation) {
         check(snapshot.machines.isNotEmpty() && snapshot.machines.all { it.id == "fixture" } &&
             snapshot.sessions.isNotEmpty() && snapshot.sessions.all { it.machineId == "fixture" }) { "pet_expiry_fixture_data_required" }
         sameConnection(config)
-    }
-
-    private fun flushPublished(config: HubConfig) {
-        // Drain the publish() apply before instrumentation exits; no additional preference value changes.
-        check(context.getSharedPreferences("pet_" + PetPack.scope(config), Context.MODE_PRIVATE).edit().commit()) {
-            "pet_expiry_cache_flush_failed"
-        }
     }
 
     private fun identity(config: HubConfig): String = MessageDigest.getInstance("SHA-256")

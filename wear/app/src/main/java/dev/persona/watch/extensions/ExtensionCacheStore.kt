@@ -64,7 +64,8 @@ class ExtensionCacheStore(root: File, private val now: () -> Long = System::curr
         null
     }
 
-    fun saveProjection(group: String, config: HubConfig, widget: ExtensionWidget, family: String, view: ExtensionWidgetView): Boolean = access {
+    fun saveProjection(group: String, config: HubConfig, widget: ExtensionWidget, family: String, view: ExtensionWidgetView,
+                       savedAtMs: Long = now()): Boolean = access {
         val state = read()
         val saved = matching(state, group, config) ?: return@access false
         val catalog = ExtensionParser.catalog(JSONObject().put("widgets", saved.getJSONArray("catalog")))
@@ -77,7 +78,7 @@ class ExtensionCacheStore(root: File, private val now: () -> Long = System::curr
         saved.optJSONArray("views")?.let { rows -> for (i in 0 until rows.length()) rows.optJSONObject(i)?.let {
             if (it.optString("key") != widget.key || it.optString("family") != family) keep += it
         } }
-        keep += JSONObject().put("key", widget.key).put("family", family).put("saved", now()).put("answer", bounded)
+        keep += JSONObject().put("key", widget.key).put("family", family).put("saved", savedAtMs).put("answer", bounded)
         saved.put("views", JSONArray(keep.sortedByDescending { it.optLong("saved") }.take(MAX_VIEWS)))
         trim(state)
         write(state)

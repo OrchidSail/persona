@@ -1,6 +1,9 @@
 package dev.persona.watch.pet
 
 import dev.persona.watch.data.HubConfig
+import dev.persona.watch.HubGroupRead
+import dev.persona.watch.data.HubGroupSnapshot
+import dev.persona.watch.data.HubGroups
 import dev.persona.watch.data.WatchSnapshot
 import java.time.LocalTime
 
@@ -9,17 +12,61 @@ internal fun petStatusScope(config: HubConfig): String = PetPack.hash(
     listOf(config.baseUrl, config.token, config.fingerprint.orEmpty(), config.deviceId.orEmpty())
         .joinToString("\u0000").toByteArray()).take(32)
 
+internal fun petStatusPreferencesName(config: HubConfig) = "pet_state_" + petStatusScope(config)
+
+internal data class PetReachability(val allFailed: Boolean, val partlyFailed: Boolean) {
+    companion object {
+        fun from(read: HubGroupRead?, groupCount: Int) = PetReachability(
+            read == null || groupCount <= 0 || read.failed.size == groupCount,
+            read?.failed?.isNotEmpty() == true)
+    }
+}
+
 /** Shared by the page and MainActivity's bridge, without advancing freshness on a failed read. */
 internal object PetFreshness {
     fun next(previous: PetStoredStatus, snapshot: WatchSnapshot?, unreachable: Boolean,
              partlyUnreachable: Boolean = false, now: Long = System.currentTimeMillis(),
              hour: Int = LocalTime.now().hour): PetStoredStatus {
-        // A failed read may still carry a previously cached snapshot; never stamp it with "now".
-        val date = maxOf(previous.updatedAt.coerceAtLeast(0), snapshot?.updatedAt?.coerceAtLeast(0) ?: 0)
+        // A successful read replaces a previous future date after clock rollback. Failed reads
+        // may retain a date, but cannot inject a future value into subsequent successful polls.
+        fun safe(date: Long) = date.coerceIn(0, now.coerceAtLeast(0))
+        val date = if (!unreachable && snapshot != null && snapshot.updatedAt > 0) safe(snapshot.updatedAt)
+            else maxOf(safe(previous.updatedAt), safe(snapshot?.updatedAt ?: 0))
         val next = PetStoredStatus(PetStatus.from(snapshot, unreachable, hour, partlyUnreachable), date)
         return next.copy(status = next.visible(now))
     }
+
+    /** Filter each Hub at its own deadline, then bound the published aggregate by its oldest input. */
+    fun groups(previous: PetStoredStatus, read: HubGroupRead?, groupCount: Int,
+               now: Long = System.currentTimeMillis(), hour: Int = LocalTime.now().hour): PetStoredStatus {
+        val reachability = PetReachability.from(read, groupCount)
+        if (read == null) return next(previous, null, true, now = now, hour = hour)
+        // Never rebase retained future-dated group data on every timer wake. A new successful
+        // fetch has its own current-clock timestamp and can replace it on the next poll.
+        val usable = read.cache.filterValues { it.updatedAt <= now &&
+            PetStoredStatus(PetStatus(PetState.IDLE), it.updatedAt).freshUntil(now) != null }
+        if (usable.isEmpty()) return next(previous, null, true, now = now, hour = hour)
+        val oldest = usable.values.minOf { it.updatedAt }
+        val merged = HubGroups.merge(usable.map { (id, snapshot) ->
+            HubGroupSnapshot(id, "", snapshot, id !in read.failed)
+        }, oldest)
+        return next(previous, merged, reachability.allFailed, reachability.partlyFailed, now, hour)
+    }
 }
+
+/** A synchronous caller may notify or remove a restore backup only after this commit succeeds. */
+internal fun commitPetPublication(stored: PetStoredStatus, commit: (PetStoredStatus) -> Boolean,
+                                  requestUpdate: () -> Unit): PetStoredStatus {
+    check(commit(stored)) { "Could not save pet state" }
+    requestUpdate()
+    return stored
+}
+
+internal fun petPublicationNeedsUpdate(previous: PetStoredStatus, next: PetStoredStatus,
+                                       lastRequest: Long, now: Long): Boolean =
+    previous.status != next.status ||
+        previous.freshUntil(now) == null && next.freshUntil(now) != null ||
+        now - lastRequest > 20 * 60 * 1000
 
 /** Connection-owned page data. A paused/replaced connection cannot accept an old worker completion. */
 internal class PetPageState {
@@ -33,6 +80,8 @@ internal class PetPageState {
         private set
     var stored = PetStoredStatus(PetStatus(PetState.OFFLINE), 0)
         private set
+    private var groupRead: HubGroupRead? = null
+    private var groupCount = 0
 
     fun resume(next: HubConfig?, saved: PetStoredStatus, now: Long): Boolean {
         val changed = next != connection
@@ -42,6 +91,8 @@ internal class PetPageState {
             manifest = null
             groups = emptyMap()
         }
+        // Another foreground page may have published fresher state while this one was paused.
+        groupRead = null
         stored = if (next == null) PetStoredStatus(PetStatus(PetState.OFFLINE), 0) else saved
         revalidate(now)
         return changed
@@ -55,20 +106,21 @@ internal class PetPageState {
         return true
     }
 
-    fun acceptRefresh(ticket: Int, nextManifest: PetManifest?, nextGroups: Map<String, WatchSnapshot>,
-                      snapshot: WatchSnapshot?, unreachable: Boolean, partlyUnreachable: Boolean,
-                      now: Long): Boolean {
+    fun acceptRefresh(ticket: Int, nextManifest: PetManifest?, read: HubGroupRead?, count: Int, now: Long): Boolean {
         if (!accepts(ticket)) return false
         manifest = nextManifest
-        groups = nextGroups
-        stored = PetFreshness.next(stored, snapshot, unreachable, partlyUnreachable, now)
+        groupRead = read
+        groupCount = count
+        if (read != null) groups = read.cache
+        stored = PetFreshness.groups(stored, read, count, now)
         return true
     }
 
     fun revalidate(now: Long): Boolean {
-        val visible = stored.visible(now)
-        val changed = stored.status != visible
-        stored = stored.copy(status = visible)
+        val next = groupRead?.let { PetFreshness.groups(stored, it, groupCount, now) }
+            ?: stored.copy(status = stored.visible(now))
+        val changed = stored.status != next.status
+        stored = next
         return changed
     }
 

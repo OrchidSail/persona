@@ -12,7 +12,7 @@ const own = `${processes}  Active instrumentation:\n  Instrumentation #0: Active
 const unrelated = own.replaceAll('dev.persona.watch', 'example.other');
 const pass = { status: 0, stdout: 'INSTRUMENTATION_RESULT: stream=PASS: fixture\nINSTRUMENTATION_CODE: -1\n', stderr: '' };
 
-async function mock({ result = pass, needsTargetStop = false, unrelatedSession = false, neverEnds = false, unknown = false, failedProbe = false } = {}) {
+async function mock({ result = pass, needsTargetStop = false, unrelatedSession = false, neverEnds = false, unknown = false, failedProbe = false, automationDump } = {}) {
   const events = [];
   const errors = [];
   let clock = 0;
@@ -48,9 +48,9 @@ async function mock({ result = pass, needsTargetStop = false, unrelatedSession =
     }
     if (cmd[1] === 'dumpsys' && cmd[2] === 'accessibility') {
       probes++;
-      const active = neverEnds || unrelatedSession || result !== pass && probes < 3;
+      const active = neverEnds || unrelatedSession || automationDump != null && probes < 3 || result !== pass && probes < 3;
       events.push(active ? 'UiAutomation active' : 'UiAutomation gone');
-      return ok(accessibility + (active ? 'Ui Automation[eventTypes=TYPE_VIEW_CLICKED]' : ''));
+      return ok(accessibility + (automationDump ? automationDump(active) : active ? 'Ui Automation[eventTypes=TYPE_VIEW_CLICKED]' : ''));
     }
     throw new Error(`Unexpected mock command ${JSON.stringify(cmd)}`);
   };
@@ -137,6 +137,42 @@ test('status probes require recognized dumps and both lifecycle surfaces to be i
   assert.equal(automationActive(processes, accessibility + 'Ui Automation[eventTypes=0]'), true);
   assert.equal(automationActive(processes, accessibility + 'mUiAutomationService=null'), false);
   assert.throws(() => automationActive('', ''), /Unrecognized/);
+});
+
+test('explicit service assignment distinguishes null metadata from a live AppUiAutomationConnection', () => {
+  const idle = 'serviceClass=AppUiAutomationConnection mUiAutomationService=null';
+  assert.equal(automationActive(processes, accessibility + idle), false);
+  assert.equal(automationActive(processes, accessibility + 'mUiAutomationService=AppUiAutomationConnection[owner=example.other]'), true);
+  assert.equal(automationActive(processes, accessibility + `${idle}\nUi Automation[eventTypes=0]`), true);
+  assert.equal(automationActive(processes, accessibility + `${idle}\nmUiAutomationService=OtherConnection[active]`), true);
+});
+
+test('unknown or incomplete automation representations cannot establish idle teardown', () => {
+  for (const dump of ['mUiAutomationService=', 'UiAutomationState: unknown', 'AppUiAutomationConnection[owner=example.other]',
+    'mUiAutomationService=null\nUiAutomationState: unknown',
+    'mUiAutomationService=null\nAppUiAutomationConnection[owner=example.other]',
+    'mUiAutomationService=null AppUiAutomationConnection[owner=example.other]',
+    'mUiAutomationService=null serviceClass=AppUiAutomationConnection[owner=example.other]']) {
+    assert.throws(() => automationActive(processes, accessibility + dump), /Unrecognized/);
+  }
+  assert.equal(automationActive(processes, accessibility + 'mUiAutomationService=nullish'), true);
+});
+
+test('a different application automation service must exit before rotation can be restored', async () => {
+  const result = await mock({ automationDump: active => active
+    ? 'mUiAutomationService=AppUiAutomationConnection[owner=example.other]'
+    : 'serviceClass=AppUiAutomationConnection mUiAutomationService=null' });
+  assert.equal(result.status, 0);
+  assert.equal(result.events.filter(event => event === 'UiAutomation active').length, 2);
+  assert.ok(result.events.indexOf('UiAutomation gone') < result.events.indexOf('restore rotation'));
+  assert.equal(result.events.some(event => event.startsWith('stop ')), false);
+});
+
+test('an unrelated persistent explicit automation service times out without restoration', async () => {
+  const result = await mock({ neverEnds: true, automationDump: () => 'mUiAutomationService=AppUiAutomationConnection[owner=example.other]' });
+  assert.equal(result.status, 1);
+  assert.equal(result.events.includes('restore rotation'), false);
+  assert.equal(result.events.some(event => event.startsWith('stop ')), false);
 });
 
 test('invalid options fail before any ADB operation', async () => {

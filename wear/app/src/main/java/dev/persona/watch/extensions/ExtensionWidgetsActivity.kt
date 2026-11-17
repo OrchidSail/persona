@@ -39,7 +39,7 @@ class ExtensionWidgetsActivity : Activity() {
     private var widgets = emptyList<ExtensionWidget>()
     private var selected: ExtensionWidget? = null
     private var selectedKey: String? = null
-    private var projection: ExtensionWidgetView? = null
+    private var projection: CachedWidget? = null
     private var chartValues: WidgetItem.Chart? = null
     private var problem: ExtensionProblem? = null
     private var busy = false
@@ -130,6 +130,8 @@ class ExtensionWidgetsActivity : Activity() {
         busy = true
         catalogReady = false
         problem = null
+        val previousConfig = config
+        val previousClient = client
         val previousWidgets = widgets
         val previousProjection = projection
         val previousSelectedKey = selected?.key ?: selectedKey
@@ -140,12 +142,24 @@ class ExtensionWidgetsActivity : Activity() {
         io.execute {
             val result = runCatching {
                 val saved = savedConfig()?.validated() ?: throw ExtensionException(ExtensionProblem.UNPAIRED)
-                val same = saved == config
-                val api = if (same) client ?: ExtensionClient(saved, language()) else ExtensionClient(saved, language())
+                val same = saved == previousConfig
+                val api = if (same) previousClient ?: ExtensionClient(saved, language()) else ExtensionClient(saved, language())
                 val savedWidgets = runCatching { diskCache.catalog(group, saved) }.getOrNull().orEmpty()
                 val savedWidget = deepLink?.let { ExtensionLink.parse(it, group)?.projection(savedWidgets) }
                     ?: savedWidgets.firstOrNull { it.key == requestedKey }
-                val savedView = savedWidget?.let { runCatching { diskCache.projection(group, saved, it, it.family)?.view }.getOrNull() }
+                val savedView = savedWidget?.let { runCatching { diskCache.projection(group, saved, it, it.family) }.getOrNull() }
+                if (savedConfig() != saved) throw ExtensionException(ExtensionProblem.CONNECTION_CHANGED)
+                val preview = recoverWidgetSelection(true, same, requestedKey,
+                    previousWidgets, previousSelectedKey, previousProjection, savedWidgets, savedWidget, savedView)
+                // Restore identity-checked local content before starting the potentially slow Hub request.
+                main.post {
+                    if (!foreground || isDestroyed || ticket != generation) return@post
+                    if (!same) chartValues = null
+                    config = saved; client = api
+                    widgets = preview.widgets; selected = preview.selected
+                    selectedKey = preview.selectedKey; projection = preview.projection
+                    render()
+                }
                 val catalogResult = runCatching { api.widgets() }
                 if (savedConfig() != saved) throw ExtensionException(ExtensionProblem.CONNECTION_CHANGED)
                 catalogResult.onSuccess { runCatching { diskCache.saveCatalog(group, saved, it) }; ExtensionComplications.changed(this) }
@@ -167,8 +181,9 @@ class ExtensionWidgetsActivity : Activity() {
                         selected = deepLink?.let { ExtensionLink.parse(it, group)?.projection(found) }
                             ?: found.firstOrNull { it.key == (selected?.key ?: selectedKey) }
                         if ((deepLink != null || requestedKey != null) && selected == null) problem = ExtensionProblem.UNAVAILABLE
-                        projection = if (loaded.same && selected?.key == previousSelectedKey) previousProjection
-                            else loaded.savedView.takeIf { loaded.savedWidget?.key == selected?.key }
+                        projection = retainWidgetProjection(selected, loaded.same,
+                            previousProjection.takeIf { previousSelectedKey == selected?.key },
+                            loaded.savedView, System.currentTimeMillis())
                         render()
                         selected?.let { loadWidget(it, force = false) }
                     }, { failure ->
@@ -196,19 +211,21 @@ class ExtensionWidgetsActivity : Activity() {
 
     private fun loadWidget(widget: ExtensionWidget, force: Boolean) {
         if (busy) return
+        projection = retainWidgetProjection(widget, true, projection, null, System.currentTimeMillis())
         selected = widget; selectedKey = widget.key; chartValues = null
         // A disk snapshot cannot authorize a new projection: retry discovery after an offline catalogue.
         if (!catalogReady) { loadCatalog(); return }
         val api = client ?: return
         val expected = config ?: return
         val ticket = ++generation
+        val previousProjection = projection
         busy = true; problem = null; render()
         io.execute {
             val result = runCatching {
                 if (savedConfig() != expected) throw ExtensionException(ExtensionProblem.CONNECTION_CHANGED)
-                api.widget(widget, force).also {
+                api.projection(widget, force).also {
                     if (savedConfig() != expected) throw ExtensionException(ExtensionProblem.CONNECTION_CHANGED)
-                    runCatching { diskCache.saveProjection(group, expected, widget, widget.family, it) }
+                    runCatching { diskCache.saveProjection(group, expected, widget, widget.family, it.view, it.savedAtMs) }
                     ExtensionComplications.changed(this)
                 }
             }.onFailure { failure ->
@@ -222,7 +239,7 @@ class ExtensionWidgetsActivity : Activity() {
                 busy = false
                 result.fold({ projection = it }, { failure ->
                     problem = problemOf(failure)
-                    if (problem != ExtensionProblem.RETRYABLE) projection = null
+                    projection = previousProjection.takeIf { problem == ExtensionProblem.RETRYABLE }
                     if (problem in setOf(ExtensionProblem.AUTHENTICATION, ExtensionProblem.FORBIDDEN, ExtensionProblem.CONNECTION_CHANGED)) {
                         widgets = emptyList(); selected = null; selectedKey = null; chartValues = null
                     }
@@ -265,12 +282,14 @@ class ExtensionWidgetsActivity : Activity() {
             }
             button(getString(R.string.back), duringLoad = true) { navigateBack() }
         } else if (selected != null) {
-            projection?.let { view ->
+            projection?.let { cached ->
+                val view = cached.view
                 if (view.title.isNotBlank() && view.title != selected?.title) text(view.title, T.heading, bold = true)
-                val delay = WidgetExpiry.nextDelay(view.expiresAtMs, System.currentTimeMillis())
-                if (problem == ExtensionProblem.RETRYABLE || delay == null)
+                val now = System.currentTimeMillis()
+                val delay = if (cached.fresh(now)) WidgetExpiry.nextDelay(cached.freshUntilMs, now) else null
+                if (delay == null)
                     text(getString(R.string.extension_stale), T.caption, T.working)
-                else if (foreground) { expiryDeadline = view.expiresAtMs; main.postDelayed(expire, delay) }
+                else if (foreground) { expiryDeadline = cached.freshUntilMs; main.postDelayed(expire, delay) }
                 if (view.items.isEmpty()) text(getString(R.string.extension_no_content), T.body, T.secondary)
                 view.items.forEach(::item)
             }
@@ -372,7 +391,7 @@ class ExtensionWidgetsActivity : Activity() {
         ExtensionProblem.CONNECTION_CHANGED -> R.string.extension_connection_changed
     }
     private data class LoadResult(val config: HubConfig, val client: ExtensionClient, val same: Boolean, val catalog: Result<List<ExtensionWidget>>,
-        val savedWidgets: List<ExtensionWidget>, val savedWidget: ExtensionWidget?, val savedView: ExtensionWidgetView?)
+        val savedWidgets: List<ExtensionWidget>, val savedWidget: ExtensionWidget?, val savedView: CachedWidget?)
 }
 
 /** Small-multiple plot; full labelled values remain available without relying on color or hover. */

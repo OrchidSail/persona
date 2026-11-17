@@ -34,20 +34,22 @@ test('reuses only the matching online TLS transport and verifies its hardware id
   assert.equal(calls.length, 2);
 });
 
-test('supports collision-renamed instances and prefers an already connected current endpoint', () => {
+test('reuses an online endpoint after checking other online device identities, without mDNS', () => {
   const { run, calls } = mock([
     [['devices', '-l'], listing(`${otherEndpoint} device\n${newEndpoint} device`)],
-    [['mdns', 'services'], mdns(`${service} (2)\t_adb-tls-connect._tcp\t${newEndpoint}\n${service}\t_adb-tls-connect._tcp\t${oldEndpoint}`)],
+    [['-s', otherEndpoint, 'shell', 'getprop', 'ro.serialno'], 'ANOTHERWATCH'],
     [['-s', newEndpoint, 'shell', 'getprop', 'ro.serialno'], serial],
   ]);
   assert.equal(connectWatch({ serial, run }), newEndpoint);
   assert.equal(calls.length, 3);
   assert.equal(calls.some(call => call[0] === 'connect'), false);
+  assert.equal(calls.some(call => call[0] === 'mdns'), false);
 });
 
 test('tries another advertisement for the same watch when an old port is unreachable', () => {
   const { run, calls } = mock([
     [['devices', '-l'], listing(`${otherEndpoint} device`)],
+    [['-s', otherEndpoint, 'shell', 'getprop', 'ro.serialno'], 'ANOTHERWATCH'],
     [['mdns', 'services'], mdns(`${service} _adb-tls-connect._tcp ${oldEndpoint}\n${service} (2) _adb-tls-connect._tcp ${newEndpoint}`)],
     [['connect', oldEndpoint], new Error('Connection refused')],
     [['connect', newEndpoint], 'connected'],
@@ -55,7 +57,7 @@ test('tries another advertisement for the same watch when an old port is unreach
   ]);
   assert.equal(connectWatch({ serial, run }), newEndpoint);
   assert.deepEqual(calls.filter(call => call[0] === 'connect'), [['connect', oldEndpoint], ['connect', newEndpoint]]);
-  assert.equal(calls.some(call => call.includes(otherEndpoint)), false);
+  assert.equal(calls.some(call => call[0] === 'connect' && call[1] === otherEndpoint), false);
 });
 
 test('excludes another serial with a matching prefix, pairing, legacy and malformed endpoints', () => {
@@ -91,13 +93,35 @@ test('does not accept connect output alone when the resulting transport is offli
   assert.throws(() => connectWatch({ serial, run }), /No reachable paired watch/);
 });
 
-test('no discovery fails without probing unrelated devices or restarting ADB', () => {
+test('no discovery fails after identity checks without connecting unrelated devices or restarting ADB', () => {
   const { run, calls } = mock([
     [['devices', '-l'], listing(`${otherEndpoint} device model:Other`)],
+    [['-s', otherEndpoint, 'shell', 'getprop', 'ro.serialno'], 'ANOTHERWATCH'],
     [['mdns', 'services'], mdns(`adb-OTHER-example _adb-tls-connect._tcp ${otherEndpoint}`)],
   ]);
   assert.throws(() => connectWatch({ serial, run }), /No reachable paired watch/);
-  assert.deepEqual(calls, [['devices', '-l'], ['mdns', 'services']]);
+  assert.deepEqual(calls, [['devices', '-l'], ['-s', otherEndpoint, 'shell', 'getprop', 'ro.serialno'], ['mdns', 'services']]);
+});
+
+test('online IP transport succeeds even when mDNS would be unavailable', () => {
+  const { run, calls } = mock([
+    [['devices', '-l'], listing(`${oldEndpoint} device`)],
+    [['-s', oldEndpoint, 'shell', 'getprop', 'ro.serialno'], serial],
+    [['mdns', 'services'], new Error('mDNS unavailable')],
+  ]);
+  assert.equal(connectWatch({ serial, run }), oldEndpoint);
+  assert.deepEqual(calls, [['devices', '-l'], ['-s', oldEndpoint, 'shell', 'getprop', 'ro.serialno']]);
+});
+
+test('online IP identity errors are skipped and invalid or unavailable transports are never queried', () => {
+  const ipv6 = '[2001:db8::10]:30001';
+  const { run, calls } = mock([
+    [['devices', '-l'], listing(`example.invalid:30001 device\n${otherEndpoint} unauthorized\n${oldEndpoint} device\n${newEndpoint} offline\n${ipv6} device`)],
+    [['-s', oldEndpoint, 'shell', 'getprop', 'ro.serialno'], new Error('device disconnected')],
+    [['-s', ipv6, 'shell', 'getprop', 'ro.serialno'], serial],
+  ]);
+  assert.equal(connectWatch({ serial, run }), ipv6);
+  assert.deepEqual(calls, [['devices', '-l'], ['-s', oldEndpoint, 'shell', 'getprop', 'ro.serialno'], ['-s', ipv6, 'shell', 'getprop', 'ro.serialno']]);
 });
 
 test('mDNS errors are explicit and do not trigger alternate protocols', () => {

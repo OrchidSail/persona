@@ -1,7 +1,5 @@
 package dev.persona.watch.data
 
-import java.net.URI
-
 internal data class PrimaryPairingRequest(val config: HubConfig, val reuseSaved: Boolean)
 internal data class AuthenticatedPrimary(val request: PrimaryPairingRequest, val config: HubConfig, val snapshot: WatchSnapshot)
 
@@ -24,20 +22,13 @@ internal class PrimaryPairing {
     companion object {
         fun prepare(old: HubConfig?, address: String, token: String): PrimaryPairingRequest {
             if (address.trim().startsWith("persona:")) return PrimaryPairingRequest(PairingInput.parse(address, token), false)
-            val origin = normalize(address)
-            val same = old != null && origin == normalize(old.baseUrl)
+            val origin = HubConfig.normalizeBaseUrl(address)
+            val same = HubConfig.sameOrigin(old?.baseUrl, origin)
             if (token.isBlank()) {
                 if (!same) throw HubException("new_address_token")
-                return PrimaryPairingRequest(old!!.copy(baseUrl = origin).validated(), true)
+                return PrimaryPairingRequest(old!!.validated(), true)
             }
             return PrimaryPairingRequest(HubConfig(origin, token.trim(), if (same) old?.fingerprint else null).validated(), false)
-        }
-        private fun normalize(address: String): String {
-            val uri = try { URI(address.trim()) } catch (_: Exception) { throw HubException("invalid_address") }
-            // Validate before canonicalizing so credentials/query/fragment can never be silently dropped.
-            HubConfig(address.trim(), "validation-only").validated()
-            val port = if (uri.port == 80 && uri.scheme == "http" || uri.port == 443 && uri.scheme == "https") -1 else uri.port
-            return URI(uri.scheme.lowercase(), null, uri.host.lowercase(), port, uri.path.trimEnd('/'), null, null).toASCIIString()
         }
     }
 }

@@ -38,14 +38,14 @@ internal interface HubRegistrationStore {
 internal class HubRegistration(private val store: HubRegistrationStore,
                                private val newId: () -> String = { UUID.randomUUID().toString() }) {
     fun add(name: String, input: HubConfig, pair: (HubConfig) -> HubConfig) {
-        val config = input.validated()
+        val config = input.canonicalized()
         require(name.trim().isNotEmpty() && name.length <= 80)
         // Unrelated journals recover independently; a failed old Hub must not block a new Hub.
         // Keep unreadable issued credentials, but discard metadata whose exchange never became durable.
         val pending = store.pending()
         val retained = pending.filter { runCatching { store.credential(it.id) != null }.getOrDefault(true) }
         if (retained != pending) store.writePending(retained)
-        val matching = retained.firstOrNull { it.baseUrl == config.baseUrl }
+        val matching = retained.firstOrNull { HubConfig.sameOrigin(it.baseUrl, config.baseUrl) }
         if (matching != null) {
             val issued = checkNotNull(store.credential(matching.id))
             publish(matching, issued)
@@ -53,11 +53,11 @@ internal class HubRegistration(private val store: HubRegistrationStore,
         }
         val current = store.groups()
         require(current.size < 3)
-        require(current.none { it.config?.baseUrl == config.baseUrl } && store.primaryUrl() != config.baseUrl)
+        require(current.none { HubConfig.sameOrigin(it.config?.baseUrl, config.baseUrl) } && !HubConfig.sameOrigin(store.primaryUrl(), config.baseUrl))
         val registration = PendingHubRegistration(newId(), name.trim(), config.baseUrl)
         // This must succeed before the network can consume a one-time pairing token.
         store.writePending(store.pending() + registration)
-        val paired = pair(config).validated()
+        val paired = pair(config).canonicalized()
         require(paired.baseUrl == config.baseUrl && paired.fingerprint == config.fingerprint)
         store.saveCredential(registration.id, paired)
         publish(registration, paired)
@@ -83,10 +83,10 @@ internal class HubRegistration(private val store: HubRegistrationStore,
 
     private fun publish(pending: PendingHubRegistration, issued: HubConfig) {
         val config = issued.validated()
-        require(config.baseUrl == pending.baseUrl)
+        require(HubConfig.sameOrigin(pending.baseUrl, config.baseUrl))
         val other = store.groups().filterNot { it.id == pending.id }
         require(other.size < 3)
-        require(other.none { it.config?.baseUrl == config.baseUrl } && store.primaryUrl() != config.baseUrl)
+        require(other.none { HubConfig.sameOrigin(it.config?.baseUrl, config.baseUrl) } && !HubConfig.sameOrigin(store.primaryUrl(), config.baseUrl))
         // Always commit, even if a failed SharedPreferences commit already changed its in-memory view.
         store.writeGroups(other + SavedHub(pending.id, pending.name, config))
         // A failed cleanup is harmless: replay rewrites the same ID, never another credential or row.

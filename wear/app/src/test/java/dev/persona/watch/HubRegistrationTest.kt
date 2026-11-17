@@ -258,4 +258,70 @@ class HubRegistrationTest {
         assertFalse(serialized.contains(issued.token))
         assertTrue(PendingHubJournal.decode(null).isEmpty())
     }
+
+    @Test fun publicationConflictsKeepIssuedCredentialsDiscoverableUntilConflictIsRemoved() {
+        for (conflict in listOf("primary", "additional", "capacity")) {
+            val store = Store().apply { failPublish = true }
+            fails { engine(store).add("Sample Hub", input) { issued } }
+            store.restart()
+            store.failPublish = false
+            when (conflict) {
+                "primary" -> store.primary = input.baseUrl
+                "additional" -> store.rows = listOf(SavedHub("other", "Other", issued))
+                "capacity" -> store.rows = (1..3).map { SavedHub("other-$it", "Other", input.copy(baseUrl = "http://other$it.local")) }
+            }
+            repeat(2) {
+                assertThrows(IllegalArgumentException::class.java) { engine(store).recover() }
+                assertEquals(listOf(PendingHubRegistration(id, "Sample Hub", input.baseUrl)), store.durableJournal)
+                assertEquals(issued, store.credentials[id])
+            }
+            store.primary = null
+            store.rows = emptyList()
+            assertTrue(engine(store).recover())
+            assertEquals(listOf(SavedHub(id, "Sample Hub", issued)), store.durableRows)
+            assertTrue(store.durableJournal.isEmpty())
+            assertEquals(1, store.saves)
+        }
+    }
+
+    @Test fun equivalentPrimaryAndAdditionalOriginsAreRejectedBeforeExchange() {
+        for ((existing, entered) in listOf("https://hub.example" to "HTTPS://HUB.example:443/",
+            "HTTP://HUB.local:80/" to "http://hub.local", "https://hub.example/base/" to "https://HUB.example:443/base")) {
+            for (primary in listOf(true, false)) {
+                val store = Store()
+                if (primary) store.primary = existing
+                else store.rows = listOf(SavedHub("other", "Other", input.copy(baseUrl = existing)))
+                assertThrows(IllegalArgumentException::class.java) {
+                    engine(store).add("Duplicate", input.copy(baseUrl = entered)) { throw AssertionError("Must not exchange duplicate") }
+                }
+                assertTrue(store.events.isEmpty())
+            }
+        }
+    }
+
+    @Test fun newRegistrationStoresTheCanonicalOriginInJournalCredentialAndDirectory() {
+        val store = Store()
+        val entered = input.copy(baseUrl = "HTTPS://HUB.example:443/")
+        engine(store).add("Sample", entered) { candidate ->
+            assertEquals("https://hub.example", candidate.baseUrl)
+            assertEquals(candidate.baseUrl, store.durableJournal.single().baseUrl)
+            candidate.copy(baseUrl = entered.baseUrl, token = issued.token, deviceId = issued.deviceId)
+        }
+        assertEquals("https://hub.example", store.credentials[id]?.baseUrl)
+        assertEquals("https://hub.example", store.durableRows.single().config?.baseUrl)
+    }
+
+    @Test fun legacyNoncanonicalPendingOriginResumesWithoutAnotherExchange() {
+        val store = Store()
+        val old = issued.copy(baseUrl = "https://HUB.example:443")
+        store.credentials[id] = old
+        store.journal = listOf(PendingHubRegistration(id, "Sample", old.baseUrl))
+        store.durableJournal = store.journal
+        engine(store).add("Sample", input.copy(baseUrl = "https://hub.example")) {
+            throw AssertionError("Must reuse the issued credential")
+        }
+        assertEquals(old, store.durableRows.single().config)
+        assertTrue(store.durableJournal.isEmpty())
+        assertEquals(0, store.saves)
+    }
 }

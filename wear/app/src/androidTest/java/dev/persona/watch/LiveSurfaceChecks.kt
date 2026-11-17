@@ -1,7 +1,6 @@
 package dev.persona.watch
 
 import android.app.Instrumentation
-import android.content.Context
 import android.os.Bundle
 import dev.persona.watch.data.HubClient
 import dev.persona.watch.data.HubConfig
@@ -55,8 +54,7 @@ class LiveSurfaceChecks(private val instrumentation: Instrumentation) {
         val snapshot = HubClient(config, "en", snapshotTransport).refresh()
         val status = PetStatus.from(snapshot, unreachable = false)
         sameConnection(config)
-        PetBridge.publish(context, config, status, snapshot.updatedAt)
-        check(context.getSharedPreferences("pet_" + PetPack.scope(config), Context.MODE_PRIVATE).edit().commit())
+        PetBridge.publishDurably(context, config, status, snapshot.updatedAt)
         result.putInt("machines", snapshot.machines.size)
         result.putInt("sessions", snapshot.sessions.size)
         result.putInt("interactions", snapshot.interactions.size)

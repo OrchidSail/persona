@@ -47,8 +47,18 @@ export function automationActive(processes, accessibility) {
   if (!/^ACTIVITY MANAGER RUNNING PROCESSES\b/m.test(processes) ||
       !/^ACCESSIBILITY MANAGER\b/m.test(accessibility)) throw new Error('Unrecognized automation status');
   const hasInstrumentation = /Active instrumentation:|Instrumentation #/i.test(processes);
-  const hasAutomation = /Ui\s*Automation/i.test(accessibility.replace(/mUiAutomationService\s*=\s*null/g, ''));
-  return hasInstrumentation || hasAutomation;
+  // AOSP emits this record only for an active service. Vendor dumps may instead expose its field.
+  if (/(?:^|[\s,{])Ui Automation\[eventTypes=/m.test(accessibility)) return true;
+  const fields = [...accessibility.matchAll(/\bmUiAutomationService\s*=\s*([^\s,;\]}]+)/g)];
+  if (fields.some(([, value]) => value !== 'null')) return true;
+  const unparsed = accessibility.split(/\r?\n/).map(line => {
+    if (!/\bmUiAutomationService\s*=\s*null(?=$|[\s,;\]}])/.test(line)) return line;
+    // Ignore only a labeled class name on this null-service line, never a separate instance record.
+    return line.replace(/\bmUiAutomationService\s*=\s*null\b/g, '')
+      .replace(/\b(?:serviceClass|class)\s*=\s*AppUiAutomationConnection(?=$|[\s,;\]}])/g, '');
+  }).join('\n');
+  if (/Ui\s*Automation/i.test(unparsed)) throw new Error('Unrecognized UiAutomation status');
+  return hasInstrumentation;
 }
 
 /** Android can host instrumentation in the target process. Only this exact runner/target may be stopped. */

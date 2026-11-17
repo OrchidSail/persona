@@ -273,14 +273,17 @@ const server = http.createServer(async (request, response) => {
             typeof body.client_msg_id !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(body.client_msg_id)) return reply(400, { code: 'invalid_message' });
           const key = `${chat[1]}:${body.client_msg_id}`;
           if (messageReceipts.has(key)) {
-            if (messageReceipts.get(key) !== digest(body.text)) return reply(409, { code: 'message_id_conflict' });
-            return reply(200, remember({ ok: true, state: 'accepted', duplicate: true }), { action: 'message_replay' });
+            const prior = messageReceipts.get(key);
+            if (prior.digest !== digest(body.text)) return reply(409, { code: 'message_id_conflict' });
+            // A new operation alias keeps this message's original receipt, independently of earlier aliases.
+            return reply(200, remember(prior.payload), { action: 'message_replay' });
           }
-          messageReceipts.set(key, digest(body.text));
+          const accepted = { ok: true, state: 'accepted', client_msg_id: body.client_msg_id };
+          messageReceipts.set(key, { digest: digest(body.text), payload: accepted });
           state.messages[chat[1]].push({ id: body.client_msg_id, kind: 'text', role: 'user', text: body.text });
           state.messages[chat[1]].push({ id: `${body.client_msg_id}-reply`, kind: 'text', role: 'assistant', text: 'Sample reply received. No real agent was started.' });
           session.state = 'unread'; session.updated_at = now();
-          return reply(200, remember({ ok: true, state: 'accepted', client_msg_id: body.client_msg_id }),
+          return reply(200, remember(accepted),
             { action: 'message', session: chat[1], textLength: body.text.length, textDigest: digest(body.text) });
         }
         if (chat[2] === 'interrupt' && !session.capabilities.interrupt) return reply(403, { code: 'read_only' });

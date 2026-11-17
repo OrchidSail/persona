@@ -15,19 +15,35 @@ data class HubConfig(
     override fun toString() = "HubConfig(<redacted>)"
 
     fun validated(): HubConfig {
-        val uri = try { URI(baseUrl.trim()) } catch (_: Exception) { throw HubException("invalid_address") }
-        if (uri.scheme !in setOf("http", "https") || uri.host.isNullOrBlank() || uri.rawUserInfo != null ||
-            uri.rawQuery != null || uri.rawFragment != null || uri.port !in -1..65535 ||
-            uri.rawPath.orEmpty().split('/').any { it == "." || it == ".." } || uri.rawPath.orEmpty().contains('%')) {
-            throw HubException("invalid_address")
-        }
-        if (uri.scheme == "http" && (fingerprint != null || !isLocalHost(uri.host))) throw HubException("https_required")
+        val origin = normalizeBaseUrl(baseUrl)
+        if (origin.startsWith("http:") && fingerprint != null) throw HubException("https_required")
         if (token.isBlank() || token.length > 4096 || token.any { it.code < 33 || it.code > 126 }) throw HubException("invalid_token")
         if (fingerprint != null && !fingerprint.matches(Regex("[A-Za-z0-9_-]{43}"))) throw HubException("invalid_fingerprint")
-        return copy(baseUrl = uri.toASCIIString().trimEnd('/'))
+        // Existing credentials also identify drafts and caches. Validation must not migrate that identity.
+        return copy(baseUrl = URI(baseUrl.trim()).toASCIIString().trimEnd('/'))
     }
 
+    /** New enrollment candidates use a canonical origin; existing stored credentials keep their scope. */
+    fun canonicalized(): HubConfig = validated().let { it.copy(baseUrl = normalizeBaseUrl(it.baseUrl)) }
+
     companion object {
+        /** Validate before rebuilding so disallowed URL components cannot disappear during normalization. */
+        fun normalizeBaseUrl(address: String): String {
+            val uri = try { URI(address.trim()) } catch (_: Exception) { throw HubException("invalid_address") }
+            val scheme = uri.scheme?.lowercase()
+            if (scheme !in setOf("http", "https") || uri.host.isNullOrBlank() || uri.rawUserInfo != null ||
+                uri.rawQuery != null || uri.rawFragment != null || uri.port !in -1..65535 ||
+                uri.rawPath.orEmpty().split('/').any { it == "." || it == ".." } || uri.rawPath.orEmpty().contains('%')) {
+                throw HubException("invalid_address")
+            }
+            if (scheme == "http" && !isLocalHost(uri.host)) throw HubException("https_required")
+            val port = if (scheme == "http" && uri.port == 80 || scheme == "https" && uri.port == 443) -1 else uri.port
+            return URI(scheme, null, uri.host.lowercase(), port, uri.path.orEmpty().trimEnd('/'), null, null).toASCIIString()
+        }
+
+        fun sameOrigin(first: String?, second: String): Boolean = first != null &&
+            runCatching { normalizeBaseUrl(first) == normalizeBaseUrl(second) }.getOrDefault(false)
+
         private fun isLocalHost(host: String): Boolean {
             val h = host.lowercase().removePrefix("[").removeSuffix("]")
             if (h == "localhost" || h == "::1" || h.endsWith(".local")) return true

@@ -1,5 +1,6 @@
 package dev.persona.watch.pet
 
+import dev.persona.watch.HubGroupRead
 import dev.persona.watch.data.HubConfig
 import dev.persona.watch.data.WatchSession
 import dev.persona.watch.data.WatchSnapshot
@@ -14,11 +15,13 @@ class PetLifecycleTest {
     private fun snapshot(date: Long = now) = WatchSnapshot(
         listOf(WatchSession("sample", "session", "Sample", "working")), emptyList(), emptyList(), emptyList(), date)
 
+    private fun read() = HubGroupRead(snapshot(), mapOf("" to snapshot()), emptySet())
+
     @Test fun replacingPrimaryClearsAllConnectionOwnedPageDataAndRejectsOldWork() {
         val page = PetPageState()
         page.resume(primary, saved, now)
         val old = page.generation
-        assertTrue(page.acceptRefresh(old, manifest, mapOf("" to snapshot()), snapshot(), false, false, now))
+        assertTrue(page.acceptRefresh(old, manifest, read(), 1, now))
         val replacement = primary.copy(baseUrl = "http://other.local", token = "other-sample-token")
         val replacementStatus = PetStoredStatus(PetStatus(PetState.IDLE), now + 1)
         assertTrue(page.resume(replacement, replacementStatus, now + 1))
@@ -27,7 +30,7 @@ class PetLifecycleTest {
         assertTrue(page.groups.isEmpty())
         assertEquals(replacementStatus, page.stored)
         assertFalse(page.acceptManifest(old, manifest))
-        assertFalse(page.acceptRefresh(old, manifest, mapOf("" to snapshot()), snapshot(), false, false, now + 1))
+        assertFalse(page.acceptRefresh(old, manifest, read(), 1, now + 1))
         assertEquals(replacementStatus, page.stored)
         assertNull(page.manifest)
     }
@@ -36,7 +39,7 @@ class PetLifecycleTest {
         val page = PetPageState()
         page.resume(primary, saved, now)
         val old = page.generation
-        page.acceptRefresh(old, manifest, mapOf("" to snapshot()), snapshot(), false, false, now)
+        page.acceptRefresh(old, manifest, read(), 1, now)
         assertTrue(page.resume(null, saved, now + 1))
         assertNull(page.connection)
         assertNull(page.manifest)
@@ -71,7 +74,7 @@ class PetLifecycleTest {
         page.invalidate()
         assertFalse(page.resume(primary, saved, now + PetStoredStatus.STALE_MS + 1))
         assertEquals(PetState.OFFLINE, page.stored.status.state)
-        assertFalse(page.acceptRefresh(old, manifest, mapOf("" to snapshot()), snapshot(), false, false, now))
+        assertFalse(page.acceptRefresh(old, manifest, read(), 1, now))
         assertEquals(PetState.OFFLINE, page.stored.status.state)
     }
 
@@ -115,8 +118,7 @@ class PetLifecycleTest {
     @Test fun everyAcceptedRefreshUsesVisibleStatusBeforePublication() {
         val page = PetPageState()
         page.resume(primary, saved, now)
-        assertTrue(page.acceptRefresh(page.generation, manifest, mapOf("" to snapshot()), snapshot(),
-            false, false, now + PetStoredStatus.STALE_MS))
+        assertTrue(page.acceptRefresh(page.generation, manifest, read(), 1, now + PetStoredStatus.STALE_MS))
         assertEquals(PetState.OFFLINE, page.stored.status.state)
         assertEquals(now, page.stored.updatedAt)
     }

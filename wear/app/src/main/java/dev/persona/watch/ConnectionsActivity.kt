@@ -31,7 +31,7 @@ class ConnectionsActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState); directory = HubDirectory(this); reload()
     }
-    private fun reload() {
+    private fun reload(removalFailed: Boolean = false, notice: String = "") {
         busy = true
         render()
         io.execute {
@@ -39,10 +39,14 @@ class ConnectionsActivity : Activity() {
             val saved = runCatching { directory.additional() to CredentialStore(this).load()?.baseUrl }
             main.post {
                 if (!isDestroyed) {
-                    recoveryFailed = recovery.isFailure
-                    if (saved.isFailure) error = getString(R.string.action_failed)
-                    else if (recoveryFailed) error = getString(R.string.hub_add_pending)
-                    else if (recovery.getOrNull() == true) error = getString(R.string.hub_added)
+                    val feedback = connectionReloadFeedback(removalFailed, recovery, saved.isFailure)
+                    recoveryFailed = feedback.retry
+                    error = when (feedback.notice) {
+                        ConnectionReloadNotice.FAILURE -> getString(R.string.action_failed)
+                        ConnectionReloadNotice.PENDING -> getString(R.string.hub_add_pending)
+                        ConnectionReloadNotice.RECOVERED -> getString(R.string.hub_added)
+                        ConnectionReloadNotice.NONE -> notice
+                    }
                     saved.onSuccess { (rows, primary) -> groups = rows; primaryUrl = primary }
                     busy = false; render()
                 }
@@ -69,7 +73,7 @@ class ConnectionsActivity : Activity() {
                                 if (!isDestroyed) {
                                     completeConnectionRemoval(result,
                                         showError = { error = getString(R.string.action_failed) },
-                                        reload = { reload() })
+                                        reload = { reload(removalFailed = result.isFailure) })
                                 }
                             }
                         }
@@ -94,7 +98,7 @@ class ConnectionsActivity : Activity() {
             val title = name.text.toString().trim()
             val config = runCatching { PairingInput.parse(address.text.toString(), token.text.toString()) }.getOrNull()
             if (config == null || title.isEmpty() || title.length > 80) { error = getString(R.string.invalid_connection); render(); return@button }
-            if ((groups.mapNotNull { it.config?.baseUrl } + primaryUrl).contains(config.baseUrl)) {
+            if ((groups.mapNotNull { it.config?.baseUrl } + primaryUrl).any { HubConfig.sameOrigin(it, config.baseUrl) }) {
                 error = getString(R.string.hub_duplicate); render(); return@button
             }
             busy = true
@@ -104,7 +108,10 @@ class ConnectionsActivity : Activity() {
                 val result = runCatching {
                     directory.add(title, config) { HubClient(it).pair() }
                 }
-                main.post { if (!isDestroyed) { error = getString(if (result.isSuccess) R.string.hub_added else R.string.hub_add_failed); reload() } }
+                main.post { if (!isDestroyed) {
+                    error = getString(if (result.isSuccess) R.string.hub_added else R.string.hub_add_failed)
+                    reload(notice = error)
+                } }
             }
         }
         button(R.string.cancel) { render() }

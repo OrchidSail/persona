@@ -7,7 +7,7 @@ import java.net.URLDecoder
 object PairingInput {
     fun parse(addressOrLink: String, separateToken: String): HubConfig {
         val address = addressOrLink.trim()
-        if (!address.startsWith("persona:")) return HubConfig(address, separateToken.trim()).validated()
+        if (!address.startsWith("persona:")) return HubConfig(address, separateToken.trim()).canonicalized()
         try {
             val link = URI(address)
             if (link.scheme != "persona" || link.host != "pair" || link.rawUserInfo != null ||
@@ -24,13 +24,13 @@ object PairingInput {
             if (separateToken.isNotBlank() && separateToken.trim() != token) throw HubException("invalid_token")
             var origin = URI(values["url"] ?: throw HubException("invalid_address"))
             val pin = values["fp"]?.takeIf { it.isNotEmpty() }
-            if (origin.scheme == "http" && pin != null) {
+            if (origin.scheme.equals("http", ignoreCase = true) && pin != null) {
                 val port = values["tls"]?.toIntOrNull()?.takeIf { it in 1..65535 } ?: throw HubException("invalid_address")
                 // Validate before rebuilding so userinfo, query and fragments cannot disappear during normalization.
                 HubConfig(origin.toString(), token).validated()
                 origin = URI("https", null, origin.host, port, origin.path, null, null)
             }
-            return HubConfig(origin.toString(), token, pin).validated()
+            return HubConfig(origin.toString(), token, pin).canonicalized()
         } catch (failure: HubException) { throw failure }
         catch (_: Exception) { throw HubException("invalid_address") }
     }

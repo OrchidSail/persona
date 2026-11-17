@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import androidx.wear.watchface.complications.datasource.ComplicationDataSourceUpdateRequester
 import dev.persona.watch.data.HubConfig
+import dev.persona.watch.HubGroupRead
 import dev.persona.watch.data.WatchSnapshot
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -19,6 +20,17 @@ object PetBridge {
         val app = context.applicationContext
         val next = PetFreshness.next(read(app, config), snapshot, unreachable, partlyUnreachable)
         publish(app, config, next.status, next.updatedAt)
+        refreshAssets(app, config)
+    }
+
+    fun refreshGroups(context: Context, config: HubConfig, result: HubGroupRead, groupCount: Int) {
+        val app = context.applicationContext
+        val next = PetFreshness.groups(read(app, config), result, groupCount)
+        publish(app, config, next.status, next.updatedAt)
+        refreshAssets(app, config)
+    }
+
+    private fun refreshAssets(app: Context, config: HubConfig) {
         if (!fetching.compareAndSet(false, true)) return
         worker.execute {
             try {
@@ -34,13 +46,14 @@ object PetBridge {
 
     fun publish(context: Context, config: HubConfig, status: PetStatus, updatedAt: Long) {
         val preferences = preferences(context, config)
+        val previous = read(context, config)
         val previousRequest = preferences.getLong("widget_requested_at", 0)
         val now = System.currentTimeMillis()
         val visible = PetStoredStatus(status, updatedAt).visible(now)
-        val changed = preferences.getString("state", "") != visible.state.wire || preferences.getInt("count", 0) != visible.count
+        val next = PetStoredStatus(visible, updatedAt)
         preferences.edit().putString("state", visible.state.wire).putInt("count", visible.count)
             .putLong("updated_at", updatedAt).apply()
-        if (changed || now - previousRequest > 20 * 60 * 1000) {
+        if (petPublicationNeedsUpdate(previous, next, previousRequest, now)) {
             preferences.edit().putLong("widget_requested_at", now).apply()
             requestUpdate(context)
         }
@@ -52,11 +65,22 @@ object PetBridge {
         return PetStoredStatus(PetStatus(state, preferences.getInt("count", 0).coerceAtLeast(0)), preferences.getLong("updated_at", 0))
     }
 
+    /** Test/probe callers need durable state before exiting or removing their restore backup. */
+    fun publishDurably(context: Context, config: HubConfig, status: PetStatus, updatedAt: Long): PetStoredStatus {
+        val now = System.currentTimeMillis()
+        val stored = PetStoredStatus(PetStoredStatus(status, updatedAt).visible(now), updatedAt)
+        return commitPetPublication(stored, commit = { next ->
+            preferences(context, config).edit().putString("state", next.status.state.wire)
+                .putInt("count", next.status.count).putLong("updated_at", next.updatedAt)
+                .putLong("widget_requested_at", now).commit()
+        }, requestUpdate = { requestUpdate(context) })
+    }
+
     fun requestUpdate(context: Context) {
         runCatching { ComplicationDataSourceUpdateRequester.create(context,
             ComponentName(context, PetComplicationService::class.java)).requestUpdateAll() }
     }
 
-    private fun preferences(context: Context, config: HubConfig) = context.getSharedPreferences("pet_state_" + petStatusScope(config), Context.MODE_PRIVATE)
+    private fun preferences(context: Context, config: HubConfig) = context.getSharedPreferences(petStatusPreferencesName(config), Context.MODE_PRIVATE)
     private const val ASSET_RETRY_MS = 60 * 60 * 1000L
 }

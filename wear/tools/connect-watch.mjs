@@ -50,11 +50,14 @@ export function connectWatch({ serial, run }) {
   if (!validSerial(serial)) throw new Error('A valid hardware serial is required.');
   const devices = parseDevices(run(['devices', '-l']));
   const online = devices.filter(device => device.state === 'device');
-  const verified = transport => {
+  const verified = (transport, claimedIdentity = true) => {
     let actual;
     try { actual = run(['-s', transport, 'shell', 'getprop', 'ro.serialno']).trim(); }
     catch { return false; }
-    if (actual !== serial) throw new Error('A discovered connection belongs to a different device; refusing to use it.');
+    if (actual !== serial) {
+      if (claimedIdentity) throw new Error('A discovered connection belongs to a different device; refusing to use it.');
+      return false;
+    }
     return true;
   };
 
@@ -66,13 +69,18 @@ export function connectWatch({ serial, run }) {
   if (named.length > 4) throw new Error('Too many matching watch transports; resolve stale discovery entries first.');
   for (const device of named) if (verified(device.transport)) return device.transport;
 
+  // Online IP transports need no current advertisement. Read identity only; never select another device.
+  for (const device of online) {
+    if (validEndpoint(device.transport) && verified(device.transport, false)) return device.transport;
+  }
+
   let services;
   try { services = parseTlsServices(run(['mdns', 'services']), serial); }
   catch (error) { throw new Error('ADB mDNS discovery failed; check wireless debugging and the local network.', { cause: error }); }
   const endpoints = [...new Set(services.map(service => service.endpoint))];
   if (endpoints.length > 4) throw new Error('Too many matching watch advertisements; resolve stale discovery entries first.');
 
-  // Only query IP transports linked to this watch's TLS advertisement, never other phones.
+  // A newly discovered endpoint must still belong to this watch before it can be used.
   for (const endpoint of endpoints) {
     if (online.some(device => device.transport === endpoint) && verified(endpoint)) return endpoint;
   }

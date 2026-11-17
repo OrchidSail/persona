@@ -253,7 +253,7 @@ class MainActivity : Activity() {
                     val allFailed = failedGroups.size == groups.size + if (hub != null) 1 else 0
                     snapshot = if (isFirst && allFailed) null else if (fresh.inboxUnavailable) fresh.copy(inbox = snapshot?.inbox.orEmpty()) else fresh
                     error = when { allFailed -> getString(R.string.connection_failed); failedGroups.isNotEmpty() -> getString(R.string.hub_partial); else -> "" }
-                    config?.let { PetBridge.refresh(this, it, snapshot, allFailed, failedGroups.isNotEmpty()) }
+                    config?.let { PetBridge.refreshGroups(this, it, loaded, groups.size + if (hub != null) 1 else 0) }
                     val openRequest = selectedInteraction
                     if (openRequest != null && (page == "interaction" || page == "confirm" && previousPage == "interaction")) {
                         val current = fresh.interactions.firstOrNull { it.key == openRequest.key }

@@ -30,17 +30,20 @@ class ExtensionClient(
     }
 
     /** Only a widget from this client's current catalogue can be projected; never a full extension page. */
-    fun widget(widget: ExtensionWidget, force: Boolean = false, family: String = widget.family): ExtensionWidgetView {
+    fun widget(widget: ExtensionWidget, force: Boolean = false, family: String = widget.family): ExtensionWidgetView =
+        projection(widget, force, family).view
+
+    /** Preserve the original fetch time when a foreground refresh reuses a cached projection. */
+    internal fun projection(widget: ExtensionWidget, force: Boolean = false, family: String = widget.family): CachedWidget {
         if (!canProject(widget)) throw ExtensionException(ExtensionProblem.UNAVAILABLE)
         if (family !in widget.families || family !in ExtensionParser.FAMILIES) throw ExtensionException(ExtensionProblem.UNAVAILABLE)
         val key = "${widget.key}|$family"
-        if (!force) cache[key]?.takeIf { it.fresh(now()) }?.let { return it.view }
+        if (!force) cache[key]?.takeIf { it.widget == widget && it.fresh(now()) }?.let { return it }
         val context = JSONObject().put("size", family).put("tz", timeZone).put("locale", locale)
             .put("platform", "android").put("ui_version", 3)
         val answer = ExtensionParser.view(request("POST", "/api/v1/extensions/${encode(widget.owner)}/-/widget/${encode(widget.id)}",
             JSONObject().put("context", context)), family)
-        cache[key] = CachedWidget(widget, family, answer, now())
-        return answer
+        return CachedWidget(widget, family, answer, now()).also { cache[key] = it }
     }
 
     /** A disk catalogue cannot grant this capability; only a successful discovery by this client can. */

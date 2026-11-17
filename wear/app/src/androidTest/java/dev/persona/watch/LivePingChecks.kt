@@ -23,6 +23,7 @@ class LivePingChecks(private val instrumentation: Instrumentation) {
     private val automation get() = instrumentation.uiAutomation
     private lateinit var config: HubConfig
     private lateinit var client: HubClient
+    private lateinit var isolation: LiveWriteIsolation
     private lateinit var session: WatchSession
     private var activity: Activity? = null
     private var deadline = 0L
@@ -33,12 +34,16 @@ class LivePingChecks(private val instrumentation: Instrumentation) {
         config = checkNotNull(CredentialStore(context).load()) { "live_ping_not_paired" }.validated()
         check(config.token != FIXTURE_TOKEN) { "live_ping_real_credential_required" }
         check(URI(config.baseUrl).scheme == "https" && config.fingerprint != null) { "live_ping_pinned_tls_required" }
+        isolation = LiveWriteIsolation(config, FIXTURE_TOKEN)
         client = HubClient(config, "en")
         val started = SystemClock.elapsedRealtime()
         deadline = started + TOTAL_TIMEOUT_MS
+        sameCredential()
         session = checkNotNull(client.refresh().sessions.singleOrNull { it.sessionId == sessionId }) {
             "live_ping_exact_unique_session_required"
         }
+        sameCredential()
+        check(session.groupId.isEmpty()) { "live_ping_primary_session_required" }
         check(session.machineId != "fixture") { "live_ping_real_session_required" }
         val initial = client.messages(session)
         verifyDedicatedChat(initial)
@@ -133,7 +138,7 @@ class LivePingChecks(private val instrumentation: Instrumentation) {
         !message.own && message.role == "assistant" && message.text.trim() == value
 
     private fun sameCredential() {
-        check(CredentialStore(context).load() == config && config.token != FIXTURE_TOKEN) { "live_ping_credential_changed" }
+        isolation.verify(CredentialStore(context).load(), HubDirectory(context).additional())
         check(SystemClock.elapsedRealtime() < deadline) { "live_ping_total_timeout" }
     }
 
@@ -160,6 +165,7 @@ class LivePingChecks(private val instrumentation: Instrumentation) {
             } else {
                 // Do not overwrite an unrelated draft, even inside the dedicated test conversation.
                 check(field.isShowingHintText || field.text.isNullOrEmpty() || field.text?.toString() == PING) { "live_ping_unrelated_draft" }
+                sameCredential()
                 field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply {
                     putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, PING)
                 })
@@ -213,7 +219,7 @@ class LivePingChecks(private val instrumentation: Instrumentation) {
         val end = minOf(deadline, SystemClock.elapsedRealtime() + UI_TIMEOUT_MS)
         while (SystemClock.elapsedRealtime() < end) {
             sameCredential()
-            if (condition()) return
+            if (condition()) { sameCredential(); return }
             SystemClock.sleep(UI_POLL_MS)
         }
         throw AssertionError("live_ping_${reason}_timeout")

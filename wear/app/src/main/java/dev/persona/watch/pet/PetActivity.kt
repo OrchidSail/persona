@@ -169,15 +169,16 @@ class PetActivity : Activity() {
                 HubGroupReader.read(connection, extras, previousGroups,
                     resources.configuration.locales[0].toLanguageTag(), connections)
             }
-            val allFailed = read.isFailure || read.getOrNull()?.failed?.size == groupCount
-            val partlyFailed = read.getOrNull()?.failed?.isNotEmpty() == true
+            val result = read.getOrNull()
+            val reachability = PetReachability.from(result, groupCount)
+            val allFailed = reachability.allFailed
+            val partlyFailed = reachability.partlyFailed
             handler.post {
                 if (isDestroyed || !foreground || !page.accepts(ticket)) return@post
                 busy = false
                 val previousStatus = status
                 val missingManifest = manifest == null
-                page.acceptRefresh(ticket, nextManifest, read.getOrNull()?.cache ?: previousGroups,
-                    read.getOrNull()?.snapshot, allFailed, partlyFailed, System.currentTimeMillis())
+                page.acceptRefresh(ticket, nextManifest, result, groupCount, System.currentTimeMillis())
                 val expired = showState()
                 PetBridge.publish(applicationContext, connection, status, updatedAt)
                 notice.text = when {
