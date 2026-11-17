@@ -6,6 +6,10 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.io.IOException
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -146,5 +150,47 @@ class ExtensionCacheTest {
         File(root, "widgets.json").writeText(" ".repeat(1_048_577))
         assertNull(store.catalog("", config))
         assertThrows(IllegalArgumentException::class.java) { store.saveCatalog("../unsafe", config, listOf(widget)) }
+    }
+
+    @Test fun unsupportedAtomicMovesFallBackForCatalogProjectionAndBindingWrites() {
+        val root = temporary.newFolder()
+        val attempts = mutableListOf<List<StandardCopyOption>>()
+        val store = ExtensionCacheStore(root, moveFile = { source, target, options ->
+            attempts += options.map { it as StandardCopyOption }
+            if (StandardCopyOption.ATOMIC_MOVE in options)
+                throw AtomicMoveNotSupportedException(source.toString(), target.toString(), "Test filesystem")
+            Files.move(source, target, *options)
+        }, now = { 60_000 })
+        store.saveCatalog("", config, listOf(widget))
+        assertTrue(store.saveProjection("", config, widget, "accessory_circular", view))
+        store.bind(7, "", config, widget, "accessory_circular", WidgetFaceKind.SHORT)
+        val expected = listOf(listOf(StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE),
+            listOf(StandardCopyOption.REPLACE_EXISTING))
+        assertEquals(expected + expected + expected, attempts)
+        val reopened = ExtensionCacheStore(root) { 60_001 }
+        assertEquals(listOf(widget), reopened.catalog("", config))
+        assertEquals(view, reopened.projection("", config, widget, "accessory_circular")!!.view)
+        assertEquals(widget.id, reopened.binding(7)!!.widget)
+        assertFalse(File(root, "widgets.new").exists())
+    }
+
+    @Test fun ordinaryMoveAndFallbackFailuresPropagateWithoutReplacingTheLastValidCache() {
+        for (atomicUnsupported in listOf(false, true)) {
+            val root = temporary.newFolder()
+            ExtensionCacheStore(root).saveCatalog("", config, listOf(widget))
+            val original = File(root, "widgets.json").readBytes()
+            var attempts = 0
+            val failure = IOException("Test move failure")
+            val store = ExtensionCacheStore(root, moveFile = { source, target, options ->
+                attempts++
+                if (atomicUnsupported && StandardCopyOption.ATOMIC_MOVE in options)
+                    throw AtomicMoveNotSupportedException(source.toString(), target.toString(), "Test filesystem")
+                throw failure
+            })
+            assertSame(failure, assertThrows(IOException::class.java) { store.saveCatalog("", config, emptyList()) })
+            assertEquals(if (atomicUnsupported) 2 else 1, attempts)
+            assertArrayEquals(original, File(root, "widgets.json").readBytes())
+            assertEquals(listOf(widget), ExtensionCacheStore(root).catalog("", config))
+        }
     }
 }

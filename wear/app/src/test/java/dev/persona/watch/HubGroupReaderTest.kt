@@ -81,7 +81,7 @@ class HubGroupReaderTest {
         assertEquals(setOf("", "1", "2", "3"), result.failed)
         assertTrue(requests.all { it.waits.isEmpty() && it.cancellations == 1 })
         assertEquals(setOf("", "1"), result.cache.keys)
-        assertEquals(19L, result.snapshot.updatedAt)
+        assertEquals(17L, result.snapshot.updatedAt)
         assertTrue(result.snapshot.inboxUnavailable)
     }
 
@@ -139,5 +139,48 @@ class HubGroupReaderTest {
         assertTrue(collect(clock, listOf(first, second), deadline = deadline).failed.isEmpty())
         assertEquals(listOf(budget), first.waits)
         assertEquals(listOf(budget - 10), second.waits)
+    }
+
+    @Test fun aSuccessfulSiblingCannotRenewDisplayedCachedData() {
+        for (failedIndex in listOf(0, 1)) {
+            val requests = List(2) { index -> Request({
+                if (index == failedIndex) throw ExecutionException(IllegalStateException("Unavailable"))
+                sample(900)
+            }) }
+            val failedId = if (failedIndex == 0) "" else "1"
+            val result = collect(Clock(), requests, mapOf(failedId to sample(120)))
+            assertEquals(120L, result.snapshot.updatedAt)
+            assertEquals(2, result.snapshot.sessions.size)
+            assertEquals(120L, result.cache.getValue(failedId).updatedAt)
+            assertFalse(result.snapshot.sessions.single { it.groupId == failedId }.canSend)
+            assertTrue(result.snapshot.sessions.single { it.groupId != failedId }.canSend)
+        }
+    }
+
+    @Test fun successfulEmptySiblingStillCannotRenewTheOnlyDisplayedCachedTasks() {
+        val empty = sample(900).copy(sessions = emptyList(), inbox = emptyList())
+        val result = collect(Clock(), listOf(Request({ throw TimeoutException() }), Request({ empty }, done = true)),
+            mapOf("" to sample(120)))
+        assertEquals(1, result.snapshot.sessions.size)
+        assertEquals(120L, result.snapshot.updatedAt)
+        assertEquals(900L, result.cache.getValue("1").updatedAt)
+    }
+
+    @Test fun allSuccessfulReadsUseTheirActualObservationTimesAndReplaceOlderCache() {
+        val result = collect(Clock(), listOf(Request({ sample(800) }), Request({ sample(900) })),
+            mapOf("" to sample(20), "1" to sample(30), "removed" to sample(1)))
+        assertTrue(result.failed.isEmpty())
+        assertEquals(800L, result.snapshot.updatedAt)
+        assertEquals(setOf("", "1"), result.cache.keys)
+        assertEquals(900L, result.cache.getValue("1").updatedAt)
+    }
+
+    @Test fun failureWithoutCachedContentDoesNotInventOrAgeAnObservation() {
+        val emptyFailure = collect(Clock(), listOf(Request({ throw TimeoutException() })))
+        assertEquals(0L, emptyFailure.snapshot.updatedAt)
+        assertTrue(emptyFailure.cache.isEmpty())
+        val partial = collect(Clock(), listOf(Request({ throw TimeoutException() }), Request({ sample(900) }, done = true)))
+        assertEquals(900L, partial.snapshot.updatedAt)
+        assertEquals(1, partial.snapshot.sessions.size)
     }
 }

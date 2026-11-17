@@ -7,6 +7,9 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.nio.file.Files
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.CopyOption
+import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.time.Instant
@@ -21,7 +24,10 @@ data class CachedWidget(val widget: ExtensionWidget, val family: String, val vie
 }
 
 /** Private, bounded snapshots and instance mappings. No address or token is serialized. */
-class ExtensionCacheStore(root: File, private val now: () -> Long = System::currentTimeMillis) {
+class ExtensionCacheStore(root: File,
+    private val moveFile: (Path, Path, Array<CopyOption>) -> Unit = { source, target, options -> Files.move(source, target, *options); Unit },
+    private val now: () -> Long = System::currentTimeMillis,
+) {
     private val root = root.canonicalFile
     private val lock = locks.computeIfAbsent(this.root.path) { Any() }
     init { require(this.root.isDirectory || this.root.mkdirs()) }
@@ -90,6 +96,16 @@ class ExtensionCacheStore(root: File, private val now: () -> Long = System::curr
         if (matching(state, group, config) != null) { groups(state).remove(group); write(state) }
     }
 
+    /** A missing projection does not revoke other widgets or even its other advertised families. */
+    fun invalidateProjection(group: String, config: HubConfig, widget: ExtensionWidget, family: String) = access {
+        val state = read()
+        val saved = matching(state, group, config) ?: return@access
+        val rows = saved.optJSONArray("views") ?: return@access
+        val keep = (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }
+            .filterNot { it.optString("key") == widget.key && it.optString("family") == family }
+        if (keep.size != rows.length()) { saved.put("views", JSONArray(keep)); write(state) }
+    }
+
     fun bind(instanceId: Int, group: String, config: HubConfig, widget: ExtensionWidget, family: String, kind: WidgetFaceKind) = access {
         require(instanceId >= 0 && familyFor(widget, kind) == family)
         val state = read()
@@ -138,7 +154,12 @@ class ExtensionCacheStore(root: File, private val now: () -> Long = System::curr
         require(bytes.size <= MAX_BYTES)
         val temp = File(root, "widgets.new")
         FileOutputStream(temp).use { it.write(bytes); it.fd.sync() }
-        Files.move(temp.toPath(), File(root, "widgets.json").toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        val target = File(root, "widgets.json").toPath()
+        try {
+            moveFile(temp.toPath(), target, arrayOf(StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE))
+        } catch (_: AtomicMoveNotSupportedException) {
+            moveFile(temp.toPath(), target, arrayOf(StandardCopyOption.REPLACE_EXISTING))
+        }
     }
     private fun trim(state: JSONObject) {
         val groups = groups(state)

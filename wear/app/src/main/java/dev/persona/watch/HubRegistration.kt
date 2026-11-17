@@ -4,9 +4,17 @@ import dev.persona.watch.data.HubConfig
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import java.security.MessageDigest
 
 /** The journal contains metadata only; issued credentials stay in encrypted CredentialStore files. */
-internal data class PendingHubRegistration(val id: String, val name: String, val baseUrl: String)
+internal data class PendingHubRegistration(val id: String, val name: String, val baseUrl: String, val inputKey: String? = null)
+
+/** Only the digest is journaled; an entered pairing token must never be stored as plaintext metadata. */
+internal fun registrationInputKey(input: HubConfig): String {
+    val config = input.canonicalized()
+    val bytes = JSONArray(listOf(config.baseUrl, config.token, config.fingerprint, config.deviceId)).toString().toByteArray(Charsets.UTF_8)
+    return MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it.toInt() and 255) }
+}
 
 internal object PendingHubJournal {
     fun decode(value: String?): List<PendingHubRegistration> {
@@ -16,11 +24,13 @@ internal object PendingHubJournal {
             val row = rows.getJSONObject(index)
             val id = row.getString("id")
             require(id.matches(Regex("[a-f0-9-]{36}")))
-            PendingHubRegistration(id, row.getString("name"), row.getString("baseUrl"))
+            val key = row.optString("inputKey").takeIf { it.matches(Regex("[a-f0-9]{64}")) }
+            PendingHubRegistration(id, row.getString("name"), row.getString("baseUrl"), key)
         }
     }
     fun encode(pending: List<PendingHubRegistration>): String = JSONArray().also { rows ->
-        pending.forEach { rows.put(JSONObject().put("id", it.id).put("name", it.name).put("baseUrl", it.baseUrl)) }
+        pending.forEach { entry -> rows.put(JSONObject().put("id", entry.id).put("name", entry.name).put("baseUrl", entry.baseUrl)
+            .also { entry.inputKey?.let { key -> it.put("inputKey", key) } }) }
     }.toString()
 }
 
@@ -32,21 +42,24 @@ internal interface HubRegistrationStore {
     fun credential(id: String): HubConfig?
     fun saveCredential(id: String, config: HubConfig)
     fun writeGroups(groups: List<SavedHub>)
+    fun aborted(id: String): Boolean = false
 }
 
 /** Caller serializes operations. Publication may be retried without another token exchange. */
 internal class HubRegistration(private val store: HubRegistrationStore,
                                private val newId: () -> String = { UUID.randomUUID().toString() }) {
-    fun add(name: String, input: HubConfig, pair: (HubConfig) -> HubConfig) {
+    fun add(name: String, input: HubConfig, record: (PendingHubRegistration) -> Unit = {}, pair: (HubConfig) -> HubConfig) {
         val config = input.canonicalized()
+        val inputKey = registrationInputKey(config)
         require(name.trim().isNotEmpty() && name.length <= 80)
         // Unrelated journals recover independently; a failed old Hub must not block a new Hub.
         // Keep unreadable issued credentials, but discard metadata whose exchange never became durable.
         val pending = store.pending()
         val retained = pending.filter { runCatching { store.credential(it.id) != null }.getOrDefault(true) }
         if (retained != pending) store.writePending(retained)
-        val matching = retained.firstOrNull { HubConfig.sameOrigin(it.baseUrl, config.baseUrl) }
+        val matching = retained.firstOrNull { it.inputKey == inputKey && HubConfig.sameOrigin(it.baseUrl, config.baseUrl) }
         if (matching != null) {
+            record(matching)
             val issued = checkNotNull(store.credential(matching.id))
             publish(matching, issued)
             return
@@ -54,11 +67,16 @@ internal class HubRegistration(private val store: HubRegistrationStore,
         val current = store.groups()
         require(current.size < 3)
         require(current.none { HubConfig.sameOrigin(it.config?.baseUrl, config.baseUrl) } && !HubConfig.sameOrigin(store.primaryUrl(), config.baseUrl))
-        val registration = PendingHubRegistration(newId(), name.trim(), config.baseUrl)
+        val registration = PendingHubRegistration(newId(), name.trim(), config.baseUrl, inputKey)
+        require(current.none { it.id == registration.id } && retained.none { it.id == registration.id })
+        record(registration)
+        check(!store.aborted(registration.id)) { "Registration was aborted" }
         // This must succeed before the network can consume a one-time pairing token.
         store.writePending(store.pending() + registration)
+        check(!store.aborted(registration.id)) { "Registration was aborted" }
         val paired = pair(config).canonicalized()
         require(paired.baseUrl == config.baseUrl && paired.fingerprint == config.fingerprint)
+        check(!store.aborted(registration.id)) { "Registration was aborted" }
         store.saveCredential(registration.id, paired)
         publish(registration, paired)
     }
@@ -82,12 +100,14 @@ internal class HubRegistration(private val store: HubRegistrationStore,
     }
 
     private fun publish(pending: PendingHubRegistration, issued: HubConfig) {
+        check(!store.aborted(pending.id)) { "Registration was aborted" }
         val config = issued.validated()
         require(HubConfig.sameOrigin(pending.baseUrl, config.baseUrl))
         val other = store.groups().filterNot { it.id == pending.id }
         require(other.size < 3)
         require(other.none { HubConfig.sameOrigin(it.config?.baseUrl, config.baseUrl) } && !HubConfig.sameOrigin(store.primaryUrl(), config.baseUrl))
         // Always commit, even if a failed SharedPreferences commit already changed its in-memory view.
+        check(!store.aborted(pending.id)) { "Registration was aborted" }
         store.writeGroups(other + SavedHub(pending.id, pending.name, config))
         // A failed cleanup is harmless: replay rewrites the same ID, never another credential or row.
         forget(pending.id)

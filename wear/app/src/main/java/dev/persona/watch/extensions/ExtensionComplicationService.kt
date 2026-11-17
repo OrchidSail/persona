@@ -18,6 +18,7 @@ import androidx.wear.watchface.complications.datasource.ComplicationRequest
 import androidx.wear.watchface.complications.datasource.TimeInterval
 import androidx.wear.watchface.complications.datasource.TimelineEntry
 import dev.persona.watch.CredentialStore
+import dev.persona.watch.HubDirectory
 import dev.persona.watch.R
 import dev.persona.watch.data.HubConfig
 import java.io.File
@@ -90,10 +91,10 @@ class ExtensionComplicationService : ComplicationDataSourceService() {
 
 object ExtensionComplications {
     fun store(context: Context) = ExtensionCacheStore(File(context.noBackupFilesDir, "extension-widgets"))
-    /** Credential envelopes are reread from disk, unlike process-local SharedPreferences directory caches. */
+    /** Envelopes and deletion fences are read from disk, not process-local directory caches. */
     fun config(context: Context, group: String): HubConfig? = when {
         group.isEmpty() -> CredentialStore(context).load()
-        group.matches(Regex("[a-f0-9-]{36}")) -> CredentialStore(context, "group_$group").load()
+        group.matches(Regex("[a-f0-9-]{36}")) -> HubDirectory(context).activeCredential(group)
         else -> null
     }
     fun changed(context: Context) { runCatching { ComplicationDataSourceUpdateRequester.create(context,

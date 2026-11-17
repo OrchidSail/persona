@@ -245,13 +245,16 @@ class MainActivity : Activity() {
             handler.post {
                 if (isDestroyed || !work.finishRefresh(ticket)) return@post
                 result.fold({ loaded ->
-                    val fresh = loaded.snapshot
+                    val previousSnapshot = snapshot
+                    val groupCount = groups.size + if (hub != null) 1 else 0
+                    val accepted = loaded.displayAfter(previousSnapshot, groupCount)
+                    val fresh = accepted ?: loaded.snapshot
                     groupCache = loaded.cache
                     failedGroups = loaded.failed
-                    val oldIds = snapshot?.interactions?.map { it.key }?.toSet().orEmpty()
-                    val isFirst = snapshot == null
-                    val allFailed = failedGroups.size == groups.size + if (hub != null) 1 else 0
-                    snapshot = if (isFirst && allFailed) null else if (fresh.inboxUnavailable) fresh.copy(inbox = snapshot?.inbox.orEmpty()) else fresh
+                    val oldIds = previousSnapshot?.interactions?.map { it.key }?.toSet().orEmpty()
+                    val isFirst = previousSnapshot == null
+                    val allFailed = failedGroups.size == groupCount
+                    snapshot = accepted
                     error = when { allFailed -> getString(R.string.connection_failed); failedGroups.isNotEmpty() -> getString(R.string.hub_partial); else -> "" }
                     config?.let { PetBridge.refreshGroups(this, it, loaded, groups.size + if (hub != null) 1 else 0) }
                     val openRequest = selectedInteraction
@@ -828,8 +831,9 @@ class MainActivity : Activity() {
                         if (publication.isFailure) { error = errorText(publication.exceptionOrNull()!!); notice = ""; updateStatus(); return@fold }
                         val paired = verified.config
                         val fresh = verified.snapshot
-                        groupCache = emptyMap(); failedGroups = emptySet()
-                        config = paired; client = HubClient(paired, language()); snapshot = fresh
+                        val initial = HubGroupRead.pairedPrimary(fresh)
+                        groupCache = initial.cache; failedGroups = initial.failed
+                        config = paired; client = HubClient(paired, language()); snapshot = initial.snapshot
                         work.connectionsChanged(); transcripts.clear(); clearSelection(); page = "home"
                         WidgetUpdates.request(this)
                         notice = getString(R.string.connection_saved); error = ""; render()

@@ -40,7 +40,7 @@ class ExtensionWidgetsActivity : Activity() {
     private var selected: ExtensionWidget? = null
     private var selectedKey: String? = null
     private var projection: CachedWidget? = null
-    private var chartValues: WidgetItem.Chart? = null
+    private val chartDetails = WidgetChartDetails()
     private var problem: ExtensionProblem? = null
     private var busy = false
     private var unregisterSystemBack: (() -> Unit)? = null
@@ -116,7 +116,7 @@ class ExtensionWidgetsActivity : Activity() {
         if (isFinishing || isDestroyed) return
         generation++; busy = false
         when {
-            chartValues != null -> { chartValues = null; render() }
+            chartDetails.value != null -> { chartDetails.clear(); render() }
             selected != null && deepLink == null -> { selected = null; selectedKey = null; projection = null; problem = null; render() }
             else -> finish()
         }
@@ -139,7 +139,7 @@ class ExtensionWidgetsActivity : Activity() {
         val previousSelectedKey = selected?.key ?: selectedKey
         val requestedKey = previousSelectedKey ?: selectedKey
         // Hide cached private content until the connection identity has been checked off the UI thread.
-        widgets = emptyList(); projection = null
+        widgets = emptyList(); selected = null; projection = null; chartDetails.clear()
         render()
         io.execute {
             val result = runCatching {
@@ -156,25 +156,24 @@ class ExtensionWidgetsActivity : Activity() {
                 // Restore identity-checked local content before starting the potentially slow Hub request.
                 main.post {
                     if (!foreground || isDestroyed || ticket != generation) return@post
-                    if (!same) chartValues = null
+                    if (!same) chartDetails.clear()
                     config = saved; client = api
                     widgets = preview.widgets; selected = preview.selected
                     selectedKey = preview.selectedKey; projection = preview.projection
+                    chartDetails.reconcile(selected, projection)
                     render()
                 }
                 val catalogResult = runCatching { api.widgets() }
                 if (savedConfig() != saved) throw ExtensionException(ExtensionProblem.CONNECTION_CHANGED)
                 catalogResult.onSuccess { runCatching { diskCache.saveCatalog(group, saved, it) }; ExtensionComplications.changed(this) }
-                    .onFailure { failure -> if (problemOf(failure) in setOf(ExtensionProblem.AUTHENTICATION, ExtensionProblem.FORBIDDEN, ExtensionProblem.UNAVAILABLE)) {
-                        runCatching { diskCache.invalidate(group, saved) }; ExtensionComplications.changed(this)
-                    } }
+                    .onFailure { invalidateFailure(saved, it) }
                 LoadResult(saved, api, same, catalogResult, savedWidgets, savedWidget, savedView)
             }
             main.post {
                 if (!foreground || isDestroyed || ticket != generation) return@post
                 busy = false
                 result.fold({ loaded ->
-                    if (!loaded.same) { selected = null; chartValues = null }
+                    if (!loaded.same) { selected = null; chartDetails.clear() }
                     config = loaded.config
                     client = loaded.client
                     loaded.catalog.fold({ found ->
@@ -186,6 +185,7 @@ class ExtensionWidgetsActivity : Activity() {
                         projection = retainWidgetProjection(selected, loaded.same,
                             previousProjection.takeIf { previousSelectedKey == selected?.key },
                             loaded.savedView, System.currentTimeMillis())
+                        chartDetails.reconcile(selected, projection)
                         render()
                         selected?.let { loadWidget(it, force = false) }
                     }, { failure ->
@@ -196,6 +196,7 @@ class ExtensionWidgetsActivity : Activity() {
                             loaded.savedWidgets, loaded.savedWidget, loaded.savedView)
                         widgets = recovered.widgets; selected = recovered.selected
                         selectedKey = recovered.selectedKey; projection = recovered.projection
+                        chartDetails.reconcile(selected, projection)
                         // An earlier successful catalogue on this same client can authorize a retry.
                         // Otherwise show the selected cached/retry detail without trusting a disk snapshot.
                         catalogReady = mayKeep && loaded.same && selected?.let(loaded.client::canProject) == true
@@ -204,7 +205,7 @@ class ExtensionWidgetsActivity : Activity() {
                     })
                 }, { failure ->
                     problem = problemOf(failure)
-                    config = null; client = null; widgets = emptyList(); selected = null; projection = null; chartValues = null
+                    config = null; client = null; widgets = emptyList(); selected = null; projection = null; chartDetails.clear()
                     render()
                 })
             }
@@ -214,7 +215,7 @@ class ExtensionWidgetsActivity : Activity() {
     private fun loadWidget(widget: ExtensionWidget, force: Boolean) {
         if (busy) return
         projection = retainWidgetProjection(widget, true, projection, null, System.currentTimeMillis())
-        selected = widget; selectedKey = widget.key; chartValues = null
+        selected = widget; selectedKey = widget.key; chartDetails.clear()
         // A disk snapshot cannot authorize a new projection: retry discovery after an offline catalogue.
         if (!catalogReady) { loadCatalog(); return }
         val api = client ?: return
@@ -230,12 +231,7 @@ class ExtensionWidgetsActivity : Activity() {
                     runCatching { diskCache.saveProjection(group, expected, widget, widget.family, it.view, it.savedAtMs) }
                     ExtensionComplications.changed(this)
                 }
-            }.onFailure { failure ->
-                if (problemOf(failure) in setOf(ExtensionProblem.AUTHENTICATION, ExtensionProblem.FORBIDDEN, ExtensionProblem.UNAVAILABLE)) {
-                    runCatching { diskCache.invalidate(group, expected) }
-                    ExtensionComplications.changed(this)
-                }
-            }
+            }.onFailure { invalidateFailure(expected, it, widget, widget.family) }
             main.post {
                 if (!foreground || isDestroyed || ticket != generation) return@post
                 busy = false
@@ -243,7 +239,7 @@ class ExtensionWidgetsActivity : Activity() {
                     problem = problemOf(failure)
                     projection = previousProjection.takeIf { problem == ExtensionProblem.RETRYABLE }
                     if (problem in setOf(ExtensionProblem.AUTHENTICATION, ExtensionProblem.FORBIDDEN, ExtensionProblem.CONNECTION_CHANGED)) {
-                        widgets = emptyList(); selected = null; selectedKey = null; chartValues = null
+                        widgets = emptyList(); selected = null; selectedKey = null; chartDetails.clear()
                     }
                 })
                 render()
@@ -259,9 +255,7 @@ class ExtensionWidgetsActivity : Activity() {
             if (!foreground || generation != ticket || savedConfig() != expected) return
             runCatching { api.widget(widget, force = true, family = family) }.onSuccess { view ->
                 if (savedConfig() == expected) runCatching { diskCache.saveProjection(group, expected, widget, family, view) }
-            }.onFailure { failure ->
-                if (problemOf(failure) in setOf(ExtensionProblem.AUTHENTICATION, ExtensionProblem.FORBIDDEN)) runCatching { diskCache.invalidate(group, expected) }
-            }
+            }.onFailure { invalidateFailure(expected, it, widget, family) }
         }
         ExtensionComplications.changed(this)
     }
@@ -276,7 +270,8 @@ class ExtensionWidgetsActivity : Activity() {
         text(selected?.title ?: getString(R.string.extension_widgets), T.title, bold = true)
         if (busy) text(getString(R.string.loading), T.caption, T.secondary)
         problem?.let { text(getString(problemString(it)), T.body, T.working) }
-        val values = chartValues
+        chartDetails.reconcile(selected, projection)
+        val values = chartDetails.value
         if (values != null) {
             values.series.forEach { series ->
                 text(series.name, T.heading, bold = true)
@@ -360,7 +355,7 @@ class ExtensionWidgetsActivity : Activity() {
                 text(pointText(series.points.last(), value.unit, false), T.caption)
             }
         }
-        if (value.series.any { it.points.isNotEmpty() }) button(getString(R.string.extension_chart_values)) { chartValues = value; render() }
+        if (value.series.any { it.points.isNotEmpty() }) button(getString(R.string.extension_chart_values)) { chartDetails.open(selected, projection, value); render() }
     }
 
     private fun pointText(point: WidgetPoint, unit: String, candle: Boolean): String {
@@ -381,6 +376,13 @@ class ExtensionWidgetsActivity : Activity() {
     }
     private fun language() = when (resources.configuration.locales[0].language) { "zh" -> "zh-Hans"; "ja" -> "ja"; else -> "en" }
     private fun dp(value: Int) = T.dp(this, value)
+    private fun invalidateFailure(expected: HubConfig, failure: Throwable, widget: ExtensionWidget? = null, family: String? = null) {
+        val problem = problemOf(failure)
+        if (WidgetFailureCache.invalidates(problem)) {
+            runCatching { WidgetFailureCache.invalidate(diskCache, group, expected, problem, widget, family) }
+            ExtensionComplications.changed(this)
+        }
+    }
     private fun problemOf(error: Throwable) = (error as? ExtensionException)?.problem ?: ExtensionProblem.RETRYABLE
     private fun problemString(problem: ExtensionProblem) = when (problem) {
         ExtensionProblem.UNPAIRED -> R.string.extension_unpaired

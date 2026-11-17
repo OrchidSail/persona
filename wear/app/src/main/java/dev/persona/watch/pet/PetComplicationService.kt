@@ -20,14 +20,19 @@ import androidx.wear.watchface.complications.datasource.TimeInterval
 import androidx.wear.watchface.complications.datasource.TimelineEntry
 import dev.persona.watch.CredentialStore
 import dev.persona.watch.R
+import dev.persona.watch.data.HubConfig
 import java.time.Instant
 
 /** Cached, static faces only. The complication never opens a network connection. */
 class PetComplicationService : ComplicationDataSourceService() {
+    private val timelines = PetTimelineWorker()
+
     override fun onComplicationRequest(request: ComplicationRequest, listener: ComplicationRequestListener) {
-        val timeline = runCatching { timeline(request.complicationType) }.getOrNull()
-        if (timeline == null) listener.onComplicationData(NoDataComplicationData())
-        else listener.onComplicationDataTimeline(timeline)
+        timelines.submitForIdentity(currentIdentity = { CredentialStore(this).load() },
+            build = { config -> timeline(request.complicationType, config) }) { timeline ->
+            if (timeline == null) listener.onComplicationData(NoDataComplicationData())
+            else listener.onComplicationDataTimeline(timeline)
+        }
     }
 
     override fun getPreviewData(type: ComplicationType): ComplicationData = runCatching {
@@ -35,9 +40,9 @@ class PetComplicationService : ComplicationDataSourceService() {
         data(type, cached, cached.stored.visible())
     }.getOrElse { NoDataComplicationData() }
 
-    private fun timeline(type: ComplicationType): ComplicationDataTimeline? {
+    private fun timeline(type: ComplicationType, config: HubConfig): ComplicationDataTimeline? {
         if (type !in setOf(ComplicationType.SHORT_TEXT, ComplicationType.LONG_TEXT, ComplicationType.SMALL_IMAGE)) return null
-        val cached = cached() ?: return null
+        val cached = cached(config) ?: return null
         val offline = data(type, cached, PetStatus(PetState.OFFLINE))
         val now = System.currentTimeMillis()
         val interval = cached.stored.freshInterval(now)
@@ -56,8 +61,8 @@ class PetComplicationService : ComplicationDataSourceService() {
         return ComplicationDataTimeline(offline, entries)
     }
 
-    private fun cached(): CachedPet? {
-        val config = CredentialStore(this).load() ?: return null
+    private fun cached(config: HubConfig? = CredentialStore(this).load()): CachedPet? {
+        if (config == null) return null
         val pack = PetPack(cacheDir, config)
         val manifest = pack.cached(false) ?: return null
         return CachedPet(pack, manifest, PetBridge.read(this, config))
@@ -81,5 +86,6 @@ class PetComplicationService : ComplicationDataSourceService() {
     }
 
     private fun text(value: String) = PlainComplicationText.Builder(value).build()
+    override fun onDestroy() { timelines.close(); super.onDestroy() }
     private data class CachedPet(val pack: PetPack, val manifest: PetManifest, val stored: PetStoredStatus)
 }

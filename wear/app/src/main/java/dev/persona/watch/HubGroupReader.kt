@@ -6,7 +6,26 @@ import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
-data class HubGroupRead(val snapshot: WatchSnapshot, val cache: Map<String, WatchSnapshot>, val failed: Set<String>)
+data class HubGroupRead(val snapshot: WatchSnapshot, val cache: Map<String, WatchSnapshot>, val failed: Set<String>) {
+    /** Existing content remains visible, but never actionable, when every current connection fails. */
+    internal fun displayAfter(previous: WatchSnapshot?, groupCount: Int): WatchSnapshot? {
+        if (groupCount <= 0) return null
+        if (failed.size == groupCount) {
+            val retained = previous ?: snapshot.takeIf { cache.isNotEmpty() } ?: return null
+            return retained.copy(
+                sessions = retained.sessions.map { it.copy(state = "offline", canSend = false, canInterrupt = false, canApprove = false) },
+                interactions = retained.interactions.map { it.copy(canAnswer = false, canCancel = false) },
+                machines = retained.machines.map { it.copy(online = false) },
+                inboxUnavailable = true)
+        }
+        return if (snapshot.inboxUnavailable) snapshot.copy(inbox = previous?.inbox ?: snapshot.inbox) else snapshot
+    }
+
+    companion object {
+        /** Publishing a newly authenticated primary also replaces all prior-identity cache entries. */
+        internal fun pairedPrimary(fresh: WatchSnapshot) = HubGroupRead(fresh, mapOf("" to fresh), emptySet())
+    }
+}
 object HubGroupReader {
     /** Blocking: call on a worker; use a separate bounded executor for concurrent connections. */
     fun read(primary: HubConfig?, extras: List<SavedHub>, cached: Map<String, WatchSnapshot>, locale: String,
@@ -51,8 +70,9 @@ object HubGroupReader {
                 }
             }
         }
-        val updatedAt = if (failed.size < groups.size) System.currentTimeMillis()
-            else next.values.maxOfOrNull { it.updatedAt } ?: 0
+        // A successful sibling cannot renew the age of a snapshot retained for a failed group.
+        // Successful snapshots already carry their actual fetch time; collection adds no new one.
+        val updatedAt = next.values.minOfOrNull { it.updatedAt } ?: 0
         return HubGroupRead(HubGroups.merge(groups.map { HubGroupSnapshot(it.id, it.name, next[it.id], it.id !in failed) },
             updatedAt), next, failed)
     }

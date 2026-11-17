@@ -23,9 +23,12 @@ class HubRegistrationTest {
         val unreadableCredentials = mutableSetOf<String>()
         var saves = 0
         var publications = 0
+        val abortedIds = mutableSetOf<String>()
+        var onPrimaryRead: () -> Unit = {}
         val events = mutableListOf<String>()
         override fun groups() = rows
-        override fun primaryUrl() = primary
+        override fun primaryUrl(): String? { onPrimaryRead(); return primary }
+        override fun aborted(id: String) = id in abortedIds
         override fun pending() = journal
         override fun writePending(pending: List<PendingHubRegistration>) {
             journal = pending // Like SharedPreferences, memory changes even if disk commit fails.
@@ -272,7 +275,7 @@ class HubRegistrationTest {
             }
             repeat(2) {
                 assertThrows(IllegalArgumentException::class.java) { engine(store).recover() }
-                assertEquals(listOf(PendingHubRegistration(id, "Sample Hub", input.baseUrl)), store.durableJournal)
+                assertEquals(listOf(PendingHubRegistration(id, "Sample Hub", input.baseUrl, registrationInputKey(input))), store.durableJournal)
                 assertEquals(issued, store.credentials[id])
             }
             store.primary = null
@@ -311,17 +314,83 @@ class HubRegistrationTest {
         assertEquals("https://hub.example", store.durableRows.single().config?.baseUrl)
     }
 
-    @Test fun legacyNoncanonicalPendingOriginResumesWithoutAnotherExchange() {
+    @Test fun legacyNoncanonicalPendingOriginRecoversIndependentlyWithoutAnExchange() {
         val store = Store()
         val old = issued.copy(baseUrl = "https://HUB.example:443")
         store.credentials[id] = old
         store.journal = listOf(PendingHubRegistration(id, "Sample", old.baseUrl))
         store.durableJournal = store.journal
-        engine(store).add("Sample", input.copy(baseUrl = "https://hub.example")) {
-            throw AssertionError("Must reuse the issued credential")
-        }
+        assertTrue(engine(store).recover())
         assertEquals(old, store.durableRows.single().config)
         assertTrue(store.durableJournal.isEmpty())
         assertEquals(0, store.saves)
+    }
+
+    @Test fun newTokenNeverReusesOldPendingCredentialAndKeepsItDiscoverable() {
+        for (legacy in listOf(false, true)) {
+            val store = Store().apply { failPublish = true }
+            fails { engine(store).add("Sample", input) { issued } }
+            store.restart()
+            store.failPublish = false
+            if (legacy) store.journal = store.journal.map { it.copy(inputKey = null) }
+            store.unreadableCredentials += id // The old account may also be unavailable.
+            val next = input.copy(token = "new-one-time-token")
+            val nextId = "22222222-2222-2222-2222-222222222222"
+            var exchanges = 0
+            HubRegistration(store) { nextId }.add("Sample", next) {
+                assertEquals(next, it); exchanges++; it.copy(token = "new-issued-token")
+            }
+            assertEquals(1, exchanges)
+            assertEquals(nextId, store.durableRows.single().id)
+            assertEquals("new-issued-token", store.durableRows.single().config?.token)
+            assertEquals(id, store.durableJournal.single().id)
+            assertEquals(issued, store.credentials[id])
+        }
+    }
+
+    @Test fun exactInputDigestIncludesIdentityButCanonicalOriginAliasesResume() {
+        val config = input.copy(baseUrl = "HTTPS://HUB.example:443/", fingerprint = "a".repeat(43), deviceId = "sample-device")
+        val key = registrationInputKey(config)
+        assertEquals(key, registrationInputKey(config.copy(baseUrl = "https://hub.example")))
+        for (changed in listOf(config.copy(token = "next-token"), config.copy(fingerprint = "b".repeat(43)),
+            config.copy(deviceId = "other-device"), config.copy(baseUrl = "https://other.example"))) {
+            assertNotEquals(key, registrationInputKey(changed))
+        }
+        val serialized = PendingHubJournal.encode(listOf(PendingHubRegistration(id, "Sample", config.baseUrl, key)))
+        assertEquals(key, PendingHubJournal.decode(serialized).single().inputKey)
+        assertFalse(serialized.contains(config.token))
+        assertFalse(serialized.contains(config.deviceId!!))
+        val store = Store().apply { failPublish = true }
+        val candidate = input.copy(baseUrl = "HTTP://HUB.local:80/")
+        fails { engine(store).add("Sample", candidate) { issued } }
+        store.restart(); store.failPublish = false
+        engine(store).add("Sample", input) { throw AssertionError("Same pairing input must resume") }
+        assertEquals(issued, store.durableRows.single().config)
+        assertEquals(1, store.saves)
+    }
+
+    @Test fun abortBeforeExchangeOrAfterExchangeNeverPublishesAndLeavesJournalDiscoverable() {
+        val before = Store()
+        fails { engine(before).add("Sample", input, record = { before.abortedIds += it.id }) {
+            throw AssertionError("Aborted queued registration must not exchange")
+        } }
+        assertTrue(before.credentials.isEmpty())
+        assertTrue(before.durableJournal.isEmpty())
+        val during = Store()
+        fails { engine(during).add("Sample", input) { during.abortedIds += id; issued } }
+        assertEquals(id, during.durableJournal.single().id)
+        assertTrue(during.credentials.isEmpty())
+        assertTrue(during.durableRows.isEmpty())
+    }
+
+    @Test fun abortDuringPublicationValidationPreventsTheFinalDirectoryWrite() {
+        val store = Store().apply { failPublish = true }
+        fails { engine(store).add("Sample", input) { issued } }
+        store.restart(); store.failPublish = false
+        store.onPrimaryRead = { store.abortedIds += id }
+        fails { engine(store).recover() }
+        assertTrue(store.durableRows.isEmpty())
+        assertEquals(id, store.durableJournal.single().id)
+        assertEquals(issued, store.credentials[id])
     }
 }

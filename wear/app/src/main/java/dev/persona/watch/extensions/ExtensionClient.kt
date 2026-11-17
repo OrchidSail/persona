@@ -41,8 +41,12 @@ class ExtensionClient(
         if (!force) cache[key]?.takeIf { it.widget == widget && it.fresh(now()) }?.let { return it }
         val context = JSONObject().put("size", family).put("tz", timeZone).put("locale", locale)
             .put("platform", "android").put("ui_version", 3)
-        val answer = ExtensionParser.view(request("POST", "/api/v1/extensions/${encode(widget.owner)}/-/widget/${encode(widget.id)}",
-            JSONObject().put("context", context)), family)
+        val answer = try { ExtensionParser.view(request("POST", "/api/v1/extensions/${encode(widget.owner)}/-/widget/${encode(widget.id)}",
+            JSONObject().put("context", context)), family) }
+        catch (failure: ExtensionException) {
+            if (failure.problem == ExtensionProblem.UNAVAILABLE) cache.remove(key)
+            throw failure
+        }
         return CachedWidget(widget, family, answer, now()).also { cache[key] = it }
     }
 

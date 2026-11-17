@@ -113,7 +113,7 @@ class ExtensionComplicationConfigActivity : Activity() {
                 check(ExtensionComplications.store(this).saveProjection(connection.id, config, widget, family, view)) { "widget_not_cached" }
                 ExtensionComplications.changed(this)
                 view
-            }.onFailure { invalidateRevoked(connection.id, config, it) }
+            }.onFailure { invalidateRevoked(connection.id, config, it, widget, family) }
             main.post {
                 if (!accept(ticket)) return@post
                 busy = false
@@ -179,9 +179,11 @@ class ExtensionComplicationConfigActivity : Activity() {
     private fun same(group: String, config: HubConfig) {
         if (ExtensionComplications.config(this, group) != config) throw ExtensionException(ExtensionProblem.CONNECTION_CHANGED)
     }
-    private fun invalidateRevoked(group: String, config: HubConfig, failure: Throwable) {
-        if ((failure as? ExtensionException)?.problem in setOf(ExtensionProblem.AUTHENTICATION, ExtensionProblem.FORBIDDEN, ExtensionProblem.UNAVAILABLE)) {
-            runCatching { ExtensionComplications.store(this).invalidate(group, config) }
+    private fun invalidateRevoked(group: String, config: HubConfig, failure: Throwable,
+                                  widget: ExtensionWidget? = null, family: String? = null) {
+        val problem = (failure as? ExtensionException)?.problem
+        if (WidgetFailureCache.invalidates(problem)) {
+            runCatching { WidgetFailureCache.invalidate(ExtensionComplications.store(this), group, config, problem, widget, family) }
             ExtensionComplications.changed(this)
         }
     }

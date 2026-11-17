@@ -16,6 +16,11 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Two independent synthetic servers only. Creates/removes one test connection through production UI. */
 class MultiHubChecks(private val instrumentation: Instrumentation) {
@@ -42,6 +47,8 @@ class MultiHubChecks(private val instrumentation: Instrumentation) {
         requireLoopback(secondary)
         check(primary.baseUrl != secondary.baseUrl) { "multihub_distinct_origins_required" }
         check(directory.additional().isEmpty()) { "multihub_existing_groups_untouched" }
+        check(!directory.hasPendingRegistrations()) { "multihub_existing_pending_untouched" }
+        val beforeIds = directory.registrationIds()
         originalEnvelope = File(context.noBackupFilesDir, "connection.enc").readBytes()
         primaryClient = HubClient(primary, "en")
         secondaryClient = HubClient(secondary, "en")
@@ -55,6 +62,20 @@ class MultiHubChecks(private val instrumentation: Instrumentation) {
         }
         verifySynthetic(primaryClient)
         verifySynthetic(secondaryClient)
+        val owned = ConcurrentHashMap<String, PendingHubRegistration>()
+        val recorded = CountDownLatch(1)
+        val aborting = AtomicBoolean(false)
+        val inputKey = registrationInputKey(secondary)
+        var observation: AutoCloseable? = null
+        observation = directory.observeRegistrations { entry ->
+            if (entry.id !in beforeIds && entry.name == groupName && entry.inputKey == inputKey &&
+                HubConfig.sameOrigin(entry.baseUrl, secondary.baseUrl)) {
+                owned[entry.id] = entry
+                // A queued add that starts after cleanup begins must stop before consuming its token.
+                if (aborting.get()) { directory.fenceRegistration(entry); observation?.close() }
+                recorded.countDown()
+            }
+        }
         var primaryFailure: Throwable? = null
         try {
             control(primary, JSONObject().put("reset", true).put("clearEvents", true))
@@ -68,7 +89,7 @@ class MultiHubChecks(private val instrumentation: Instrumentation) {
             adding = true
             click(text(R.string.connect))
             waitUntil("test_connection_saved") {
-                val group = directory.additional().singleOrNull { it.name == groupName && it.config?.baseUrl == secondary.baseUrl }
+                val group = directory.additional().singleOrNull { owned.containsKey(it.id) && HubConfig.sameOrigin(it.config?.baseUrl, secondary.baseUrl) }
                 if (group == null) false else {
                     check(group.config?.token == FIXTURE_TOKEN) { "multihub_wrong_test_credential" }
                     secondaryId = group.id
@@ -177,19 +198,36 @@ class MultiHubChecks(private val instrumentation: Instrumentation) {
             runCatching { screenshot("multihub-$step-failed") }
             throw AssertionError("multihub_$step", failure)
         } finally {
-            val cleanup = runCatching {
-                // A unique test name and exact fixture config identify only the connection created in this run.
-                directory.additional().filter { it.name == groupName && it.config?.baseUrl == secondary.baseUrl && it.config?.token == FIXTURE_TOKEN }
-                    .forEach { directory.remove(it.id) }
-                control(primary, JSONObject().put("mode", "online"), cleanup = true)
-                control(secondary, JSONObject().put("mode", "online"), cleanup = true)
+            aborting.set(true)
+            val teardownFailure = runCatching {
+                activity?.let { current -> instrumentation.runOnMainSync {
+                    if (!current.isDestroyed) {
+                        current.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        if (adding) current.finish()
+                    }
+                } }
             }.exceptionOrNull()
-            activity?.let { current -> instrumentation.runOnMainSync {
-                if (!current.isDestroyed) current.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            } }
-            if (cleanup != null) {
+            val cleanup = runCatching {
+                if (adding) check(recorded.await(5, TimeUnit.SECONDS)) { "multihub_registration_not_observed" }
+                owned.values.forEach { directory.fenceRegistration(it) }
+                val worker = Executors.newSingleThreadExecutor()
+                try {
+                    val task = worker.submit { cleanupFixtureRegistrations(owned.values.toList()) { directory.abortRegistration(it) } }
+                    try { task.get(10, TimeUnit.SECONDS) }
+                    catch (failure: Exception) { task.cancel(true); throw failure }
+                } finally { worker.shutdownNow() }
+            }.exceptionOrNull()
+            // A late, not-yet-recorded UI add retains its observer only to fence itself and then detach.
+            if (!adding || owned.isNotEmpty()) observation?.close()
+            val resetErrors = listOf(primary, secondary).mapNotNull { connection ->
+                runCatching { control(connection, JSONObject().put("mode", "online"), cleanup = true) }.exceptionOrNull()
+            }
+            val failures = listOfNotNull(cleanup, teardownFailure) + resetErrors
+            val cleanupFailure = failures.firstOrNull()
+            failures.drop(1).forEach { cleanupFailure?.addSuppressed(it) }
+            if (cleanupFailure != null) {
                 val original = primaryFailure
-                if (original != null) original.addSuppressed(cleanup) else throw cleanup
+                if (original != null) original.addSuppressed(cleanupFailure) else throw cleanupFailure
             }
         }
     }
