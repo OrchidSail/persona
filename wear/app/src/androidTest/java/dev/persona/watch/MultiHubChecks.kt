@@ -72,8 +72,9 @@ class MultiHubChecks(private val instrumentation: Instrumentation) {
                 HubConfig.sameOrigin(entry.baseUrl, secondary.baseUrl)) {
                 owned[entry.id] = entry
                 // A queued add that starts after cleanup begins must stop before consuming its token.
-                if (aborting.get()) { directory.fenceRegistration(entry); observation?.close() }
-                recorded.countDown()
+                try {
+                    if (aborting.get()) { directory.fenceRegistration(entry); observation?.close() }
+                } finally { recorded.countDown() }
             }
         }
         var primaryFailure: Throwable? = null
@@ -208,13 +209,19 @@ class MultiHubChecks(private val instrumentation: Instrumentation) {
                 } }
             }.exceptionOrNull()
             val cleanup = runCatching {
-                if (adding) check(recorded.await(5, TimeUnit.SECONDS)) { "multihub_registration_not_observed" }
-                owned.values.forEach { directory.fenceRegistration(it) }
                 val worker = Executors.newSingleThreadExecutor()
                 try {
-                    val task = worker.submit { cleanupFixtureRegistrations(owned.values.toList()) { directory.abortRegistration(it) } }
-                    try { task.get(10, TimeUnit.SECONDS) }
-                    catch (failure: Exception) { task.cancel(true); throw failure }
+                    drainFixtureRegistrations(
+                        owned = { owned.values.toList() },
+                        fence = { directory.fenceRegistration(it) },
+                        abort = { entry, budget ->
+                            val task = worker.submit { directory.abortRegistration(entry) }
+                            try { task.get(budget, TimeUnit.MILLISECONDS) }
+                            catch (failure: Exception) { task.cancel(true); throw failure }
+                        },
+                        awaitRecord = if (adding) ({ budget: Long -> recorded.await(budget, TimeUnit.MILLISECONDS) }) else null,
+                        now = SystemClock::elapsedRealtime,
+                    )
                 } finally { worker.shutdownNow() }
             }.exceptionOrNull()
             // A late, not-yet-recorded UI add retains its observer only to fence itself and then detach.

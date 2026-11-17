@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
-import { automationActive, hasOwnedInstrumentation, runInstrumentation, runWatchCheck } from './run-watch-check.mjs';
+import { automationActive, hasOwnedInstrumentation, instrumentationPassed, runInstrumentation, runWatchCheck } from './run-watch-check.mjs';
 
 const processes = 'ACTIVITY MANAGER RUNNING PROCESSES (dumpsys activity processes)\n';
 const accessibility = 'ACCESSIBILITY MANAGER (dumpsys accessibility)\ncurrentUserId=0\n';
@@ -12,7 +12,7 @@ const own = `${processes}  Active instrumentation:\n  Instrumentation #0: Active
 const unrelated = own.replaceAll('dev.persona.watch', 'example.other');
 const pass = { status: 0, stdout: 'INSTRUMENTATION_RESULT: stream=PASS: fixture\nINSTRUMENTATION_CODE: -1\n', stderr: '' };
 
-async function mock({ result = pass, needsTargetStop = false, unrelatedSession = false, neverEnds = false, unknown = false, failedProbe = false, automationDump } = {}) {
+async function mock({ result = pass, needsTargetStop = false, unrelatedSession = false, neverEnds = false, unknown = false, failedProbe = false, automationDump, mode } = {}) {
   const events = [];
   const errors = [];
   let clock = 0;
@@ -54,7 +54,8 @@ async function mock({ result = pass, needsTargetStop = false, unrelatedSession =
     }
     throw new Error(`Unexpected mock command ${JSON.stringify(cmd)}`);
   };
-  const status = await runWatchCheck(['--adb', 'FAKE_ADB', '--device', 'TESTWATCH'], {
+  const args = ['--adb', 'FAKE_ADB', '--device', 'TESTWATCH', ...(mode ? ['--mode', mode] : [])];
+  const status = await runWatchCheck(args, {
     spawn, stdout: () => {}, stderr: text => errors.push(text),
     cleanup: { now: () => clock, wait: delay => { clock += delay; }, timeoutMs: 400 },
   });
@@ -67,6 +68,77 @@ test('successful instrumentation waits for teardown before restoring rotation', 
   assert.equal(result.rotation, '0');
   assert.ok(result.events.indexOf('UiAutomation gone') < result.events.indexOf('restore rotation'));
   assert.equal(result.events.some(event => event.startsWith('stop ')), false);
+});
+
+test('a passing stream may quote failure-looking payload lines without triggering package cleanup', async () => {
+  const stdout = 'INSTRUMENTATION_STATUS: stream=Checking expected failure cases\nFAIL: quoted status detail\n'
+    + 'INSTRUMENTATION_STATUS_CODE: 0\n'
+    + 'INSTRUMENTATION_RESULT: fixture=true\nINSTRUMENTATION_RESULT: stream=PASS: fixture\n'
+    + 'FAIL: this is a quoted failure case in the passing result\n'
+    + 'INSTRUMENTATION_RESULT: elapsed_ms=12\nINSTRUMENTATION_CODE: -1\n';
+  assert.equal(instrumentationPassed(stdout), true);
+  assert.equal(instrumentationPassed(stdout.replaceAll('\n', '\r\n')), true);
+  const result = await mock({ result: { status: 0, stdout } });
+  assert.equal(result.status, 0);
+  assert.equal(result.events.some(event => event.startsWith('stop ')), false);
+  assert.ok(result.events.indexOf('UiAutomation gone') < result.events.indexOf('restore rotation'));
+});
+
+test('result fields, not progress or a terminal code alone, must explicitly report success', () => {
+  for (const stdout of [
+    'INSTRUMENTATION_CODE: -1\n',
+    'INSTRUMENTATION_RESULT: stream=\nINSTRUMENTATION_CODE: -1\n',
+    'INSTRUMENTATION_RESULT: stream=No outcome\nPASS: payload only\nINSTRUMENTATION_CODE: -1\n',
+    'INSTRUMENTATION_RESULT: detail=PASS: fixture\nINSTRUMENTATION_CODE: -1\n',
+    'INSTRUMENTATION_STATUS: stream=PASS: progress\nINSTRUMENTATION_STATUS_CODE: 0\nINSTRUMENTATION_CODE: -1\n',
+    'INSTRUMENTATION_RESULT: stream=FAIL: fixture\nPASS: quoted detail\nINSTRUMENTATION_CODE: -1\n',
+  ]) assert.equal(instrumentationPassed(stdout), false, stdout);
+});
+
+test('observation and setup modes retain their own scoped outcome fields without claiming a completed face test', async () => {
+  for (const [mode, key, heading] of [
+    ['surfaces', 'surfaces_passed', 'Synthetic app surfaces passed:'],
+    ['real_surfaces', 'real_surfaces_probed', 'OBSERVED:'],
+    ['pet_expiry', 'pet_expiry_seeded', 'SEEDED:'],
+    ['pet_expiry_restore', 'pet_expiry_restored', 'RESTORED:'],
+  ]) {
+    const stdout = `INSTRUMENTATION_RESULT: ${key}=true\nINSTRUMENTATION_RESULT: stream=${heading} sample outcome\nINSTRUMENTATION_CODE: -1\n`;
+    assert.equal(instrumentationPassed(stdout, mode), true);
+    assert.equal(instrumentationPassed(stdout), false);
+    assert.equal(instrumentationPassed(stdout, 'fixture'), false);
+    assert.equal(instrumentationPassed(stdout.replace(`${key}=true`, `${key}=false`), mode), false);
+    assert.equal(instrumentationPassed(stdout.replace(`${key}=true`, 'another_result=true'), mode), false);
+    assert.equal(instrumentationPassed(stdout.replace(heading, 'FAIL:'), mode), false);
+    assert.equal(instrumentationPassed(pass.stdout, mode), false);
+    const result = await mock({ mode, result: { status: 0, stdout } });
+    assert.equal(result.status, 0);
+    assert.equal(result.events.some(event => event.startsWith('stop ')), false);
+  }
+});
+
+test('actual failure records and malformed result framing fail and retain the cleanup ordering', async () => {
+  for (const stdout of [
+    'FAIL: unframed failure\n' + pass.stdout,
+    'INSTRUMENTATION_FAILED: test crashed\n' + pass.stdout,
+    'INSTRUMENTATION_ABORTED: test cancelled\n' + pass.stdout,
+    'INSTRUMENTATION_RESULT: shortMsg=Process crashed\n' + pass.stdout,
+    'INSTRUMENTATION_STATUS: Error=Process crashed\nINSTRUMENTATION_STATUS_CODE: 0\n' + pass.stdout,
+    'INSTRUMENTATION_STATUS: stream=FAIL: fixture\nINSTRUMENTATION_STATUS_CODE: 0\n' + pass.stdout,
+    'INSTRUMENTATION_STATUS: stream=Test error\nINSTRUMENTATION_STATUS_CODE: -2\n' + pass.stdout,
+    'INSTRUMENTATION_STATUS: stream=Unterminated status\n' + pass.stdout,
+    pass.stdout + 'INSTRUMENTATION_CODE: -1\n',
+    pass.stdout + 'INSTRUMENTATION_RESULT: extra=true\n',
+    pass.stdout + 'Unexpected trailing output\n',
+    pass.stdout.replace('INSTRUMENTATION_CODE: -1', 'INSTRUMENTATION_CODE: -1junk'),
+    pass.stdout.replace('INSTRUMENTATION_CODE: -1', 'INSTRUMENTATION_RESULT: stream=PASS: duplicate\nINSTRUMENTATION_CODE: -1'),
+    'INSTRUMENTATION_RESULT: stream=PASS: fixture\n',
+  ]) {
+    assert.equal(instrumentationPassed(stdout), false, stdout);
+    const result = await mock({ result: { status: 0, stdout } });
+    assert.equal(result.status, 1, stdout);
+    assert.ok(result.events.indexOf('stop dev.persona.watch.test') < result.events.indexOf('probe instrumentation'));
+    assert.ok(result.events.indexOf('UiAutomation gone') < result.events.indexOf('restore rotation'));
+  }
 });
 
 test('ETIMEDOUT with an already exited child stops test, then identified target, and waits before restore', async () => {

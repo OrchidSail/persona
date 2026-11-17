@@ -193,4 +193,63 @@ class ExtensionCacheTest {
             assertEquals(listOf(widget), ExtensionCacheStore(root).catalog("", config))
         }
     }
+
+    private fun group(index: Int) = if (index == 0) "" else "00000000-0000-0000-0000-${index.toString().padStart(12, '0')}"
+
+    @Test fun refreshingEachOfFourConnectionsKeepsEveryConfiguredSlotAndProjection() {
+        val root = temporary.newFolder()
+        var time = 1_000L
+        val store = ExtensionCacheStore(root) { time++ }
+        for (id in 0..3) {
+            store.saveCatalog(group(id), config, listOf(widget))
+            store.saveProjection(group(id), config, widget, "accessory_circular", view)
+            store.bind(id, group(id), config, widget, "accessory_circular", WidgetFaceKind.SHORT)
+        }
+        for (refreshed in listOf(3, 0, 2, 1, 0)) {
+            store.saveCatalog(group(refreshed), config, listOf(widget))
+            val reopened = ExtensionCacheStore(root)
+            for (id in 0..3) {
+                assertEquals(group(id), reopened.binding(id)!!.group)
+                assertEquals(listOf(widget), reopened.catalog(group(id), config))
+                assertEquals(view, reopened.projection(group(id), config, widget, "accessory_circular")!!.view)
+            }
+        }
+    }
+
+    @Test fun overflowPrunesUnboundGroupsBeforeOlderGroupsWithConfiguredSlots() {
+        var time = 1_000L
+        val store = ExtensionCacheStore(temporary.newFolder()) { time++ }
+        for (id in 0..3) {
+            store.saveCatalog(group(id), config, listOf(widget))
+            store.saveProjection(group(id), config, widget, "accessory_circular", view)
+        }
+        store.bind(0, group(0), config, widget, "accessory_circular", WidgetFaceKind.SHORT)
+        store.bind(2, group(2), config, widget, "accessory_circular", WidgetFaceKind.SHORT)
+        store.saveCatalog(group(4), config, listOf(widget))
+        assertNull(store.catalog(group(1), config))
+        for (id in listOf(0, 2, 3, 4)) assertEquals(listOf(widget), store.catalog(group(id), config))
+        for (id in listOf(0, 2)) {
+            assertEquals(group(id), store.binding(id)!!.group)
+            assertNotNull(store.projection(group(id), config, widget, "accessory_circular"))
+        }
+    }
+
+    @Test fun overflowWithFourBoundGroupsRejectsTheWriteWithoutOrphaningAnySlot() {
+        val root = temporary.newFolder()
+        val store = ExtensionCacheStore(root)
+        for (id in 0..3) {
+            store.saveCatalog(group(id), config, listOf(widget))
+            store.saveProjection(group(id), config, widget, "accessory_circular", view)
+            store.bind(id, group(id), config, widget, "accessory_circular", WidgetFaceKind.SHORT)
+        }
+        val previous = File(root, "widgets.json").readBytes()
+        val failure = assertThrows(IllegalStateException::class.java) { store.saveCatalog(group(4), config, listOf(widget)) }
+        assertEquals("widget_cache_capacity", failure.message)
+        assertArrayEquals(previous, File(root, "widgets.json").readBytes())
+        assertNull(store.catalog(group(4), config))
+        for (id in 0..3) {
+            assertNotNull(store.binding(id))
+            assertNotNull(store.projection(group(id), config, widget, "accessory_circular"))
+        }
+    }
 }

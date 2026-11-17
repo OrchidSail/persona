@@ -24,6 +24,7 @@ class LivePingChecks(private val instrumentation: Instrumentation) {
     private lateinit var config: HubConfig
     private lateinit var client: HubClient
     private lateinit var isolation: LiveWriteIsolation
+    private lateinit var transcript: LivePingTranscript
     private lateinit var session: WatchSession
     private var activity: Activity? = null
     private var deadline = 0L
@@ -46,7 +47,8 @@ class LivePingChecks(private val instrumentation: Instrumentation) {
         check(session.groupId.isEmpty()) { "live_ping_primary_session_required" }
         check(session.machineId != "fixture") { "live_ping_real_session_required" }
         val initial = client.messages(session)
-        verifyDedicatedChat(initial)
+        sameCredential()
+        transcript = LivePingTranscript(initial, INITIAL_MARKER, READY, PING, PONG)
         val exchange = LivePingExchange(initial, PING, PONG, SystemClock.elapsedRealtime())
         if (exchange.shouldSend) check(session.canSend) { "live_ping_session_read_only" }
         var clickedSend = false
@@ -58,14 +60,7 @@ class LivePingChecks(private val instrumentation: Instrumentation) {
                 // Observe the same acceptance-chat marker in the production UI before editing its composer.
                 waitText(READY)
                 setReply()
-                sameCredential()
-                val beforeClick = client.messages(session)
-                verifyDedicatedChat(beforeClick)
-                exchange.observe(beforeClick, SystemClock.elapsedRealtime())
-                clickedSend = exchange.sendIfMissing {
-                    sendStarted = SystemClock.elapsedRealtime()
-                    clickSendOnce()
-                }
+                clickedSend = clickSendOnce(exchange) { sendStarted = SystemClock.elapsedRealtime() }
                 if (clickedSend) status("sent_via_ui")
             }
             val reader = Executors.newSingleThreadExecutor()
@@ -109,13 +104,7 @@ class LivePingChecks(private val instrumentation: Instrumentation) {
 
     private fun verifyDedicatedChat(messages: List<WatchMessage>) {
         sameCredential()
-        val initial = messages.filter { it.own && it.text.contains(INITIAL_MARKER) && it.text.contains(PING) && it.text.contains(PONG) }
-        check(initial.size == 1) { "live_ping_initial_marker_required" }
-        check(messages.any { isAssistant(it, READY) || isAssistant(it, PONG) }) { "live_ping_ready_marker_required" }
-        check(messages.filter { it.own }.all { it === initial.single() || it.text == PING }) {
-            "live_ping_unrelated_chat_content"
-        }
-        check(messages.count { it.own && it.text == PING } <= 1) { "live_ping_duplicate_ping" }
+        transcript.verify(messages)
     }
 
     private fun isAssistant(message: WatchMessage, value: String) =
@@ -158,7 +147,7 @@ class LivePingChecks(private val instrumentation: Instrumentation) {
         waitUntil("reply_value") { nodes().any { it.isEditable && it.text?.toString() == PING } }
     }
 
-    private fun clickSendOnce() {
+    private fun clickSendOnce(exchange: LivePingExchange, sending: () -> Unit): Boolean {
         val label = context.getString(R.string.send)
         var button: AccessibilityNodeInfo? = null
         waitUntil("send_visible") {
@@ -167,8 +156,16 @@ class LivePingChecks(private val instrumentation: Instrumentation) {
             else { button = found; true }
         }
         sameCredential()
-        // Exactly one attempt. A false/uncertain UI result must never trigger another click automatically.
-        check(checkNotNull(button).performAction(AccessibilityNodeInfo.ACTION_CLICK)) { "live_ping_send_click_unconfirmed" }
+        // The UI wait can advance the bounded history window. Recheck its stable anchor immediately before sending.
+        val beforeClick = client.messages(session)
+        verifyDedicatedChat(beforeClick)
+        exchange.observe(beforeClick, SystemClock.elapsedRealtime())
+        return exchange.sendIfMissing {
+            sameCredential()
+            sending()
+            // Exactly one attempt. A false/uncertain UI result must never trigger another click automatically.
+            check(checkNotNull(button).performAction(AccessibilityNodeInfo.ACTION_CLICK)) { "live_ping_send_click_unconfirmed" }
+        }
     }
 
     private fun waitText(value: String) = waitUntil("text_visible") {

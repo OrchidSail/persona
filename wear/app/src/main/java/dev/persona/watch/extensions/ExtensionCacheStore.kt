@@ -50,8 +50,17 @@ class ExtensionCacheStore(root: File,
         groups(state).put(group, JSONObject().put("identity", identity(config)).put("catalog", JSONArray(safe.map(::encodeWidget)))
             .put("views", views).put("saved", now()))
         val groups = groups(state)
-        groups.keys().asSequence().filter { it != group }.sortedByDescending { groups.optJSONObject(it)?.optLong("saved") ?: 0 }
-            .drop(MAX_GROUPS - 1).toList().forEach(groups::remove)
+        val overflow = groups.length() - MAX_GROUPS
+        if (overflow > 0) {
+            val slots = bindings(state)
+            val boundGroups = slots.keys().asSequence().mapNotNull { key ->
+                key.toIntOrNull()?.let { parseBinding(it, slots.optJSONObject(key)) }
+            }.filter { groups.optJSONObject(it.group)?.optString("identity") == it.identity }.map { it.group }.toSet()
+            val removable = groups.keys().asSequence().filter { it != group && it !in boundGroups }
+                .sortedBy { groups.optJSONObject(it)?.optLong("saved") ?: 0 }.take(overflow).toList()
+            check(removable.size == overflow) { "widget_cache_capacity" }
+            removable.forEach(groups::remove)
+        }
         trim(state)
         write(state)
     }

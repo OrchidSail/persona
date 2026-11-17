@@ -12,6 +12,7 @@ class PetGroupFreshnessTest {
     private val now = 10_000_000L
     private val primary = HubConfig("http://hub.local", "sample-token")
     private val empty = PetStoredStatus(PetStatus(PetState.OFFLINE), 0)
+    private val manifest = PetManifest(emptyMap(), emptyMap(), "{}")
     private fun snapshot(date: Long, waiting: Boolean = false) = WatchSnapshot(
         listOf(WatchSession("machine", "same-session", "Sample", if (waiting) "needs_you" else "working")),
         if (waiting) listOf(WatchInteraction("request", "machine", "same-session", "permission", "Sample", "Sample")) else emptyList(),
@@ -45,7 +46,7 @@ class PetGroupFreshnessTest {
         assertEquals(now, next.updatedAt)
         val page = PetPageState()
         page.resume(primary, previous, now)
-        assertTrue(page.acceptRefresh(page.generation, null, result, 2, now))
+        assertTrue(page.acceptRefresh(page.generation, manifest, result, 2, now))
         assertEquals(next, page.stored)
     }
 
@@ -54,7 +55,7 @@ class PetGroupFreshnessTest {
         val result = read(mapOf("" to snapshot(old, true), "additional" to snapshot(now)), setOf(""))
         val page = PetPageState()
         page.resume(primary, empty, now)
-        page.acceptRefresh(page.generation, null, result, 2, now)
+        page.acceptRefresh(page.generation, manifest, result, 2, now)
         assertEquals(PetStatus(PetState.NEEDS_YOU, 1), page.stored.status)
         assertEquals(old, page.stored.updatedAt)
         assertEquals(100L, page.expiryDelay(now))

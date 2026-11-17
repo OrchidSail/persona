@@ -71,4 +71,60 @@ class DraftLedgerTest {
         assertTrue(ledger.acknowledge(sent))
         assertEquals("Other", ledger.text("hub-b"))
     }
+
+    @Test fun generatingFromAnEmptyComposerPersistsANonemptyDraftBeforeRecreation() {
+        val ledger = ledger()
+        val empty = ledger.version("hub-a")
+        assertEquals("", empty.text)
+        assertTrue(ledger.suggest(empty, "Generated reply"))
+        assertEquals("Generated reply", store.values["draft:hub-a"])
+        assertNotNull(store.values["revision:hub-a"])
+        assertEquals("Generated reply", ledger().text("hub-a"))
+    }
+
+    @Test fun acceptingEqualTextIsAlreadyPersistedAndDoesNotDiscardItsSendOperation() {
+        val ledger = ledger()
+        ledger.save("hub-a", "Generated reply")
+        val before = ledger.submit("hub-a", "legacy")
+        assertTrue(ledger.acceptSuggestion("hub-a", "Generated reply"))
+        assertEquals(before.version, ledger.version("hub-a"))
+        assertEquals(before.operationId, ledger.submit("hub-a", "legacy").operationId)
+        assertEquals("Generated reply", ledger().text("hub-a"))
+    }
+
+    @Test fun lateSuggestionCanBeExplicitlyAcceptedIntoAnEmptyComposerWithoutReplacementConsent() {
+        val ledger = ledger()
+        val initial = ledger.version("hub-a")
+        ledger.save("hub-a", "Edited while generating")
+        ledger.save("hub-a", "")
+        assertFalse(ledger.suggest(initial, "Generated reply"))
+        assertTrue(ledger.acceptSuggestion("hub-a", "Generated reply"))
+        assertEquals("Generated reply", ledger().text("hub-a"))
+    }
+
+    @Test fun replacingDifferentNonemptyTextRequiresTheExactConfirmedRevision() {
+        val ledger = ledger()
+        ledger.save("hub-a", "Existing")
+        val confirmed = ledger.version("hub-a")
+        assertFalse(ledger.acceptSuggestion("hub-a", "Generated reply"))
+        ledger.save("hub-a", "New edit")
+        assertFalse(ledger.acceptSuggestion("hub-a", "Generated reply", confirmed))
+        assertEquals("New edit", ledger.text("hub-a"))
+        assertTrue(ledger.acceptSuggestion("hub-a", "Generated reply", ledger.version("hub-a")))
+    }
+
+    @Test fun blankOrUnstoredSuggestionCannotReportAcceptance() {
+        val ledger = ledger()
+        assertFalse(ledger.acceptSuggestion("hub-a", "  "))
+        val missingWrite = DraftLedger(object : DraftStorage {
+            override fun get(key: String): String? = null
+            override fun put(values: Map<String, String?>) = Unit
+        })
+        assertFalse(missingWrite.acceptSuggestion("hub-a", "Generated reply"))
+        val failingWrite = DraftLedger(object : DraftStorage {
+            override fun get(key: String): String? = null
+            override fun put(values: Map<String, String?>) { throw IllegalStateException("sample storage failure") }
+        })
+        assertThrows(IllegalStateException::class.java) { failingWrite.acceptSuggestion("hub-a", "Generated reply") }
+    }
 }

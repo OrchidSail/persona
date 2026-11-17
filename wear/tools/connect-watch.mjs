@@ -39,7 +39,7 @@ export function parseTlsServices(output, serial) {
   if (!validSerial(serial)) throw new Error('A valid hardware serial is required.');
   return output.split(/\r?\n/).flatMap(line => {
     // Service instance names can contain spaces; do not split into fixed columns.
-    const match = /^(.+?)\s+_adb-tls-connect\._tcp\s+(\S+)\s*$/.exec(line.trim());
+    const match = /^(.+?)\s+_adb-tls-connect\._tcp\.?\s+(\S+)\s*$/.exec(line.trim());
     return match && matchesInstance(match[1], serial) && validEndpoint(match[2])
       ? [{ instance: match[1], endpoint: match[2] }] : [];
   });

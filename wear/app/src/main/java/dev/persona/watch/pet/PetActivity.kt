@@ -51,7 +51,7 @@ class PetActivity : Activity() {
     private val expire = Runnable {
         if (foreground) {
             val changed = showState()
-            page.connection?.let { PetBridge.publish(this, it, status, updatedAt) }
+            page.connection?.let { connection -> page.publication()?.let { PetBridge.publish(this, connection, it.status, it.updatedAt) } }
             if (changed) play(status.state.wire)
         }
     }
@@ -151,15 +151,12 @@ class PetActivity : Activity() {
         val source = pack ?: return
         if (busy || !foreground) return
         val ticket = page.generation
-        val previousManifest = manifest
         val previousGroups = page.groups
         busy = true
         if (manifest == null) notice.text = getString(R.string.pet_loading)
         worker.execute {
             if (!page.accepts(ticket)) return@execute
-            var nextManifest = previousManifest
-            val assetResult = if (fetchAssets || nextManifest == null) runCatching { source.fetch() } else null
-            assetResult?.getOrNull()?.let { nextManifest = it }
+            val assets = readPetAssets(fetchAssets, cached = { source.cached() }, fetch = source::fetch)
             if (!page.accepts(ticket)) return@execute
             var groupCount = 1
             val read = runCatching {
@@ -177,11 +174,11 @@ class PetActivity : Activity() {
                 busy = false
                 val previousStatus = status
                 val missingManifest = manifest == null
-                page.acceptRefresh(ticket, nextManifest, result, groupCount, System.currentTimeMillis())
+                page.acceptRefresh(ticket, assets.manifest, result, groupCount, System.currentTimeMillis())
                 val expired = showState()
-                PetBridge.publish(applicationContext, connection, status, updatedAt)
+                page.publication()?.let { PetBridge.publish(applicationContext, connection, it.status, it.updatedAt) }
                 notice.text = when {
-                    manifest == null && assetResult?.exceptionOrNull().let { it is HubException && it.status in listOf(403, 404) } -> getString(R.string.pet_unsupported)
+                    manifest == null && assets.failure.let { it is HubException && it.status in listOf(403, 404) } -> getString(R.string.pet_unsupported)
                     manifest == null -> getString(R.string.pet_unavailable_body)
                     allFailed -> getString(R.string.pet_retry_body)
                     partlyFailed -> getString(R.string.hub_partial)

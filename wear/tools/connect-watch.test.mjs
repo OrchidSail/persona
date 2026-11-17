@@ -60,6 +60,33 @@ test('tries another advertisement for the same watch when an old port is unreach
   assert.equal(calls.some(call => call[0] === 'connect' && call[1] === otherEndpoint), false);
 });
 
+test('discovers fully qualified TLS service types and still verifies the hardware serial', () => {
+  const { run, calls } = mock([
+    [['devices', '-l'], listing('')],
+    [['mdns', 'services'], mdns(`${service} (2) _adb-tls-connect._tcp. ${newEndpoint}`)],
+    [['connect', newEndpoint], 'connected'],
+    [['-s', newEndpoint, 'shell', 'getprop', 'ro.serialno'], serial],
+  ]);
+  assert.equal(connectWatch({ serial, run }), newEndpoint);
+  assert.deepEqual(calls, [['devices', '-l'], ['mdns', 'services'], ['connect', newEndpoint],
+    ['-s', newEndpoint, 'shell', 'getprop', 'ro.serialno']]);
+});
+
+test('the optional service root dot preserves serial, service type and endpoint boundaries', () => {
+  const ipv6 = '[2001:db8::10]:30001';
+  const rows = [
+    `${service} _adb-tls-connect._tcp. ${ipv6}`,
+    `adb-${serial}MORE-example _adb-tls-connect._tcp. ${otherEndpoint}`,
+    `${service} _adb-tls-pairing._tcp. ${oldEndpoint}`,
+    `${service} _adb-tls-connect._tcp.. ${oldEndpoint}`,
+    `${service} _adb-tls-connect._tcp.example ${oldEndpoint}`,
+    `${service} _adb-tls-connect._tcp. example.invalid:30001`,
+    `${service} _adb-tls-connect._tcp. 192.0.2.10:65536`,
+    `${service} _adb-tls-connect._tcp. ${newEndpoint} extra`,
+  ];
+  assert.deepEqual(parseTlsServices(mdns(rows.join('\n')), serial), [{ instance: service, endpoint: ipv6 }]);
+});
+
 test('excludes another serial with a matching prefix, pairing, legacy and malformed endpoints', () => {
   const output = mdns([
     `adb-${serial}MORE-example _adb-tls-connect._tcp ${otherEndpoint}`,

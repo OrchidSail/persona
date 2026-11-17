@@ -323,6 +323,23 @@ class FixtureUiChecks(private val instrumentation: Instrumentation) {
         // Cancel must preserve the existing draft and must not even ask the server to generate another.
         open("inbox")
         click("Sample invitation")
+        // The unchanged empty composer accepts generation directly into its persisted draft.
+        setReply("")
+        click(text(R.string.inbox_ai_reply))
+        waitText(text(R.string.inbox_draft_ready))
+        waitReply(SAMPLE_AI_DRAFT)
+        val inboxItem = client.refresh().inbox.single { it.id == "fixture-inbox" }
+        val generatedHash = DraftScope.hash(config.baseUrl, emptySet(), "inbox:${inboxItem.manager.orEmpty()}:${inboxItem.id}")
+        val savedDrafts = context.getSharedPreferences("watch_drafts", Activity.MODE_PRIVATE)
+        check(savedDrafts.getString("draft:$generatedHash", null) == SAMPLE_AI_DRAFT &&
+            !savedDrafts.getString("revision:$generatedHash", null).isNullOrBlank()) { "fixture_empty_ai_draft_not_stored" }
+        open("inbox")
+        click("Sample invitation")
+        waitReply(SAMPLE_AI_DRAFT)
+        check(fixtureEvents().count { it.optString("action") == "inbox_draft" } == 1 &&
+            fixtureEvents().none { it.optString("action") in setOf("inbox_reply", "inbox_done") }) { "fixture_empty_ai_draft_not_retained" }
+        status("PASS", "nonvoice_empty_ai_draft")
+        fixtureControl(JSONObject().put("clearEvents", true))
         val originalDraft = "Original sample inbox draft ${SystemClock.uptimeMillis()}"
         setReply(originalDraft)
         click(text(R.string.inbox_ai_reply))
@@ -519,7 +536,8 @@ class FixtureUiChecks(private val instrumentation: Instrumentation) {
                 false
             }
         }
-        waitUntil("reply_value") { nodes().any { it.isEditable && it.text?.toString() == value } }
+        waitUntil("reply_value") { nodes().any { it.isEditable &&
+            if (value.isEmpty()) it.isShowingHintText || it.text.isNullOrEmpty() else it.text?.toString() == value } }
         SystemClock.sleep(ACTION_SETTLE_MS)
     }
 

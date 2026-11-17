@@ -109,12 +109,15 @@ internal class PetPageState {
     fun acceptRefresh(ticket: Int, nextManifest: PetManifest?, read: HubGroupRead?, count: Int, now: Long): Boolean {
         if (!accepts(ticket)) return false
         manifest = nextManifest
-        groupRead = read
+        groupRead = read.takeIf { nextManifest != null }
         groupCount = count
         if (read != null) groups = read.cache
-        stored = PetFreshness.groups(stored, read, count, now)
+        stored = if (nextManifest == null) stored.copy(status = stored.visible(now))
+            else PetFreshness.groups(stored, read, count, now)
         return true
     }
+
+    fun publication(): PetStoredStatus? = stored.takeIf { connection != null && manifest != null }
 
     fun revalidate(now: Long): Boolean {
         val next = groupRead?.let { PetFreshness.groups(stored, it, groupCount, now) }

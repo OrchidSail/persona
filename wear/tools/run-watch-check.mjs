@@ -91,6 +91,57 @@ export function waitForAutomationExit(run, {
   }
 }
 
+/** Parse raw am instrument records; continuation lines belong to their current bundle value. */
+export function instrumentationPassed(output, mode) {
+  const result = new Map(), progress = new Map();
+  const failed = fields => /^\s*FAIL:/.test(fields.get('stream') || '') ||
+    ['shortMsg', 'longMsg', 'Error', 'stack'].some(key => fields.get(key)?.trim());
+  let current = null, statusOpen = false, resultStarted = false, code = null;
+  for (const line of output.toString('utf8').split(/\r?\n/)) {
+    const field = /^INSTRUMENTATION_(RESULT|STATUS): ([A-Za-z0-9_]+)=(.*)$/.exec(line);
+    if (field) {
+      if (code !== null || field[1] === 'STATUS' && resultStarted || field[1] === 'RESULT' && statusOpen) return false;
+      if (field[1] === 'RESULT') {
+        resultStarted = true;
+        if (result.has(field[2])) return false;
+        result.set(field[2], field[3]);
+      } else {
+        if (progress.has(field[2])) return false;
+        progress.set(field[2], field[3]); statusOpen = true;
+      }
+      current = { type: field[1], key: field[2] };
+      continue;
+    }
+    const status = /^INSTRUMENTATION_STATUS_CODE: (-?[0-9]+)$/.exec(line);
+    if (status) {
+      if (code !== null || resultStarted || !statusOpen || Number(status[1]) < 0 || failed(progress)) return false;
+      statusOpen = false; current = null; progress.clear();
+      continue;
+    }
+    const final = /^INSTRUMENTATION_CODE: (-?[0-9]+)$/.exec(line);
+    if (final) {
+      if (code !== null || statusOpen) return false;
+      code = Number(final[1]); current = null;
+      continue;
+    }
+    // Framework failures, unknown records and malformed terminators cannot be payload continuations.
+    if (/^INSTRUMENTATION_/.test(line)) return false;
+    if (current?.type === 'RESULT') result.set(current.key, `${result.get(current.key)}\n${line}`);
+    else if (current?.type === 'STATUS') progress.set(current.key, `${progress.get(current.key)}\n${line}`);
+    else if (current == null && line.trim() !== '') return false;
+  }
+  if (code !== -1 || statusOpen || failed(result)) return false;
+  // These existing modes report a bounded observation/setup outcome, not a completed face test.
+  const outcome = new Map([
+    ['surfaces', ['surfaces_passed', 'Synthetic app surfaces passed:']],
+    ['real_surfaces', ['real_surfaces_probed', 'OBSERVED:']],
+    ['pet_expiry', ['pet_expiry_seeded', 'SEEDED:']],
+    ['pet_expiry_restore', ['pet_expiry_restored', 'RESTORED:']],
+  ]).get(mode);
+  const stream = (result.get('stream') || '').trimStart();
+  return outcome ? result.get(outcome[0])?.trim() === 'true' && stream.startsWith(outcome[1]) : stream.startsWith('PASS:');
+}
+
 /** Dependency injection is for host-side tests; importing this module never invokes ADB. */
 export async function runWatchCheck(args, {
   spawn = spawnSync,
@@ -138,7 +189,7 @@ export async function runWatchCheck(args, {
         if (result.stdout) stdout(result.stdout);
         if (result.stderr) stderr(result.stderr);
         if (result.error || result.signal || result.status !== 0) throw new Error('Instrumentation interrupted or timed out');
-        if (!/INSTRUMENTATION_CODE:\s*-1\s*(?:\r?\n|$)/.test(result.stdout || '') || /(?:^|\n)(?:INSTRUMENTATION_RESULT:\s*stream=)?FAIL:/.test(result.stdout || '')) {
+        if (!instrumentationPassed(result.stdout || '', options.get('--mode'))) {
           throw new Error('Instrumentation did not report a passing result');
         }
         passed = true;

@@ -39,4 +39,14 @@ internal class DraftLedger(private val storage: DraftStorage, private val newId:
         save(version.hash, text)
         return true
     }
+
+    /** Blank/equal drafts need no replacement consent; a changed nonblank draft needs its exact version. */
+    fun acceptSuggestion(hash: String, suggestion: String, confirmed: Version? = null): Boolean {
+        if (suggestion.isBlank()) return false
+        val current = version(hash)
+        if (current.text.isNotBlank() && current.text != suggestion && current != confirmed) return false
+        save(hash, suggestion)
+        // Equal text was already saved; a storage failure must not discard the pending suggestion.
+        return text(hash) == suggestion
+    }
 }

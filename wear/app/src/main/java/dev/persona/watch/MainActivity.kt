@@ -504,9 +504,9 @@ class MainActivity : Activity() {
             val operation = operationId(stored)
             if (current?.canSend == true) perform(R.string.processing, owner = current.groupId, task = {
                 it.send(current, getString(R.string.continue_action), operation)
-            }, settled = { clearOperation(stored, operation) }) {
+            }, settled = { clearOperation(stored, operation) }, done = {
                 loadMessages(current)
-            }
+            })
         }
         if (session.canInterrupt && session.state in setOf("working", "needs_you")) {
             action(R.string.stop, destructive = true) {
@@ -718,9 +718,16 @@ class MainActivity : Activity() {
             paragraph(suggestion, compact = true)
             action(R.string.inbox_use_suggestion) {
                 val target = hash(draftKey)
-                confirm(getString(R.string.inbox_replace_draft_body), getString(R.string.inbox_use_suggestion)) {
-                    ledger.save(target, suggestion); generatedSuggestions.remove(target); render(true)
+                val version = ledger.version(target)
+                val accept = {
+                    val accepted = runCatching { ledger.acceptSuggestion(target, suggestion, version) }
+                        .getOrElse { error = errorText(it); false }
+                    if (accepted) generatedSuggestions.remove(target)
+                    render(true)
                 }
+                if (version.text.isNotBlank() && version.text != suggestion)
+                    confirm(getString(R.string.inbox_replace_draft_body), getString(R.string.inbox_use_suggestion), call = accept)
+                else accept()
             }
         }
         action(R.string.mark_done, enabled = canAct) {
@@ -866,13 +873,12 @@ class MainActivity : Activity() {
         render(true)
         mutations.execute {
             val result = runCatching { task(hub) }
-            handler.post {
+            postMutationResult(result, post = { callback -> handler.post { callback() } }, settled = settled) { delivered ->
                 // Reconcile only captured draft/operation keys, even if the visible connections changed.
-                if (result.isSuccess) settled()
                 val current = work.finishMutation(ticket)
-                if (isDestroyed) return@post
-                if (!current) { render(true); return@post }
-                result.fold({
+                if (isDestroyed) return@postMutationResult
+                if (!current) { render(true); return@postMutationResult }
+                delivered.fold({
                     notice = getString(success)
                     done()
                     scroll.performHapticFeedback(HapticFeedbackConstants.CONFIRM)

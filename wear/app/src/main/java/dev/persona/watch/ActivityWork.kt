@@ -1,5 +1,14 @@
 package dev.persona.watch
 
+/** Network results cross one UI dispatch boundary before any captured-state or visible completion. */
+internal fun <T> postMutationResult(result: Result<T>, post: (() -> Unit) -> Unit,
+                                   settled: () -> Unit, complete: (Result<T>) -> Unit) {
+    post {
+        if (result.isSuccess) settled()
+        complete(result)
+    }
+}
+
 /** Tickets separate connection identity from refresh/mutation lifetime. All access is on the UI thread. */
 internal class ActivityWork {
     data class Ticket(val generation: Int, val serial: Long)

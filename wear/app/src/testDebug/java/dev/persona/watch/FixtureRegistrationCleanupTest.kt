@@ -6,6 +6,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.util.concurrent.TimeoutException
 
 class FixtureRegistrationCleanupTest {
     @get:Rule val folder = TemporaryFolder()
@@ -141,5 +142,151 @@ class FixtureRegistrationCleanupTest {
             }
         }
         assertEquals(mapOf(id to 3, otherId to 1), attempts)
+    }
+
+    @Test fun alreadyOwnedRegistrationIsFencedAndAbortedBeforeAnUnsuccessfulWait() {
+        val store = Store()
+        val entry = owned()
+        store.journal = listOf(entry)
+        store.rows = listOf(SavedHub(id, entry.name, issued))
+        store.saveCredential(id, issued)
+        val order = mutableListOf<String>()
+        val failure = assertThrows(IllegalStateException::class.java) {
+            drainFixtureRegistrations(
+                owned = { listOf(entry) },
+                fence = { order += "fence"; store.fence.mark(it.id) },
+                abort = { value, _ -> order += "abort"; HubRegistrationAbort(store).abort(value) },
+                awaitRecord = {
+                    order += "await"
+                    assertTrue(store.fence.contains(id))
+                    assertTrue(store.rows.isEmpty() && store.journal.isEmpty())
+                    assertFalse(store.envelope(id).exists())
+                    false
+                },
+            )
+        }
+        assertEquals("multihub_registration_not_observed", failure.message)
+        assertEquals(listOf("fence", "abort", "await"), order)
+    }
+
+    @Test fun entriesRecordedDuringFailedOrThrowingWaitAreStillAborted() {
+        for (throws in listOf(false, true)) {
+            val store = Store()
+            val entries = mutableListOf<PendingHubRegistration>()
+            val failure = assertThrows(IllegalStateException::class.java) {
+                drainFixtureRegistrations(
+                    owned = { entries.toList() },
+                    fence = { store.fence.mark(it.id) },
+                    abort = { entry, _ -> HubRegistrationAbort(store).abort(entry) },
+                    awaitRecord = {
+                        val entry = owned()
+                        entries += entry
+                        store.journal = listOf(entry)
+                        store.rows = listOf(SavedHub(id, entry.name, issued))
+                        store.saveCredential(id, issued)
+                        check(!throws) { "injected record failure" }
+                        false
+                    },
+                )
+            }
+            assertEquals(if (throws) "injected record failure" else "multihub_registration_not_observed", failure.message)
+            assertTrue(store.fence.contains(id))
+            assertTrue(store.rows.isEmpty() && store.journal.isEmpty())
+            assertFalse(store.envelope(id).exists())
+        }
+    }
+
+    @Test fun entriesArrivingDuringThePostWaitAbortAreResnapshottedAndDrained() {
+        val entries = mutableListOf<PendingHubRegistration>()
+        val fenced = mutableSetOf<String>()
+        val aborted = mutableListOf<String>()
+        var clock = 0L
+        drainFixtureRegistrations(
+            owned = { entries.toList() },
+            fence = { fenced += it.id },
+            abort = { entry, _ ->
+                assertTrue(entry.id in fenced)
+                aborted += entry.id
+                if (entry.id == id) entries += owned(otherId)
+            },
+            awaitRecord = { entries += owned(); true },
+            now = { clock }, wait = { clock += it }, timeoutMs = 100,
+        )
+        assertEquals(listOf(id, otherId), aborted)
+        assertEquals(setOf(id, otherId), fenced)
+        assertEquals(50L, clock)
+    }
+
+    @Test fun initialAbortFailuresAreRetriedAfterTheWaitUntilNoOwnedResidueRemains() {
+        val store = Store()
+        val entry = owned()
+        store.journal = listOf(entry)
+        store.saveCredential(id, issued)
+        store.deleteFailures = 7
+        var clock = 0L
+        drainFixtureRegistrations(
+            owned = { listOf(entry) },
+            fence = { store.fence.mark(it.id) },
+            abort = { value, _ -> HubRegistrationAbort(store).abort(value) },
+            awaitRecord = { assertEquals(3, store.deletes); true },
+            now = { clock }, wait = { clock += it }, timeoutMs = 100,
+        )
+        assertEquals(8, store.deletes)
+        assertEquals(50L, clock)
+        assertTrue(store.fence.contains(id))
+        assertTrue(store.journal.isEmpty())
+        assertFalse(store.envelope(id).exists())
+    }
+
+    @Test fun abortTimeoutFencesEveryKnownEntryAndReportsResidueAtTheSharedDeadline() {
+        val entries = listOf(owned(), owned(otherId))
+        val fenced = mutableSetOf<String>()
+        val budgets = mutableListOf<Long>()
+        var clock = 0L
+        var awaited = false
+        val failure = assertThrows(IllegalStateException::class.java) {
+            drainFixtureRegistrations(
+                owned = { entries },
+                fence = { fenced += it.id },
+                abort = { _, budget ->
+                    assertEquals(setOf(id, otherId), fenced)
+                    budgets += budget
+                    clock += budget
+                    throw TimeoutException("injected abort timeout")
+                },
+                awaitRecord = { budget -> awaited = true; assertEquals(0L, budget); false },
+                now = { clock }, wait = { clock += it }, timeoutMs = 100,
+            )
+        }
+        assertTrue(awaited)
+        assertEquals("multihub_cleanup_incomplete_2", failure.message)
+        assertEquals(setOf(id, otherId), fenced)
+        assertEquals(listOf(100L), budgets)
+        assertEquals(100L, clock)
+        assertTrue(failure.suppressed.any { it is TimeoutException })
+        assertTrue(failure.suppressed.any { it.message == "multihub_registration_not_observed" })
+    }
+
+    @Test fun registrationWaitTimeoutLeavesOnlyTheRemainingCleanupBudget() {
+        val entries = mutableListOf<PendingHubRegistration>()
+        var clock = 0L
+        var aborted = false
+        val failure = assertThrows(IllegalStateException::class.java) {
+            drainFixtureRegistrations(
+                owned = { entries.toList() },
+                fence = {},
+                abort = { _, budget -> aborted = true; assertEquals(10_000L, budget) },
+                awaitRecord = { budget ->
+                    assertEquals(5_000L, budget)
+                    clock += budget
+                    entries += owned()
+                    false
+                },
+                now = { clock }, wait = { clock += it },
+            )
+        }
+        assertTrue(aborted)
+        assertEquals("multihub_registration_not_observed", failure.message)
+        assertEquals(5_000L, clock)
     }
 }
