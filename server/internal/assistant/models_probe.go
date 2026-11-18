@@ -83,16 +83,36 @@ type probeTarget struct {
 	auth string
 }
 
-// sameProbeGateway reports whether a probe's base_url override still points to stored's own gateway so stored
-// credentials may be sent. It never strips endpoint suffixes (/v1/messages, /chat/completions, /responses) from
-// override: "/team/v1/messages" or "/v1/chat/completions" could be a distinct deployment prefix on the same host,
-// and must not receive stored's API key or custom headers. Only exact matches against the stored or published
-// LaunchBaseURL (plus #4886's trailing-/v1 equivalence when both stored and the request speak Messages) qualify.
+// canonicalProbeURL reports whether raw is an http(s) URL with no duplicate internal slashes in its path.
+func canonicalProbeURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.Opaque != "" {
+		return false
+	}
+	authority := strings.Index(raw, "//")
+	if authority < 0 {
+		return false
+	}
+	authority += len("//")
+	slash := strings.IndexByte(raw[authority:], '/')
+	if slash < 0 {
+		return true
+	}
+	return !strings.Contains(raw[authority+slash:], "//")
+}
+
+// sameProbeGateway reports whether a probe's base_url override still points to stored's canonical gateway so stored
+// credentials may be sent. Overrides are compared only against the normalized LaunchBaseURL (never an unnormalized
+// legacy stored.BaseURL), must have a canonical path without internal "//" or endpoint suffixes (/v1/messages,
+// /chat/completions, /responses), and may add a single trailing "/v1" only when both stored and effective protocols
+// speak Messages (#4886).
 func sameProbeGateway(stored proto.ManagedLauncher, override, reqAPI string, reqAgent *string) bool {
 	b := strings.TrimRight(strings.TrimSpace(override), "/")
-	raw := strings.TrimRight(strings.TrimSpace(stored.BaseURL), "/")
+	if !canonicalProbeURL(b) {
+		return false
+	}
 	launch := strings.TrimRight(strings.TrimSpace(stored.LaunchBaseURL()), "/")
-	if b == raw || b == launch {
+	if b == launch {
 		return true
 	}
 	eff := stored
@@ -103,7 +123,10 @@ func sameProbeGateway(stored proto.ManagedLauncher, override, reqAPI string, req
 		eff.Agent = strings.TrimSpace(*reqAgent)
 	}
 	if stored.MessagesBase() && eff.MessagesBase() {
-		return proto.TrimTrailingV1(b) == launch
+		u, err := url.Parse(launch)
+		if err == nil && u.Host != "" && u.Opaque == "" && u.RawQuery == "" && u.Fragment == "" {
+			return b == launch+"/v1"
+		}
 	}
 	return false
 }

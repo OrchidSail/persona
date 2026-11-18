@@ -416,14 +416,8 @@ func APIBaseURL(base, api string) string {
 // preceded by /v1, never a /messages deployment prefix), then strip any trailing /v1 segments so
 // "https://gw/prefix/v1/" → "https://gw/prefix" and both "https://gw/messages/v1" and
 // "https://gw/messages/v1/messages" → "https://gw/messages". Anything else (no host, a query) is only trimmed.
-// TrimTrailingV1 drops any trailing /v1 segments (and trailing slashes) from base without stripping endpoint paths
-// such as /v1/messages, preserving #4886's lossless gateway comparison on probe overrides.
-func TrimTrailingV1(base string) string {
-	return trimBasePathSuffix(base, "/v1")
-}
-
 func MessagesBaseURL(base string) string {
-	return TrimTrailingV1(trimMessagesEndpointSuffix(base))
+	return trimBasePathSuffix(trimMessagesEndpointSuffix(base), "/v1")
 }
 
 func splitBaseURLPath(base string) (root, path string, ok bool) {

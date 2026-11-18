@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -63,25 +64,43 @@ func HasOpenCodeSessionHeader(raw string) bool {
 	return false
 }
 
-// SetOpenCodeSession attaches x-opencode-session when rawURL is an OpenCode Go gateway and h does not already carry one.
+func firstNonEmptyHeader(values []string) string {
+	for _, v := range values {
+		if trimmed := strings.TrimSpace(v); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+// SetOpenCodeSession canonicalizes any existing x-opencode-session entries and attaches sessionID (or a new UUIDv4)
+// when rawURL is an OpenCode Go gateway and no non-empty caller value is present.
 func SetOpenCodeSession(h http.Header, rawURL, sessionID string) {
 	if h == nil || !OpenCodeGo(rawURL) {
 		return
 	}
-	for name, values := range h {
+	canonical := http.CanonicalHeaderKey(OpenCodeSessionHeader)
+	chosen := firstNonEmptyHeader(h[canonical])
+	var matched []string
+	for name := range h {
 		if strings.EqualFold(name, OpenCodeSessionHeader) {
-			for _, v := range values {
-				if strings.TrimSpace(v) != "" {
-					return
-				}
-			}
+			matched = append(matched, name)
 		}
 	}
-	id := strings.TrimSpace(sessionID)
-	if id == "" {
-		id = OpenCodeSessionID("")
+	slices.Sort(matched)
+	for _, name := range matched {
+		if chosen == "" {
+			chosen = firstNonEmptyHeader(h[name])
+		}
+		delete(h, name)
 	}
-	h.Set(OpenCodeSessionHeader, id)
+	if chosen == "" {
+		chosen = strings.TrimSpace(sessionID)
+	}
+	if chosen == "" {
+		chosen = OpenCodeSessionID("")
+	}
+	h.Set(OpenCodeSessionHeader, chosen)
 }
 
 // ClearOpenCodeSession removes any x-opencode-session header in any casing (for cross-origin redirects).
