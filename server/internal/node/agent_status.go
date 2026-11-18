@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/nwverse/persona/server/internal/host"
 	"github.com/nwverse/persona/server/internal/proto"
+	"github.com/nwverse/persona/server/internal/screen"
 )
 
 // agent is the live agent of session id, with its status as liveStatus says.
@@ -87,8 +89,9 @@ func (n *Node) noteBlockedAt(id string, blocked bool, now time.Time) time.Time {
 
 // codexRolloutWorkingOverBlocked reports whether a Codex session whose host reports StatusBlocked is provably running
 // a turn in its rollout: an open turn in the current tail with fresh turn-scoped activity advancing well after
-// blocked began, and neither its app-server thread, screen approval, nor an open blocking rollout ask is waiting.
-func (n *Node) codexRolloutWorkingOverBlocked(id, path string, m quickMeta, blockedSince, now time.Time) bool {
+// blocked began, neither its app-server thread, screen approval, nor an open blocking rollout ask is waiting, and a
+// fresh screen read confirms no approval or terminal dialog is visible.
+func (n *Node) codexRolloutWorkingOverBlocked(ctx context.Context, id, pane, path string, m quickMeta, blockedSince, now time.Time) bool {
 	if blockedSince.IsZero() || !m.turnOpen || m.turnClosed {
 		return false
 	}
@@ -99,10 +102,25 @@ func (n *Node) codexRolloutWorkingOverBlocked(id, path string, m quickMeta, bloc
 	if _, t, err := n.codexOwner(id); err == nil && t.status == proto.StatusBlocked {
 		return false
 	}
-	if n.cx.hasApproval(id) {
+	if n.cx.hasApproval(id) || n.cx.hasBlockingAsk(id, path) {
 		return false
 	}
-	return !n.cx.hasBlockingAsk(id, path)
+	if pane == "" || n.hosts == nil {
+		return false
+	}
+	rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	text, err := n.dialogScreen(rctx, pane)
+	if err != nil {
+		return false
+	}
+	if d := screen.ReadCodex(text); d.Approval != nil || d.Question != nil || d.View == screen.CodexTranscript {
+		if d.Approval != nil {
+			n.cx.setApproval(id, true)
+		}
+		return false
+	}
+	return screen.ParseDialog(text) == nil && !screen.Choosing(text)
 }
 
 // codexSpinner: the frames of the spinner Codex animates in its terminal title while a turn runs, as herdr's own Codex

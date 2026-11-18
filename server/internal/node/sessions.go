@@ -188,7 +188,7 @@ func (n *Node) sessionListIn(ctx context.Context, refreshAgents bool, pass *code
 		}
 		blockedSince := n.noteBlockedAt(id, s.Status == proto.StatusBlocked, now)
 		if a.Agent == "codex" && host.ParsePane(a.PaneID).Kind != host.Botmux && s.Status == proto.StatusBlocked &&
-			n.codexRolloutWorkingOverBlocked(id, rolloutPath, rollout, blockedSince, now) {
+			n.codexRolloutWorkingOverBlocked(ctx, id, a.PaneID, rolloutPath, rollout, blockedSince, now) {
 			s.Status = proto.StatusWorking
 			s.AttentionReason = ""
 		}

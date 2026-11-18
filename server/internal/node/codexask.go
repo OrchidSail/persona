@@ -172,7 +172,9 @@ func (n *Node) codexCardsNow(ctx context.Context, only string) []codexCard {
 			out = append(out, codexCard{ix: askCard(id, a, title, ask), pane: a.pane, ask: &ask})
 		}
 		if waiting || a.joined || a.status != proto.StatusBlocked {
-			if only == "" {
+			// Only clear the cached approval bit without reading the screen when the host is no longer blocked or
+			// the thread is joined on its app-server; an open rollout question alone must not drop a visible TUI approval.
+			if only == "" && (a.joined || a.status != proto.StatusBlocked) {
 				n.cx.setApproval(id, false)
 			}
 			continue
