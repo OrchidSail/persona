@@ -101,17 +101,21 @@ func TestOpenCodeGoDirectAPISessionHeader(t *testing.T) {
 					t.Fatalf("Complete: text=%q err=%v", text, err)
 				}
 			}
-			if len(paths) != 2 || paths[0] != tc.wantPath || paths[1] != tc.wantPath {
+			copied := *client
+			if text, err := copied.Complete(context.Background(), "sys", "ping", 8); err != nil || text != "ok" {
+				t.Fatalf("copied Complete: text=%q err=%v", text, err)
+			}
+			if len(paths) != 3 || paths[0] != tc.wantPath || paths[1] != tc.wantPath || paths[2] != tc.wantPath {
 				t.Fatalf("paths=%v want %s", paths, tc.wantPath)
 			}
 			if uas[0] != modelhttp.UserAgent() {
 				t.Fatalf("User-Agent=%q want %q", uas[0], modelhttp.UserAgent())
 			}
 			if tc.wantHdr {
-				if sessions[0] == "" || sessions[0] != sessions[1] {
-					t.Fatalf("expected stable non-empty session header, got %v", sessions)
+				if sessions[0] == "" || sessions[0] != sessions[1] || sessions[0] != sessions[2] {
+					t.Fatalf("expected stable non-empty session header across calls and shallow copies, got %v", sessions)
 				}
-			} else if sessions[0] != "" || sessions[1] != "" {
+			} else if sessions[0] != "" || sessions[1] != "" || sessions[2] != "" {
 				t.Fatalf("unexpected session header: %v", sessions)
 			}
 		})

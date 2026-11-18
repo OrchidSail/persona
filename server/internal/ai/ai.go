@@ -35,11 +35,10 @@ var errNotConfigured = errors.New("还没有能直接调用的模型：在 设�
 func IsNotConfigured(err error) bool { return errors.Is(err, errNotConfigured) }
 
 type Client struct {
-	cfg       Config
-	sessionID string
-	http      *http.Client
-	resolve   func(context.Context) (*Client, error)
-	run       func(context.Context, Request) (Reply, error)
+	cfg     Config
+	http    *http.Client
+	resolve func(context.Context) (*Client, error)
+	run     func(context.Context, Request) (Reply, error)
 }
 
 // NewResolved resolves the execution configuration at the start of every request.
@@ -56,11 +55,7 @@ func New(cfg Config) *Client {
 
 // NewWith is New sending its requests through transport (nil: this machine's network).
 func NewWith(cfg Config, transport http.RoundTripper) *Client {
-	return &Client{
-		cfg:       cfg,
-		sessionID: modelhttp.OpenCodeSessionID(""),
-		http:      &http.Client{Timeout: 60 * time.Second, Transport: transport, CheckRedirect: checkRedirect},
-	}
+	return &Client{cfg: cfg, http: &http.Client{Timeout: 60 * time.Second, Transport: transport, CheckRedirect: checkRedirect}}
 }
 
 // net/http copies headers from the first request on every redirect, so check the entire chain before retaining its
@@ -154,22 +149,12 @@ type Request struct {
 	System    string
 	Messages  []Message
 	MaxTokens int // output limit for Messages and Chat Completions
-	// BoundOutput also enforces MaxTokens on Responses. Cost-sensitive background calls
-	// fail closed when a relay refuses the bound; legacy callers keep their existing behavior.
-	BoundOutput bool
 	// SessionID optionally scopes session-routed gateways (such as OpenCode Go) across turns; empty falls back to ctx
 	// (WithSessionID) or the client's stable session identifier.
 	SessionID string
-}
-
-type sessionIDKey struct{}
-
-// WithSessionID attaches a stable session identifier to ctx for gateways that require session routing.
-func WithSessionID(ctx context.Context, sessionID string) context.Context {
-	if s := strings.TrimSpace(sessionID); s != "" {
-		return context.WithValue(ctx, sessionIDKey{}, s)
-	}
-	return ctx
+	// BoundOutput also enforces MaxTokens on Responses. Cost-sensitive background calls
+	// fail closed when a relay refuses the bound; legacy callers keep their existing behavior.
+	BoundOutput bool
 }
 
 // Usage is what one request spent, as the upstream counted it (zero where it did not say).
@@ -334,26 +319,6 @@ func (c *Client) setUserAgent(req *http.Request) {
 		req.Header.Set("User-Agent", *c.cfg.UserAgent)
 	}
 	modelhttp.SetDefaultUserAgent(req.Header)
-}
-
-func (c *Client) openCodeSessionID(ctx context.Context, r Request) string {
-	if s := strings.TrimSpace(r.SessionID); s != "" {
-		return modelhttp.OpenCodeSessionID(s)
-	}
-	if ctx != nil {
-		if s, _ := ctx.Value(sessionIDKey{}).(string); strings.TrimSpace(s) != "" {
-			return modelhttp.OpenCodeSessionID(s)
-		}
-	}
-	if c.sessionID != "" {
-		return c.sessionID
-	}
-	return modelhttp.OpenCodeSessionID("")
-}
-
-func (c *Client) setGatewayHeaders(ctx context.Context, req *http.Request, r Request) {
-	c.setUserAgent(req)
-	modelhttp.SetOpenCodeSession(req.Header, req.URL.String(), c.openCodeSessionID(ctx, r))
 }
 
 // messages calls the Messages API; answered is whether the upstream said 200, Truncated whether the reply stopped at
