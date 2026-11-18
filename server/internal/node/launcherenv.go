@@ -589,9 +589,15 @@ func providerEnv(l proto.ManagedLauncher, model, effort string, mainConversation
 	// Claude Code puts CLAUDE_CODE_EFFORT_LEVEL above --effort and /effort, which would override the caller's
 	// choice and lock the session's effort control (#2307). A default effort goes to the command line (--effort)
 	// instead, and the environment variable is set only when the provider's own env sets it explicitly.
+	baseURL := l.LaunchBaseURL()
+	for _, kv := range launcherEnvVars(l.Env) {
+		if kv[0] == "ANTHROPIC_BASE_URL" {
+			baseURL = kv[1]
+		}
+	}
 	headers := l.Headers
-	if modelhttp.OpenCodeGo(effectiveBaseURL) && !modelhttp.HasOpenCodeSessionHeader(headers) {
-		line := modelhttp.OpenCodeSessionHeader + ": " + modelhttp.OpenCodeSessionID("launcher:"+cmp.Or(l.Name, effectiveBaseURL))
+	if modelhttp.OpenCodeGo(baseURL) && !modelhttp.HasOpenCodeSessionHeader(headers) {
+		line := modelhttp.OpenCodeSessionHeader + ": " + modelhttp.OpenCodeSessionID("launcher:"+cmp.Or(l.Name, baseURL))
 		if strings.TrimSpace(headers) == "" {
 			headers = line
 		} else {

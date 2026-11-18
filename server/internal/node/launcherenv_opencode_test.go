@@ -53,6 +53,19 @@ func TestProviderEnvOpenCodeGoCustomHeaders(t *testing.T) {
 	if got := providerEnv(other, "", "", false)["ANTHROPIC_CUSTOM_HEADERS"]; strings.Contains(got, modelhttp.OpenCodeSessionHeader) {
 		t.Fatalf("unexpected header on non-opencode gateway: %q", got)
 	}
+
+	// ANTHROPIC_BASE_URL in l.Env determines whether OpenCode Go session headers are injected.
+	envOverrideIn := other
+	envOverrideIn.Env = "ANTHROPIC_BASE_URL=https://opencode.ai/zen/go/anthropic"
+	wantOverride := modelhttp.OpenCodeSessionHeader + ": " + modelhttp.OpenCodeSessionID("launcher:other")
+	if got := providerEnv(envOverrideIn, "", "", false)["ANTHROPIC_CUSTOM_HEADERS"]; got != wantOverride {
+		t.Fatalf("env override into OpenCode Go: got %q, want %q", got, wantOverride)
+	}
+	envOverrideOut := l
+	envOverrideOut.Env = "ANTHROPIC_BASE_URL=https://api.anthropic.com"
+	if got := providerEnv(envOverrideOut, "", "", false)["ANTHROPIC_CUSTOM_HEADERS"]; strings.Contains(got, modelhttp.OpenCodeSessionHeader) {
+		t.Fatalf("env override away from OpenCode Go kept header: %q", got)
+	}
 }
 
 func TestCodexManagedEnvAndLaunchArgsStripLegacyResponsesSuffix(t *testing.T) {
