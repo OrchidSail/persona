@@ -3,6 +3,7 @@ package dev.persona.watch
 import android.app.Activity
 import android.app.Instrumentation
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.SystemClock
@@ -27,6 +28,7 @@ class FixtureUiChecks(private val instrumentation: Instrumentation) {
     private var activity: Activity? = null
     private var deadline = 0L
     private var currentStep = "guard"
+    private val measurements = Bundle()
 
     /** Default: seven core checks. Optional regressions and nonvoice reset the synthetic server. */
     fun run(scenario: String? = null): Bundle {
@@ -38,8 +40,9 @@ class FixtureUiChecks(private val instrumentation: Instrumentation) {
         client = HubClient(config, "en")
         val started = SystemClock.elapsedRealtime()
         val names = if (scenario.isNullOrBlank() || scenario == "all") SCENARIOS else scenario.split(',').map { it.trim() }
-        check(names.isNotEmpty() && names.all { it in SCENARIOS || it in REGRESSIONS || it == "nonvoice" }) { "fixture_unknown_scenario" }
+        check(names.isNotEmpty() && names.all { it in SCENARIOS || it in REGRESSIONS || it in setOf("nonvoice", "matrix") }) { "fixture_unknown_scenario" }
         deadline = started + when {
+            "matrix" in names -> MATRIX_TIMEOUT_MS
             "nonvoice" in names -> NONVOICE_TIMEOUT_MS
             names.all { it in REGRESSIONS } -> REGRESSION_TIMEOUT_MS
             else -> TOTAL_TIMEOUT_MS
@@ -63,20 +66,25 @@ class FixtureUiChecks(private val instrumentation: Instrumentation) {
                     "cancel_stale" -> cancelStale()
                     "nonvoice" -> nonvoice()
                     "form_accessibility" -> formAccessibility()
+                    "matrix" -> matrix()
+                    "credential_loss" -> measurements.putAll(CredentialLossChecks(instrumentation).run())
                 }
                 sameFixtureCredential()
                 passed += name
                 status("PASS", name)
             }
             return Bundle().apply {
+                putAll(measurements)
                 putBoolean("fixture", true)
                 putString("fixture_passed", passed.joinToString(","))
                 putInt("fixture_checks", passed.size)
                 putLong("fixture_elapsed_ms", SystemClock.elapsedRealtime() - started)
+                putFloat("fixture_font_scale", context.resources.configuration.fontScale)
+                putInt("fixture_ui_mode_night", context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK)
                 putString("stream", "PASS: fixture UI controls (${passed.joinToString(", ")})\n")
             }
         } catch (failure: Throwable) {
-            runCatching { screenshot("$currentStep-failed") }
+            runCatching { failureScreenshot("$currentStep-failed") }
             status("FAIL", currentStep)
             throw AssertionError("fixture_ui_$currentStep", failure)
         } finally {
@@ -95,20 +103,85 @@ class FixtureUiChecks(private val instrumentation: Instrumentation) {
         check(snapshot.sessions.isNotEmpty() && snapshot.sessions.all { it.machineId == "fixture" }) { "fixture_sessions_required" }
     }
 
-    private fun formAccessibility() {
+    private fun formAccessibility(capture: String? = null) {
         open("settings")
-        instrumentation.runOnMainSync { InputAccessibilityChecks.verify(checkNotNull(activity), 2) }
+        waitUntil("pairing_form") { nodes().count { it.isEditable } == 2 }
+        InputAccessibilityChecks.verifyOnMain(instrumentation, checkNotNull(activity), 2)
+        capture?.let { matrixScreenshots("$it-settings") }
         sameFixtureCredential()
         val current = instrumentation.startActivitySync(Intent(context, ConnectionsActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         })
         activity = current
         waitText(text(R.string.hub_add))
+        capture?.let { matrixScreenshots("$it-connections") }
         click(text(R.string.hub_add))
-        instrumentation.runOnMainSync { InputAccessibilityChecks.verify(current, 3) }
+        InputAccessibilityChecks.verifyOnMain(instrumentation, current, 3)
+        capture?.let { matrixScreenshots("$it-add-connection") }
         // No pairing token is entered or exchanged; this scenario checks the native form structure only.
         click(text(R.string.cancel))
     }
+
+    /** Reusable at each supported system appearance/font size; all data and writes remain synthetic. */
+    private fun matrix() {
+        fixtureControl(JSONObject().put("reset", true).put("scenario", "matrix").put("clearEvents", true))
+        fun timed(name: String, action: () -> Unit) {
+            val started = SystemClock.elapsedRealtime()
+            action()
+            measurements.putLong("matrix_${name}_ms", SystemClock.elapsedRealtime() - started)
+        }
+        measurements.putString("matrix_timings_scope", "synthetic_production_ui")
+        timed("home_ready") { open("home"); waitText("Sample trip planning") }
+        matrixScreenshots("matrix-home")
+        timed("agents_ready") { open("agents"); waitText("Sample trip planning") }
+        matrixScreenshots("matrix-agents")
+        timed("inbox_ready") { open("inbox"); waitText("Sample invitation") }
+        matrixScreenshots("matrix-inbox")
+        timed("inbox_detail") { click("Sample invitation"); waitText("A synthetic invitation for watch testing.") }
+        matrixScreenshots("matrix-inbox-detail")
+        setReply("")
+        timed("inbox_suggestion") { click(text(R.string.inbox_ai_reply)); waitText(text(R.string.inbox_draft_ready)); waitReply(SAMPLE_AI_DRAFT) }
+        matrixScreenshots("matrix-inbox-suggestion-unsent")
+        check(fixtureEvents().none { it.optString("action") in setOf("inbox_reply", "inbox_done") }) { "matrix_suggestion_auto_sent" }
+        timed("chat_ready") { open("session", "assistant"); waitText("Synthetic test conversation. You can safely send a sample reply here.") }
+        val reply = "Sample matrix reply ${SystemClock.uptimeMillis()}"
+        setReply(reply)
+        matrixScreenshots("matrix-chat-composer")
+        restoringFixtureOnline {
+            // Delay only this isolated fixture to make the production Sending state observable.
+            fixtureControl(JSONObject().put("delayMs", 5000))
+            val sendStarted = SystemClock.elapsedRealtime()
+            timed("send_status") { click(text(R.string.send)); waitText(text(R.string.sending)) }
+            screenshot("matrix-chat-sending")
+            fixtureControl(JSONObject().put("delayMs", 0))
+            waitNetwork("matrix_message_receipt") {
+                val session = client.refresh().sessions.single { it.sessionId == "assistant" }
+                client.messages(session).count { it.own && it.text == reply } == 1
+            }
+            measurements.putLong("matrix_send_receipt_ms", SystemClock.elapsedRealtime() - sendStarted)
+        }
+        open("session", "assistant")
+        waitText("Sample reply received. No real agent was started.")
+        matrixScreenshots("matrix-chat-reply")
+        protectedPermission()
+        protectedPermission("fixture-sensitive-handoff", "matrix-protected-handoff-no-allow")
+        formAccessibility("matrix")
+        open("home")
+        waitText("Sample trip planning")
+        restoringFixtureOnline {
+            fixtureControl(JSONObject().put("mode", "error"))
+            click(text(R.string.refresh))
+            waitText(text(R.string.connection_failed), contains = true)
+            matrixScreenshots("matrix-error")
+            fixtureControl(JSONObject().put("mode", "online"))
+            timed("recovery_ready") { click(text(R.string.refresh)); waitText(text(R.string.connected)) }
+            matrixScreenshots("matrix-recovered")
+        }
+        measurements.putBoolean("matrix_passed", true)
+    }
+
+    /** Save overlapping real viewports, including both ends; never stitch or redraw production pixels. */
+    private fun matrixScreenshots(name: String) = screenshot(name)
 
     private fun sameFixtureCredential(checkDeadline: Boolean = true) {
         val current = CredentialStore(context).load()
@@ -154,15 +227,15 @@ class FixtureUiChecks(private val instrumentation: Instrumentation) {
         awaitResolved("fixture-screen")
     }
 
-    private fun protectedPermission() {
-        val card = requirePending("fixture-sensitive")
+    private fun protectedPermission(id: String = "fixture-sensitive", capture: String = "protected-no-allow") {
+        val card = requirePending(id)
         check(card.requiresInput) { "fixture_sensitive_contract" }
-        open("interaction", "fixture-sensitive")
+        open("interaction", id)
         waitText(text(R.string.requires_phone))
         check(nodes().none { matches(it, text(R.string.allow)) && clickable(it) != null }) { "fixture_sensitive_has_allow" }
-        screenshot("protected-no-allow")
+        if (currentStep == "matrix") matrixScreenshots(capture) else screenshot(capture)
         click(text(R.string.deny))
-        awaitResolved("fixture-sensitive")
+        awaitResolved(id)
     }
 
     private fun chat() {
@@ -429,7 +502,7 @@ class FixtureUiChecks(private val instrumentation: Instrumentation) {
             throw failure
         } finally {
             try {
-                fixtureControl(JSONObject().put("mode", "online"), cleanup = true)
+                fixtureControl(JSONObject().put("mode", "online").put("delayMs", 0), cleanup = true)
             } catch (cleanupFailure: Throwable) {
                 val original = primaryFailure
                 if (original != null) original.addSuppressed(cleanupFailure) else throw cleanupFailure
@@ -600,12 +673,27 @@ class FixtureUiChecks(private val instrumentation: Instrumentation) {
     }
 
     private fun screenshot(name: String) {
-        sameFixtureCredential()
+        ViewportCapture(instrumentation, currentActivity = { checkNotNull(activity) },
+            check = { sameFixtureCredential() }, save = ::saveScreenshot).capture(name)
+    }
+
+    private fun saveScreenshot(name: String, bitmap: Bitmap) {
+        val folder = File(context.filesDir, "fixture-qa").apply { mkdirs() }
+        File(folder, "$name.png").outputStream().use {
+            check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) { "fixture_screenshot_write" }
+        }
+    }
+
+    /** Preserve diagnostics even after a deadline failure; never capture another app's window. */
+    private fun failureScreenshot(name: String) {
+        sameFixtureCredential(checkDeadline = false)
         check(automation.rootInActiveWindow?.packageName?.toString() == context.packageName) { "fixture_screenshot_window" }
         val bitmap = checkNotNull(automation.takeScreenshot()) { "fixture_screenshot_failed" }
-        val folder = File(context.filesDir, "fixture-qa").apply { mkdirs() }
-        File(folder, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        bitmap.recycle()
+        try {
+            sameFixtureCredential(checkDeadline = false)
+            check(automation.rootInActiveWindow?.packageName?.toString() == context.packageName) { "fixture_screenshot_window" }
+            saveScreenshot(name, bitmap)
+        } finally { bitmap.recycle() }
     }
 
     private fun text(id: Int) = context.getString(id)
@@ -617,7 +705,8 @@ class FixtureUiChecks(private val instrumentation: Instrumentation) {
     companion object {
         private const val FIXTURE_TOKEN = "persona-wear-fixture-only"
         private val SCENARIOS = listOf("question", "plan", "permission", "screen", "protected", "chat", "inbox")
-        private val REGRESSIONS = listOf("recovery", "cancel_stale", "form_accessibility")
+        private val REGRESSIONS = listOf("recovery", "cancel_stale", "form_accessibility", "credential_loss")
+        private const val MATRIX_TIMEOUT_MS = 180_000L
         private const val TOTAL_TIMEOUT_MS = 95_000L
         private const val REGRESSION_TIMEOUT_MS = 60_000L
         private const val NONVOICE_TIMEOUT_MS = 120_000L

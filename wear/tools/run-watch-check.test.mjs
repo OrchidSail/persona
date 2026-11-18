@@ -18,6 +18,7 @@ async function mock({ result = pass, needsTargetStop = false, unrelatedSession =
   let clock = 0;
   let rotation = '0';
   let instrumented = false;
+  let instrumentCommand;
   let stopped = false;
   let probes = 0;
   const spawn = (executable, args) => {
@@ -33,6 +34,7 @@ async function mock({ result = pass, needsTargetStop = false, unrelatedSession =
     }
     if (cmd[1] === 'settings') return ok(cmd[4] === 'user_rotation' ? rotation : '0');
     if (cmd[1] === 'am' && cmd[2] === 'instrument') {
+      instrumentCommand = cmd;
       events.push('instrument'); instrumented = true; rotation = '1'; return result;
     }
     if (cmd[1] === 'am' && cmd[2] === 'force-stop') {
@@ -59,7 +61,7 @@ async function mock({ result = pass, needsTargetStop = false, unrelatedSession =
     spawn, stdout: () => {}, stderr: text => errors.push(text),
     cleanup: { now: () => clock, wait: delay => { clock += delay; }, timeoutMs: 400 },
   });
-  return { status, events, errors, rotation };
+  return { status, events, errors, rotation, instrumentCommand };
 }
 
 test('successful instrumentation waits for teardown before restoring rotation', async () => {
@@ -68,6 +70,31 @@ test('successful instrumentation waits for teardown before restoring rotation', 
   assert.equal(result.rotation, '0');
   assert.ok(result.events.indexOf('UiAutomation gone') < result.events.indexOf('restore rotation'));
   assert.equal(result.events.some(event => event.startsWith('stop ')), false);
+  assert.equal(result.instrumentCommand.includes('mode'), false);
+});
+
+test('unknown requested modes fail before any ADB call and cannot accept a default smoke result', async () => {
+  for (const mode of ['unknown', 'smoke', 'real_surface', 'fixture_extra', '__proto__', 'constructor', 'FIXTURE', 'fixture ']) {
+    const calls = [], errors = [];
+    const unexpected = (...args) => { calls.push(args); return pass; };
+    const status = await runWatchCheck(['--device', 'TESTWATCH', '--mode', mode], {
+      spawn: unexpected, instrument: unexpected, stdout: () => {}, stderr: value => errors.push(value),
+    });
+    assert.equal(status, 1, mode);
+    assert.deepEqual(calls, [], mode);
+    assert.match(errors.join(''), /Unsupported check mode/);
+    assert.equal(instrumentationPassed(pass.stdout, mode), false);
+  }
+});
+
+test('every supported PASS mode is forwarded exactly instead of falling back to smoke', async () => {
+  for (const mode of ['fixture', 'multihub', 'complication_parcel', 'live_ping']) {
+    const result = await mock({ mode });
+    assert.equal(result.status, 0, mode);
+    const index = result.instrumentCommand.indexOf('mode');
+    assert.deepEqual(result.instrumentCommand.slice(index - 1, index + 2), ['-e', 'mode', mode]);
+    assert.equal(result.events.filter(event => event === 'instrument').length, 1);
+  }
 });
 
 test('a passing stream may quote failure-looking payload lines without triggering package cleanup', async () => {
@@ -112,6 +139,8 @@ test('observation and setup modes retain their own scoped outcome fields without
     assert.equal(instrumentationPassed(pass.stdout, mode), false);
     const result = await mock({ mode, result: { status: 0, stdout } });
     assert.equal(result.status, 0);
+    const index = result.instrumentCommand.indexOf('mode');
+    assert.deepEqual(result.instrumentCommand.slice(index - 1, index + 2), ['-e', 'mode', mode]);
     assert.equal(result.events.some(event => event.startsWith('stop ')), false);
   }
 });

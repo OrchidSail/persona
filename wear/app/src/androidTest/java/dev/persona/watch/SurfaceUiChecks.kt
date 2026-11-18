@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.Instrumentation
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.graphics.drawable.BitmapDrawable
 import android.os.Bundle
 import android.os.SystemClock
@@ -17,6 +18,8 @@ import android.widget.ImageView
 import dev.persona.watch.data.HubClient
 import dev.persona.watch.data.HubConfig
 import dev.persona.watch.extensions.ExtensionWidgetsActivity
+import dev.persona.watch.extensions.ExtensionComplications
+import dev.persona.watch.extensions.WidgetItem
 import dev.persona.watch.pet.PetActivity
 import dev.persona.watch.pet.PetPack
 import org.json.JSONObject
@@ -54,8 +57,10 @@ class SurfaceUiChecks(private val instrumentation: Instrumentation) {
             val pack = PetPack(context.cacheDir, config)
             waitUntil("verified_pet_package", 60_000) { pack.cached(verify = true)?.assets?.size == 13 }
             waitText(context.getString(R.string.pet_needs_you, 5))
+            centerPet("surface-pet-ready-centered")
             waitUntil("decoded_pet_bitmap", 30_000) { petBitmapHash() != null }
-            screenshot("surface-pet-ready")
+            capture("surface-pet-ready")
+            centerPet("surface-pet-animation-before")
             val motionEnabled = Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) > 0f
             val frames = mutableSetOf<Int>()
             if (motionEnabled) waitUntil("animated_pet_frames", 12_000) {
@@ -64,6 +69,7 @@ class SurfaceUiChecks(private val instrumentation: Instrumentation) {
             }
             click(text(R.string.pet_tap))
             // Pending work is deterministic in this fixture. A tap replays that state instead of inventing idle status.
+            centerPet("surface-pet-animation-after-tap")
             waitUntil("pet_after_tap", 15_000) { petBitmapHash() != null }
             val tappedFrames = mutableSetOf<Int>()
             if (motionEnabled) waitUntil("animated_pet_after_tap", 12_000) {
@@ -71,33 +77,70 @@ class SurfaceUiChecks(private val instrumentation: Instrumentation) {
                 tappedFrames.size >= 3
             }
             waitText(context.getString(R.string.pet_needs_you, 5))
-            screenshot("surface-pet-tapped")
+            capture("surface-pet-tapped")
 
             status("widget_catalog_and_projection")
             open(ExtensionWidgetsActivity::class.java)
             waitText("Sample status widget")
-            screenshot("surface-widget-catalog")
+            capture("surface-widget-catalog")
             click("Sample status widget")
             waitText("Sample read-only status.")
-            screenshot("surface-widget-text")
             for (value in listOf("Sample count", "7", "Seven synthetic tasks", "Sample progress", "Sample progress: ${NumberFormat.getPercentInstance().format(0.5)}",
                 "Half of sample work", "Sample next step", "Review on computer", "Queued", "Sample open", "2", "Sample done", "5",
                 "Sample trend", "Sample series", "Wed: 3 units")) waitText(value)
             assertNoExtensionControls()
-            screenshot("surface-widget-chart")
+            capture("surface-widget-projection")
             click(text(R.string.extension_chart_values))
             for (value in listOf("Mon: 1 units", "Tue: 2 units", "Wed: 3 units")) waitText(value)
-            screenshot("surface-widget-chart-values")
+            capture("surface-widget-chart-values")
             back()
             waitText("Sample read-only status.")
+
+            status("all_widget_chart_kinds")
+            val projectionStore = ExtensionComplications.store(context)
+            val selectedWidget = checkNotNull(projectionStore.catalog("", config)?.singleOrNull { it.id == "overview" })
+            fun projection() = projectionStore.projection("", config, selectedWidget, selectedWidget.family)
+            for (kind in listOf("line", "area", "bar", "pie", "donut", "candlestick")) {
+                control(JSONObject().put("chartKind", kind))
+                val previousDate = checkNotNull(projection()).savedAtMs
+                click(text(R.string.refresh))
+                waitUntil("widget_chart_$kind") {
+                    projection()?.let { current -> current.savedAtMs > previousDate &&
+                        current.view.items.filterIsInstance<WidgetItem.Chart>().singleOrNull()?.let {
+                            it.kind == kind && it.series.isNotEmpty() && it.series.all { series -> series.points.isNotEmpty() }
+                        } == true } == true
+                }
+                waitText("Sample trend")
+                waitText("Sample series")
+                val candleRow = if (kind == "candlestick") {
+                    val values = listOf(1.0, 3.0, 0.0, 2.0).map { String.format(java.util.Locale.getDefault(), "%.4g", it) }
+                    context.getString(R.string.extension_candle_values, "Mon", values[0], values[1], values[2], values[3])
+                } else null
+                if (candleRow != null) waitText(candleRow) else waitText("Mon: 1 units\nTue: 2 units\nWed: 3 units")
+                capture("surface-chart-$kind")
+                viewportCapture().captureCentered("surface-chart-$kind-centered") { view ->
+                    if (candleRow == null) view.javaClass.simpleName == "WidgetChartView"
+                    else (view as? android.widget.TextView)?.text?.toString() == candleRow
+                }
+            }
+            control(JSONObject().put("chartKind", "line"))
+            val previousDate = checkNotNull(projection()).savedAtMs
+            click(text(R.string.refresh))
+            waitUntil("widget_fresh_retry_precondition") { projection()?.let {
+                it.savedAtMs > previousDate && it.fresh(System.currentTimeMillis()) &&
+                    it.view.items.filterIsInstance<WidgetItem.Chart>().singleOrNull()?.kind == "line"
+            } == true }
+            val beforeFailure = checkNotNull(projection())
 
             status("widget_transient_error_and_retry")
             control(JSONObject().put("failNext", JSONObject().put("path", OVERVIEW_PATH).put("status", 503)))
             click(text(R.string.refresh))
             waitText(text(R.string.extension_retryable))
-            waitText(text(R.string.extension_stale))
             waitText("Sample read-only status.")
-            screenshot("surface-widget-stale")
+            check(beforeFailure.fresh(System.currentTimeMillis())) { "surfaces_retry_freshness_window_elapsed" }
+            check(projection() == beforeFailure) { "surfaces_retry_changed_cached_projection" }
+            check(nodes().none { matches(it, text(R.string.extension_stale)) }) { "surfaces_retry_falsely_stale" }
+            capture("surface-widget-fresh-retry-error")
             click(text(R.string.refresh))
             waitUntil("widget_retry_success") {
                 val current = nodes()
@@ -106,24 +149,24 @@ class SurfaceUiChecks(private val instrumentation: Instrumentation) {
                 }
             }
             waitText("Sample read-only status.")
-            screenshot("surface-widget-retry")
+            capture("surface-widget-retry")
 
             status("unsupported_widget_items")
             back()
             click("Sample unsupported widget")
             waitText(text(R.string.extension_no_content))
             assertNoExtensionControls()
-            screenshot("surface-widget-unsupported")
+            capture("surface-widget-unsupported")
 
             status("catalog_unavailable_and_retry")
             control(JSONObject().put("failNext", JSONObject().put("path", CATALOG_PATH).put("status", 404)))
             open(ExtensionWidgetsActivity::class.java)
             waitText(text(R.string.extension_unavailable))
             check(nodes().none { matches(it, "Sample status widget") }) { "surfaces_unavailable_catalog_retained" }
-            screenshot("surface-widget-unavailable")
+            capture("surface-widget-unavailable")
             click(text(R.string.refresh))
             waitText("Sample status widget")
-            screenshot("surface-widget-catalog-recovered")
+            capture("surface-widget-catalog-recovered")
 
             val events = control().getJSONArray("events")
             val rows = (0 until events.length()).map(events::getJSONObject)
@@ -144,6 +187,7 @@ class SurfaceUiChecks(private val instrumentation: Instrumentation) {
                 putInt("pet_observed_frames", frames.size)
                 putInt("pet_observed_tapped_frames", tappedFrames.size)
                 putBoolean("pet_motion_enabled", motionEnabled)
+                putInt("widget_chart_kinds", 6)
                 putBoolean("system_complication_tested", false)
                 putLong("surfaces_elapsed_ms", SystemClock.elapsedRealtime() - started)
                 putString("stream", "Synthetic app surfaces passed: original pet assets and rendering, read-only widgets, chart values, unsupported content and retry. Watch-face installation was not tested.\n")
@@ -220,7 +264,10 @@ class SurfaceUiChecks(private val instrumentation: Instrumentation) {
             }
             val art = activity?.window?.decorView?.let(::find)
             val bitmap = (art?.drawable as? BitmapDrawable)?.bitmap
-            if (art?.isShown == true && bitmap != null && !bitmap.isRecycled && bitmap.width > 0 && bitmap.height > 0) {
+            val visible = Rect()
+            if (art != null && art.isShown && art.getGlobalVisibleRect(visible) &&
+                visible.width() == art.width && visible.height() == art.height &&
+                bitmap != null && !bitmap.isRecycled && bitmap.width > 0 && bitmap.height > 0) {
                 val pixels = IntArray(bitmap.width * bitmap.height)
                 bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
                 if (pixels.any { it ushr 24 != 0 }) result = pixels.contentHashCode()
@@ -285,10 +332,17 @@ class SurfaceUiChecks(private val instrumentation: Instrumentation) {
         sameFixture()
         check(automation.rootInActiveWindow?.packageName?.toString() == context.packageName) { "surfaces_screenshot_window" }
         val bitmap = checkNotNull(automation.takeScreenshot()) { "surfaces_screenshot_failed" }
-        try {
-            val folder = File(context.filesDir, "fixture-qa").apply { mkdirs() }
-            File(folder, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        } finally { bitmap.recycle() }
+        try { saveScreenshot(name, bitmap) } finally { bitmap.recycle() }
+    }
+    private fun viewportCapture() = ViewportCapture(instrumentation,
+        currentActivity = { checkNotNull(activity) }, check = { sameFixture() }, save = ::saveScreenshot)
+    private fun centerPet(name: String) = viewportCapture().captureCentered(name) {
+        it is ImageView && it.contentDescription?.toString() == text(R.string.pet_tap)
+    }
+    private fun capture(name: String) = viewportCapture().capture(name)
+    private fun saveScreenshot(name: String, bitmap: Bitmap) {
+        val folder = File(context.filesDir, "fixture-qa").apply { mkdirs() }
+        File(folder, "$name.png").outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) { "surfaces_screenshot_write_failed" } }
     }
     private fun text(id: Int) = context.getString(id)
     private fun status(value: String) {

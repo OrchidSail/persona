@@ -1,15 +1,15 @@
 # Wear OS verification
 
-This document separates local checks, synthetic physical-device tests and real-Hub observations. The recorded device acceptance used a Samsung Galaxy Watch8 running Android 16 / API 36 with a 480 × 480 round display. Core UI acceptance was repeated on app `0.2.0`; the subsequent complication acceptance and real-Hub regression used `0.2.1` (3). Other devices and operating-system versions require their own checks.
+This document separates local checks, synthetic physical-device tests and real-Hub observations. The historical device acceptance used a Samsung Galaxy Watch8 running Android 16 / API 36 with a 480 × 480 round display. Core UI acceptance was repeated on app `0.2.0`; the subsequent complication acceptance and real-Hub regression used `0.2.1` (3). These older results do not establish acceptance of later PR revisions. The stage-nine record below captures results available before source freeze; the final matrix and cleanup results against the frozen commit belong in the labelled attachments and acceptance record in [PR #8554](https://github.com/nwverse/persona/pull/8554). Other devices and operating-system versions require their own checks.
 
-## Automated checks
+## Recorded automated checks through stage eight
 
 | Check | Recorded result | What it establishes |
 | --- | --- | --- |
 | App and test APK builds | Passed in the 2026-11-18 follow-up rerun | Both packages compile; instrumentation was not executed in this stage |
 | App unit tests | 353 passed, zero failures/errors/skips | Parsing, permissions, scoping, drafts, rendering models, freshness and review regressions |
 | Android Lint | Zero errors, 35 advisory warnings | Static analysis; warnings include dependency age, unused resources, accessibility/plural resources and intentionally pinned TLS handling |
-| Complication serialization | All five timelines passed in the earlier device acceptance; current head compiled only | AndroidX wire conversion and Android `Parcel` round trips for three pet types and two extension types |
+| Complication serialization | All five timelines passed in the earlier device acceptance; stage-eight revision compiled only | AndroidX wire conversion and Android `Parcel` round trips for three pet types and two extension types |
 | Rotation guard | Nine host-side checks passed | Preference restoration and asynchronous teardown ordering; unknown preferences are rejected |
 | TLS-debug discovery | Fourteen host-side checks passed | Identity checks, stale advertisements, renamed services and refusal to select an unrelated device |
 | Instrumentation runner | Twenty-six host-side checks passed | Mocked timeout, interruption, teardown, failure exits and refusal to restore before quiescence; no ADB invocation |
@@ -71,11 +71,41 @@ Review 5947340931 raised five more findings. The parcel fixture now calls both p
 
 Three review premises were already prevented by current code. Full-directory registration replay excludes its own row before the capacity check; new tests exercise repeated journal-cleanup failures/restarts, exact-input replay without another exchange, and duplicate-origin rejection. Pet aggregation derives reachability from failed groups, not an unavailable primary Inbox; new tests retain unread DONE and its original timestamp with a healthy idle sibling, distinguish actual Hub failure and expire each input independently. Future-dated widget observations already fail the freshness check and use the explicit refresh default. The provider's extracted, tested interval helper preserves that policy, the original exclusive expiry and credential/content rejection rather than promoting future data to fresh.
 
-The complete stage-eight Wear rerun used `--rerun-tasks --max-workers=2`: all 82 tasks executed, 353 JVM tests passed with zero failures/errors/skips, both APKs built and explicit instrumentation Kotlin compilation passed. Lint remained at zero errors / 35 advisory warnings. Node passed 53/53; Go passed seven top-level tests plus six subtests. No required suite failed. Independent source reviews checked the five findings. Documentation and publication scans were run after this QA update and are recorded in the PR. No device instrumentation, ADB, watch/emulator setting, unrelated process, real-Hub write or deployment was used; the repaired parcel fixture has not been rerun on a physical watch at this head.
+The complete stage-eight Wear rerun used `--rerun-tasks --max-workers=2`: all 82 tasks executed, 353 JVM tests passed with zero failures/errors/skips, both APKs built and explicit instrumentation Kotlin compilation passed. Lint remained at zero errors / 35 advisory warnings. Node passed 53/53; Go passed seven top-level tests plus six subtests. No required suite failed. Independent source reviews checked the five findings. Documentation and publication scans were run after this QA update and are recorded in the PR. No device instrumentation, ADB, watch/emulator setting, unrelated process, real-Hub write or deployment was used in stage eight; its repaired parcel fixture was not rerun on a physical watch during that stage.
 
-These checks use production and debug-harness helpers but do not establish Android Canvas pixels, actual Keystore behavior, TalkBack semantics on a watch, current-head screenshots or a new device acceptance run. The added field-label/minimum-height instrumentation and every fixture scenario compile; they were not run on a device. The exchange-response-to-durable-credential gap remains outside local recovery, as described in [pairing](README.md#pairing-and-private-debug-provisioning).
+The stage-one through stage-eight host checks use production and debug-harness helpers but do not establish Android Canvas pixels, actual Keystore behavior, TalkBack semantics on a watch, current-head screenshots or a new device acceptance run. The field-label/minimum-height instrumentation and fixture scenarios compiled in those stages; they were not run on a device then. The exchange-response-to-durable-credential gap remains outside local recovery, as described in [pairing](README.md#pairing-and-private-debug-provisioning).
 
-## Physical-device checks with synthetic data
+## Stage-nine evidence before source freeze
+
+The current review build adds guarded `matrix` and `credential_loss` fixture scenarios and expands the surface check to all six chart kinds. Use the [runner instructions](README.md#physical-device-test-runner) to reproduce them. The following results were actually observed before source freeze; pilot runs are not the final current-head matrix. Final runs, visual review and cleanup will be recorded in the PR against the frozen commit, without changing that tested SHA to update this report. The PR attachments must identify the tested build, system appearance and font scale, cover complete screen content, and record findings and any rerun after a correction. Do not substitute the historical gallery below for those attachments.
+
+| Pre-freeze check | Recorded result |
+| --- | --- |
+| Complete Wear rerun with `--rerun-tasks --max-workers=2` | All 82 tasks executed successfully in 2 m 50 s, including both APKs and explicit instrumentation Kotlin compilation; 357 JVM tests with zero failures/errors/skips; lint zero errors / 35 advisory warnings |
+| Host helper tests | Node 57/57 passed |
+| Optional Hub Status provider | Seven Go tests and six subtests passed with `-count=1 -v` in 2.611 s |
+| Documentation wiring | `test_doc_wire.py`: 13 passed in 16.299 s |
+| Documentation sections | `test_doc_sections.py`: four passed in 343.940 s |
+| Maximum-font pilot matrix and native form checks | Passed at supported scale `1.3` in 79,231 ms, including explicit labels and at least 48 dp input heights |
+| Synthetic surface pilot | Passed in 108,298 ms: all six chart kinds, 13 verified pet assets, and three distinct observed animation frames before and after a tap |
+| Pilot visual corrections | Six captures manually verified the wrapping saved-token guidance; 19 error/recovered captures covered the complete pages without viewport gaps |
+| Pilot system pet slots | All three pet complication types appeared in actual system slots; this does not establish final-commit rendering, taps or expiry |
+
+The first smoke preflight had a transient failure and passed on retry. A form check initially produced a false failure by reading the wrong minimum-height getter; the corrected assertion checks the effective height and passed on the watch. One sandboxed offline Gradle attempt could not resolve the plugin from that environment's cache; the same complete command passed using the host cache. The environment failure and test assertion defect are recorded rather than classified as production baseline failures.
+
+The appearance/font matrix uses system light and dark appearance at default scale and the acceptance device's supported maximum scale, `1.3`. This is a reported device configuration, not an arbitrary larger font override or a claim about all Wear OS devices. Persona's fixed dark UI is exercised in both system appearances; no light theme was added. Native input checks verify explicit labels and at least 48 dp touch height; they do not replace visual review or TalkBack testing.
+
+The matrix records production UI feedback and receipt timings through a loopback synthetic fixture. Its `matrix_*_ms` measurements are observed upper bounds that include harness polling/settling; the Sending/receipt case deliberately injects a fixture delay. They are not real-LAN transport measurements or real agent/model performance. Credential loss uses the production AES-GCM save/load path and an actual Android Keystore key, but only in an isolated alias/private directory with synthetic credentials. The test checks fail-closed decryption and replacement credential recovery while preserving the production alias and saved primary envelope; it does not destroy real credentials or establish real-account re-pairing.
+
+| Acceptance item after source freeze | Evidence destination |
+| --- | --- |
+| Light/dark system appearance × default/maximum font captures and complete viewport review | Final matrix and labelled attachments in the PR, tied to the frozen commit |
+| Protected requests, labels/48 dp inputs, six chart kinds, feedback/recovery timings and isolated credential loss | Final run results and evidence reconciliation in the PR; pilot results above remain separately identified |
+| Complication serialization and actual face selection/rendering/taps/expiry | Separate final-commit results in the PR; historical or pilot evidence does not substitute for them |
+| Incremental privacy and whitespace checks after source freeze | Final verification record in the PR; no unreported pass is implied |
+| Original connection, test resources and changed settings restored | Final cleanup verification in the PR |
+
+## Historical physical-device checks with synthetic data
 
 The fixture runs independently of real accounts and agents. Its audit records the accepted operations, allowing visible results to be compared with actual requests. Temporary ADB reverse tunnels were used for the recorded fixture runs; these are not direct-LAN or remote-network evidence.
 
@@ -97,7 +127,7 @@ These tests use the production UI, not a replacement test screen. The temporary 
 
 The complete core flows were repeated on `0.2.0`; the `0.2.1` checks specifically covered complication timelines, selection, taps and expiry. Interrupted runs, locked-screen captures and setup-only instrumentation results were excluded from passing evidence.
 
-## Physical-device checks with a real Hub
+## Historical physical-device checks with a real Hub
 
 The watch used a separate answer-role credential, encrypted through Android Keystore, and connected directly over LAN HTTPS with the paired public-key pin. The recorded real-Hub checks did not use the synthetic fixture or an ADB reverse tunnel.
 
@@ -139,7 +169,7 @@ After a temporary test, restore the saved connection, face, provider assignments
 
 - Voice, microphone recording and transcription were deferred. The pre-existing system-dictation entry remains unverified; no recording pipeline, phone companion or cloud-speech substitute is claimed.
 - Real approvals and real Inbox sending were not exercised by the later real-Hub checks. Their state transitions were tested against the isolated fixture.
-- Background notifications, remote-network behavior, the largest accessibility text size and the broader Wear OS device matrix remain unverified or outside the implementation.
+- Background notifications, remote-network behavior and the broader Wear OS device matrix remain unverified or outside the implementation. The final-commit maximum-font matrix belongs in the PR acceptance record; the stage-nine pilot results are recorded above.
 - The watch design is intentionally dark. This acceptance does not claim a separate light visual theme or complete visual-accessibility certification.
 - User-specific watch-face changes and system-orientation troubleshooting are outside this module's portable acceptance. Test helpers must preserve observed settings rather than infer an original preference.
 
@@ -176,4 +206,4 @@ Multi-Hub identifiers, cached projections and callbacks were traced to their own
 
 The optional Hub Status provider is a separate server-side extension: its declared permissions are `agents.read` and `machines.read`, and its code only GETs the three aggregate source lists. It has no packaged credential, arbitrary request target, redirect-following or watch-side installation path. Production Wear has no audio recording permission, background polling service or WebSocket client. System dictation remains the separately documented unverified feature.
 
-This review does not close the maintainer's acceptance blockers. Current-head dark/light and largest-font evidence for every changed screen, physical credential-loss/recovery and protected-approval cases, measured production timings, and the broader device/network matrix remain incomplete. Labels and minimum touch heights have source and fixture checks, but no new physical accessibility run was performed. The PR is Ready for review at the author's request; these acceptance gates remain open, and historical captures and host tests are not substituted for them.
+This source review does not close the maintainer's acceptance blockers. Stage-nine results available before source freeze are recorded above; the final matrix, remaining checks and cleanup will be recorded in the PR against the frozen commit. Real-LAN/model performance, TalkBack certification and the broader device/network matrix are separate boundaries. The PR is Ready for review at the author's request. Historical captures, pilot runs and host tests are not substituted for final-commit acceptance.

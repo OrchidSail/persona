@@ -6,6 +6,8 @@ import { withPreservedRotationAsync } from './rotation-guard.mjs';
 
 const TEST_PACKAGE = 'dev.persona.watch.test';
 const TARGET_PACKAGE = 'dev.persona.watch';
+const CHECK_MODES = new Set(['fixture', 'multihub', 'surfaces', 'pet_expiry', 'pet_expiry_restore',
+  'complication_parcel', 'real_surfaces', 'live_ping']);
 const pollingCell = new Int32Array(new SharedArrayBuffer(4));
 
 /** Keep Node responsive to interruption while the host ADB child owns instrumentation. */
@@ -93,6 +95,7 @@ export function waitForAutomationExit(run, {
 
 /** Parse raw am instrument records; continuation lines belong to their current bundle value. */
 export function instrumentationPassed(output, mode) {
+  if (mode !== undefined && !CHECK_MODES.has(mode)) return false;
   const result = new Map(), progress = new Map();
   const failed = fields => /^\s*FAIL:/.test(fields.get('stream') || '') ||
     ['shortMsg', 'longMsg', 'Error', 'stack'].some(key => fields.get(key)?.trim());
@@ -157,6 +160,8 @@ export async function runWatchCheck(args, {
       if (!supported.has(args[i]) || !args[i + 1] || options.has(args[i])) throw new Error('Invalid or repeated check option');
       options.set(args[i], args[i + 1]);
     }
+    const mode = options.get('--mode');
+    if (mode !== undefined && !CHECK_MODES.has(mode)) throw new Error('Unsupported check mode');
     const adb = options.get('--adb') || 'adb';
     const device = options.get('--device');
     const timeout = Number(options.get('--timeout-ms') || 180000);
@@ -189,7 +194,7 @@ export async function runWatchCheck(args, {
         if (result.stdout) stdout(result.stdout);
         if (result.stderr) stderr(result.stderr);
         if (result.error || result.signal || result.status !== 0) throw new Error('Instrumentation interrupted or timed out');
-        if (!instrumentationPassed(result.stdout || '', options.get('--mode'))) {
+        if (!instrumentationPassed(result.stdout || '', mode)) {
           throw new Error('Instrumentation did not report a passing result');
         }
         passed = true;

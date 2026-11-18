@@ -86,3 +86,40 @@ test('a message first accepted without an operation returns its original receipt
   }
   assert.equal((await request('/__test')).body.messageCounts.assistant, 4);
 });
+
+test('surface chart control supplies finite data for every production chart kind and resets to line', async t => {
+  const request = await fixture(t);
+  await request('/__test', { reset: true, scenario: 'surfaces' });
+  const context = { context: { size: 'large', platform: 'android', ui_version: 3, locale: 'en', tz: 'UTC' } };
+  const projection = () => request('/api/v1/extensions/fixture-tools/-/widget/overview', context);
+  for (const kind of ['line', 'area', 'bar', 'pie', 'donut', 'candlestick']) {
+    assert.equal((await request('/__test', { chartKind: kind })).status, 200);
+    const response = await projection();
+    assert.equal(response.status, 200);
+    const chart = response.body.view.sections[0].items.find(item => item.type === 'chart');
+    assert.equal(chart.kind, kind);
+    assert.equal(chart.series[0].points.length, 3);
+    for (const point of chart.series[0].points) {
+      assert.ok(Number.isFinite(point.value));
+      if (kind === 'candlestick') {
+        for (const key of ['open', 'high', 'low', 'close']) assert.ok(Number.isFinite(point[key]));
+        assert.ok(point.low <= Math.min(point.open, point.close));
+        assert.ok(point.high >= Math.max(point.open, point.close));
+      }
+    }
+  }
+  assert.equal((await request('/__test', { chartKind: 'script' })).status, 400);
+  await request('/__test', { reset: true, scenario: 'surfaces' });
+  assert.equal((await projection()).body.view.sections[0].items.find(item => item.type === 'chart').kind, 'line');
+});
+
+test('matrix includes both protected tool forms and neither accepts an allow response', async t => {
+  const request = await fixture(t);
+  assert.equal((await request('/__test', { reset: true, scenario: 'matrix' })).status, 200);
+  const cards = (await request('/api/v1/interactions')).body.interactions.filter(item => item.secret);
+  assert.deepEqual(cards.map(item => item.tool_name).sort(), ['secret_handoff', 'secret_run']);
+  for (const card of cards) {
+    assert.notEqual((await request(`/api/v1/interactions/${card.id}/resolve`, { allow: true })).status, 200);
+    assert.equal((await request(`/api/v1/interactions/${card.id}/resolve`, { allow: false })).status, 200);
+  }
+});

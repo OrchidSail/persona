@@ -818,7 +818,8 @@ class MainActivity : Activity() {
         val address = input(getString(R.string.hub_hint), config?.baseUrl.orEmpty(), label = getString(R.string.pair_link_or_address)).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
         }
-        val token = input(getString(if (config == null) R.string.pair_token else R.string.token_saved), secret = true, label = getString(R.string.pair_token))
+        val token = input(getString(R.string.pair_token), secret = true, label = getString(R.string.pair_token))
+        if (config != null) paragraph(getString(R.string.token_saved), compact = true)
         action(R.string.show_token) {
             val show = token.transformationMethod != null
             token.transformationMethod = if (show) null else PasswordTransformationMethod.getInstance()

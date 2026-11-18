@@ -25,6 +25,7 @@ const petDirectory = fileURLToPath(new URL('../../server/internal/hub/personas/n
 const petFiles = new Set(['pet.json', 'needs_you.png', 'working.png', 'done.png', 'idle.png', 'sleep.png', 'offline.png', 'tap.png',
   'face-needs_you.png', 'face-working.png', 'face-done.png', 'face-idle.png', 'face-sleep.png', 'face-offline.png']);
 const widgetFamilies = ['large', 'medium', 'small', 'accessory_rectangular', 'accessory_circular', 'accessory_inline'];
+const chartKinds = ['line', 'area', 'bar', 'pie', 'donut', 'candlestick'];
 const widgetCatalog = [
   { extension: 'fixture-tools', extension_name: 'Sample extension', id: 'overview', title: 'Sample status widget', families: widgetFamilies, opens: 'status' },
   { extension: 'fixture-tools', extension_name: 'Sample extension', id: 'unsupported', title: 'Sample unsupported widget', families: ['large'] },
@@ -90,8 +91,16 @@ function reset(scenario = 'core') {
       dialog: { multi: false, options: [{ key: '1', label: 'Concise' }, { key: '2', label: 'Detailed' }] },
     }));
   }
+  if (scenario === 'matrix') {
+    sessions.push({ machine_id: 'fixture', session_id: 'sensitive-handoff', title: 'Sample protected handoff', assistant: false,
+      state: 'needs_you', capabilities: { send: true, interrupt: true, approve: true }, updated_at: now() });
+    interactions.push(card('sensitive-handoff', 'permission', {
+      summary: 'This sample handoff needs a protected value. Continue on your computer.',
+      tool_name: 'secret_handoff', secret: true, fields: [{ name: 'sample_value', secret: true }],
+    }));
+  }
   state = {
-    scenario, mode: 'online', delayMs: 0, failNext: null, interactions, resolved: [], sessions,
+    scenario, mode: 'online', delayMs: 0, chartKind: 'line', failNext: null, interactions, resolved: [], sessions,
     messages: Object.fromEntries(sessions.map(session => [session.session_id, [
       { id: 'work', seq: 1, turn_id: 'fixture-intro', kind: 'tool_use', role: 'assistant', tool_name: 'sample_read', text: 'Synthetic tool activity. Nothing was executed.' },
       { id: 'intro', seq: 2, turn_id: 'fixture-intro', kind: 'text', role: 'assistant', text: 'Synthetic test conversation. You can safely send a sample reply here.' },
@@ -159,9 +168,12 @@ function widgetView(id, family) {
     { type: 'progress', label: 'Sample progress', ratio: 0.5, detail: 'Half of sample work' },
     { type: 'row', title: 'Sample next step', subtitle: 'Review on computer', value: 'Queued' },
     { type: 'stat_grid', stats: [{ label: 'Sample open', value: '2' }, { label: 'Sample done', value: '5' }] },
-    { type: 'chart', title: 'Sample trend', kind: 'line', unit: ' units', series: [{ name: 'Sample series', points: [
-      { label: 'Mon', value: 1, display: '1' }, { label: 'Tue', value: 2, display: '2' }, { label: 'Wed', value: 3, display: '3' },
-    ] }] }, ...unsupported,
+    { type: 'chart', title: 'Sample trend', kind: state.chartKind, unit: ' units', series: [{ name: 'Sample series', points:
+      state.chartKind === 'candlestick' ? [
+        { label: 'Mon', value: 2, open: 1, high: 3, low: 0, close: 2 }, { label: 'Tue', value: 3, open: 2, high: 4, low: 1, close: 3 },
+        { label: 'Wed', value: 2, open: 3, high: 4, low: 1, close: 2 },
+      ] : [{ label: 'Mon', value: 1, display: '1' }, { label: 'Tue', value: 2, display: '2' }, { label: 'Wed', value: 3, display: '3' }],
+    }] }, ...unsupported,
   ];
   return { view: { title: id === 'unsupported' ? 'Sample unsupported widget' : 'Sample status widget', sections: [{ items }] },
     expires_at: new Date(Date.now() + 60000).toISOString(), family };
@@ -184,9 +196,13 @@ const server = http.createServer(async (request, response) => {
       if (method === 'GET') return reply(200, summary());
       if (method !== 'POST') return reply(405, { code: 'method_not_allowed' });
       const body = await bodyOf(request);
-      if (body.scenario !== undefined && (!['core', 'nonvoice', 'surfaces'].includes(body.scenario) || body.reset !== true))
+      if (body.scenario !== undefined && (!['core', 'nonvoice', 'surfaces', 'matrix'].includes(body.scenario) || body.reset !== true))
         return reply(400, { code: 'invalid_scenario' });
       if (body.reset === true) reset(body.scenario);
+      if (body.chartKind !== undefined) {
+        if (!chartKinds.includes(body.chartKind)) return reply(400, { code: 'invalid_chart_kind' });
+        state.chartKind = body.chartKind;
+      }
       if (body.clearEvents === true) events.length = 0;
       if (body.mode !== undefined) {
         if (!['online', 'offline', 'error', 'stale'].includes(body.mode)) return reply(400, { code: 'invalid_mode' });

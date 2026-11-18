@@ -404,13 +404,13 @@ class MultiHubChecks(private val instrumentation: Instrumentation) {
         throw AssertionError("multihub_${step}_${reason}_timeout")
     }
     private fun screenshot(name: String) {
-        sameFixtures()
-        check(automation.rootInActiveWindow?.packageName?.toString() == context.packageName) { "multihub_screenshot_window" }
-        val bitmap = checkNotNull(automation.takeScreenshot()) { "multihub_screenshot_failed" }
-        try {
-            val folder = File(context.filesDir, "fixture-qa").apply { mkdirs() }
-            File(folder, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        } finally { bitmap.recycle() }
+        ViewportCapture(instrumentation, currentActivity = { checkNotNull(activity) },
+            check = { sameFixtures() }, save = { filename, bitmap ->
+                val folder = File(context.filesDir, "fixture-qa").apply { mkdirs() }
+                File(folder, "$filename.png").outputStream().use {
+                    check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) { "multihub_screenshot_write_failed" }
+                }
+            }).capture(name)
     }
     private fun text(id: Int) = context.getString(id)
     private fun status(value: String) {

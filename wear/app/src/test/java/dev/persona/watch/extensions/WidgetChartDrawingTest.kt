@@ -77,7 +77,11 @@ class WidgetChartDrawingTest {
     @Test fun finiteValuesWhoseRawTotalOverflowsStillHaveFiniteProportionalSlices() {
         listOf("pie", "donut").forEach { kind ->
             val drawing = circular(kind, Double.MAX_VALUE, Double.MAX_VALUE, Double.MAX_VALUE / 2)
-            assertEquals(listOf(144f, 144f, 72f), drawing.slices.map { it.sweep })
+            val expected = listOf(144f, 144f, 72f)
+            assertEquals(expected.size, drawing.slices.size)
+            expected.forEachIndexed { index, sweep ->
+                assertEquals("$kind slice $index", sweep, drawing.slices[index].sweep, 0.0001f)
+            }
             assertEquals(360f, drawing.slices.sumOf { it.sweep.toDouble() }.toFloat(), 0.0001f)
             assertTrue(drawing.slices.all { it.start.isFinite() && it.sweep.isFinite() && it.sweep > 0 })
         }
