@@ -414,13 +414,19 @@ const (
 	freshActivityWindow       = 45 * time.Second
 )
 
-// clearStaleTerminalBlocked clears a stale StatusBlocked / StateNeedsYou on a terminal session when no interaction
-// card is pending and fresh tool activity keeps advancing well after needs_you began.
+// clearStaleTerminalBlocked clears a stale StatusBlocked / StateNeedsYou on a Codex terminal-routed session
+// when no interaction card or closeout ask is pending and fresh tool activity keeps advancing well after needs_you began.
 func (s *Service) clearStaleTerminalBlocked(machine string, sess *proto.Session, now time.Time) {
+	if sess.Agent != "codex" || sess.CodexRoute != "terminal" {
+		return
+	}
 	if sess.State != proto.StateNeedsYou || sess.Status != proto.StatusBlocked || sess.PendingInteractions > 0 {
 		return
 	}
 	if sess.SourceKind != "" && (sess.Capabilities == nil || !sess.Capabilities.Terminal) {
+		return
+	}
+	if !sess.AsksRead || sess.Asks != "" || sess.TurnError != "" {
 		return
 	}
 	if sess.Activity == "" || sess.ActivityAt == nil {

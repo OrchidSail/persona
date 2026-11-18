@@ -86,22 +86,20 @@ func (n *Node) noteBlockedAt(id string, blocked bool, now time.Time) time.Time {
 }
 
 // codexRolloutWorkingOverBlocked reports whether a Codex session whose host reports StatusBlocked is provably running
-// a turn in its rollout: an open turn with fresh activity advancing well after blocked began, and neither its
-// app-server thread nor an open blocking rollout ask is waiting on the user.
+// a turn in its rollout: an open turn in the current tail with fresh turn-scoped activity advancing well after
+// blocked began, and neither its app-server thread, screen approval, nor an open blocking rollout ask is waiting.
 func (n *Node) codexRolloutWorkingOverBlocked(id, path string, m quickMeta, blockedSince, now time.Time) bool {
 	if blockedSince.IsZero() || !m.turnOpen || m.turnClosed {
 		return false
 	}
-	latest := m.doingAt
-	for _, ts := range []time.Time{m.lastTextAt, m.lastPromptAt, m.contentAt} {
-		if ts.After(latest) {
-			latest = ts
-		}
-	}
+	latest := m.turnActivityAt
 	if latest.IsZero() || !latest.After(blockedSince.Add(codexBlockedStaleGrace)) || now.Sub(latest) >= codexFreshWorking {
 		return false
 	}
 	if _, t, err := n.codexOwner(id); err == nil && t.status == proto.StatusBlocked {
+		return false
+	}
+	if n.cx.hasApproval(id) {
 		return false
 	}
 	return !n.cx.hasBlockingAsk(id, path)

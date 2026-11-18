@@ -223,4 +223,37 @@ func TestCodexStaleBlockedClearedByActiveRollout(t *testing.T) {
 	if row := paneRow(t, n, sid); row.Status != proto.StatusBlocked {
 		t.Fatalf("open blocking ask: got %s, want blocked", row.Status)
 	}
+
+	// Fresh activity recorded BEFORE blocked began must NOT clear StatusBlocked even after the 10s grace expires.
+	oldTS := now.Add(-18 * time.Second).Format(time.RFC3339Nano)
+	preBlockBody := `{"timestamp":"` + oldTS + `","type":"session_meta","payload":{"id":"` + sid + `","cwd":"` + dir + `"}}` + "\n" +
+		`{"timestamp":"` + oldTS + `","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}` + "\n" +
+		`{"timestamp":"` + oldTS + `","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"e1","command":["powershell","-Command","Get-ChildItem"],"status":"completed","aggregated_output":"ok\n","exit_code":0}}}` + "\n"
+	if err := os.WriteFile(rollout, []byte(preBlockBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	n.mu.Lock()
+	delete(n.metas, rollout)
+	n.blockedAt[sid] = now.Add(-15 * time.Second)
+	n.mu.Unlock()
+	if row := paneRow(t, n, sid); row.Status != proto.StatusBlocked {
+		t.Fatalf("pre-block activity after 10s grace with no post-block progress: got %s, want blocked", row.Status)
+	}
+
+	// Old-turn / carried-over timestamp (task_complete followed by idle or no open turn activity after blockedAt) must NOT clear StatusBlocked.
+	closedTS := now.Add(-time.Second).Format(time.RFC3339Nano)
+	oldTurnBody := `{"timestamp":"` + closedTS + `","type":"session_meta","payload":{"id":"` + sid + `","cwd":"` + dir + `"}}` + "\n" +
+		`{"timestamp":"` + closedTS + `","type":"event_msg","payload":{"type":"task_started","turn_id":"t0"}}` + "\n" +
+		`{"timestamp":"` + closedTS + `","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"e0","command":["powershell","-Command","Get-ChildItem"],"status":"completed","aggregated_output":"ok\n","exit_code":0}}}` + "\n" +
+		`{"timestamp":"` + closedTS + `","type":"event_msg","payload":{"type":"task_complete","turn_id":"t0"}}` + "\n"
+	if err := os.WriteFile(rollout, []byte(oldTurnBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	n.mu.Lock()
+	delete(n.metas, rollout)
+	n.blockedAt[sid] = now.Add(-25 * time.Second)
+	n.mu.Unlock()
+	if row := paneRow(t, n, sid); row.Status != proto.StatusBlocked {
+		t.Fatalf("closed old turn timestamp: got %s, want blocked", row.Status)
+	}
 }

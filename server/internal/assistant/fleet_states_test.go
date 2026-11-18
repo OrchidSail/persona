@@ -488,16 +488,28 @@ func TestClearStaleTerminalBlocked(t *testing.T) {
 			name:  "stale blocked with fresh activity and zero pending interactions",
 			since: now.Add(-20 * time.Second),
 			sess: proto.Session{
-				SessionID: "s1", Status: proto.StatusBlocked, State: proto.StateNeedsYou,
+				SessionID: "s1", Agent: "codex", CodexRoute: "terminal", AsksRead: true,
+				Status: proto.StatusBlocked, State: proto.StateNeedsYou,
 				AttentionReason: "waiting", Activity: "Running command", ActivityAt: &fresh,
 			},
 			wantState: proto.StateWorking,
 		},
 		{
+			name:  "claude session after completed bash entering blocked with zero pending interactions keeps needs_you",
+			since: now.Add(-20 * time.Second),
+			sess: proto.Session{
+				SessionID: "s1", Agent: "claude", AsksRead: true,
+				Status: proto.StatusBlocked, State: proto.StateNeedsYou,
+				Activity: "Running command", ActivityAt: &fresh,
+			},
+			wantState: proto.StateNeedsYou,
+		},
+		{
 			name:  "pending interaction keeps needs_you",
 			since: now.Add(-20 * time.Second),
 			sess: proto.Session{
-				SessionID: "s1", Status: proto.StatusBlocked, State: proto.StateNeedsYou,
+				SessionID: "s1", Agent: "codex", CodexRoute: "terminal", AsksRead: true,
+				Status: proto.StatusBlocked, State: proto.StateNeedsYou,
 				PendingInteractions: 1, Activity: "Running command", ActivityAt: &fresh,
 			},
 			wantState: proto.StateNeedsYou,
@@ -506,7 +518,8 @@ func TestClearStaleTerminalBlocked(t *testing.T) {
 			name:  "activity within grace window keeps needs_you",
 			since: now.Add(-20 * time.Second),
 			sess: proto.Session{
-				SessionID: "s1", Status: proto.StatusBlocked, State: proto.StateNeedsYou,
+				SessionID: "s1", Agent: "codex", CodexRoute: "terminal", AsksRead: true,
+				Status: proto.StatusBlocked, State: proto.StateNeedsYou,
 				Activity: "Running command", ActivityAt: &withinGrace,
 			},
 			wantState: proto.StateNeedsYou,
@@ -515,7 +528,8 @@ func TestClearStaleTerminalBlocked(t *testing.T) {
 			name:  "stale activity keeps needs_you",
 			since: now.Add(-2 * time.Minute),
 			sess: proto.Session{
-				SessionID: "s1", Status: proto.StatusBlocked, State: proto.StateNeedsYou,
+				SessionID: "s1", Agent: "codex", CodexRoute: "terminal", AsksRead: true,
+				Status: proto.StatusBlocked, State: proto.StateNeedsYou,
 				Activity: "Running command", ActivityAt: &stale,
 			},
 			wantState: proto.StateNeedsYou,
@@ -524,8 +538,19 @@ func TestClearStaleTerminalBlocked(t *testing.T) {
 			name:  "non-terminal runtime keeps needs_you",
 			since: now.Add(-20 * time.Second),
 			sess: proto.Session{
-				SessionID: "s1", Status: proto.StatusBlocked, State: proto.StateNeedsYou,
+				SessionID: "s1", Agent: "codex", CodexRoute: "terminal", AsksRead: true,
+				Status: proto.StatusBlocked, State: proto.StateNeedsYou,
 				SourceKind: proto.SourceRuntime, Activity: "Running command", ActivityAt: &fresh,
+			},
+			wantState: proto.StateNeedsYou,
+		},
+		{
+			name:  "open closeout ask keeps needs_you",
+			since: now.Add(-20 * time.Second),
+			sess: proto.Session{
+				SessionID: "s1", Agent: "codex", CodexRoute: "terminal", AsksRead: true, Asks: "Should I proceed?",
+				Status: proto.StatusBlocked, State: proto.StateNeedsYou,
+				Activity: "Running command", ActivityAt: &fresh,
 			},
 			wantState: proto.StateNeedsYou,
 		},

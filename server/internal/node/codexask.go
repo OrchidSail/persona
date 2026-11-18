@@ -73,6 +73,7 @@ type codexCards struct {
 	held      map[string]time.Time      // card id → answered from the phone: not listed again until then
 	heldIn    map[string]string         // card id → the session of a held card
 	dismissed map[string]dismissedCard  // card id → handed back to the computer from the phone
+	approvals map[string]bool           // session id → last screen scan saw a Codex approval dialog
 	pagerAt   map[string]time.Time      // pane → when its transcript pager was last closed to show a dialog
 	joins     map[string]codexJoinState // session id → joining it on its app-server (codex_daemon.go)
 }
@@ -171,12 +172,21 @@ func (n *Node) codexCardsNow(ctx context.Context, only string) []codexCard {
 			out = append(out, codexCard{ix: askCard(id, a, title, ask), pane: a.pane, ask: &ask})
 		}
 		if waiting || a.joined || a.status != proto.StatusBlocked {
+			if only == "" {
+				n.cx.setApproval(id, false)
+			}
 			continue
 		}
 		d, read := n.codexApprovalOn(ctx, a.pane)
 		if d != nil {
+			if only == "" {
+				n.cx.setApproval(id, true)
+			}
 			out = append(out, codexCard{ix: approvalCard(id, a, title, d), pane: a.pane, approval: d})
 		} else if read {
+			if only == "" {
+				n.cx.setApproval(id, false)
+			}
 			n.cx.approvalGone(id)
 		}
 	}
@@ -292,6 +302,25 @@ func (c *codexCards) hasBlockingAsk(id, path string) bool {
 		}
 	}
 	return false
+}
+
+func (c *codexCards) setApproval(id string, on bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !on {
+		delete(c.approvals, id)
+		return
+	}
+	if c.approvals == nil {
+		c.approvals = map[string]bool{}
+	}
+	c.approvals[id] = true
+}
+
+func (c *codexCards) hasApproval(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.approvals[id]
 }
 
 func (t *codexTail) read() {
