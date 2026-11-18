@@ -215,7 +215,8 @@ const server = http.createServer(async (request, response) => {
       if (body.failNext !== undefined) {
         const failure = body.failNext;
         if (failure !== null && (typeof failure.path !== 'string' || !failure.path.startsWith('/api/v1/') ||
-          ![401, 403, 404, 409, 410, 429, 500, 503].includes(failure.status))) return reply(400, { code: 'invalid_failure' });
+          ![401, 403, 404, 409, 410, 429, 500, 503].includes(failure.status) ||
+          (failure.family !== undefined && !widgetFamilies.includes(failure.family)))) return reply(400, { code: 'invalid_failure' });
         state.failNext = failure;
       }
       if (body.expire !== undefined) {
@@ -231,12 +232,14 @@ const server = http.createServer(async (request, response) => {
     }
     if (state.delayMs) await new Promise(resolveDelay => setTimeout(resolveDelay, state.delayMs));
     if (state.mode === 'error') return reply(503, { code: 'fixture_unavailable' });
-    if (state.failNext?.path === path) {
+    const body = ['POST', 'PUT'].includes(method) ? await bodyOf(request) : {};
+    if (state.failNext?.path === path &&
+        (state.failNext.family === undefined || state.failNext.family === body.context?.size)) {
       const failure = state.failNext;
       state.failNext = null;
-      return reply(failure.status, { code: 'fixture_injected_error' });
+      const event = widgetFamilies.includes(body.context?.size) ? { family: body.context.size } : {};
+      return reply(failure.status, { code: 'fixture_injected_error' }, event);
     }
-    const body = ['POST', 'PUT'].includes(method) ? await bodyOf(request) : {};
     if (method === 'GET') {
       if (state.scenario === 'surfaces' && path === '/api/v1/extensions/-/widgets') return reply(200, { widgets: widgetCatalog });
       if (state.scenario === 'surfaces' && path.startsWith('/api/v1/personas/nwverse/pet/')) {

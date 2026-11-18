@@ -113,6 +113,40 @@ test('surface chart control supplies finite data for every production chart kind
   assert.equal((await projection()).body.view.sections[0].items.find(item => item.type === 'chart').kind, 'line');
 });
 
+test('accessory projections preserve a large-only fault until the app consumes it once', async t => {
+  const request = await fixture(t);
+  const path = '/api/v1/extensions/fixture-tools/-/widget/overview';
+  const projection = size => request(path, { context: { size, platform: 'android', ui_version: 3, locale: 'en', tz: 'UTC' } });
+  assert.equal((await request('/__test', { reset: true, scenario: 'surfaces', clearEvents: true,
+    failNext: { path, status: 503, family: 'large' } })).status, 200);
+  for (const family of ['accessory_circular', 'accessory_rectangular', 'accessory_inline']) {
+    assert.equal((await projection(family)).status, 200);
+  }
+  assert.deepEqual(await projection('large'), { status: 503, body: { code: 'fixture_injected_error' } });
+  assert.equal((await projection('large')).status, 200);
+  const rows = (await request('/__test')).body.events.filter(event => event.path === path);
+  assert.deepEqual(rows.map(({ status, family }) => ({ status, family })), [
+    { status: 200, family: 'accessory_circular' }, { status: 200, family: 'accessory_rectangular' },
+    { status: 200, family: 'accessory_inline' }, { status: 503, family: 'large' }, { status: 200, family: 'large' },
+  ]);
+});
+
+test('fault families reject unknown values without replacing a pending valid fault', async t => {
+  const request = await fixture(t);
+  const path = '/api/v1/extensions/fixture-tools/-/widget/overview';
+  assert.equal((await request('/__test', { reset: true, scenario: 'surfaces',
+    failNext: { path, status: 503, family: 'large' } })).status, 200);
+  for (const family of ['unknown', 'LARGE', '', null, 1, ['large'], { size: 'large' }]) {
+    assert.deepEqual(await request('/__test', { failNext: { path, status: 503, family } }),
+      { status: 400, body: { code: 'invalid_failure' } });
+  }
+  assert.equal((await request(path, { context: { size: 'large', platform: 'android', ui_version: 3, locale: 'en', tz: 'UTC' } })).status, 503);
+  const catalog = '/api/v1/extensions/-/widgets';
+  assert.equal((await request('/__test', { failNext: { path: catalog, status: 404 } })).status, 200);
+  assert.equal((await request(catalog)).status, 404);
+  assert.equal((await request(catalog)).status, 200);
+});
+
 test('matrix includes both protected tool forms and neither accepts an allow response', async t => {
   const request = await fixture(t);
   assert.equal((await request('/__test', { reset: true, scenario: 'matrix' })).status, 200);

@@ -16,6 +16,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.ImageView
 import android.widget.Button
+import android.widget.TextView
 import dev.persona.watch.data.HubClient
 import dev.persona.watch.data.HubConfig
 import dev.persona.watch.extensions.ExtensionWidgetsActivity
@@ -86,7 +87,7 @@ class SurfaceUiChecks(private val instrumentation: Instrumentation) {
             waitText("Sample status widget")
             assertCatalogButtonLayouts()
             capture("surface-widget-catalog")
-            click("Sample status widget")
+            click(widgetAction("Sample status widget"))
             waitText("Sample read-only status.")
             for (value in listOf("Sample count", "7", "Seven synthetic tasks", "Sample progress", "Sample progress: ${NumberFormat.getPercentInstance().format(0.5)}",
                 "Half of sample work", "Sample next step", "Review on computer", "Queued", "Sample open", "2", "Sample done", "5",
@@ -136,7 +137,7 @@ class SurfaceUiChecks(private val instrumentation: Instrumentation) {
             val beforeFailure = checkNotNull(projection())
 
             status("widget_transient_error_and_retry")
-            control(JSONObject().put("failNext", JSONObject().put("path", OVERVIEW_PATH).put("status", 503)))
+            control(JSONObject().put("failNext", JSONObject().put("path", OVERVIEW_PATH).put("status", 503).put("family", selectedWidget.family)))
             click(text(R.string.refresh))
             waitText(text(R.string.extension_retryable))
             waitText("Sample read-only status.")
@@ -158,7 +159,7 @@ class SurfaceUiChecks(private val instrumentation: Instrumentation) {
             back()
             waitText("Sample status widget")
             assertCatalogButtonLayouts()
-            click("Sample unsupported widget")
+            click(widgetAction("Sample unsupported widget"))
             waitText(text(R.string.extension_no_content))
             assertNoExtensionControls()
             capture("surface-widget-unsupported")
@@ -285,26 +286,36 @@ class SurfaceUiChecks(private val instrumentation: Instrumentation) {
         check(nodes().none { node -> node.isEditable || listOf("Never execute sample action", "Never edit sample setting", "Never open sample website")
             .any { matches(node, it) } }) { "surfaces_extension_controls_exposed" }
     }
-    /** Inspect the real laid-out Buttons, not accessibility's untruncated source strings. */
+    private fun widgetAction(title: String) = "${text(R.string.extension_view_widget)}: $title"
+
+    /** Inspect both the short action and its associated, fully wrapped title on real native views. */
     private fun assertCatalogButtonLayouts() = waitUntil("catalog_button_layouts") {
         var result: Result<Boolean>? = null
         instrumentation.runOnMainSync { result = runCatching {
-            val buttons = mutableListOf<Button>()
+            val views = mutableListOf<TextView>()
             fun visit(view: View) {
-                if (view is Button) buttons += view
+                if (view is TextView) views += view
                 if (view is ViewGroup) for (index in 0 until view.childCount) visit(view.getChildAt(index))
             }
             visit(checkNotNull(activity).window.decorView)
-            val labels = listOf("Sample status widget", "Sample unsupported widget")
-            val catalog = labels.map { label ->
-                buttons.singleOrNull { it.text.toString() == label } ?: return@runCatching false
+            val titles = listOf("Sample status widget", "Sample unsupported widget")
+            val catalog = titles.map { title ->
+                val button = views.filterIsInstance<Button>().singleOrNull {
+                    it.contentDescription?.toString() == widgetAction(title)
+                } ?: return@runCatching false
+                val heading = views.singleOrNull {
+                    it !is Button && it.text.toString() == title && it.labelFor == button.id
+                } ?: return@runCatching false
+                button to heading
             }
-            if (catalog.any { it.isLayoutRequested || it.layout == null || it.width <= 0 || it.height <= 0 }) return@runCatching false
+            if (catalog.flatMap { listOf(it.first, it.second) }.any {
+                it.isLayoutRequested || it.layout == null || it.width <= 0 || it.height <= 0
+            }) return@runCatching false
             val minimum = WatchTheme.dp(context, WatchTheme.touch)
-            catalog.forEachIndexed { index, button ->
-                val label = labels[index]
+            catalog.forEachIndexed { index, (button, heading) ->
+                val label = text(R.string.extension_view_widget)
                 val layout = checkNotNull(button.layout)
-                check(button.text.toString() == label && button.contentDescription?.toString() == label) {
+                check(button.text.toString() == label && button.contentDescription?.toString() == widgetAction(titles[index])) {
                     "surfaces_catalog_button_label_$index"
                 }
                 check(button.minimumHeight >= minimum && button.width >= minimum && button.height >= minimum) {
@@ -314,6 +325,15 @@ class SurfaceUiChecks(private val instrumentation: Instrumentation) {
                     layout.getLineStart(0) == 0 && layout.getLineEnd(0) == label.length &&
                     layout.getLineWidth(0) <= button.width - button.compoundPaddingLeft - button.compoundPaddingRight + 1f) {
                     "surfaces_catalog_button_truncated_$index"
+                }
+                val titleLayout = checkNotNull(heading.layout)
+                check(heading.isAccessibilityHeading && titleLayout.lineCount > 0 &&
+                    titleLayout.getLineStart(0) == 0 && titleLayout.getLineEnd(titleLayout.lineCount - 1) == titles[index].length &&
+                    (0 until titleLayout.lineCount).all {
+                        titleLayout.getEllipsisCount(it) == 0 &&
+                            titleLayout.getLineMax(it) <= heading.width - heading.compoundPaddingLeft - heading.compoundPaddingRight + 1f
+                    } && heading.height >= titleLayout.height + heading.compoundPaddingTop + heading.compoundPaddingBottom) {
+                    "surfaces_catalog_title_truncated_$index"
                 }
             }
             true

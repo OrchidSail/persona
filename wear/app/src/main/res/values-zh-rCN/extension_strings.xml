@@ -1,5 +1,7 @@
 <resources>
     <string name="extension_widgets">扩展小组件</string>
+    <string name="extension_view_widget">查看组件</string>
+    <string name="extension_preview_widget">预览</string>
     <string name="extension_empty">此连接暂时没有可用的小组件。</string>
     <string name="extension_no_content">这个小组件没有可在手表上显示的内容。</string>
     <string name="extension_read_only">此处仅供查看。请在手机或电脑上使用扩展的操作控件。</string>

@@ -1,5 +1,7 @@
 <resources>
     <string name="extension_widgets">Extension widgets</string>
+    <string name="extension_view_widget">View widget</string>
+    <string name="extension_preview_widget">Preview</string>
     <string name="extension_empty">No widgets are available on this connection.</string>
     <string name="extension_no_content">This widget has no content that can be shown on the watch.</string>
     <string name="extension_read_only">Read-only preview. Use your phone or computer for extension controls.</string>

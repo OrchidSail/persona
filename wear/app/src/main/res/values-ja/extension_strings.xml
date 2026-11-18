@@ -1,5 +1,7 @@
 <resources>
     <string name="extension_widgets">拡張ウィジェット</string>
+    <string name="extension_view_widget">表示</string>
+    <string name="extension_preview_widget">プレビュー</string>
     <string name="extension_empty">この接続先に利用できるウィジェットはありません。</string>
     <string name="extension_no_content">このウィジェットには時計で表示できる内容がありません。</string>
     <string name="extension_read_only">閲覧専用です。拡張機能の操作はスマートフォンかコンピューターで行ってください。</string>

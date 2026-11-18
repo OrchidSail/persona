@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.View
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import androidx.wear.watchface.complications.datasource.ComplicationDataSourceService
@@ -164,7 +165,20 @@ class ExtensionComplicationConfigActivity : Activity() {
             connection != null -> {
                 text(connection.name, T.caption)
                 if (!busy && catalog.widgets.isEmpty()) text(getString(R.string.extension_face_empty))
-                catalog.widgets.forEach { entry -> button(entry.title) { preview(entry) } }
+                catalog.widgets.forEach { entry ->
+                    val title = T.text(this, entry.title, T.heading, bold = true).apply {
+                        isAccessibilityHeading = true
+                        setPadding(0, dp(T.lineGap), 0, dp(T.lineGap))
+                    }
+                    body.addView(title)
+                    val label = getString(R.string.extension_preview_widget)
+                    body.addView(T.button(this, label) { preview(entry) }.apply {
+                        id = View.generateViewId()
+                        title.labelFor = id
+                        isEnabled = !busy
+                        contentDescription = "$label: ${entry.title}"
+                    })
+                }
                 if (!busy) button(R.string.refresh) { loadCatalog(connection) }
                 if (groups.size > 1) button(R.string.hub_groups, true) { loadGroups() }
             }

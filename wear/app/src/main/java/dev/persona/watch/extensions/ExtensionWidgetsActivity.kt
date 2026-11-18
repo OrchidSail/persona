@@ -296,7 +296,18 @@ class ExtensionWidgetsActivity : Activity() {
         } else {
             if (!busy && problem == null && widgets.isEmpty()) text(getString(R.string.extension_empty), T.body, T.secondary)
             widgets.forEach { widget ->
-                button(widget.title) { projection = null; loadWidget(widget, force = false) }
+                val title = T.text(this, widget.title, T.heading, bold = true).apply {
+                    isAccessibilityHeading = true
+                    setPadding(T.zero, dp(T.lineGap), T.zero, dp(T.lineGap))
+                }
+                body.addView(title)
+                val label = getString(R.string.extension_view_widget)
+                body.addView(T.button(this, label) { projection = null; loadWidget(widget, force = false) }.apply {
+                    id = View.generateViewId()
+                    title.labelFor = id
+                    isEnabled = !busy
+                    contentDescription = "$label: ${widget.title}"
+                })
                 if (widget.source.isNotBlank()) text(widget.source, T.caption, T.secondary)
             }
             if (problem != ExtensionProblem.INVALID_LINK) button(getString(R.string.refresh)) { loadCatalog() }
