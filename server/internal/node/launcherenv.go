@@ -61,6 +61,9 @@ func envClearFor(l proto.ManagedLauncher) []string {
 			}
 		}
 	}
+	if l.AgentType() == "codex" && !slices.Contains(clear, openCodeSessionEnv) {
+		clear = append(clear, openCodeSessionEnv)
+	}
 	return clear
 }
 

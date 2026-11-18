@@ -38,6 +38,11 @@ func TestSavingStripsPastedEndpointSuffixes(t *testing.T) {
 			"https://api.openai.com/v1",
 		},
 		{
+			"prefix-responses",
+			`"kind":"api","api":"responses","base_url":"https://gw.example/responses"`,
+			"https://gw.example/responses",
+		},
+		{
 			"opencode-messages",
 			`"base_url":"https://opencode.ai/inference/go/anthropic/v1/messages"`,
 			"https://opencode.ai/inference/go/anthropic",
@@ -234,6 +239,14 @@ func TestProbeCredentialScopingRejectsEndpointSuffixOverrides(t *testing.T) {
 		storedLauncher{
 			KeySealed: sealedKey,
 			ManagedLauncher: proto.ManagedLauncher{
+				Name:    "msg-plain-v1",
+				BaseURL: "https://gw.example/team/v1",
+				Model:   "m",
+			},
+		},
+		storedLauncher{
+			KeySealed: sealedKey,
+			ManagedLauncher: proto.ManagedLauncher{
 				Name:    "chat-v1",
 				Kind:    "api",
 				API:     "chat",
@@ -271,17 +284,21 @@ func TestProbeCredentialScopingRejectsEndpointSuffixOverrides(t *testing.T) {
 		},
 	)
 
-	// Canonical LaunchBaseURL (and single /v1) on legacy stored Messages providers retain credentials.
-	for _, tc := range []struct{ name, base string }{
-		{"legacy-msg-endpoint", "https://gw.example"},
-		{"legacy-msg-endpoint", "https://gw.example/v1"},
-		{"legacy-msg-double-slash", "https://gw.example"},
-		{"legacy-msg-double-slash", "https://gw.example/v1"},
+	// Canonical LaunchBaseURL (and single /v1, including protocol-switch probes on the same gateway) retain credentials.
+	for _, body := range []string{
+		`{"name":"legacy-msg-endpoint","base_url":"https://gw.example"}`,
+		`{"name":"legacy-msg-endpoint","base_url":"https://gw.example/v1"}`,
+		`{"name":"legacy-msg-double-slash","base_url":"https://gw.example"}`,
+		`{"name":"legacy-msg-double-slash","base_url":"https://gw.example/v1"}`,
+		`{"name":"msg-plain-v1","api":"chat","base_url":"https://gw.example/team/v1"}`,
+		`{"name":"msg-plain-v1","api":"responses","base_url":"https://gw.example/team/v1"}`,
+		`{"name":"msg-team","api":"chat","headers":"","base_url":"https://gw.example/team/v1"}`,
+		`{"name":"chat-v1","api":"messages","base_url":"https://gw.example"}`,
 	} {
 		gotAPIKey, gotBearer, gotTeam = "", "", ""
-		_ = probeResult(t, mux, "/api/v1/launchers/test", `{"name":"`+tc.name+`","base_url":"`+tc.base+`"}`)
-		if gotAPIKey != fakeKey || gotTeam != "secret-team" {
-			t.Fatalf("%s (%s) lost stored credentials: key=%q team=%q", tc.name, tc.base, gotAPIKey, gotTeam)
+		out := probeResult(t, mux, "/api/v1/launchers/test", body)
+		if out["ok"] != true || (gotAPIKey != fakeKey && gotBearer != "Bearer "+fakeKey) {
+			t.Fatalf("%s lost stored credentials: out=%v x-api-key=%q bearer=%q", body, out, gotAPIKey, gotBearer)
 		}
 	}
 
@@ -289,10 +306,11 @@ func TestProbeCredentialScopingRejectsEndpointSuffixOverrides(t *testing.T) {
 		`{"name":"msg-team","base_url":"https://gw.example/team/v1/messages"}`,
 		`{"name":"msg-team","base_url":"https://gw.example/team//v1"}`,
 		`{"name":"msg-team","base_url":"https://gw.example/team/v1/v1"}`,
-		`{"name":"msg-team","api":"chat","base_url":"https://gw.example/team/v1"}`,
+		`{"name":"msg-team","api":"chat","base_url":"https://gw.example/team/v1/chat/completions"}`,
 		`{"name":"chat-v1","base_url":"https://gw.example/v1/chat/completions"}`,
 		`{"name":"resp-v1","base_url":"https://gw.example/v1/responses"}`,
 		`{"name":"legacy-msg-endpoint","base_url":"https://gw.example/v1/messages"}`,
+		`{"name":"legacy-msg-endpoint","api":"chat","base_url":"https://gw.example/v1/messages"}`,
 		`{"name":"legacy-msg-endpoint","base_url":"https://gw.example/v1//messages"}`,
 		`{"name":"legacy-msg-endpoint","base_url":"https://gw.example/v1/messages//"}`,
 		`{"name":"legacy-msg-endpoint","base_url":"https://gw.example/v1/messages/v1/messages"}`,

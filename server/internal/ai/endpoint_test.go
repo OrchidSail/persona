@@ -43,7 +43,10 @@ func TestDirectAPIEndpointWithVersionedAndPastedBases(t *testing.T) {
 		{"messages double v1 full", "messages", "/v1/v1/messages", "/v1/v1/messages"},
 		{"responses versioned", "responses", "/prefix/v1/", "/prefix/v1/responses"},
 		{"responses full v1", "responses", "/prefix/v1/responses/", "/prefix/v1/responses"},
-		{"responses full bare", "responses", "/prefix/responses", "/prefix/v1/responses"},
+		{"responses prefix named responses", "responses", "/responses", "/responses/v1/responses"},
+		{"responses prefix named responses v1", "responses", "/responses/v1", "/responses/v1/responses"},
+		{"responses prefix named responses full", "responses", "/responses/v1/responses", "/responses/v1/responses"},
+		{"responses double v1 full", "responses", "/v1/v1/responses", "/v1/v1/responses"},
 		{"chat versioned", "chat", "/inference/go/openai/v1", "/inference/go/openai/v1/chat/completions"},
 		{"chat full v1", "chat", "/inference/go/openai/v1/chat/completions", "/inference/go/openai/v1/chat/completions"},
 		{"chat double v1 full", "chat", "/v1/v1/chat/completions", "/v1/v1/chat/completions"},
@@ -167,5 +170,24 @@ func TestOpenCodeGoSessionScopingAndCrossOriginRedirect(t *testing.T) {
 	}
 	if len(seen) != 2 || !strings.HasPrefix(seen[0], "opencode.ai=") || seen[0] == "opencode.ai=" || seen[1] != "relay.example.com=" {
 		t.Fatalf("redirect headers: %v", seen)
+	}
+}
+
+func TestGateKeyAndChatEffortCacheKeepDeploymentPrefixesApart(t *testing.T) {
+	if a, b := gateKeyFor("responses", "https://gw.example/openai", "k"), gateKeyFor("responses", "https://gw.example/openai/responses", "k"); a == b {
+		t.Fatalf("distinct Responses prefixes collided: %q", a)
+	}
+	if a, b := gateKeyFor("responses", "https://gw.example/openai/v1", "k"), gateKeyFor("responses", "https://gw.example/openai/v1/responses", "k"); a != b {
+		t.Fatalf("pasted /v1/responses did not share gate with /v1: %q != %q", a, b)
+	}
+	if a, b := gateKeyFor("chat", "https://gw.example/openai/v1", "k"), gateKeyFor("chat", "https://gw.example/openai/v1/chat/completions", "k"); a != b {
+		t.Fatalf("pasted /chat/completions did not share gate with /v1: %q != %q", a, b)
+	}
+	RememberChatEffortRejection("https://gw.example/openai/responses", "k", "m", "", false)
+	if !OmitChatEffort("https://gw.example/openai/responses", "k", "m", "", "medium") {
+		t.Fatal("expected rejection on exact chat prefix")
+	}
+	if OmitChatEffort("https://gw.example/openai", "k", "m", "", "medium") {
+		t.Fatal("chat effort cache collided across /openai and /openai/responses")
 	}
 }

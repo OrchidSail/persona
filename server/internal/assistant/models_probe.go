@@ -104,8 +104,8 @@ func canonicalProbeURL(raw string) bool {
 // sameProbeGateway reports whether a probe's base_url override still points to stored's canonical gateway so stored
 // credentials may be sent. Overrides are compared only against the normalized LaunchBaseURL (never an unnormalized
 // legacy stored.BaseURL), must have a canonical path without internal "//" or endpoint suffixes (/v1/messages,
-// /chat/completions, /responses), and may add a single trailing "/v1" only when both stored and effective protocols
-// speak Messages (#4886).
+// /chat/completions, /v1/responses), and allow the single-/v1 counterpart on the same canonical base (including across
+// a protocol switch between Messages and OpenAI-compatible protocols, #4886).
 func sameProbeGateway(stored proto.ManagedLauncher, override, reqAPI string, reqAgent *string) bool {
 	b := strings.TrimRight(strings.TrimSpace(override), "/")
 	if !canonicalProbeURL(b) {
@@ -122,11 +122,15 @@ func sameProbeGateway(stored proto.ManagedLauncher, override, reqAPI string, req
 	if reqAgent != nil {
 		eff.Agent = strings.TrimSpace(*reqAgent)
 	}
-	if stored.MessagesBase() && eff.MessagesBase() {
-		u, err := url.Parse(launch)
-		if err == nil && u.Host != "" && u.Opaque == "" && u.RawQuery == "" && u.Fragment == "" {
-			return b == launch+"/v1"
-		}
+	u, err := url.Parse(launch)
+	if err != nil || u.Host == "" || u.Opaque != "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	if !strings.HasSuffix(launch, "/v1") && (stored.MessagesBase() || eff.MessagesBase()) {
+		return b == launch+"/v1"
+	}
+	if eff.MessagesBase() && strings.HasSuffix(launch, "/v1") {
+		return b == strings.TrimSuffix(launch, "/v1")
 	}
 	return false
 }

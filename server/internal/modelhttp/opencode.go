@@ -52,16 +52,22 @@ func OpenCodeSessionID(seed string) string {
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// HasOpenCodeSessionHeader reports whether newline-delimited "Name: value" headers already supply x-opencode-session.
-func HasOpenCodeSessionHeader(raw string) bool {
+// OpenCodeSessionHeaderValue returns the first non-empty x-opencode-session value in newline-delimited "Name: value" headers.
+func OpenCodeSessionHeaderValue(raw string) string {
 	for _, line := range strings.Split(raw, "\n") {
 		if name, value, ok := strings.Cut(strings.TrimSpace(line), ":"); ok &&
-			strings.EqualFold(strings.TrimSpace(name), OpenCodeSessionHeader) &&
-			strings.TrimSpace(value) != "" {
-			return true
+			strings.EqualFold(strings.TrimSpace(name), OpenCodeSessionHeader) {
+			if v := strings.TrimSpace(value); v != "" {
+				return v
+			}
 		}
 	}
-	return false
+	return ""
+}
+
+// HasOpenCodeSessionHeader reports whether newline-delimited "Name: value" headers already supply x-opencode-session.
+func HasOpenCodeSessionHeader(raw string) bool {
+	return OpenCodeSessionHeaderValue(raw) != ""
 }
 
 func firstNonEmptyHeader(values []string) string {

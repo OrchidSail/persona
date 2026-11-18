@@ -393,15 +393,16 @@ func AnthropicAPI(base string) bool {
 
 // APIBaseURL normalizes a gateway Base URL for api ("messages"/empty, "responses", or "chat"), stripping a pasted
 // trailing endpoint path while keeping /v1 on OpenAI-compatible bases ("https://host/v1/v1/chat/completions" →
-// "https://host/v1/v1").
+// "https://host/v1/v1") and preserving bare /responses deployment prefixes ("https://gw/responses" stays unchanged;
+// "https://gw/v1/responses" → "https://gw/v1").
 func APIBaseURL(base, api string) string {
 	switch api {
 	case "", "messages":
 		return MessagesBaseURL(base)
 	case "chat":
-		return trimBasePathSuffix(base, "/chat/completions")
+		return trimSinglePathSuffix(base, "/chat/completions")
 	case "responses":
-		return trimBasePathSuffix(base, "/responses")
+		return trimVersionedEndpointSuffix(base, "/responses")
 	default:
 		return strings.TrimRight(strings.TrimSpace(base), "/")
 	}
@@ -417,7 +418,7 @@ func APIBaseURL(base, api string) string {
 // "https://gw/prefix/v1/" → "https://gw/prefix" and both "https://gw/messages/v1" and
 // "https://gw/messages/v1/messages" → "https://gw/messages". Anything else (no host, a query) is only trimmed.
 func MessagesBaseURL(base string) string {
-	return trimBasePathSuffix(trimMessagesEndpointSuffix(base), "/v1")
+	return trimBasePathSuffix(trimVersionedEndpointSuffix(base, "/messages"), "/v1")
 }
 
 func splitBaseURLPath(base string) (root, path string, ok bool) {
@@ -434,23 +435,33 @@ func splitBaseURLPath(base string) (root, path string, ok bool) {
 	return base[:authority+slash], base[authority+slash:], true
 }
 
-func trimMessagesEndpointSuffix(base string) string {
+// trimVersionedEndpointSuffix drops a single pasted /v1<suffix> endpoint (e.g. /v1/messages or /v1/responses) while
+// keeping the preceding /v1 and leaving bare deployment prefixes ("https://gw/messages", "https://gw/responses") intact.
+func trimVersionedEndpointSuffix(base, suffix string) string {
 	root, path, ok := splitBaseURLPath(base)
 	if !ok {
 		return root
 	}
-	for {
-		rest, hasMessages := strings.CutSuffix(path, "/messages")
-		if !hasMessages {
-			return root + path
-		}
-		rest = strings.TrimRight(rest, "/")
-		beforeV1, hasV1 := strings.CutSuffix(rest, "/v1")
-		if !hasV1 {
-			return root + path
-		}
-		path = strings.TrimRight(beforeV1, "/")
+	rest, found := strings.CutSuffix(path, suffix)
+	if !found {
+		return root + path
 	}
+	rest = strings.TrimRight(rest, "/")
+	if !strings.HasSuffix(rest, "/v1") {
+		return root + path
+	}
+	return root + rest
+}
+
+func trimSinglePathSuffix(base, suffix string) string {
+	root, path, ok := splitBaseURLPath(base)
+	if !ok {
+		return root
+	}
+	if rest, found := strings.CutSuffix(path, suffix); found {
+		return root + strings.TrimRight(rest, "/")
+	}
+	return root + path
 }
 
 func trimBasePathSuffix(base, suffix string) string {

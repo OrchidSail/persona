@@ -219,7 +219,7 @@ func (c *Client) Chat(ctx context.Context, r Request) (Reply, error) {
 	}
 	// Every client of one address and key goes through the same gate, which holds requests back while the upstream
 	// is out of quota or busy (limit.go).
-	g := gateFor(c.cfg.BaseURL, key)
+	g := gateForAPI(c.cfg.API, c.cfg.BaseURL, key)
 	t, err := g.admit(ctx)
 	if err != nil {
 		return Reply{}, err
@@ -269,9 +269,9 @@ func (c *Client) Chat(ctx context.Context, r Request) (Reply, error) {
 // errUnwound is what the gate is told of a request a panic unwound through: it ended, with no answer to read.
 var errUnwound = errors.New("ai: the request did not return")
 
-// trimEndpointSuffix drops a pasted endpoint path from the URL path of base (leaving scheme, host, query and fragment
-// intact) so a full endpoint pasted into BaseURL is not appended a second time.
-func trimEndpointSuffix(base, suffix string) string {
+// trimSingleEndpointPath drops one pasted endpoint suffix (e.g. /chat/completions) from the URL path of base,
+// leaving scheme, host, query and fragment intact.
+func trimSingleEndpointPath(base, suffix string) string {
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	u, err := url.Parse(base)
 	if err != nil || u.Host == "" || u.Opaque != "" || u.RawQuery != "" || u.Fragment != "" {
@@ -283,18 +283,15 @@ func trimEndpointSuffix(base, suffix string) string {
 		return base
 	}
 	root, path := base[:authority+slash], base[authority+slash:]
-	for {
-		rest, ok := strings.CutSuffix(path, suffix)
-		if !ok {
-			return root + path
-		}
-		path = strings.TrimRight(rest, "/")
+	if rest, ok := strings.CutSuffix(path, suffix); ok {
+		return root + strings.TrimRight(rest, "/")
 	}
+	return root + path
 }
 
-// trimMessagesEndpointPath drops a pasted /v1/messages endpoint suffix while keeping the preceding /v1 (and leaving a
-// bare /messages deployment prefix untouched so "https://gw/messages" still builds "https://gw/messages/v1/messages").
-func trimMessagesEndpointPath(base string) string {
+// trimVersionedEndpointPath drops a single pasted /v1<suffix> endpoint (e.g. /v1/messages or /v1/responses) while
+// keeping the preceding /v1 and leaving bare deployment prefixes ("https://gw/messages", "https://gw/responses") intact.
+func trimVersionedEndpointPath(base, suffix string) string {
 	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	u, err := url.Parse(base)
 	if err != nil || u.Host == "" || u.Opaque != "" || u.RawQuery != "" || u.Fragment != "" {
@@ -306,25 +303,24 @@ func trimMessagesEndpointPath(base string) string {
 		return base
 	}
 	root, path := base[:authority+slash], base[authority+slash:]
-	for {
-		rest, ok := strings.CutSuffix(path, "/messages")
-		if !ok {
-			return root + path
-		}
-		rest = strings.TrimRight(rest, "/")
-		if !strings.HasSuffix(rest, "/v1") {
-			return root + path
-		}
-		path = rest
+	rest, ok := strings.CutSuffix(path, suffix)
+	if !ok {
+		return root + path
 	}
+	rest = strings.TrimRight(rest, "/")
+	if !strings.HasSuffix(rest, "/v1") {
+		return root + path
+	}
+	return root + rest
 }
 
 // apiEndpoint preserves deployment prefixes, strips a pasted endpoint suffix, and accepts bases with or without /v1.
 func apiEndpoint(base, path string) string {
-	if path == "messages" {
-		base = trimMessagesEndpointPath(base)
-	} else {
-		base = trimEndpointSuffix(base, "/"+path)
+	switch path {
+	case "messages", "responses":
+		base = trimVersionedEndpointPath(base, "/"+path)
+	default:
+		base = trimSingleEndpointPath(base, "/"+path)
 	}
 	if !strings.HasSuffix(base, "/v1") {
 		base += "/v1"

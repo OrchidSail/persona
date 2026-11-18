@@ -124,11 +124,15 @@ func TestAPIBaseURLAndLaunchBaseURL(t *testing.T) {
 			"https://api.openai.com/responses/v1",
 		},
 		{
-			ManagedLauncher{Kind: "api", API: "responses", BaseURL: "https://api.openai.com/responses/"},
-			"https://api.openai.com",
+			ManagedLauncher{Kind: "api", API: "responses", BaseURL: "https://gw.example/responses/"},
+			"https://gw.example/responses",
 		},
 		{
-			ManagedLauncher{Agent: "codex", BaseURL: "https://api.openai.com/v1/responses"},
+			ManagedLauncher{Agent: "codex", BaseURL: "https://gw.example/responses"},
+			"https://gw.example/responses",
+		},
+		{
+			ManagedLauncher{Agent: "codex", BaseURL: "https://api.openai.com/v1/responses/"},
 			"https://api.openai.com/v1",
 		},
 		{

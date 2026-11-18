@@ -118,7 +118,7 @@ type chatEffortCache struct {
 var processChatEffortCache chatEffortCache
 
 func chatEffortCacheKey(baseURL, key, model, viaMachine string) string {
-	return gateKey(baseURL, key) + "\x00" + viaMachine + "\x00" + model
+	return gateKeyFor("chat", baseURL, key) + "\x00" + viaMachine + "\x00" + model
 }
 
 // omitChatEffort says whether this connection/model already rejected the requested form of effort recently.
