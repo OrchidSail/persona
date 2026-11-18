@@ -471,3 +471,74 @@ func TestTurnError(t *testing.T) {
 		}
 	}
 }
+
+func TestClearStaleTerminalBlocked(t *testing.T) {
+	now := time.Now().UTC()
+	fresh := now.Add(-2 * time.Second)
+	stale := now.Add(-time.Minute)
+	withinGrace := now.Add(-15 * time.Second)
+
+	for _, tc := range []struct {
+		name      string
+		since     time.Time
+		sess      proto.Session
+		wantState string
+	}{
+		{
+			name:  "stale blocked with fresh activity and zero pending interactions",
+			since: now.Add(-20 * time.Second),
+			sess: proto.Session{
+				SessionID: "s1", Status: proto.StatusBlocked, State: proto.StateNeedsYou,
+				AttentionReason: "waiting", Activity: "Running command", ActivityAt: &fresh,
+			},
+			wantState: proto.StateWorking,
+		},
+		{
+			name:  "pending interaction keeps needs_you",
+			since: now.Add(-20 * time.Second),
+			sess: proto.Session{
+				SessionID: "s1", Status: proto.StatusBlocked, State: proto.StateNeedsYou,
+				PendingInteractions: 1, Activity: "Running command", ActivityAt: &fresh,
+			},
+			wantState: proto.StateNeedsYou,
+		},
+		{
+			name:  "activity within grace window keeps needs_you",
+			since: now.Add(-20 * time.Second),
+			sess: proto.Session{
+				SessionID: "s1", Status: proto.StatusBlocked, State: proto.StateNeedsYou,
+				Activity: "Running command", ActivityAt: &withinGrace,
+			},
+			wantState: proto.StateNeedsYou,
+		},
+		{
+			name:  "stale activity keeps needs_you",
+			since: now.Add(-2 * time.Minute),
+			sess: proto.Session{
+				SessionID: "s1", Status: proto.StatusBlocked, State: proto.StateNeedsYou,
+				Activity: "Running command", ActivityAt: &stale,
+			},
+			wantState: proto.StateNeedsYou,
+		},
+		{
+			name:  "non-terminal runtime keeps needs_you",
+			since: now.Add(-20 * time.Second),
+			sess: proto.Session{
+				SessionID: "s1", Status: proto.StatusBlocked, State: proto.StateNeedsYou,
+				SourceKind: proto.SourceRuntime, Activity: "Running command", ActivityAt: &fresh,
+			},
+			wantState: proto.StateNeedsYou,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Service{fleet: fleetBook{stateSince: map[[2]string]stateMark{
+				{"m1", "s1"}: {state: proto.StateNeedsYou, at: tc.since},
+			}}}
+			sess := tc.sess
+			s.clearStaleTerminalBlocked("m1", &sess, now)
+			if sess.State != tc.wantState {
+				t.Fatalf("state = %s, want %s", sess.State, tc.wantState)
+			}
+		})
+	}
+}

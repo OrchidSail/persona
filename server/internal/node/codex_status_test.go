@@ -170,3 +170,57 @@ func TestCodexDaemonPaneIsWorkingWhileItsTurnRuns(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexStaleBlockedClearedByActiveRollout(t *testing.T) {
+	now := time.Now().UTC()
+	sid := "00000002-0000-4000-8000-000000000001"
+	dir := t.TempDir()
+	rollout := filepath.Join(dir, "rollout.jsonl")
+	writeRollout := func(extra string) {
+		t.Helper()
+		ts := now.Add(-2 * time.Second).Format(time.RFC3339Nano)
+		body := `{"timestamp":"` + ts + `","type":"session_meta","payload":{"id":"` + sid + `","cwd":"` + dir + `"}}` + "\n" +
+			`{"timestamp":"` + ts + `","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}` + "\n" +
+			`{"timestamp":"` + ts + `","type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"e1","command":["powershell","-Command","Get-ChildItem"],"status":"completed","aggregated_output":"ok\n","exit_code":0}}}` + "\n" +
+			extra
+		if err := os.WriteFile(rollout, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeRollout("")
+
+	n := &Node{
+		home:    dir,
+		state:   &stateFile{},
+		codices: newCodexRegistry(),
+		agents:  map[string]host.Agent{sid: {Agent: "codex", PaneID: "w2:p4", Cwd: dir, AgentStatus: proto.StatusBlocked, Attention: "waiting"}},
+		paths:   map[string]string{sid: rollout},
+		pathsAt: map[string]time.Time{sid: now},
+		metas:   map[string]quickMeta{},
+		bgScans: map[string]*bgScan{},
+	}
+
+	// Within the 10s grace window after blocked began, keep StatusBlocked so real prompts are not masked.
+	if row := paneRow(t, n, sid); row.Status != proto.StatusBlocked {
+		t.Fatalf("within grace window: got %q, want blocked", row.Status)
+	}
+
+	// Simulate herdr having been stuck in blocked since 25s ago while rollout kept advancing to 2s ago.
+	n.mu.Lock()
+	n.blockedAt[sid] = now.Add(-25 * time.Second)
+	n.mu.Unlock()
+	if row := paneRow(t, n, sid); row.Status != proto.StatusWorking || row.AttentionReason != "" {
+		t.Fatalf("stale blocked with active rollout: got status=%q attention=%q, want working", row.Status, row.AttentionReason)
+	}
+
+	// When an open non-async request_user_input exists in the rollout, keep StatusBlocked.
+	ts := now.Add(-time.Second).Format(time.RFC3339Nano)
+	askLine := `{"timestamp":"` + ts + `","type":"response_item","payload":{"type":"function_call","name":"request_user_input","call_id":"call_1","arguments":"{\"questions\":[{\"id\":\"q1\",\"question\":\"Continue?\"}]}"}}` + "\n"
+	writeRollout(askLine)
+	n.mu.Lock()
+	n.blockedAt[sid] = now.Add(-25 * time.Second)
+	n.mu.Unlock()
+	if row := paneRow(t, n, sid); row.Status != proto.StatusBlocked {
+		t.Fatalf("open blocking ask: got %s, want blocked", row.Status)
+	}
+}

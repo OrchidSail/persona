@@ -399,6 +399,7 @@ func (s *Service) decorateInventory(machine string, list []proto.Session, comple
 			list[i].StartError = startErrorText(lang, cmp.Or(m.Name, machine), list[i])
 		}
 		list[i].State, list[i].BackgroundWorking = stateWithBackground(agentState(list[i], list[i].SeenAt), list[i])
+		s.clearStaleTerminalBlocked(machine, &list[i], time.Now())
 		list[i].BackgroundWaiting = backgroundWaiting(list[i])
 		list[i].TurnError, list[i].TurnErrorKind = turnError(list[i])
 		decorateLimit(&list[i]) // a subscription's usage limit and when it resets (usage_limit.go)

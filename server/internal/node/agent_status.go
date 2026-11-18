@@ -59,6 +59,54 @@ func (n *Node) codexStatus(id string, a host.Agent) string {
 	return a.AgentStatus
 }
 
+// codexBlockedStaleGrace: how long after herdr reports blocked a rollout's advancing turn activity must continue before
+// herdr's blocked status is treated as stale.
+const codexBlockedStaleGrace = 10 * time.Second
+
+// codexFreshWorking: how recently a Codex rollout must have had turn activity to override a stale host blocked status.
+const codexFreshWorking = 45 * time.Second
+
+// noteBlockedAt records when session id entered StatusBlocked (or clears it once it leaves), returning the entry time.
+func (n *Node) noteBlockedAt(id string, blocked bool, now time.Time) time.Time {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if !blocked {
+		delete(n.blockedAt, id)
+		return time.Time{}
+	}
+	if n.blockedAt == nil {
+		n.blockedAt = map[string]time.Time{}
+	}
+	since, ok := n.blockedAt[id]
+	if !ok {
+		since = now
+		n.blockedAt[id] = now
+	}
+	return since
+}
+
+// codexRolloutWorkingOverBlocked reports whether a Codex session whose host reports StatusBlocked is provably running
+// a turn in its rollout: an open turn with fresh activity advancing well after blocked began, and neither its
+// app-server thread nor an open blocking rollout ask is waiting on the user.
+func (n *Node) codexRolloutWorkingOverBlocked(id, path string, m quickMeta, blockedSince, now time.Time) bool {
+	if blockedSince.IsZero() || !m.turnOpen || m.turnClosed {
+		return false
+	}
+	latest := m.doingAt
+	for _, ts := range []time.Time{m.lastTextAt, m.lastPromptAt, m.contentAt} {
+		if ts.After(latest) {
+			latest = ts
+		}
+	}
+	if latest.IsZero() || !latest.After(blockedSince.Add(codexBlockedStaleGrace)) || now.Sub(latest) >= codexFreshWorking {
+		return false
+	}
+	if _, t, err := n.codexOwner(id); err == nil && t.status == proto.StatusBlocked {
+		return false
+	}
+	return !n.cx.hasBlockingAsk(id, path)
+}
+
 // codexSpinner: the frames of the spinner Codex animates in its terminal title while a turn runs, as herdr's own Codex
 // detection reads them (its osc_title_working rule).
 const codexSpinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"

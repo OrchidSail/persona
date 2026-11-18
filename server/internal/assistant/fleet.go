@@ -402,6 +402,42 @@ type stateMark struct {
 	at    time.Time
 }
 
+func (s *Service) stateMarkOf(machine, session string) (stateMark, bool) {
+	s.fleet.mu.Lock()
+	defer s.fleet.mu.Unlock()
+	mk, ok := s.fleet.stateSince[[2]string{machine, session}]
+	return mk, ok
+}
+
+const (
+	staleBlockedActivityGrace = 10 * time.Second
+	freshActivityWindow       = 45 * time.Second
+)
+
+// clearStaleTerminalBlocked clears a stale StatusBlocked / StateNeedsYou on a terminal session when no interaction
+// card is pending and fresh tool activity keeps advancing well after needs_you began.
+func (s *Service) clearStaleTerminalBlocked(machine string, sess *proto.Session, now time.Time) {
+	if sess.State != proto.StateNeedsYou || sess.Status != proto.StatusBlocked || sess.PendingInteractions > 0 {
+		return
+	}
+	if sess.SourceKind != "" && (sess.Capabilities == nil || !sess.Capabilities.Terminal) {
+		return
+	}
+	if sess.Activity == "" || sess.ActivityAt == nil {
+		return
+	}
+	mk, ok := s.stateMarkOf(machine, sess.SessionID)
+	if !ok || mk.state != proto.StateNeedsYou {
+		return
+	}
+	if !sess.ActivityAt.After(mk.at.Add(staleBlockedActivityGrace)) || now.Sub(*sess.ActivityAt) >= freshActivityWindow {
+		return
+	}
+	sess.Status = proto.StatusWorking
+	sess.State = proto.StateWorking
+	sess.AttentionReason = ""
+}
+
 // fillStateMarks fills in StateSince: the time an agent's state last changed, kept until it changes again. A complete
 // list also drops the marks and hook flags of the machine's sessions no longer listed.
 func (s *Service) fillStateMarks(machine string, list []proto.Session, now time.Time, complete bool) {

@@ -284,6 +284,16 @@ func (c *codexCards) asks(id, path string) []transcript.CodexAsk {
 	return t.asks.Open()
 }
 
+// hasBlockingAsk reports whether the session's rollout currently holds an open non-async question.
+func (c *codexCards) hasBlockingAsk(id, path string) bool {
+	for _, ask := range c.asks(id, path) {
+		if !ask.Async {
+			return true
+		}
+	}
+	return false
+}
+
 func (t *codexTail) read() {
 	f, err := os.Open(t.path)
 	if err != nil {
