@@ -20,24 +20,24 @@ func known(v any) machineFact           { return machineFact{Value: v} }
 func unknown(reason string) machineFact { return machineFact{Reason: reason} }
 
 type machineFacts struct {
-	ID                   string      `json:"id"`
-	Name                 string      `json:"name"`
-	State                string      `json:"state"`
-	StateReason          machineFact `json:"state_reason"`
-	OS                   machineFact `json:"os"`
-	Cores                machineFact `json:"cores"`
-	CPUBusyPercent       machineFact `json:"cpu_busy_percent"`
-	Load                 machineFact `json:"load_1m"`
-	MemoryAvailableBytes machineFact `json:"memory_available_bytes"`
-	Swap                 machineFact `json:"swap_bytes"`
+	ID                   string       `json:"id"`
+	Name                 string       `json:"name"`
+	State                string       `json:"state"`
+	StateReason          machineFact  `json:"state_reason"`
+	OS                   machineFact  `json:"os"`
+	Cores                machineFact  `json:"cores"`
+	CPUBusyPercent       machineFact  `json:"cpu_busy_percent"`
+	Load                 machineFact  `json:"load_1m"`
+	MemoryAvailableBytes machineFact  `json:"memory_available_bytes"`
+	Swap                 machineFact  `json:"swap_bytes"`
 	DiskFreeBytes        machineFact  `json:"disk_free_bytes"`
 	BatteryPercent       *machineFact `json:"battery_percent,omitempty"`
 	BatteryCharging      *machineFact `json:"battery_charging,omitempty"`
 	TempC                *machineFact `json:"temp_c,omitempty"`
 	SampleAgeSeconds     machineFact  `json:"sample_age_seconds"`
-	WorkingAgents        machineFact `json:"working_agents"`
-	FailingLaunchers     machineFact `json:"failing_launchers"`
-	NodeOutdated         machineFact `json:"node_outdated"`
+	WorkingAgents        machineFact  `json:"working_agents"`
+	FailingLaunchers     machineFact  `json:"failing_launchers"`
+	NodeOutdated         machineFact  `json:"node_outdated"`
 }
 
 // connectionReason follows the same categories as the machine page; unknown errors are not guessed.
