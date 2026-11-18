@@ -7,6 +7,7 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.content.res.ColorStateList
 import android.text.TextUtils
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
@@ -62,6 +63,9 @@ object WatchTheme {
         textSize = action
         isAllCaps = false
         isSingleLine = true
+        // Single-line mode enables horizontal scrolling; disable it so auto-size uses the real width.
+        setHorizontallyScrolling(false)
+        setAutoSizeTextTypeUniformWithConfiguration(caption.toInt(), action.toInt(), 1, TypedValue.COMPLEX_UNIT_SP)
         ellipsize = TextUtils.TruncateAt.END
         setTextColor(if (destructive) danger else ink)
         minHeight = dp(context, touch)

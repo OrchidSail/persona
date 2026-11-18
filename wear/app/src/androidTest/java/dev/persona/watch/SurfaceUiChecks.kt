@@ -15,6 +15,7 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.ImageView
+import android.widget.Button
 import dev.persona.watch.data.HubClient
 import dev.persona.watch.data.HubConfig
 import dev.persona.watch.extensions.ExtensionWidgetsActivity
@@ -22,6 +23,7 @@ import dev.persona.watch.extensions.ExtensionComplications
 import dev.persona.watch.extensions.WidgetItem
 import dev.persona.watch.pet.PetActivity
 import dev.persona.watch.pet.PetPack
+import dev.persona.watch.ui.WatchTheme
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -82,6 +84,7 @@ class SurfaceUiChecks(private val instrumentation: Instrumentation) {
             status("widget_catalog_and_projection")
             open(ExtensionWidgetsActivity::class.java)
             waitText("Sample status widget")
+            assertCatalogButtonLayouts()
             capture("surface-widget-catalog")
             click("Sample status widget")
             waitText("Sample read-only status.")
@@ -153,6 +156,8 @@ class SurfaceUiChecks(private val instrumentation: Instrumentation) {
 
             status("unsupported_widget_items")
             back()
+            waitText("Sample status widget")
+            assertCatalogButtonLayouts()
             click("Sample unsupported widget")
             waitText(text(R.string.extension_no_content))
             assertNoExtensionControls()
@@ -166,6 +171,7 @@ class SurfaceUiChecks(private val instrumentation: Instrumentation) {
             capture("surface-widget-unavailable")
             click(text(R.string.refresh))
             waitText("Sample status widget")
+            assertCatalogButtonLayouts()
             capture("surface-widget-catalog-recovered")
 
             val events = control().getJSONArray("events")
@@ -278,6 +284,41 @@ class SurfaceUiChecks(private val instrumentation: Instrumentation) {
     private fun assertNoExtensionControls() {
         check(nodes().none { node -> node.isEditable || listOf("Never execute sample action", "Never edit sample setting", "Never open sample website")
             .any { matches(node, it) } }) { "surfaces_extension_controls_exposed" }
+    }
+    /** Inspect the real laid-out Buttons, not accessibility's untruncated source strings. */
+    private fun assertCatalogButtonLayouts() = waitUntil("catalog_button_layouts") {
+        var result: Result<Boolean>? = null
+        instrumentation.runOnMainSync { result = runCatching {
+            val buttons = mutableListOf<Button>()
+            fun visit(view: View) {
+                if (view is Button) buttons += view
+                if (view is ViewGroup) for (index in 0 until view.childCount) visit(view.getChildAt(index))
+            }
+            visit(checkNotNull(activity).window.decorView)
+            val labels = listOf("Sample status widget", "Sample unsupported widget")
+            val catalog = labels.map { label ->
+                buttons.singleOrNull { it.text.toString() == label } ?: return@runCatching false
+            }
+            if (catalog.any { it.isLayoutRequested || it.layout == null || it.width <= 0 || it.height <= 0 }) return@runCatching false
+            val minimum = WatchTheme.dp(context, WatchTheme.touch)
+            catalog.forEachIndexed { index, button ->
+                val label = labels[index]
+                val layout = checkNotNull(button.layout)
+                check(button.text.toString() == label && button.contentDescription?.toString() == label) {
+                    "surfaces_catalog_button_label_$index"
+                }
+                check(button.minimumHeight >= minimum && button.width >= minimum && button.height >= minimum) {
+                    "surfaces_catalog_button_touch_$index"
+                }
+                check(button.maxLines == 1 && layout.lineCount == 1 && layout.getEllipsisCount(0) == 0 &&
+                    layout.getLineStart(0) == 0 && layout.getLineEnd(0) == label.length &&
+                    layout.getLineWidth(0) <= button.width - button.compoundPaddingLeft - button.compoundPaddingRight + 1f) {
+                    "surfaces_catalog_button_truncated_$index"
+                }
+            }
+            true
+        } }
+        checkNotNull(result).getOrThrow()
     }
     private fun click(label: String) {
         var button: AccessibilityNodeInfo? = null
