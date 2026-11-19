@@ -37,7 +37,6 @@ type fleetBook struct {
 	seen         map[[2]string]time.Time // (machine, session) -> when the user last looked at it
 	seenLoaded   bool                    // seen holds the table's times (loadSeen succeeded once)
 	stateSince   map[[2]string]stateMark // (machine, session) -> its state and when it entered it
-	blockedSince map[[2]string]time.Time // (machine, session) -> when raw Codex terminal StatusBlocked began
 	notified     map[string]time.Time    // assistant conversation -> when it last pushed with notify_user
 	// reportSent: assistant conversation -> when a scheduled run or a task notice was sent into it (noteReportTurn):
 	// the turn it starts is pushed however short it is.
@@ -403,68 +402,6 @@ type stateMark struct {
 	at    time.Time
 }
 
-func (s *Service) clearRawBlocked(machine, session string) {
-	s.fleet.mu.Lock()
-	delete(s.fleet.blockedSince, [2]string{machine, session})
-	s.fleet.mu.Unlock()
-}
-
-// noteRawBlocked tracks when a Codex terminal-routed session first entered raw StatusBlocked, independent of
-// stateSince (which records the post-override display state). While a real interaction card is pending, the mark is
-// refreshed to now so any StatusBlocked remaining after the card resolves starts a fresh grace window.
-func (s *Service) noteRawBlocked(machine, session string, hasPending bool, now time.Time) time.Time {
-	s.fleet.mu.Lock()
-	defer s.fleet.mu.Unlock()
-	if s.fleet.blockedSince == nil {
-		s.fleet.blockedSince = map[[2]string]time.Time{}
-	}
-	k := [2]string{machine, session}
-	if hasPending {
-		s.fleet.blockedSince[k] = now
-		return now
-	}
-	if since, ok := s.fleet.blockedSince[k]; ok {
-		return since
-	}
-	s.fleet.blockedSince[k] = now
-	return now
-}
-
-const (
-	staleBlockedActivityGrace = 10 * time.Second
-	freshActivityWindow       = 45 * time.Second
-)
-
-// clearStaleTerminalBlocked clears a stale StatusBlocked / StateNeedsYou on a Codex terminal-routed session
-// when no interaction card or closeout ask is pending and fresh tool activity keeps advancing well after raw
-// StatusBlocked began. Uses blockedSince rather than stateSince so consecutive inventories stay in StateWorking
-// without oscillating back to StateNeedsYou.
-func (s *Service) clearStaleTerminalBlocked(machine string, sess *proto.Session, now time.Time) {
-	if sess.Status != proto.StatusBlocked || sess.Agent != "codex" || sess.CodexRoute != "terminal" {
-		s.clearRawBlocked(machine, sess.SessionID)
-		return
-	}
-	since := s.noteRawBlocked(machine, sess.SessionID, sess.PendingInteractions > 0, now)
-	if sess.State != proto.StateNeedsYou || sess.PendingInteractions > 0 {
-		return
-	}
-	if sess.SourceKind != "" && (sess.Capabilities == nil || !sess.Capabilities.Terminal) {
-		return
-	}
-	if !sess.AsksRead || sess.Asks != "" || sess.TurnError != "" {
-		return
-	}
-	if sess.Activity == "" || sess.ActivityAt == nil {
-		return
-	}
-	if !sess.ActivityAt.After(since.Add(staleBlockedActivityGrace)) || now.Sub(*sess.ActivityAt) >= freshActivityWindow {
-		return
-	}
-	sess.Status = proto.StatusWorking
-	sess.State = proto.StateWorking
-	sess.AttentionReason = ""
-}
-
 // fillStateMarks fills in StateSince: the time an agent's state last changed, kept until it changes again. A complete
 // list also drops the marks and hook flags of the machine's sessions no longer listed.
 func (s *Service) fillStateMarks(machine string, list []proto.Session, now time.Time, complete bool) {
@@ -496,11 +433,6 @@ func (s *Service) fillStateMarks(machine string, list []proto.Session, now time.
 		if k[0] == machine && !listed[k[1]] {
 			delete(s.fleet.stateSince, k)
 			delete(s.fleet.hooked, k)
-		}
-	}
-	for k := range s.fleet.blockedSince {
-		if k[0] == machine && !listed[k[1]] {
-			delete(s.fleet.blockedSince, k)
 		}
 	}
 }

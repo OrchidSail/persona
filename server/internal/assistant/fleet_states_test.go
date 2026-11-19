@@ -472,103 +472,10 @@ func TestTurnError(t *testing.T) {
 	}
 }
 
-func TestClearStaleTerminalBlocked(t *testing.T) {
-	now := time.Now().UTC()
-	fresh := now.Add(-2 * time.Second)
-	stale := now.Add(-time.Minute)
-	withinGrace := now.Add(-15 * time.Second)
-
-	for _, tc := range []struct {
-		name      string
-		since     time.Time
-		sess      proto.Session
-		wantState string
-	}{
-		{
-			name:  "stale blocked with fresh activity and zero pending interactions",
-			since: now.Add(-20 * time.Second),
-			sess: proto.Session{
-				SessionID: "s1", Agent: "codex", CodexRoute: "terminal", AsksRead: true,
-				Status: proto.StatusBlocked, State: proto.StateNeedsYou,
-				AttentionReason: "waiting", Activity: "Running command", ActivityAt: &fresh,
-			},
-			wantState: proto.StateWorking,
-		},
-		{
-			name:  "claude session after completed bash entering blocked with zero pending interactions keeps needs_you",
-			since: now.Add(-20 * time.Second),
-			sess: proto.Session{
-				SessionID: "s1", Agent: "claude", AsksRead: true,
-				Status: proto.StatusBlocked, State: proto.StateNeedsYou,
-				Activity: "Running command", ActivityAt: &fresh,
-			},
-			wantState: proto.StateNeedsYou,
-		},
-		{
-			name:  "pending interaction keeps needs_you",
-			since: now.Add(-20 * time.Second),
-			sess: proto.Session{
-				SessionID: "s1", Agent: "codex", CodexRoute: "terminal", AsksRead: true,
-				Status: proto.StatusBlocked, State: proto.StateNeedsYou,
-				PendingInteractions: 1, Activity: "Running command", ActivityAt: &fresh,
-			},
-			wantState: proto.StateNeedsYou,
-		},
-		{
-			name:  "activity within grace window keeps needs_you",
-			since: now.Add(-20 * time.Second),
-			sess: proto.Session{
-				SessionID: "s1", Agent: "codex", CodexRoute: "terminal", AsksRead: true,
-				Status: proto.StatusBlocked, State: proto.StateNeedsYou,
-				Activity: "Running command", ActivityAt: &withinGrace,
-			},
-			wantState: proto.StateNeedsYou,
-		},
-		{
-			name:  "stale activity keeps needs_you",
-			since: now.Add(-2 * time.Minute),
-			sess: proto.Session{
-				SessionID: "s1", Agent: "codex", CodexRoute: "terminal", AsksRead: true,
-				Status: proto.StatusBlocked, State: proto.StateNeedsYou,
-				Activity: "Running command", ActivityAt: &stale,
-			},
-			wantState: proto.StateNeedsYou,
-		},
-		{
-			name:  "non-terminal runtime keeps needs_you",
-			since: now.Add(-20 * time.Second),
-			sess: proto.Session{
-				SessionID: "s1", Agent: "codex", CodexRoute: "terminal", AsksRead: true,
-				Status: proto.StatusBlocked, State: proto.StateNeedsYou,
-				SourceKind: proto.SourceRuntime, Activity: "Running command", ActivityAt: &fresh,
-			},
-			wantState: proto.StateNeedsYou,
-		},
-		{
-			name:  "open closeout ask keeps needs_you",
-			since: now.Add(-20 * time.Second),
-			sess: proto.Session{
-				SessionID: "s1", Agent: "codex", CodexRoute: "terminal", AsksRead: true, Asks: "Should I proceed?",
-				Status: proto.StatusBlocked, State: proto.StateNeedsYou,
-				Activity: "Running command", ActivityAt: &fresh,
-			},
-			wantState: proto.StateNeedsYou,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			s := &Service{fleet: fleetBook{blockedSince: map[[2]string]time.Time{
-				{"m1", "s1"}: tc.since,
-			}}}
-			sess := tc.sess
-			s.clearStaleTerminalBlocked("m1", &sess, now)
-			if sess.State != tc.wantState {
-				t.Fatalf("state = %s, want %s", sess.State, tc.wantState)
-			}
-		})
-	}
-}
-
-func TestDecorateInventoryStaleBlockedStaysWorkingAcrossConsecutivePasses(t *testing.T) {
+// A live terminal row whose node kept StatusBlocked (for example, a generic dialog or approval overlay confirmed by
+// the node's screen read, or before an approval card reaches the manager) must remain StateNeedsYou in the assistant
+// even when PendingInteractions is 0 and ActivityAt keeps advancing.
+func TestDecorateInventoryPreservesNodeBlockedStatus(t *testing.T) {
 	ft := newFleetTestNoStore(t)
 	s := ft.s
 
@@ -582,59 +489,23 @@ func TestDecorateInventoryStaleBlockedStaysWorkingAcrossConsecutivePasses(t *tes
 		}
 	}
 
-	// Pass 1: initial blocked report records blockedSince and stays needs_you within the 10s grace window.
-	out1 := s.decorateInventory("m1", []proto.Session{makeRaw(proto.StatusBlocked, time.Now().Add(-time.Second))}, true)
-	if len(out1) != 1 || out1[0].State != proto.StateNeedsYou {
-		t.Fatalf("pass 1: got %+v, want needs_you", out1)
-	}
-
-	// Simulate 20s elapsed since raw blocked began while activity keeps advancing.
+	// Simulate the session already being in StateNeedsYou for 20s while ActivityAt advances.
 	s.fleet.mu.Lock()
-	s.fleet.blockedSince[[2]string{"m1", "s1"}] = time.Now().Add(-20 * time.Second)
+	s.fleet.stateSince = map[[2]string]stateMark{
+		{"m1", "s1"}: {state: proto.StateNeedsYou, at: time.Now().Add(-20 * time.Second)},
+	}
 	s.fleet.mu.Unlock()
 
-	// Pass 2: clears stale blocked to working.
-	out2 := s.decorateInventory("m1", []proto.Session{makeRaw(proto.StatusBlocked, time.Now().Add(-2*time.Second))}, true)
-	if len(out2) != 1 || out2[0].State != proto.StateWorking || out2[0].Status != proto.StatusWorking {
-		t.Fatalf("pass 2: got state=%s status=%s, want working", out2[0].State, out2[0].Status)
-	}
-	workingSince := out2[0].StateSince
-
-	// Pass 3 & 4: node still reports StatusBlocked with advancing activity; state must stay working with stable StateSince.
-	for pass := 3; pass <= 4; pass++ {
-		time.Sleep(2 * time.Millisecond)
+	for pass := 1; pass <= 2; pass++ {
 		out := s.decorateInventory("m1", []proto.Session{makeRaw(proto.StatusBlocked, time.Now().Add(-time.Second))}, true)
-		if len(out) != 1 || out[0].State != proto.StateWorking || out[0].Status != proto.StatusWorking {
-			t.Fatalf("pass %d: got state=%s status=%s, want working", pass, out[0].State, out[0].Status)
-		}
-		if !out[0].StateSince.Equal(workingSince) {
-			t.Fatalf("pass %d: StateSince changed from %v to %v", pass, workingSince, out[0].StateSince)
+		if len(out) != 1 || out[0].State != proto.StateNeedsYou || out[0].Status != proto.StatusBlocked {
+			t.Fatalf("pass %d: got state=%s status=%s, want needs_you/blocked", pass, out[0].State, out[0].Status)
 		}
 	}
 
-	// When a real interaction arrives and later resolves while still blocked, blockedSince refreshes for a new grace window.
-	s.fleet.mu.Lock()
-	s.ixMapLocked()["ix_real"] = &pending{ix: proto.Interaction{ID: "ix_real", MachineID: "m1", SessionID: "s1", Kind: proto.IxPermission}}
-	s.fleet.mu.Unlock()
-	outPending := s.decorateInventory("m1", []proto.Session{makeRaw(proto.StatusBlocked, time.Now().Add(-time.Second))}, true)
-	if len(outPending) != 1 || outPending[0].State != proto.StateNeedsYou || outPending[0].PendingInteractions != 1 {
-		t.Fatalf("with pending interaction: got state=%s pending=%d, want needs_you/1", outPending[0].State, outPending[0].PendingInteractions)
-	}
-	s.fleet.mu.Lock()
-	delete(s.fleet.interactions, "ix_real")
-	s.fleet.mu.Unlock()
-	outAfterResolve := s.decorateInventory("m1", []proto.Session{makeRaw(proto.StatusBlocked, time.Now().Add(-time.Second))}, true)
-	if len(outAfterResolve) != 1 || outAfterResolve[0].State != proto.StateNeedsYou {
-		t.Fatalf("right after interaction resolved: got state=%s, want needs_you (fresh grace window)", outAfterResolve[0].State)
-	}
-
-	// Leaving StatusBlocked clears blockedSince, so a subsequent StatusBlocked also gets a fresh grace window.
-	s.fleet.mu.Lock()
-	s.fleet.blockedSince[[2]string{"m1", "s1"}] = time.Now().Add(-20 * time.Second)
-	s.fleet.mu.Unlock()
-	_ = s.decorateInventory("m1", []proto.Session{makeRaw(proto.StatusDone, time.Now())}, true)
-	outReblocked := s.decorateInventory("m1", []proto.Session{makeRaw(proto.StatusBlocked, time.Now().Add(-time.Second))}, true)
-	if len(outReblocked) != 1 || outReblocked[0].State != proto.StateNeedsYou {
-		t.Fatalf("after leaving and re-entering blocked: got state=%s, want needs_you", outReblocked[0].State)
+	// Once the node clears stale StatusBlocked after a fresh screen read and reports StatusWorking, the row becomes working.
+	outWorking := s.decorateInventory("m1", []proto.Session{makeRaw(proto.StatusWorking, time.Now().Add(-time.Second))}, true)
+	if len(outWorking) != 1 || outWorking[0].State != proto.StateWorking || outWorking[0].Status != proto.StatusWorking {
+		t.Fatalf("node-validated working: got state=%s status=%s, want working", outWorking[0].State, outWorking[0].Status)
 	}
 }
