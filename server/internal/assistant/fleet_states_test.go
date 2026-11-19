@@ -556,8 +556,8 @@ func TestClearStaleTerminalBlocked(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &Service{fleet: fleetBook{stateSince: map[[2]string]stateMark{
-				{"m1", "s1"}: {state: proto.StateNeedsYou, at: tc.since},
+			s := &Service{fleet: fleetBook{blockedSince: map[[2]string]time.Time{
+				{"m1", "s1"}: tc.since,
 			}}}
 			sess := tc.sess
 			s.clearStaleTerminalBlocked("m1", &sess, now)
@@ -565,5 +565,76 @@ func TestClearStaleTerminalBlocked(t *testing.T) {
 				t.Fatalf("state = %s, want %s", sess.State, tc.wantState)
 			}
 		})
+	}
+}
+
+func TestDecorateInventoryStaleBlockedStaysWorkingAcrossConsecutivePasses(t *testing.T) {
+	ft := newFleetTestNoStore(t)
+	s := ft.s
+
+	makeRaw := func(status string, activityAt time.Time) proto.Session {
+		at := activityAt
+		return proto.Session{
+			SessionID: "s1", Agent: "codex", CodexRoute: "terminal", AsksRead: true,
+			Status: status, AttentionReason: "waiting",
+			Activity: "Running command", ActivityAt: &at,
+			UpdatedAt: activityAt,
+		}
+	}
+
+	// Pass 1: initial blocked report records blockedSince and stays needs_you within the 10s grace window.
+	out1 := s.decorateInventory("m1", []proto.Session{makeRaw(proto.StatusBlocked, time.Now().Add(-time.Second))}, true)
+	if len(out1) != 1 || out1[0].State != proto.StateNeedsYou {
+		t.Fatalf("pass 1: got %+v, want needs_you", out1)
+	}
+
+	// Simulate 20s elapsed since raw blocked began while activity keeps advancing.
+	s.fleet.mu.Lock()
+	s.fleet.blockedSince[[2]string{"m1", "s1"}] = time.Now().Add(-20 * time.Second)
+	s.fleet.mu.Unlock()
+
+	// Pass 2: clears stale blocked to working.
+	out2 := s.decorateInventory("m1", []proto.Session{makeRaw(proto.StatusBlocked, time.Now().Add(-2*time.Second))}, true)
+	if len(out2) != 1 || out2[0].State != proto.StateWorking || out2[0].Status != proto.StatusWorking {
+		t.Fatalf("pass 2: got state=%s status=%s, want working", out2[0].State, out2[0].Status)
+	}
+	workingSince := out2[0].StateSince
+
+	// Pass 3 & 4: node still reports StatusBlocked with advancing activity; state must stay working with stable StateSince.
+	for pass := 3; pass <= 4; pass++ {
+		time.Sleep(2 * time.Millisecond)
+		out := s.decorateInventory("m1", []proto.Session{makeRaw(proto.StatusBlocked, time.Now().Add(-time.Second))}, true)
+		if len(out) != 1 || out[0].State != proto.StateWorking || out[0].Status != proto.StatusWorking {
+			t.Fatalf("pass %d: got state=%s status=%s, want working", pass, out[0].State, out[0].Status)
+		}
+		if !out[0].StateSince.Equal(workingSince) {
+			t.Fatalf("pass %d: StateSince changed from %v to %v", pass, workingSince, out[0].StateSince)
+		}
+	}
+
+	// When a real interaction arrives and later resolves while still blocked, blockedSince refreshes for a new grace window.
+	s.fleet.mu.Lock()
+	s.ixMapLocked()["ix_real"] = &pending{ix: proto.Interaction{ID: "ix_real", MachineID: "m1", SessionID: "s1", Kind: proto.IxPermission}}
+	s.fleet.mu.Unlock()
+	outPending := s.decorateInventory("m1", []proto.Session{makeRaw(proto.StatusBlocked, time.Now().Add(-time.Second))}, true)
+	if len(outPending) != 1 || outPending[0].State != proto.StateNeedsYou || outPending[0].PendingInteractions != 1 {
+		t.Fatalf("with pending interaction: got state=%s pending=%d, want needs_you/1", outPending[0].State, outPending[0].PendingInteractions)
+	}
+	s.fleet.mu.Lock()
+	delete(s.fleet.interactions, "ix_real")
+	s.fleet.mu.Unlock()
+	outAfterResolve := s.decorateInventory("m1", []proto.Session{makeRaw(proto.StatusBlocked, time.Now().Add(-time.Second))}, true)
+	if len(outAfterResolve) != 1 || outAfterResolve[0].State != proto.StateNeedsYou {
+		t.Fatalf("right after interaction resolved: got state=%s, want needs_you (fresh grace window)", outAfterResolve[0].State)
+	}
+
+	// Leaving StatusBlocked clears blockedSince, so a subsequent StatusBlocked also gets a fresh grace window.
+	s.fleet.mu.Lock()
+	s.fleet.blockedSince[[2]string{"m1", "s1"}] = time.Now().Add(-20 * time.Second)
+	s.fleet.mu.Unlock()
+	_ = s.decorateInventory("m1", []proto.Session{makeRaw(proto.StatusDone, time.Now())}, true)
+	outReblocked := s.decorateInventory("m1", []proto.Session{makeRaw(proto.StatusBlocked, time.Now().Add(-time.Second))}, true)
+	if len(outReblocked) != 1 || outReblocked[0].State != proto.StateNeedsYou {
+		t.Fatalf("after leaving and re-entering blocked: got state=%s, want needs_you", outReblocked[0].State)
 	}
 }
