@@ -113,4 +113,23 @@ class AssistDraftBusTest {
         val before = listOf(screenshot.copy(uri = assistUri))
         assertEquals(listOf(assistUri), leftCaptures(before, emptyList(), pkg))
     }
+
+    @Test
+    fun unsentOverlayTextHandoffAppendsCleanlyWithoutOverwritingExistingDraft() {
+        val bus = AssistDraftQueue(clock = { 1_000L })
+        bus.publish(id = "h2", screenshot = screenshot, text = "Summarize this chart")
+        val claimed = bus.claim(AssistDraftTarget.Session(mainSession))!!
+        assertTrue(claimed.hasUnappliedContent)
+        assertEquals("Summarize this chart", claimed.text)
+
+        val composer = ChatComposerState(ChatComposerDraft(text = "Earlier note"))
+        val applied = prefillAssistDraft(composer, claimed)
+        assertTrue(applied.screenshotAdded)
+        assertTrue(applied.textAdded)
+        assertEquals("Earlier note\nSummarize this chart", composer.value.text)
+
+        bus.markScreenshotApplied("h2")
+        bus.markTextApplied("h2")
+        assertFalse(bus.current()!!.hasUnappliedContent)
+    }
 }

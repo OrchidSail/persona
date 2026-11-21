@@ -17,6 +17,7 @@ import persona.feature.chat.ComposerAttachment
 internal object AssistScreenshotStore {
     const val DIR_NAME = "assist"
     const val MAX_SIDE_PX = 1600
+    const val THUMB_SIDE_PX = 256
     const val JPEG_QUALITY = 88
     const val DEFAULT_MAX_AGE_MILLIS = 24L * 60 * 60 * 1000
     const val DEFAULT_MAX_FILES = 16
@@ -25,6 +26,48 @@ internal object AssistScreenshotStore {
     private val storeLock = Any()
 
     fun directory(context: Context): File = File(context.cacheDir, DIR_NAME)
+
+    /**
+     * Converts a system-provided [bitmap] (including [Bitmap.Config.HARDWARE]) into an owned, downscaled
+     * software [Bitmap] held strictly in memory without writing to disk. Returns null for null/recycled/empty bitmaps.
+     */
+    fun prepareInMemory(bitmap: Bitmap?, maxSidePx: Int = MAX_SIDE_PX): Bitmap? {
+        if (bitmap == null || bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return null
+        var software: Bitmap? = null
+        return try {
+            software = bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return null
+            val scaled = scaleDownIfNeeded(software, maxSidePx)
+            if (scaled !== software && !software.isRecycled) software.recycle()
+            scaled
+        } catch (_: Exception) {
+            if (software != null && software !== bitmap && !software.isRecycled) software.recycle()
+            null
+        }
+    }
+
+    /** Creates an owned small software bitmap for thumbnail preview without mutating [source]. */
+    fun createPreviewThumbnail(source: Bitmap?, maxSidePx: Int = THUMB_SIDE_PX): Bitmap? {
+        if (source == null || source.isRecycled || source.width <= 0 || source.height <= 0) return null
+        return try {
+            val scaled = scaleDownIfNeeded(source, maxSidePx)
+            if (scaled === source) source.copy(Bitmap.Config.ARGB_8888, false) else scaled
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Deletes a single screenshot previously saved under `cacheDir/assist/`, verifying path containment. */
+    fun deleteSaved(context: Context, attachment: ComposerAttachment?): Boolean {
+        val name = attachment?.name?.takeIf { it.isNotBlank() } ?: return false
+        return synchronized(storeLock) {
+            val dir = directory(context)
+            val target = File(dir, name)
+            val safe = runCatching {
+                target.canonicalPath.startsWith(dir.canonicalPath + File.separator)
+            }.getOrDefault(false)
+            safe && target.isFile && target.delete()
+        }
+    }
 
     fun pruneExpired(
         context: Context,

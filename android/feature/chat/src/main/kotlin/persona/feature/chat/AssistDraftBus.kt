@@ -25,18 +25,22 @@ data class PendingAssistDraft(
     val createdAtMillis: Long,
     val screenshot: ComposerAttachment? = null,
     val context: ChatLinkContext? = null,
+    val text: String = "",
     val target: AssistDraftTarget? = null,
     val screenshotApplied: Boolean = false,
     val contextApplied: Boolean = false,
+    val textApplied: Boolean = false,
 ) {
     val hasUnappliedContent: Boolean
-        get() = (screenshot != null && !screenshotApplied) || (context != null && !contextApplied)
+        get() = (screenshot != null && !screenshotApplied) ||
+            (context != null && !contextApplied) ||
+            (text.isNotBlank() && !textApplied)
 }
 
 /**
  * Thread-safe, order-independent handoff queue connecting the system assist session to the active composer.
- * Handles screenshots and assist metadata arriving in either order, including late screenshot arrival after
- * the target composer has already claimed the handoff.
+ * Handles screenshots, unsent overlay text, and assist metadata arriving in either order, including late
+ * updates after the target composer has already claimed the handoff.
  */
 class AssistDraftQueue(
     private val clock: () -> Long = SystemClock::elapsedRealtime,
@@ -46,8 +50,14 @@ class AssistDraftQueue(
     val pending: StateFlow<PendingAssistDraft?> = state.asStateFlow()
 
     /** Publishes or updates a handoff identified by [id], preserving any already-claimed target on the same [id]. */
-    fun publish(id: String, screenshot: ComposerAttachment? = null, context: ChatLinkContext? = null) {
+    fun publish(
+        id: String,
+        screenshot: ComposerAttachment? = null,
+        context: ChatLinkContext? = null,
+        text: String = "",
+    ) {
         val now = clock()
+        val trimmedText = text.trim()
         state.update { current ->
             val reusable = current?.takeIf { it.id == id && !isExpired(it, now) }
             if (reusable != null) {
@@ -56,6 +66,8 @@ class AssistDraftQueue(
                     screenshotApplied = if (screenshot != null) false else reusable.screenshotApplied,
                     context = context ?: reusable.context,
                     contextApplied = if (context != null) false else reusable.contextApplied,
+                    text = trimmedText.ifEmpty { reusable.text },
+                    textApplied = if (trimmedText.isNotEmpty()) false else reusable.textApplied,
                 )
             } else {
                 PendingAssistDraft(
@@ -63,6 +75,7 @@ class AssistDraftQueue(
                     createdAtMillis = now,
                     screenshot = screenshot,
                     context = context,
+                    text = trimmedText,
                 )
             }
         }
@@ -104,7 +117,7 @@ class AssistDraftQueue(
             if (current == null || isExpired(current, now)) {
                 updated = null
                 null
-            } else if (!current.screenshotApplied && !current.contextApplied) {
+            } else if (!current.screenshotApplied && !current.contextApplied && !current.textApplied) {
                 current.copy(target = target).also { updated = it }
             } else {
                 updated = null
@@ -123,6 +136,12 @@ class AssistDraftQueue(
     fun markContextApplied(id: String) {
         state.update { current ->
             if (current?.id == id) current.copy(contextApplied = true) else current
+        }
+    }
+
+    fun markTextApplied(id: String) {
+        state.update { current ->
+            if (current?.id == id) current.copy(textApplied = true) else current
         }
     }
 
@@ -154,6 +173,7 @@ data class AssistDraftApplyResult(
     val screenshotAdded: Boolean = false,
     val screenshotRejectedForLimit: Boolean = false,
     val contextAdded: Boolean = false,
+    val textAdded: Boolean = false,
 )
 
 /**
@@ -169,6 +189,7 @@ fun prefillAssistDraft(
     var screenshotAdded = false
     var screenshotRejected = false
     var contextAdded = false
+    var textAdded = false
     val shot = draft.screenshot
     if (shot != null && !draft.screenshotApplied) {
         val alreadyPresent = composer.attachments.any {
@@ -191,7 +212,24 @@ fun prefillAssistDraft(
             contextAdded = true
         }
     }
-    return AssistDraftApplyResult(screenshotAdded, screenshotRejected, contextAdded)
+    val note = draft.text.trim()
+    if (note.isNotEmpty() && !draft.textApplied) {
+        composer.beginEdit()
+        val existing = composer.value.text
+        val combined = when {
+            existing.isBlank() -> note
+            existing.trimEnd().endsWith(note) -> existing
+            else -> "${existing.trimEnd()}\n$note"
+        }
+        if (combined != existing) {
+            composer.value = androidx.compose.ui.text.input.TextFieldValue(
+                combined,
+                androidx.compose.ui.text.TextRange(combined.length),
+            )
+            textAdded = true
+        }
+    }
+    return AssistDraftApplyResult(screenshotAdded, screenshotRejected, contextAdded, textAdded)
 }
 
 /** Applies [draft] to [composer], records completion in [bus], and cleans up any cap-rejected assist screenshot. */
@@ -210,6 +248,9 @@ suspend fun applyAssistDraft(
     }
     if (draft.context != null && !draft.contextApplied) {
         bus.markContextApplied(draft.id)
+    }
+    if (draft.text.isNotBlank() && !draft.textApplied) {
+        bus.markTextApplied(draft.id)
     }
     if (result.screenshotRejectedForLimit) {
         draft.screenshot?.uri?.let { uri ->

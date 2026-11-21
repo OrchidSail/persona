@@ -99,4 +99,48 @@ class AssistScreenshotStoreTest {
             dir.deleteRecursively()
         }
     }
+
+    @Test
+    fun prepareInMemoryCreatesIndependentScaledCopyWithoutWritingFiles() {
+        val dir = AssistScreenshotStore.directory(context)
+        val source = Bitmap.createBitmap(2400, 1200, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.GREEN) }
+        val staged = AssistScreenshotStore.prepareInMemory(source)
+        assertNotNull(staged)
+        assertEquals(1600, staged!!.width)
+        assertEquals(800, staged.height)
+        assertTrue(dir.listFiles().orEmpty().isEmpty())
+
+        // Recycling the staged copy must not affect the source bitmap.
+        staged.recycle()
+        assertFalse(source.isRecycled)
+        source.recycle()
+    }
+
+    @Test
+    fun deleteSavedDeletesOnlyFilesContainedInAssistCacheDir() {
+        val bitmap = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.RED) }
+        val saved = AssistScreenshotStore.save(
+            context = context,
+            bitmap = bitmap,
+            id = "delete-me",
+            nowMillis = System.currentTimeMillis(),
+            uriForFile = { file -> Uri.parse("content://${context.packageName}.chat.files/assist/${file.name}") },
+        )!!
+        val savedFile = File(AssistScreenshotStore.directory(context), saved.name)
+        assertTrue(savedFile.isFile)
+
+        // Path traversal attempt outside cacheDir/assist must be rejected.
+        val outside = File(context.cacheDir, "outside-keep.txt").apply { writeText("keep") }
+        try {
+            val traversal = saved.copy(name = "../outside-keep.txt")
+            assertFalse(AssistScreenshotStore.deleteSaved(context, traversal))
+            assertTrue(outside.isFile)
+
+            assertTrue(AssistScreenshotStore.deleteSaved(context, saved))
+            assertFalse(savedFile.exists())
+        } finally {
+            outside.delete()
+            bitmap.recycle()
+        }
+    }
 }
