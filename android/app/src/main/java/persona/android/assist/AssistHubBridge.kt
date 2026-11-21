@@ -35,9 +35,9 @@ import persona.feature.chat.uploadAttachment
 @EntryPoint
 @InstallIn(SingletonComponent::class)
 internal interface AssistOverlayEntryPoint {
-    fun services(): AppServices
-    fun wiring(): ChatWiringSource
-    fun connections(): ConnectionRuntime
+    fun assistAppServices(): AppServices
+    fun assistChatWiring(): ChatWiringSource
+    fun assistConnections(): ConnectionRuntime
 }
 
 /**
@@ -59,13 +59,13 @@ internal class AssistHubBridge(
     private var observeJob: Job? = null
 
     fun wakeHub() {
-        runCatching { entryPoint?.connections()?.wake() }
+        runCatching { entryPoint?.assistConnections()?.wake() }
     }
 
     fun start() {
         if (observeJob?.isActive == true) return
-        val services = entryPoint?.services()
-        val wiring = entryPoint?.wiring()
+        val services = entryPoint?.assistAppServices()
+        val wiring = entryPoint?.assistChatWiring()
         if (services == null || wiring == null) {
             onSnapshot(AssistHubSnapshot(status = AssistHubStatus.Unpaired))
             return
@@ -187,9 +187,9 @@ internal class AssistHubBridge(
     }
 
     private fun requireReadySession(): Pair<ShellSession, ChatAppBindings?> {
-        val services = entryPoint?.services()
+        val services = entryPoint?.assistAppServices()
             ?: error(context.getString(R.string.app_assist_hub_unpaired_title))
-        val wiring = entryPoint.wiring()
+        val wiring = entryPoint.assistChatWiring()
         val session = services.session.value
             ?: error(context.getString(R.string.app_assist_hub_unpaired_title))
         val binding = wiring.current.value?.takeIf { it.scope.path == session.identity }
