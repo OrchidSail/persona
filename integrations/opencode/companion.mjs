@@ -6,6 +6,7 @@
 //   node integrations/opencode/companion.mjs [--socket <runtime.sock>] [--bin <path>]
 //     [--db <opencode.db>] [--config-dir <dir>] [--launcher <name>] [--name <label>]
 //     [--model <provider/model>] [--instance <id>] [--no-assistant] [--no-update] [--parent-stdin]
+//     [--assistant-workers <1..64>] [--assistant-idle-ms <milliseconds>]
 
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -29,6 +30,8 @@ export function parseCompanionArgs(argv = process.argv.slice(2), env = process.e
       instance: { type: 'string' },
       'no-assistant': { type: 'boolean' },
       'no-update': { type: 'boolean' },
+      'assistant-workers': { type: 'string' },
+      'assistant-idle-ms': { type: 'string' },
       'parent-stdin': { type: 'boolean' },
     },
     strict: true,
@@ -37,7 +40,13 @@ export function parseCompanionArgs(argv = process.argv.slice(2), env = process.e
   const bin = values.bin || values['opencode-bin'] || env.PERSONA_OPENCODE_BIN || env.OPENCODE_BIN || 'opencode'
   const label = values.name || values['display-name'] || undefined
   const displayName = values['display-name'] || values.name || undefined
+  const maxAssistantWorkers = values['assistant-workers'] === undefined ? undefined : Number(values['assistant-workers'])
+  const assistantIdleMs = values['assistant-idle-ms'] === undefined ? undefined : Number(values['assistant-idle-ms'])
+  if (maxAssistantWorkers !== undefined && (!Number.isInteger(maxAssistantWorkers) || maxAssistantWorkers < 1 || maxAssistantWorkers > 64)) throw new Error('--assistant-workers must be an integer between 1 and 64')
+  if (assistantIdleMs !== undefined && (!Number.isFinite(assistantIdleMs) || assistantIdleMs < 1)) throw new Error('--assistant-idle-ms must be positive')
   return {
+    ...(maxAssistantWorkers === undefined ? {} : { maxAssistantWorkers }),
+    ...(assistantIdleMs === undefined ? {} : { assistantIdleMs }),
     socketPath: values.socket || undefined,
     bin,
     dbPath: values.db || undefined,

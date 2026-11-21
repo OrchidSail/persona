@@ -117,6 +117,14 @@ class FakeAcpClient extends EventEmitter {
       ],
     }
   }
+  async resumeSession(params) {
+    this.calls.push(['resumeSession', params])
+    this.loadedSessions.add(params.sessionId)
+    return { configOptions: [
+      { id: 'mode', category: 'mode', currentValue: 'build', options: [{ value: 'build' }, { value: 'plan' }] },
+      { id: 'model', category: 'model', currentValue: 'opencode-go/claude-sonnet-4-6', options: this.configModels },
+    ] }
+  }
   async setConfigOption(sessionId, configId, value) {
     this.calls.push(['setConfigOption', { sessionId, configId, value }])
     if (this.failModeSet && configId === 'mode' && value === this.failModeSet) {
@@ -152,6 +160,25 @@ class FakeAcpClient extends EventEmitter {
   }
 }
 
+// Legacy feature tests share their expectation log and input controls, but
+// each assistant still receives a different ACP object and loaded-session set.
+function createTestCompanion(options) {
+  const parent = options.acp
+  return createOpencodeCompanion({ ...options, assistantAcpFactory: () => {
+    const child = new FakeAcpClient()
+    child.calls = parent.calls
+    for (const key of ['nextId', 'onPrompt', 'onNewSession', 'failModeSet', 'configModels']) {
+      Object.defineProperty(child, key, { get: () => parent[key], set: (value) => { parent[key] = value } })
+    }
+    child.newSession = async (params) => {
+      const result = await parent.newSession.call(child, params)
+      child.loadedSessions.add(result.sessionId)
+      return result
+    }
+    return child
+  } })
+}
+
 test('companion advertises launchers/models/assistant without supervision_policy, starts Agent session, streams, handles permissions, modes, rename, close', async (t) => {
   const n = await startFakeNode(t)
   const db = fakeV1Db()
@@ -160,7 +187,7 @@ test('companion advertises launchers/models/assistant without supervision_policy
   db.message('ses_disk_1', 'm2', 'assistant', [{ type: 'text', text: 'reply from tui' }], { modelID: 'gpt-5', providerID: 'openai' })
 
   const acp = new FakeAcpClient()
-  const companion = createOpencodeCompanion({
+  const companion = createTestCompanion({
     socketPath: n.path,
     retryMs: 20,
     pushDelayMs: 5,
@@ -287,7 +314,7 @@ test('companion assistant mode wires HTTP MCP end-to-end, hides context, enforce
     assert.deepEqual(listRes.result.tools.map((x) => x.name), ['kb_search', 'mail_send'])
   }
 
-  const companion = createOpencodeCompanion({
+  const companion = createTestCompanion({
     socketPath: n.path,
     retryMs: 20,
     pushDelayMs: 5,
@@ -386,7 +413,7 @@ test('companion resumes a disk-only session via ACP session/load and supports in
   let resolvePrompt
   acp.onPrompt = () => new Promise((r) => { resolvePrompt = r })
 
-  const companion = createOpencodeCompanion({
+  const companion = createTestCompanion({
     socketPath: n.path,
     retryMs: 20,
     pushDelayMs: 5,
@@ -435,6 +462,11 @@ test('parseCompanionArgs honors --bin, --opencode-bin, --name, --display-name, P
   assert.equal(fromLegacyEnv.bin, '/env/old-oc')
 
   assert.throws(() => parseCompanionArgs(['--unknown-flag', '1'], {}))
+  const bounded = parseCompanionArgs(['--assistant-workers', '3', '--assistant-idle-ms', '2500'], {})
+  assert.equal(bounded.maxAssistantWorkers, 3)
+  assert.equal(bounded.assistantIdleMs, 2500)
+  for (const value of ['0', '65', '1.5', 'NaN']) assert.throws(() => parseCompanionArgs(['--assistant-workers', value], {}))
+  for (const value of ['0', '-1', 'Infinity']) assert.throws(() => parseCompanionArgs(['--assistant-idle-ms', value], {}))
 
   const acpEnv = buildAcpEnv({ OPENCODE_PERMISSION: JSON.stringify({ read: 'allow', bash: 'allow' }) })
   assert.deepEqual(JSON.parse(acpEnv.OPENCODE_PERMISSION), { read: 'allow', bash: 'ask', edit: 'ask', write: 'ask' })
@@ -511,7 +543,7 @@ test('companion enforces raw unclipped command gates, relative AGENTS.md rejecti
     return res
   }
 
-  const companion = createOpencodeCompanion({
+  const companion = createTestCompanion({
     socketPath: n.path,
     retryMs: 20,
     pushDelayMs: 5,
