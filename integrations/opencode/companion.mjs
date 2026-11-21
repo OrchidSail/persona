@@ -5,7 +5,7 @@
 //
 //   node integrations/opencode/companion.mjs [--socket <runtime.sock>] [--bin <path>]
 //     [--db <opencode.db>] [--config-dir <dir>] [--launcher <name>] [--name <label>]
-//     [--model <provider/model>] [--no-assistant] [--parent-stdin]
+//     [--model <provider/model>] [--instance <id>] [--no-assistant] [--no-update] [--parent-stdin]
 
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -28,6 +28,7 @@ export function parseCompanionArgs(argv = process.argv.slice(2), env = process.e
       runtime: { type: 'string' },
       instance: { type: 'string' },
       'no-assistant': { type: 'boolean' },
+      'no-update': { type: 'boolean' },
       'parent-stdin': { type: 'boolean' },
     },
     strict: true,
@@ -48,6 +49,7 @@ export function parseCompanionArgs(argv = process.argv.slice(2), env = process.e
     runtime: values.runtime,
     instance: values.instance,
     assistant: values['no-assistant'] ? false : true,
+    noUpdate: values['no-update'] === true,
     parentStdin: values['parent-stdin'] === true,
   }
 }
@@ -78,8 +80,12 @@ function main() {
 
   if (opts.parentStdin && !process.stdin.isTTY) {
     process.stdin.on('end', shutdown)
+    process.stdin.on('close', shutdown)
     process.stdin.on('error', shutdown)
     process.stdin.resume()
+    if (process.stdin.readableEnded || process.stdin.destroyed) {
+      shutdown()
+    }
   }
 }
 

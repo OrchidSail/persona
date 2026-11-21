@@ -56,6 +56,7 @@ const VALID_EFFORTS = new Set(PERSONA_EFFORTS)
 const SUPERVISION_ERROR_CODE = 'assistant_supervision_runtime'
 const INTERRUPT_SETTLE_MS = 10_000
 const THOUGHT_PUSH_MS = 150
+const DEFAULT_ACP_IDLE_MS = 5 * 60_000
 
 /**
  * Build the child env for `opencode acp`, ensuring `bash`, `edit`, and `write` always route
@@ -104,6 +105,7 @@ export function buildAcpEnv(baseEnv = process.env) {
  *   log?: (msg: string) => void,
  *   now?: () => number,
  *   acp?: OpencodeAcpClient,
+ *   acpIdleMs?: number,
  *   discoverModels?: (opts?: { refresh?: boolean }) => Promise<any[]>,
  * }} [options]
  */
@@ -115,6 +117,7 @@ export function createOpencodeCompanion(options = {}) {
   const now = options.now || Date.now
   const listDays = options.listDays ?? 7
   const maxSessions = options.maxSessions ?? 80
+  const acpIdleMs = options.acpIdleMs ?? DEFAULT_ACP_IDLE_MS
   const runtimeId = options.runtime || 'opencode'
   const label = options.name || 'opencode'
   const launcherName = options.launcher === undefined ? 'opencode' : String(options.launcher).trim()
@@ -144,6 +147,7 @@ export function createOpencodeCompanion(options = {}) {
   let schemaKind = '' // 'v2' | 'v1' | ''
   let listCache = { at: 0, rows: [] }
   let stopped = false
+  let acpIdleTimer = null
 
   const acp = options.acp || new OpencodeAcpClient({
     bin,
@@ -155,6 +159,33 @@ export function createOpencodeCompanion(options = {}) {
   })
   acp.onPermissionRequest = (params) => handlePermissionRequest(params)
   acp.on('update', (params) => onAcpUpdate(params))
+
+  function isAcpBusy() {
+    if (acp.busy) return true
+    for (const s of live.values()) {
+      if (s.running || s.queued > 0 || s.asks.size > 0) return true
+    }
+    return false
+  }
+
+  function cancelAcpIdleStop() {
+    if (acpIdleTimer) {
+      clearTimeout(acpIdleTimer)
+      acpIdleTimer = null
+    }
+  }
+
+  function scheduleAcpIdleStop() {
+    cancelAcpIdleStop()
+    if (stopped || acpIdleMs <= 0 || !acp.pid || isAcpBusy()) return
+    acpIdleTimer = setTimeout(() => {
+      acpIdleTimer = null
+      if (stopped || isAcpBusy() || !acp.pid) return
+      log('stopping idle opencode acp child')
+      void acp.stopChild().catch((err) => log(`idle opencode acp stop: ${err?.message ?? err}`))
+    }, acpIdleMs)
+    acpIdleTimer.unref?.()
+  }
 
   const mcpProxy = createMcpProxy({
     tools: async (binding) => {
@@ -912,6 +943,7 @@ export function createOpencodeCompanion(options = {}) {
   // ---- session lifecycle & control ----
 
   async function ensureLoaded(s) {
+    cancelAcpIdleStop()
     await acp.ensureStarted()
     if (s.loadedGeneration === acp.generation && acp.loadedSessions.has(s.id)) return
     const desiredMode = s.mode
@@ -1018,6 +1050,7 @@ export function createOpencodeCompanion(options = {}) {
     if (isAsst) await ensureGateRules()
     const route = await mcpProxy.allocate({ assistant: isAsst, mode: reqMode || 'default' })
     let sessionId = ''
+    cancelAcpIdleStop()
     try {
       await acp.ensureStarted()
       const created = await acp.newSession({ cwd, mcpServers: [route.acpServer] })
@@ -1074,6 +1107,7 @@ export function createOpencodeCompanion(options = {}) {
 
       listCache.at = 0
       rt.sessionsChanged(0)
+      scheduleAcpIdleStop()
       return { session: liveRow(s) }
     } catch (err) {
       route.release()
@@ -1081,6 +1115,7 @@ export function createOpencodeCompanion(options = {}) {
         live.delete(sessionId)
         await acp.closeSession(sessionId).catch(() => {})
       }
+      scheduleAcpIdleStop()
       if (err instanceof RpcError) throw err
       throw new RpcError(`opencode：${err?.message ?? err}`, 'opencode')
     }
@@ -1235,6 +1270,7 @@ export function createOpencodeCompanion(options = {}) {
         listCache.at = 0
         pushLiveSnapshot(s)
         rt.sessionsChanged(0)
+        scheduleAcpIdleStop()
       }
     })
     s.tail = turnDone
@@ -1263,14 +1299,19 @@ export function createOpencodeCompanion(options = {}) {
 
   async function modes(params) {
     const s = await resolveSession(params.session_id)
-    await ensureLoaded(s)
-    await applySessionConfig(s, {
-      model: params.model,
-      effort: params.effort,
-      permission_mode: params.permission_mode,
-    })
-    listCache.at = 0
-    rt.sessionsChanged(0)
+    cancelAcpIdleStop()
+    try {
+      await ensureLoaded(s)
+      await applySessionConfig(s, {
+        model: params.model,
+        effort: params.effort,
+        permission_mode: params.permission_mode,
+      })
+      listCache.at = 0
+      rt.sessionsChanged(0)
+    } finally {
+      scheduleAcpIdleStop()
+    }
   }
 
   async function rename(params) {
@@ -1303,6 +1344,7 @@ export function createOpencodeCompanion(options = {}) {
     listCache.at = 0
     rt.streamEnd(id)
     rt.sessionsChanged(0)
+    scheduleAcpIdleStop()
   }
 
   async function startCompanion() {
@@ -1313,6 +1355,7 @@ export function createOpencodeCompanion(options = {}) {
 
   async function stopCompanion() {
     stopped = true
+    cancelAcpIdleStop()
     for (const s of live.values()) {
       if (s.thoughtTimer) {
         clearTimeout(s.thoughtTimer)
