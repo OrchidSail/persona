@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -494,4 +494,44 @@ test('itemsCache replaces older history keys in the same session slot and enforc
   const resOver1 = stepsToItems(oversize, { full: false, cacheSlot: 'big-slot-c|0|0', cacheKey: 'big-slot-c|0|0|h1' })
   const resOver2 = stepsToItems(oversize, { full: false, cacheSlot: 'big-slot-c|0|0', cacheKey: 'big-slot-c|0|0|h1' })
   assert.notEqual(resOver2, resOver1, 'oversize entry above 64MB budget must not be cached')
+})
+
+test('same-inode growth detects an in-place same-length prefix edit anywhere in the file before append', (t) => {
+  const { brain, directory } = logs(t)
+  const file = join(directory, 'transcript_full.jsonl')
+  const line = (i, tag) => JSON.stringify({
+    step_index: i,
+    source: 'MODEL',
+    type: 'PLANNER_RESPONSE',
+    status: 'DONE',
+    created_at: '2026-11-20T10:00:00Z',
+    content: `${tag}-${String(i).padStart(3, '0')}`,
+  }) + '\n'
+
+  const rows = Array.from({ length: 200 }, (_, i) => line(i, 'ORIG'))
+  const initial = rows.join('')
+  assert.ok(Buffer.byteLength(initial) > 20 * 1024, 'fixture should exceed 20KB')
+  writeFileSync(file, initial)
+
+  const before = readTranscript(brain, true)
+  assert.equal(before.steps.length, 200)
+  assert.equal(before.steps[60].content, 'ORIG-060')
+
+  // In-place same-length overwrite of step 60 (outside head/mid/tail windows) followed by appending step 200
+  const offset60 = Buffer.byteLength(rows.slice(0, 60).join(''))
+  const edited60 = Buffer.from(line(60, 'EDIT'))
+  assert.equal(edited60.length, Buffer.byteLength(rows[60]))
+  const fd = openSync(file, 'r+')
+  try {
+    writeSync(fd, edited60, 0, edited60.length, offset60)
+  } finally {
+    closeSync(fd)
+  }
+  appendFileSync(file, line(200, 'TAIL'))
+
+  const after = readTranscript(brain, true)
+  assert.equal(after.steps.length, 201)
+  assert.equal(after.steps[60].content, 'EDIT-060', 'in-place edit at step 60 must not be hidden by growth path')
+  assert.equal(after.steps[200].content, 'TAIL-200')
+  assert.notEqual(after.revision, before.revision)
 })
