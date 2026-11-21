@@ -922,14 +922,42 @@ test('plugin routes multi-assistant sessions dynamically, releases route on forg
   const sw = ctx.calls.filter((c) => c[0] === 'session.switchModel').at(-1)
   assert.deepEqual(sw[1].model, { providerID: 'opencode-go', id: 'claude-sonnet-4-6', variant: 'high' })
 
-  // Deleting both assistant sessions clears activeAssistantByDir and releases the MCP route (404).
+  // Effort-only modes on a DB-only/restarted session (no in-memory s.model) resolves model from DB and calls switchModel.
+  d.session('ses_db_only_effort', {
+    directory: '/w/app',
+    model: JSON.stringify({ providerID: 'opencode-go', id: 'claude-sonnet-4-6' }),
+  })
+  await n.peer.call('session.modes', { session_id: 'ses_db_only_effort', effort: 'low' })
+  const swDb = ctx.calls.filter((c) => c[0] === 'session.switchModel').at(-1)
+  assert.equal(swDb[1].sessionID, 'ses_db_only_effort')
+  assert.deepEqual(swDb[1].model, { providerID: 'opencode-go', id: 'claude-sonnet-4-6', variant: 'low' })
+
+  // Effort-only modes on a session with no model in memory or DB fails closed with bad_request (never silently records effort).
+  d.session('ses_no_model_effort', { directory: '/w/app', model: null })
+  await assert.rejects(
+    n.peer.call('session.modes', { session_id: 'ses_no_model_effort', effort: 'high' }),
+    (err) => err.code === 'bad_request',
+  )
+  assert.equal(host.sessions.get('ses_no_model_effort')?.effort, undefined)
+
+  // Deleting the active assistant session (s1) while sibling s2 is still alive re-points activeAssistantByDir to s2!
   ctx.emit('session.deleted', { sessionID: 'ses_asst_multi_1' })
+  await until('s1 forgotten', () => !host.assistants.has('ses_asst_multi_1'))
+  const siblingCall = await fetch(mcpAdded[0].config.url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...mcpAdded[0].config.headers },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'todo_list', arguments: {} } }),
+  }).then((r) => r.json())
+  assert.equal(siblingCall.result.isError, false)
+  assert.equal(n.toolCalls.at(-1).session_id, 'ses_asst_multi_2')
+
+  // Deleting the final surviving assistant session releases the MCP route (404).
   ctx.emit('session.deleted', { sessionID: 'ses_asst_multi_2' })
   await until('mcp route released', async () => {
     const r = await fetch(mcpAdded[0].config.url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...mcpAdded[0].config.headers },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'ping' }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'ping' }),
     })
     return r.status === 404
   })

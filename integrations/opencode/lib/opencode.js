@@ -324,7 +324,7 @@ export function createOpencodeHost(deps, options = {}) {
     }
     const rawDir = r.directory ?? created?.directory ?? ''
     if (assistantEnabled && rawDir && isAssistantDir(rawDir, home) && !assistants.has(r.id)) {
-      assistants.set(r.id, { cwd: rawDir, mode: 'default', memoryDir: '' })
+      assistants.set(r.id, { cwd: rawDir, mode: 'default', memoryDir: '', activeAt: r.time_updated ?? now() })
     }
     // Preserve the original assistant directory for the chat's whole life (#2368).
     const directory = assistants.get(r.id)?.cwd || rawDir
@@ -370,10 +370,25 @@ export function createOpencodeHost(deps, options = {}) {
     try {
       if (!json) return ''
       const parsed = JSON.parse(json)
+      if (parsed?.providerID && parsed?.id) return `${parsed.providerID}/${parsed.id}`
       return parsed?.id ?? ''
     } catch {
       return ''
     }
+  }
+
+  async function currentModelOf(id) {
+    const s = sessions.get(id)
+    if (s?.model) return s.model
+    const created = createdSessions.get(id)
+    if (created?.model) return created.model
+    const [m] = await rows('select max(seq) as seq from session_message where session_id = ?', id)
+    if (m?.seq > 0) {
+      const d = await derive(id, m.seq)
+      if (d?.model) return d.provider ? `${d.provider}/${d.model}` : d.model
+    }
+    const [r] = await rows('select model from session_v2 where id = ?', id)
+    return modelOf(r?.model)
   }
 
   async function listSessions() {
@@ -624,7 +639,7 @@ export function createOpencodeHost(deps, options = {}) {
     }
     if (model || normalizedEffort) {
       if (catalog.length === 0) await refreshModels(ctx, { force: true }).catch(() => {})
-      const targetModelInput = model || s.model || createdSessions.get(id)?.model || ''
+      const targetModelInput = model || await currentModelOf(id)
       const resolved = targetModelInput ? resolveModel(targetModelInput, catalog) : null
       if (resolved) {
         const modelRef = {
@@ -645,9 +660,7 @@ export function createOpencodeHost(deps, options = {}) {
           if (normalizedEffort) c.effort = normalizedEffort
         }
       } else if (normalizedEffort) {
-        s.effort = normalizedEffort
-        const c = createdSessions.get(id)
-        if (c) c.effort = normalizedEffort
+        throw new RpcError('无法确定当前会话的模型，请同时指定 model 后再切换思考深度', 'bad_request')
       }
     }
     if (permission_mode) {
@@ -746,7 +759,7 @@ export function createOpencodeHost(deps, options = {}) {
     })
 
     if (isAsst) {
-      assistants.set(id, { cwd, mode: reqMode || 'default', memoryDir: '' })
+      assistants.set(id, { cwd, mode: reqMode || 'default', memoryDir: '', activeAt: createdAt })
       activeAssistantByDir.set(cwd, id)
       await ensureAssistantMcp(ctx, cwd, id)
     }
@@ -814,7 +827,7 @@ export function createOpencodeHost(deps, options = {}) {
       const prev = assistants.get(id) ?? { cwd: await directoryOf(id), mode: 'default', memoryDir: '' }
       const nextMode = params.mode || params.permission_mode || prev.mode || 'default'
       const nextMemoryDir = typeof params.memory_dir === 'string' && params.memory_dir ? params.memory_dir : prev.memoryDir
-      assistants.set(id, { cwd: prev.cwd, mode: nextMode, memoryDir: nextMemoryDir })
+      assistants.set(id, { cwd: prev.cwd, mode: nextMode, memoryDir: nextMemoryDir, activeAt: now() })
       if (prev.cwd) activeAssistantByDir.set(prev.cwd, id)
       if (typeof params.context === 'string' && params.context.trim()) {
         text = promptWithContext(rawText, params.context)
@@ -1081,11 +1094,22 @@ export function createOpencodeHost(deps, options = {}) {
     createdSessions.delete(id)
     assistants.delete(id)
     if (asst?.cwd) {
-      if (activeAssistantByDir.get(asst.cwd) === id) {
-        activeAssistantByDir.delete(asst.cwd)
+      let replacementId = ''
+      let replacementAt = -1
+      for (const [otherId, other] of assistants) {
+        if (other.cwd === asst.cwd && (other.activeAt ?? 0) >= replacementAt) {
+          replacementId = otherId
+          replacementAt = other.activeAt ?? 0
+        }
       }
-      const stillActiveInDir = [...assistants.values()].some((a) => a.cwd === asst.cwd)
-      if (!stillActiveInDir) {
+      if (replacementId) {
+        if (activeAssistantByDir.get(asst.cwd) === id) {
+          activeAssistantByDir.set(asst.cwd, replacementId)
+        }
+      } else {
+        if (activeAssistantByDir.get(asst.cwd) === id) {
+          activeAssistantByDir.delete(asst.cwd)
+        }
         const route = mcpWiredDirs.get(asst.cwd)
         if (route) {
           route.release?.()
