@@ -98,7 +98,7 @@ func opencodeBridgeDisabled() bool {
 	return v == "0" || v == "false" || v == "no" || v == "off"
 }
 
-func isExecutableFile(p string) bool {
+func isOpencodeExecutableFile(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && !st.IsDir() && (st.Mode().Perm()&0o111 != 0 || runtime.GOOS == "windows")
 }
@@ -107,7 +107,7 @@ func isExecutableFile(p string) bool {
 var findOpencodeExecutable = func() string {
 	for _, envKey := range []string{"PERSONA_OPENCODE_BIN", "OPENCODE_BIN"} {
 		if p := strings.TrimSpace(os.Getenv(envKey)); p != "" {
-			if isExecutableFile(p) {
+			if isOpencodeExecutableFile(p) {
 				return p
 			}
 			if looked, err := exec.LookPath(p); err == nil {
@@ -138,7 +138,7 @@ var findOpencodeExecutable = func() string {
 	sort.Sort(sort.Reverse(sort.StringSlice(nvmDirs)))
 	candidates = append(candidates, nvmDirs...)
 	for _, p := range candidates {
-		if isExecutableFile(p) {
+		if isOpencodeExecutableFile(p) {
 			return p
 		}
 	}
@@ -302,9 +302,18 @@ func (rh *RuntimeHost) runOpencodeBridge(ctx context.Context, opencodeBin string
 		}
 	}
 	for {
-		if _, external := rh.opencodePeers(instance); external {
+		if builtin, external := rh.opencodePeers(instance); external {
 			rh.logger.Printf("opencode runtime: yielding to external opencode runtime")
 			stopChild()
+			if builtin != nil {
+				builtin.mu.Lock()
+				drop := builtin.drop
+				builtin.mu.Unlock()
+				builtin.peer.Close(errors.New("opencode runtime yielded to external runtime"))
+				if drop != nil {
+					drop()
+				}
+			}
 			return true, nil
 		}
 		select {

@@ -253,6 +253,7 @@ func (rh *RuntimeHost) registerRuntime(ctx context.Context, h *runtimeConn, hell
 			}
 		}
 	}
+	var yieldedOpencode *runtimeConn
 	if !h.isDaemon() && isOpencodeRuntimeHello(hello) {
 		instance := rh.builtinOpencodeInstance()
 		isBuiltinOpencode := hello.Runtime == opencodeRuntimeID && instance != "" && hello.Instance == instance
@@ -274,6 +275,7 @@ func (rh *RuntimeHost) registerRuntime(ctx context.Context, h *runtimeConn, hell
 				if err := ctx.Err(); err != nil {
 					return err
 				}
+				yieldedOpencode = builtin
 			}
 			if hello.Runtime == opencodeRuntimeID {
 				preempt = func(old *runtimeConn, _ runtimeHello) bool {
@@ -287,6 +289,9 @@ func (rh *RuntimeHost) registerRuntime(ctx context.Context, h *runtimeConn, hell
 	stale, err := rh.reg.hello(h, hello, rh.reservedID, preempt)
 	if err != nil {
 		return err
+	}
+	if yieldedOpencode != nil && !slices.Contains(stale, yieldedOpencode) {
+		stale = append(stale, yieldedOpencode)
 	}
 	h.mu.Lock()
 	h.builtinAgy = isBuiltinAgy

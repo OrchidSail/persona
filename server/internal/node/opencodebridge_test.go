@@ -241,6 +241,15 @@ func TestOpencodeBridgeSupervisesAndYieldsToExternalAndPlugin(t *testing.T) {
 		got := starts(marks)
 		return len(got) == 2 && got[1] == "stopped"
 	})
+	// The yielded built-in runtime connection must be evicted so opencodeConnected does not misclassify it as external.
+	waitWithin(t, time.Second, "yielded built-in opencode connection closed", func() bool {
+		select {
+		case <-builtin.peer.Done():
+			return true
+		default:
+			return false
+		}
+	})
 
 	// While plugin stays connected, built-in stays off.
 	probesBefore := probes.Load()
