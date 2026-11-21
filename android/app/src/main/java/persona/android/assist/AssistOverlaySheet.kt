@@ -112,10 +112,11 @@ internal fun AssistOverlayEnvironment(
     val face = app?.appearance?.face?.collectAsState()?.value
     val pack = app?.personas?.current?.collectAsState()?.value
     val openExternal by rememberUpdatedState(onOpenExternalUri)
-    val feedback = remember(context) {
+    val failedMessage = stringResource(R.string.app_error_failed)
+    val feedback = remember(context, failedMessage) {
         object : AppFeedback {
             override fun failure(error: Throwable, operation: Boolean): Boolean =
-                notice(error.message ?: context.getString(R.string.app_error_failed))
+                notice(error.message ?: failedMessage)
 
             override fun notice(message: String): Boolean {
                 Toast.makeText(context.applicationContext, message, Toast.LENGTH_SHORT).show()
