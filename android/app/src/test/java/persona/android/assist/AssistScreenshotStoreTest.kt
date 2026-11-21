@@ -30,7 +30,7 @@ class AssistScreenshotStoreTest {
     @Test
     fun saveWritesPrivateCacheJpegAndReturnsImageAttachment() {
         val bitmap = Bitmap.createBitmap(120, 80, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.BLUE) }
-        val now = 1_700_000_000_000L
+        val now = System.currentTimeMillis()
         val attachment = AssistScreenshotStore.save(
             context = context,
             bitmap = bitmap,
@@ -75,23 +75,28 @@ class AssistScreenshotStoreTest {
 
     @Test
     fun pruneExpiredDeletesStaleTempAndExcessFilesKeepingNewest() {
-        val dir = AssistScreenshotStore.directory(context).apply { mkdirs() }
-        val now = 10_000_000L
-        val maxAge = 1_000L
+        // Use an isolated directory so PersonaApp's startup background prune cannot race with synthetic timestamps.
+        val dir = File(context.cacheDir, "assist-prune-test-${System.nanoTime()}").apply { mkdirs() }
+        try {
+            val now = 10_000_000_000L
+            val maxAge = 10_000L
 
-        val expired = File(dir, "assist-expired.jpg").apply { writeBytes(byteArrayOf(1)); setLastModified(now - 2_000L) }
-        val temp = File(dir, "assist-partial.tmp").apply { writeBytes(byteArrayOf(2)); setLastModified(now - 10L) }
-        val oldKeep = File(dir, "assist-old.jpg").apply { writeBytes(byteArrayOf(3)); setLastModified(now - 500L) }
-        val midKeep = File(dir, "assist-mid.jpg").apply { writeBytes(byteArrayOf(4)); setLastModified(now - 300L) }
-        val newest = File(dir, "assist-new.jpg").apply { writeBytes(byteArrayOf(5)); setLastModified(now - 100L) }
+            val expired = File(dir, "assist-expired.jpg").apply { writeBytes(byteArrayOf(1)); setLastModified(now - 20_000L) }
+            val temp = File(dir, "assist-partial.tmp").apply { writeBytes(byteArrayOf(2)); setLastModified(now - 1_000L) }
+            val oldKeep = File(dir, "assist-old.jpg").apply { writeBytes(byteArrayOf(3)); setLastModified(now - 6_000L) }
+            val midKeep = File(dir, "assist-mid.jpg").apply { writeBytes(byteArrayOf(4)); setLastModified(now - 4_000L) }
+            val newest = File(dir, "assist-new.jpg").apply { writeBytes(byteArrayOf(5)); setLastModified(now - 2_000L) }
 
-        val deleted = AssistScreenshotStore.pruneExpired(dir, nowMillis = now, maxAgeMillis = maxAge, maxFiles = 2)
+            val deleted = AssistScreenshotStore.pruneExpired(dir, nowMillis = now, maxAgeMillis = maxAge, maxFiles = 2)
 
-        assertEquals(3, deleted)
-        assertFalse(expired.exists())
-        assertFalse(temp.exists())
-        assertFalse(oldKeep.exists())
-        assertTrue(midKeep.exists())
-        assertTrue(newest.exists())
+            assertEquals(3, deleted)
+            assertFalse(expired.exists())
+            assertFalse(temp.exists())
+            assertFalse(oldKeep.exists())
+            assertTrue(midKeep.exists())
+            assertTrue(newest.exists())
+        } finally {
+            dir.deleteRecursively()
+        }
     }
 }

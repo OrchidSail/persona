@@ -21,6 +21,9 @@ internal object AssistScreenshotStore {
     const val DEFAULT_MAX_AGE_MILLIS = 24L * 60 * 60 * 1000
     const val DEFAULT_MAX_FILES = 16
 
+    // Serializes saves and pruning so startup cleanup never deletes an in-flight `.tmp` screenshot on cold launch.
+    private val storeLock = Any()
+
     fun directory(context: Context): File = File(context.cacheDir, DIR_NAME)
 
     fun pruneExpired(
@@ -39,6 +42,15 @@ internal object AssistScreenshotStore {
         nowMillis: Long = System.currentTimeMillis(),
         maxAgeMillis: Long = DEFAULT_MAX_AGE_MILLIS,
         maxFiles: Int = DEFAULT_MAX_FILES,
+    ): Int = synchronized(storeLock) {
+        pruneExpiredLocked(directory, nowMillis, maxAgeMillis, maxFiles)
+    }
+
+    private fun pruneExpiredLocked(
+        directory: File,
+        nowMillis: Long,
+        maxAgeMillis: Long,
+        maxFiles: Int,
     ): Int {
         if (!directory.isDirectory) return 0
         val files = directory.listFiles()?.filter { it.isFile }.orEmpty()
@@ -78,43 +90,45 @@ internal object AssistScreenshotStore {
         uriForFile: (File) -> Uri = { file -> FileProvider.getUriForFile(context, "${context.packageName}.chat.files", file) },
     ): ComposerAttachment? {
         if (bitmap == null || bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return null
-        val dir = directory(context)
-        if (!dir.isDirectory && !dir.mkdirs()) return null
-        pruneExpired(dir, nowMillis, maxAgeMillis, (maxFiles - 1).coerceAtLeast(0))
-        val safeId = sanitizeId(id)
-        val tmpFile = File(dir, "assist-$safeId.tmp")
-        val targetFile = File(dir, "assist-$nowMillis-$safeId.jpg")
-        var software: Bitmap? = null
-        var scaled: Bitmap? = null
-        return try {
-            software = if (bitmap.config == Bitmap.Config.HARDWARE) {
-                bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return null
-            } else {
-                bitmap
+        return synchronized(storeLock) {
+            val dir = directory(context)
+            if (!dir.isDirectory && !dir.mkdirs()) return null
+            pruneExpiredLocked(dir, nowMillis, maxAgeMillis, (maxFiles - 1).coerceAtLeast(0))
+            val safeId = sanitizeId(id)
+            val tmpFile = File(dir, "assist-$safeId.tmp")
+            val targetFile = File(dir, "assist-$nowMillis-$safeId.jpg")
+            var software: Bitmap? = null
+            var scaled: Bitmap? = null
+            try {
+                software = if (bitmap.config == Bitmap.Config.HARDWARE) {
+                    bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return null
+                } else {
+                    bitmap
+                }
+                scaled = scaleDownIfNeeded(software, MAX_SIDE_PX)
+                FileOutputStream(tmpFile).use { stream ->
+                    check(scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, stream)) { "JPEG compression failed" }
+                    stream.fd.sync()
+                }
+                if (targetFile.exists()) targetFile.delete()
+                check(tmpFile.renameTo(targetFile)) { "Unable to finalize assist screenshot" }
+                targetFile.setLastModified(nowMillis)
+                val uri = uriForFile(targetFile)
+                ComposerAttachment(
+                    id = "assist-$safeId",
+                    name = targetFile.name,
+                    uri = uri.toString(),
+                    image = true,
+                    size = targetFile.length(),
+                )
+            } catch (_: Exception) {
+                tmpFile.delete()
+                targetFile.delete()
+                null
+            } finally {
+                if (scaled != null && scaled !== software && !scaled.isRecycled) scaled.recycle()
+                if (software != null && software !== bitmap && !software.isRecycled) software.recycle()
             }
-            scaled = scaleDownIfNeeded(software, MAX_SIDE_PX)
-            FileOutputStream(tmpFile).use { stream ->
-                check(scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, stream)) { "JPEG compression failed" }
-                stream.fd.sync()
-            }
-            if (targetFile.exists()) targetFile.delete()
-            check(tmpFile.renameTo(targetFile)) { "Unable to finalize assist screenshot" }
-            targetFile.setLastModified(nowMillis)
-            val uri = uriForFile(targetFile)
-            ComposerAttachment(
-                id = "assist-$safeId",
-                name = targetFile.name,
-                uri = uri.toString(),
-                image = true,
-                size = targetFile.length(),
-            )
-        } catch (_: Exception) {
-            tmpFile.delete()
-            targetFile.delete()
-            null
-        } finally {
-            if (scaled != null && scaled !== software && !scaled.isRecycled) scaled.recycle()
-            if (software != null && software !== bitmap && !software.isRecycled) software.recycle()
         }
     }
 
