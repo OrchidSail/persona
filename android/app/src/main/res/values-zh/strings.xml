@@ -113,4 +113,5 @@
     <string name="app_capsule_keeper_channel">悬浮胶囊</string>
     <string name="app_capsule_keeper_off_title">悬浮胶囊的保持常驻被关闭了</string>
     <string name="app_capsule_keeper_off_text">更新后系统关闭了「Persona 悬浮胶囊」无障碍服务。点此到「无障碍」重新开启，锁屏后胶囊才不会消失。</string>
+    <string name="app_assist_context_title">当前屏幕</string>
 </resources>

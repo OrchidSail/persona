@@ -114,4 +114,5 @@
     <string name="app_capsule_keeper_channel">Floating capsule</string>
     <string name="app_capsule_keeper_off_title">Floating capsule was turned off</string>
     <string name="app_capsule_keeper_off_text">The system turned off “Persona floating capsule” after the update. Tap to turn it back on in Accessibility so the capsule stays after you lock the phone.</string>
+    <string name="app_assist_context_title">Current screen</string>
 </resources>

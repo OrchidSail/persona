@@ -113,4 +113,5 @@
     <string name="app_capsule_keeper_channel">フローティングカプセル</string>
     <string name="app_capsule_keeper_off_title">カプセルの常時表示がオフになりました</string>
     <string name="app_capsule_keeper_off_text">更新後にシステムが「Persona フローティングカプセル」をオフにしました。タップして「ユーザー補助」で再びオンにすると、ロック後もカプセルが表示されます。</string>
+    <string name="app_assist_context_title">現在の画面</string>
 </resources>
