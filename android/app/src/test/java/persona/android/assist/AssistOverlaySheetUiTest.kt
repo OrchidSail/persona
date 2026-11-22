@@ -31,6 +31,8 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import persona.android.ui.ComponentActivityHostRule
+import persona.core.contracts.ModelPick
+import persona.core.contracts.api.DigitalAssistantModelChoice
 import persona.core.designsystem.AppStyle
 import persona.core.designsystem.PersonaTheme
 
@@ -206,6 +208,48 @@ class AssistOverlaySheetUiTest {
         assertTrue("360dp open button >= 44dp tall", openBounds.height >= 44.dp)
         assertTrue("360dp send button >= 44dp tall", sendBounds.height >= 44.dp)
         assertTrue("Controls must not overlap horizontally", screenBounds.right <= modelBounds.left)
+    }
+
+    @Test
+    @Config(application = Application::class, sdk = [35], qualifiers = "en-w320dp-h640dp-xhdpi")
+    fun ultraNarrow320dpWithLongModelNameAndAttachedBadgeNeverClipsTrailingButtons() {
+        rule.setContent {
+            PersonaTheme(darkTheme = true, reduceMotion = true, style = AppStyle.Glass) {
+                AssistOverlaySheet(
+                    ui = AssistOverlayUiState(
+                        invocationId = "inv-narrow-320-long-model",
+                        captureStatus = AssistCaptureStatus.Attached,
+                        hubStatus = AssistHubStatus.Ready,
+                        modelChoice = DigitalAssistantModelChoice(
+                            pick = ModelPick("custom", "enterprise-long-model-name-2026"),
+                            modelLabel = "Enterprise Super Long Custom Model Name v9.9.9",
+                            launcherLabel = "Custom",
+                        ),
+                    ),
+                    onDraftChange = {},
+                    onDictationHeard = {},
+                    onNotice = {},
+                    onAttachScreen = {},
+                    onRemoveScreen = {},
+                    onSend = {},
+                    onOpenInPersona = {},
+                    onDismiss = {},
+                )
+            }
+        }
+
+        val cardBounds = rule.onNodeWithTag("assist-composer-island").getUnclippedBoundsInRoot()
+        val screenBounds = rule.onNodeWithTag("assist-screen-attached-row").getUnclippedBoundsInRoot()
+        val modelBounds = rule.onNodeWithTag("assist-model-pill").getUnclippedBoundsInRoot()
+        val openBounds = rule.onNodeWithTag("assist-open-in-persona").getUnclippedBoundsInRoot()
+        val sendBounds = rule.onNodeWithTag("assist-send-button").getUnclippedBoundsInRoot()
+
+        assertTrue("320dp send button must stay >= 44dp wide, got ${sendBounds.width}", sendBounds.width >= 44.dp)
+        assertTrue("320dp open button must stay >= 44dp wide, got ${openBounds.width}", openBounds.width >= 44.dp)
+        assertTrue("320dp send button must stay inside card right edge", sendBounds.right <= cardBounds.right)
+        assertTrue("320dp open button must stay left of send button", openBounds.right <= sendBounds.left)
+        assertTrue("320dp model pill must stay left of open button", modelBounds.right <= openBounds.left)
+        assertTrue("320dp screen chip must stay left of model pill", screenBounds.right <= modelBounds.left)
     }
 
     @Test

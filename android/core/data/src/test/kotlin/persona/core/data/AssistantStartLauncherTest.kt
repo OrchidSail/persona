@@ -80,4 +80,26 @@ class AssistantStartLauncherTest {
         assertEquals(listOf(false to "gemini:gemini-2.5-flash"), transport.created)
         assertEquals(null, repository.assistant.value.mainSession)
     }
+
+    @Test fun defaultStartSideConversationFailsClosedWithoutCallingStartConversation() = runTest {
+        var mainStarterCalled = false
+        val minimal = object : persona.core.contracts.api.AssistantConversations {
+            override val assistant = MutableStateFlow(persona.core.contracts.api.AssistantSnapshot(null, emptyList()))
+            override val pinned = MutableStateFlow<Set<SessionKey>>(emptySet())
+            override suspend fun refresh() = Unit
+            override suspend fun startConversation(): SessionKey {
+                mainStarterCalled = true
+                return SessionKey("mac", "main")
+            }
+            override suspend fun startConversation(launcher: String): SessionKey {
+                mainStarterCalled = true
+                return SessionKey("mac", "main")
+            }
+        }
+        val result = runCatching {
+            minimal.startSideConversation(persona.core.contracts.ModelPick("gemini", "gemini-2.5-flash"))
+        }
+        assertEquals(true, result.exceptionOrNull() is UnsupportedOperationException)
+        assertEquals(false, mainStarterCalled)
+    }
 }

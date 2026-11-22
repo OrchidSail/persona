@@ -228,7 +228,8 @@ interface AssistantConversations : AssistantRepository {
      * A lightweight non-main conversation (`main = false`) using [pick], never creating or altering
      * the main conversation's model binding (used by Android's Digital Assistant floating overlay).
      */
-    suspend fun startSideConversation(pick: persona.core.contracts.ModelPick): SessionKey = startConversation(pick)
+    suspend fun startSideConversation(pick: persona.core.contracts.ModelPick): SessionKey =
+        throw UnsupportedOperationException("Side conversations unavailable")
     /**
      * The chats of the assistant's [space] ([AssistantSpace]), read from the hub each time: they are never in [assistant]'s
      * list. Each carries [space] even from a hub that leaves it out of this list.

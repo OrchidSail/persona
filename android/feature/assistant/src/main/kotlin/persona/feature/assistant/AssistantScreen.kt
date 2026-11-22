@@ -685,6 +685,16 @@ fun AssistantScreen(
                     askMain(main)
                     return@collect
                 }
+                if (activeSession != null || newChat != null) newConversation()
+                val shownSession = activeSession?.let { sid ->
+                    activeMachine?.takeIf { it.isNotBlank() }?.let { mid -> SessionKey(mid, sid) }
+                }
+                if (shownSession != null) {
+                    // Active conversation remained hosted (for example while sending); keep the
+                    // pending handoff routed to it instead of parking it on the hidden starter page.
+                    persona.feature.chat.AssistDraftBus.claim(persona.feature.chat.AssistDraftTarget.Session(shownSession))
+                    return@collect
+                }
                 // On a cold start the conversations may still be on their way: wait before claiming
                 // the starter composer so a pending assist draft lands in the main chat once ready.
                 if (!openedMain) {
@@ -699,10 +709,9 @@ fun AssistantScreen(
                             persona.feature.chat.AssistDraftBus.claim(persona.feature.chat.AssistDraftTarget.Starter)
                         }
                     }
-                } else {
+                } else if (latestMain == null && activeSession == null) {
                     persona.feature.chat.AssistDraftBus.claim(persona.feature.chat.AssistDraftTarget.Starter)
                 }
-                if (activeSession != null || newChat != null) newConversation()
             } else {
                 persona.feature.chat.AssistDraftBus.claim(persona.feature.chat.AssistDraftTarget.Starter)
             }

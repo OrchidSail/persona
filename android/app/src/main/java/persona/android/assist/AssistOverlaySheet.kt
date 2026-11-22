@@ -244,11 +244,11 @@ internal fun AssistOverlaySheet(
     val dictation = dictationOverride ?: rememberOverlayDictation(onHeard = onDictationHeard, onError = onNotice)
     val dictating = dictation?.listening == true
     val latestDictation by rememberUpdatedState(dictation)
-    var composerFocused by remember { mutableStateOf(false) }
+    var composerFocused by remember(ui.invocationId) { mutableStateOf(false) }
 
-    var dragging by remember { mutableStateOf(false) }
-    var rawDragPx by remember { mutableFloatStateOf(0f) }
-    var expandHapticFired by remember { mutableStateOf(false) }
+    var dragging by remember(ui.invocationId) { mutableStateOf(false) }
+    var rawDragPx by remember(ui.invocationId) { mutableFloatStateOf(0f) }
+    var expandHapticFired by remember(ui.invocationId) { mutableStateOf(false) }
     val expandDragReady = !ui.deviceLocked && dragging && rawDragPx <= -expandThresholdPx
     val targetDragOffsetPx = when {
         rawDragPx >= 0f -> rawDragPx
@@ -335,7 +335,7 @@ internal fun AssistOverlaySheet(
         )
     }
 
-    val verticalDragModifier = Modifier.pointerInput(dismissThresholdPx, expandThresholdPx) {
+    val verticalDragModifier = Modifier.pointerInput(ui.invocationId, dismissThresholdPx, expandThresholdPx) {
         detectVerticalDragGestures(
             onDragStart = {
                 dragging = true
@@ -978,7 +978,8 @@ private fun AssistUnifiedComposerCard(
                 }
             }
 
-            // Bottom integrated action row: privacy screen toggle on left; model, ↗, and Send on right.
+            // Bottom integrated action row: fixed 44dp Open & Send buttons are measured first so they
+            // never clip on narrow screens while screen toggle and model switcher share remaining width.
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -987,7 +988,7 @@ private fun AssistUnifiedComposerCard(
                 horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
             ) {
                 Box(
-                    Modifier.weight(1f),
+                    Modifier.weight(1.25f),
                     contentAlignment = Alignment.CenterStart,
                 ) {
                     AssistScreenContextControl(
@@ -1001,71 +1002,67 @@ private fun AssistUnifiedComposerCard(
                     )
                 }
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
-                ) {
-                    AssistModelSwitcherButton(
-                        label = modelPillLabel,
-                        open = ui.modelPickerOpen,
-                        enabled = !ui.sending,
-                        isCustom = !ui.modelChoice.isDefault,
-                        style = style,
-                        chipShape = chipShape,
-                        onClick = onToggleModelPicker,
-                    )
+                AssistModelSwitcherButton(
+                    label = modelPillLabel,
+                    open = ui.modelPickerOpen,
+                    enabled = !ui.sending,
+                    isCustom = !ui.modelChoice.isDefault,
+                    style = style,
+                    chipShape = chipShape,
+                    onClick = onToggleModelPicker,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
 
-                    Box(
-                        Modifier
-                            .size(Tokens.MinTouch.ios) // 44dp borderless tonal icon button
-                            .clip(buttonShape)
-                            .background(tonalFill)
-                            .clickable(
-                                role = Role.Button,
-                                onClickLabel = openInPersonaLabel,
-                                onClick = onOpenInPersona,
-                            )
-                            .semantics { contentDescription = openInPersonaLabel }
-                            .testTag("assist-open-in-persona"),
-                        contentAlignment = Alignment.Center,
-                    ) {
+                Box(
+                    Modifier
+                        .size(Tokens.MinTouch.ios) // 44dp borderless tonal icon button
+                        .clip(buttonShape)
+                        .background(tonalFill)
+                        .clickable(
+                            role = Role.Button,
+                            onClickLabel = openInPersonaLabel,
+                            onClick = onOpenInPersona,
+                        )
+                        .semantics { contentDescription = openInPersonaLabel }
+                        .testTag("assist-open-in-persona"),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    JIcon(
+                        icon = PersonaIcons.open,
+                        contentDescription = null,
+                        size = Tokens.Size.iconS,
+                        tint = palette.ink2,
+                    )
+                }
+
+                val sendLabel = stringResource(R.string.app_send)
+                Box(
+                    Modifier
+                        .size(Tokens.MinTouch.ios) // 44dp high-contrast Send button
+                        .clip(buttonShape)
+                        .background(if (ui.canSend) palette.action else tonalFill)
+                        .clickable(
+                            enabled = ui.canSend && !ui.sending,
+                            role = Role.Button,
+                            onClickLabel = sendLabel,
+                            onClick = onSend,
+                        )
+                        .semantics { contentDescription = sendLabel }
+                        .testTag("assist-send-button"),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (ui.sending) {
+                        JSpinner(
+                            Modifier.size(Tokens.Size.iconXS),
+                            color = if (ui.canSend) palette.onAction else palette.ink2,
+                        )
+                    } else {
                         JIcon(
-                            icon = PersonaIcons.open,
+                            icon = PersonaIcons.send,
                             contentDescription = null,
                             size = Tokens.Size.iconS,
-                            tint = palette.ink2,
+                            tint = if (ui.canSend) palette.onAction else palette.ink3,
                         )
-                    }
-
-                    val sendLabel = stringResource(R.string.app_send)
-                    Box(
-                        Modifier
-                            .size(Tokens.MinTouch.ios) // 44dp high-contrast Send button
-                            .clip(buttonShape)
-                            .background(if (ui.canSend) palette.action else tonalFill)
-                            .clickable(
-                                enabled = ui.canSend && !ui.sending,
-                                role = Role.Button,
-                                onClickLabel = sendLabel,
-                                onClick = onSend,
-                            )
-                            .semantics { contentDescription = sendLabel }
-                            .testTag("assist-send-button"),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        if (ui.sending) {
-                            JSpinner(
-                                Modifier.size(Tokens.Size.iconXS),
-                                color = if (ui.canSend) palette.onAction else palette.ink2,
-                            )
-                        } else {
-                            JIcon(
-                                icon = PersonaIcons.send,
-                                contentDescription = null,
-                                size = Tokens.Size.iconS,
-                                tint = if (ui.canSend) palette.onAction else palette.ink3,
-                            )
-                        }
                     }
                 }
             }
@@ -1310,6 +1307,7 @@ private fun AssistModelSwitcherButton(
     style: AppStyle,
     chipShape: Shape,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val palette = PersonaTheme.palette
     val type = PersonaTheme.type
@@ -1323,7 +1321,7 @@ private fun AssistModelSwitcherButton(
     val contentTint = if (highlighted) palette.accent else palette.ink2
 
     Row(
-        Modifier
+        modifier
             .heightIn(min = Tokens.MinTouch.ios) // 44dp comfortable touch target
             .clip(chipShape)
             .background(fill)
@@ -1354,7 +1352,7 @@ private fun AssistModelSwitcherButton(
             color = contentTint,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.widthIn(max = Tokens.Size.box80 + Tokens.Space.xl),
+            modifier = Modifier.weight(1f, fill = false),
         )
         JIcon(
             icon = if (open) PersonaIcons.collapse else PersonaIcons.expand,
