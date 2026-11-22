@@ -117,7 +117,7 @@
 
 Pitfalls, odd behavior, and the tradeoffs made at the time (originally in `CLAUDE.md`; index in `docs/lessons/README.md`). Add new lessons to the relevant section, or start a section if none fits.
 
-- Fixed `time.Sleep` calls in `_test.go` files under `server/` and `sdk/go/` are ratcheted by `scripts/ci/sleep_ratchet.py` (baseline `scripts/ci/sleep_baseline.json`): a file's count may stay or fall, never rise, a new file starts at zero, and `// sleep-ok: <reason>` on the call's line is the only escape. Prefer `testing/synctest`, a polling helper or a channel.
+- Fixed `time.Sleep` calls in `_test.go` files under `server/` and `sdk/go/` are ratcheted by `scripts/ci/sleep_ratchet.py` (baseline `scripts/ci/sleep_baseline.json`): a file's count may stay or fall, never rise, a new file starts at zero, and `// sleep-ok: <reason>` on the call's line is the only escape. Prefer `testing/synctest`, a polling helper or a channel. Taking a sleep out does not need the baseline lowered in the same change: only a rise fails, and with a base a changed file may not rise above its count at the merge base either (`docs/operations/testing.md`, "Count ratchets"). When the strict direction failed a fall too, a forgotten lowering broke `main` again and again (#2761, #5635), and baseline edits were the commonest conflict between parallel PRs.
 
 - To keep a fake hub answer out (a press past `cardAnswerWait`), block it on a channel the test closes, not a fixed sleep (2026-11-11, #4274). The assistant's `fakeHub` runs app answers under its lock, so a held answer blocks every other fake call: close the channel before the test touches the hub again, and register the close with `t.Cleanup` so a failed assertion cannot leave it blocked (`heldAnswer` in `server/internal/assistant/feishu_answer_ended_test.go`). Then wait for the last effect of the late path (its note), not for a fixed time.
 
@@ -168,6 +168,10 @@ Pitfalls, odd behavior, and the tradeoffs made at the time (originally in `CLAUD
 - Assistant tests swap a service's hub with `setHub`, never `s.hub = h` (2026-11-11, #4006). The inbox's "Needs you" teller (`tellInboxNeedsYou`) reads `s.hub` on a goroutine of its own, and a test's service starts one at its first inbox read, so a plain assignment raced with it under `-race`. The teller reads the hub only under `needsYouMu`, and `setHub` swaps it under that lock. The teller is not the only reader: a timer armed while the service is set up (`directionsSoon`, which reads `s.hub` through `hello`) can fire during the test, on a `synctest` bubble's clock too, and nothing orders it after a swap. Where a test only needs a fake behavior, the fake hub does it under `f.mu` (`hangChannel`) and the hub is never swapped. A test with two racing readers can report one in a combined run and the other when run alone, so check each test in separate processes of its own. In the same run, two leader retry tests ended before their retry ran because `sendsTo` also counts sends the fake refused; the retry goroutine then read a package timing their cleanup restored. Such timings belong on the `Service` (`leaderResume`, like `taskRetry`), and a wait must see the effect it names (`deliveredTo`, the sends the fake took).
 
 - Prepared approval result counts need a resumable fake conversation and settled delivery lanes (#10455). Listing `s1` is not enough: the fake also needs `known["s1"]` for `resume_only`, or it records a refused direct try and its asynchronous queued retry as two sends. Mark the conversation known and wait for approval delivery plus relay draining before asserting exactly one terminal result; waiting for the first visible result hides the duplicate.
+
+- Shortening a shared input window for one event must not expire another event's admission (#10480). `TestAvailabilityReplyWaitWithoutQueue` set `availInputFor` to 1 ms before starting its supervision round; an `inOrder` delay then expired the supervision input, recorded the round as `other`, and timed out the fixture. Scope the shortened window to the owner message and restore it immediately. Do not lengthen the assertion deadline or change production round attribution for a race the fixture created.
+
+- Waiting for an asynchronous event needs a threshold, not an exact global count (#10456). `TestReadinessAuthStatusRetry` waited for exactly two auth-status requests, but prefetch and the second readiness read could legitimately start a third first, so the check missed `==2` forever and timed out. Require the second request (`>=2`) and keep the old-node one-request control exact. Do not increase the deadline for a valid extra request.
 
 - A fake's one-shot hook keyed only by machine runs for whoever lists that machine next, a background goroutine included (2026-11-18, #10331). `TestACardMessageReopensOnlyItsOwnTask` armed `fakeHub.afterList["box"]` for the card message's own look at the task's agents. The acceptance before it had started the todo-token sync (`syncTodoTokens`), which lists the same machine; on a busy machine that list was still out when the hook was armed, took it and ran it in the background, so the card message never did (6 of 1000 runs at `-cpu 4`). Tie such a hook to the call under test (a context value the test sets, `listHooked`), not to whichever call comes next. To find who took one, print `debug.Stack()` where the hook fires and run until it fails.
 
@@ -427,6 +431,45 @@ Gradle then called the tests up to date and skipped them. A deliberately broken 
   also passes its path to the test JVM.
 
 **To check the setup**, break one rule on purpose and confirm the binding tests fail before trusting them.
+
+## Go's test cache can repeat a pass the change broke (2026-11-22, #12724)
+
+Every Go test command the repository's scripts run passes `-count=1`
+(`docs/operations/testing.md`, "Why tests stay uncached"), and dropping it to save time keeps coming up (#10613).
+The reason: Go reuses a test result while the test binary and what the test process itself recorded opening are
+unchanged, and it rechecks a recorded file only inside the module root (`computeTestInputsID` in `cmd/go`: "Do not
+recheck files outside the module, GOPATH, or GOROOT root"), so for `server/` the rest of the repository is
+invisible. Those inputs are exactly what check-fast sends to the packages that read them (the `spec/fixtures/*` rule in
+`scripts/ci/check_fast_map.py`, and `server_readers` in `scripts/test/check-fast.sh`), and what a child process reads,
+like the `go list` that `internal/archguard` runs, is never recorded at all.
+
+Reproduced on 2026-11-22 with Go 1.27.3 at `origin/main` a133f8cce9, from `server/` (`-run` keeps other tests out of
+it; a package with any failing test is never cached):
+
+```sh
+go test -run '^TestScriptOrStreamGoesByTheBytes$' ./internal/proto/           # ok 0.101s
+cp ../spec/fixtures/file-types/typescript.ts ../spec/fixtures/file-types/segment.ts
+go test -run '^TestScriptOrStreamGoesByTheBytes$' ./internal/proto/           # ok (cached)
+go test -count=1 -run '^TestScriptOrStreamGoesByTheBytes$' ./internal/proto/  # FAIL: segment fixture is 1018 bytes, not whole packets
+git checkout -- ../spec/fixtures/file-types/segment.ts
+```
+
+Inside the module the guards go stale the same way: after `go test -run '^TestContractsArePure$' ./internal/archguard/`
+passed, a new one-line package under `server/internal/` whose name ends in `wire` (which makes it a contract package
+the guard's list must name) still got `ok (cached)`, while `-count=1` failed with "… looks like a contract package but
+testdata/contracts.txt does not list it".
+
+What a hit would save, measured the same day with the build already cached (110 s to warm it on a loaded machine): the
+guard packages check-fast runs on every server change took 12 s uncached and 1 s cached, and its guard tests 10 to
+14 s uncached. Only packages the change did not reach can hit at all: the edited package and every package that imports
+it get a new test binary and run again. Caching also changes the run itself: `go test` passes `-test.testlogfile` only
+when the result may be cached, and `internal/office` failed only in that mode, because a test that lowered the file size
+limit also cut off that log (#8962, fixed by #8968).
+
+- Keep `-count=1` in every command whose result is reported as verification, and in any new entry point. A plain
+  `go test` while editing is fine, but its `ok (cached)` says nothing about the change.
+- A test cannot tell Go's cache about a file outside `server/` or about what a child process read, so a reader of
+  `spec/`, `schema/`, `sdk/go/`, `docs/` or client sources stays correct only while it runs uncached.
 
 ## Running the hosted CI lanes on a Mac (2026-11-09)
 
@@ -1337,3 +1380,18 @@ next file or pipe the script opens takes the free fd 2, and stderr writes land i
 substitution's pipe there (`lsof` shows fd 2 as a PIPE after `done < <(…)`), which hid the failure in a run whose plan
 had used one. A script that copies stderr checks it at the start (`: 9>&2 || exec 2>/dev/null`) and goes on without
 what it would have shown there.
+
+## A delayed response test has to order the refreshes, not only their reads (2026-11-21, #10289)
+
+`PushInterceptsTests.lateResponseCannotOverwriteNewerRead()` held the first `intercepts` *call* and let the second one
+answer immediately, while the model keeps the answer of the refresh that *started* last (`revision` / `ticket`). Two
+refreshes started with `async let` and a direct `await` on the main actor are not ordered against each other: the
+second-started refresh can be the one that calls `intercepts` first, take the held answer, and then correctly win, so
+the test failed as "Old" on the hosted runner and passed 30/30 elsewhere. Gate the refreshes themselves: start the
+second one only after the first is holding its answer (yield from inside the fake, wait on an `AsyncStream`), then
+release it. No sleep is needed, and the refresh meant to be stale always is.
+
+- `xcodebuild -test-iterations N` repeats XCTest cases, not Swift Testing tests: with `-test-iterations 20`, Xcode 27.2
+  ran this Swift Testing suite once ("Test run with 9 tests in 1 suite"). Repeat a Swift Testing suite by looping
+  `xcodebuild … test-without-building` (about 20 s a run once built), and accept its `TEST EXECUTE SUCCEEDED`, not
+  `TEST SUCCEEDED`.
