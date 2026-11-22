@@ -86,6 +86,14 @@ func (s *Service) registerInlineViews(parent context.Context, p SessionItems) {
 	}
 }
 
+// inlineViewTurns is the bounded recent-turn window scanned by registerInlineTurn / registerInlineTurnSettled.
+// Scanning more than one turn ensures a reply whose native transcript flushes after TurnEnded (replacing temporary
+// live item ids with final persisted ids) — or whose TurnEnded edge was coalesced by an immediate background wake —
+// still registers its final persona-view blocks when a background task, reminder, relay, or quick follow-up starts
+// another turn before settle. All node and runtime session.items implementations cap turns at 10 (and items at 2000),
+// and registerInlineViews is idempotent on already-registered blocks and timestamp-watermarked view errors.
+const inlineViewTurns = 5
+
 // registerInlineTurn also registers cards when no app was watching the conversation during its reply.
 func (s *Service) registerInlineTurn(parent context.Context, r SessionRef) {
 	if _, ok := s.store().(inlineViewStore); !ok {
@@ -99,7 +107,7 @@ func (s *Service) registerInlineTurn(parent context.Context, r SessionRef) {
 	var result struct {
 		Items []proto.Item `json:"items"`
 	}
-	if err := s.call(ctx, r.MachineID, DeviceSessionItems, map[string]any{"session_id": r.SessionID, "turns": 1, "lazy_images": true}, &result); err != nil {
+	if err := s.call(ctx, r.MachineID, DeviceSessionItems, map[string]any{"session_id": r.SessionID, "turns": inlineViewTurns, "lazy_images": true}, &result); err != nil {
 		return
 	}
 	s.registerInlineViews(ctx, SessionItems{MachineID: r.MachineID, SessionID: r.SessionID, Items: result.Items})

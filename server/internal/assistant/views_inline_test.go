@@ -136,10 +136,18 @@ func TestInlineTurnRegistersWithoutAnAppAndReadsFullText(t *testing.T) {
 	}
 }
 
+type memViewError struct {
+	errors    []string
+	reported  bool
+	createdAt time.Time
+}
+
 type memInlineViewStore struct {
 	*memStore
-	vmu    sync.Mutex
-	blocks map[string]map[string]db.AssistantViewBlockRow
+	vmu       sync.Mutex
+	blocks    map[string]map[string]db.AssistantViewBlockRow
+	viewErrs  map[[3]string]*memViewError
+	passMarks map[[2]string]time.Time
 }
 
 var (
@@ -149,8 +157,10 @@ var (
 
 func newMemInlineViewStore() *memInlineViewStore {
 	return &memInlineViewStore{
-		memStore: &memStore{},
-		blocks:   map[string]map[string]db.AssistantViewBlockRow{},
+		memStore:  &memStore{},
+		blocks:    map[string]map[string]db.AssistantViewBlockRow{},
+		viewErrs:  map[[3]string]*memViewError{},
+		passMarks: map[[2]string]time.Time{},
 	}
 }
 
@@ -181,8 +191,98 @@ func (m *memInlineViewStore) AssistantViewBlockKeys(_ context.Context, conversat
 	return out, nil
 }
 
-func (m *memInlineViewStore) RecordAssistantViewErrors(_ context.Context, _, _, _ string, _ []string, _ time.Time) error {
+func (m *memInlineViewStore) block(conversation, key string) (db.AssistantViewBlockRow, bool) {
+	m.vmu.Lock()
+	defer m.vmu.Unlock()
+	row, ok := m.blocks[conversation][key]
+	return row, ok
+}
+
+func (m *memInlineViewStore) RecordAssistantViewErrors(_ context.Context, conversation, machine, item string, problems []string, at time.Time) error {
+	if conversation == "" || machine == "" || item == "" {
+		return nil
+	}
+	m.vmu.Lock()
+	defer m.vmu.Unlock()
+	scope := [2]string{conversation, machine}
+	if len(problems) == 0 {
+		if at.IsZero() {
+			if row := m.viewErrs[[3]string{conversation, machine, item}]; row != nil {
+				row.reported = true
+			}
+			return nil
+		}
+		if cur := m.passMarks[scope]; at.After(cur) {
+			m.passMarks[scope] = at
+		}
+		for k, row := range m.viewErrs {
+			if k[0] == conversation && k[1] == machine && !row.reported && (k[2] == item || row.createdAt.Before(at)) {
+				row.reported = true
+			}
+		}
+		return nil
+	}
+	passed := m.passMarks[scope]
+	if passed.IsZero() {
+		passed = time.Unix(0, 0).UTC()
+	}
+	redone := !at.IsZero() && !at.After(passed)
+	key := [3]string{conversation, machine, item}
+	if existing := m.viewErrs[key]; existing != nil {
+		if slices.Equal(existing.errors, problems) {
+			return nil
+		}
+		existing.errors = slices.Clone(problems)
+		existing.reported = redone
+		return nil
+	}
+	m.viewErrs[key] = &memViewError{errors: slices.Clone(problems), reported: redone, createdAt: at}
 	return nil
+}
+
+func (m *memInlineViewStore) pendingViewErrorItems(conversation, machine string) []string {
+	m.vmu.Lock()
+	defer m.vmu.Unlock()
+	var out []string
+	for k, row := range m.viewErrs {
+		if k[0] == conversation && k[1] == machine && !row.reported {
+			out = append(out, k[2])
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+func (m *memInlineViewStore) ackViewErrorItem(conversation, machine, item string) {
+	m.vmu.Lock()
+	defer m.vmu.Unlock()
+	if row := m.viewErrs[[3]string{conversation, machine, item}]; row != nil {
+		row.reported = true
+	}
+}
+
+// runtimePageTurns mirrors runtime-sdk/lib/items.js page() and node/agypane.go:
+// every user text/image item (including background task wakes, reminders, and relays) counts as a turn,
+// capped at 10 turns.
+func runtimePageTurns(items []proto.Item, turns int) []proto.Item {
+	if turns <= 0 {
+		return slices.Clone(items)
+	}
+	want := min(turns, 10)
+	seen := 0
+	start := 0
+	for i := len(items) - 1; i >= 0; i-- {
+		it := items[i]
+		if it.Role == "user" && (it.Kind == proto.KindText || it.Kind == proto.KindImage) &&
+			!(i > 0 && items[i-1].Role == "user" && items[i-1].Seq == it.Seq) {
+			seen++
+			if seen == want {
+				start = i
+				break
+			}
+		}
+	}
+	return slices.Clone(items[start:])
 }
 
 func TestInlineTurnRegistersFinalIDAfterSettleAndIsIdempotent(t *testing.T) {
@@ -345,4 +445,342 @@ func TestInlineTurnRegistersWhenStoppedAssistantRevAdvances(t *testing.T) {
 			t.Fatalf("after settleDelay: assistant_view_block count=%d, want 2 (%q)", got, f.eventTypes())
 		}
 	})
+}
+
+func TestInlineTurnRegistersPreviousTurnFinalIDAfterImmediateBackgroundWake(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newFakeHub().withMachine()
+		f.ownModels = true
+		f.settings = &Settings{Timezone: "Asia/Shanghai"}
+		st := newMemInlineViewStore()
+		s := newServiceOn(t, f, st)
+		t.Cleanup(func() {
+			if q := s.fleet.q.ch; q != nil {
+				close(q)
+			}
+		})
+		const delay = time.Minute
+		f.mu.Lock()
+		f.hello.DoneDelayMS = delay.Milliseconds()
+		f.mu.Unlock()
+
+		ctx := context.Background()
+		conversation := "agy-bg-wake-inline-view"
+		f.setSessions("server", proto.Session{SessionID: conversation, Assistant: true, Status: proto.StatusDone})
+		card := `{"fallback":"Choose","sections":[{"items":[{"type":"button","title":"Yes","action":{"id":"yes","reply":"Choose yes"}}]}]}`
+		cardText := "Options:\n```persona-view\n" + card + "\n```\n"
+		tA := time.Now().UTC()
+
+		var mu sync.Mutex
+		var transcript []proto.Item
+		var sawInlineWindow bool
+		setTranscript := func(items ...proto.Item) {
+			mu.Lock()
+			transcript = slices.Clone(items)
+			mu.Unlock()
+		}
+		f.answerNode(DeviceSessionItems, func(_ string, raw json.RawMessage) (any, error) {
+			var p struct {
+				Turns      int  `json:"turns"`
+				LazyImages bool `json:"lazy_images"`
+			}
+			_ = json.Unmarshal(raw, &p)
+			mu.Lock()
+			items := runtimePageTurns(transcript, p.Turns)
+			if p.Turns == inlineViewTurns && p.LazyImages {
+				sawInlineWindow = true
+			}
+			mu.Unlock()
+			return map[string]any{"items": items}, nil
+		})
+
+		// Turn A ends with an inline persona-view card under its temporary unexported item id.
+		turnAUser := proto.Item{ID: "1784#0", Seq: 1784, Role: "user", Kind: proto.KindText, TS: tA.Add(-time.Second), Text: "What should we pick?"}
+		turnATemp := proto.Item{ID: "1785#0", Seq: 1785, Role: "assistant", Kind: proto.KindText, TS: tA, Text: cardText}
+		setTranscript(turnAUser, turnATemp)
+
+		s.TurnEnded(ctx, SessionRef{MachineID: "server", SessionID: conversation})
+		synctest.Wait()
+
+		keys, err := st.AssistantViewBlockKeys(ctx, conversation)
+		if err != nil || !slices.Equal(keys, []string{"1785#0/0"}) {
+			t.Fatalf("after Turn A ended: keys=%v err=%v", keys, err)
+		}
+		if got := strings.Count(f.eventTypes(), "assistant_view_block"); got != 1 {
+			t.Fatalf("after Turn A ended: assistant_view_block count=%d, want 1 (%q)", got, f.eventTypes())
+		}
+
+		// Seconds later (before Turn A flushes or settles), a background task wake starts and finishes Turn B.
+		turnBUser := proto.Item{ID: "1786#0", Seq: 1786, Role: "user", Kind: proto.KindText, Wake: true, TS: tA.Add(2 * time.Second), Text: "Background task finished."}
+		turnBReply := proto.Item{ID: "1787#0", Seq: 1787, Role: "assistant", Kind: proto.KindText, TS: tA.Add(3 * time.Second), Text: "Noted the background task update."}
+		setTranscript(turnAUser, turnATemp, turnBUser, turnBReply)
+
+		elapse(3 * time.Second)
+		s.TurnEnded(ctx, SessionRef{MachineID: "server", SessionID: conversation})
+		synctest.Wait()
+
+		// Turn A has not flushed yet, so rescanning [Turn A (temp), Turn B] is idempotent with no duplicate event.
+		keys, err = st.AssistantViewBlockKeys(ctx, conversation)
+		if err != nil || !slices.Equal(keys, []string{"1785#0/0"}) {
+			t.Fatalf("after Turn B ended (before flush): keys=%v err=%v", keys, err)
+		}
+		if got := strings.Count(f.eventTypes(), "assistant_view_block"); got != 1 {
+			t.Fatalf("after Turn B ended (before flush): assistant_view_block count=%d, want 1 (%q)", got, f.eventTypes())
+		}
+
+		// Turn A's native transcript flushes with its final persisted item id, and another reminder wake (Turn C) lands
+		// before Turn A's settleDelay elapses.
+		turnAFinal := proto.Item{ID: "1790@abcd#1", Seq: 1790, Role: "assistant", Kind: proto.KindText, TS: tA, Text: cardText}
+		turnCUser := proto.Item{ID: "1791#0", Seq: 1791, Role: "user", Kind: proto.KindText, Wake: true, TS: tA.Add(10 * time.Second), Text: "Reminder due."}
+		turnCReply := proto.Item{ID: "1792#0", Seq: 1792, Role: "assistant", Kind: proto.KindText, TS: tA.Add(11 * time.Second), Text: "Reminder acknowledged."}
+		flushed := []proto.Item{turnAUser, turnAFinal, turnBUser, turnBReply, turnCUser, turnCReply}
+		setTranscript(flushed...)
+
+		// Confirm the root cause: requesting only turns:1 omits Turn A's final persisted item id completely.
+		for _, it := range runtimePageTurns(flushed, 1) {
+			if it.ID == turnAFinal.ID {
+				t.Fatalf("turns:1 unexpectedly included %s; test setup did not reproduce the bug", turnAFinal.ID)
+			}
+		}
+
+		// Turn A's settleDelay elapses: registerInlineTurnSettled scans recent turns and registers Turn A's final id.
+		elapse(delay - 3*time.Second)
+		keys, err = st.AssistantViewBlockKeys(ctx, conversation)
+		if err != nil || !slices.Equal(keys, []string{"1785#0/0", "1790@abcd#1/0"}) {
+			t.Fatalf("after Turn A settleDelay: keys=%v err=%v", keys, err)
+		}
+		if got := strings.Count(f.eventTypes(), "assistant_view_block"); got != 2 {
+			t.Fatalf("after Turn A settleDelay: assistant_view_block count=%d, want 2 (%q)", got, f.eventTypes())
+		}
+		origRow, ok := st.block(conversation, "1790@abcd#1/0")
+		if !ok {
+			t.Fatal("missing final registered block row")
+		}
+
+		// Turn B's settleDelay elapses and an explicit replay runs: fully idempotent, no duplicate broadcasts or edits.
+		elapse(3 * time.Second)
+		s.registerInlineTurnSettled(ctx, "server", conversation)
+		keys, err = st.AssistantViewBlockKeys(ctx, conversation)
+		if err != nil || !slices.Equal(keys, []string{"1785#0/0", "1790@abcd#1/0"}) {
+			t.Fatalf("after Turn B settleDelay and replay: keys=%v err=%v", keys, err)
+		}
+		if got := strings.Count(f.eventTypes(), "assistant_view_block"); got != 2 {
+			t.Fatalf("after Turn B settleDelay and replay: assistant_view_block count=%d, want 2 (%q)", got, f.eventTypes())
+		}
+		afterRow, ok := st.block(conversation, "1790@abcd#1/0")
+		if !ok || !afterRow.CreatedAt.Equal(origRow.CreatedAt) || string(afterRow.View) != string(origRow.View) {
+			t.Fatalf("rescan mutated stored block: before=%+v after=%+v", origRow, afterRow)
+		}
+		mu.Lock()
+		usedWindow := sawInlineWindow
+		mu.Unlock()
+		if !usedWindow {
+			t.Fatalf("expected registerInlineTurn to request turns=%d with lazy_images=true", inlineViewTurns)
+		}
+	})
+}
+
+func TestInlineTurnMultiTurnRescanIdempotentForErrorsAndBlocks(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeHub().withMachine()
+	st := newMemInlineViewStore()
+	s := newServiceOn(t, f, st)
+	conversation := "multi-turn-idempotent"
+	f.setSessions("server", proto.Session{SessionID: conversation, Assistant: true, Status: proto.StatusDone})
+	ref := SessionRef{MachineID: "server", SessionID: conversation}
+
+	validCard := "```persona-view\n{\"fallback\":\"Pick\",\"sections\":[{\"items\":[{\"type\":\"button\",\"title\":\"OK\",\"action\":{\"id\":\"ok\",\"reply\":\"OK\"}}]}]}\n```\n"
+	invalidCard := "```persona-view\n{\"sections\":[]}\n```\n"
+	t0 := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
+
+	var mu sync.Mutex
+	var transcript []proto.Item
+	setTranscript := func(items ...proto.Item) {
+		mu.Lock()
+		transcript = slices.Clone(items)
+		mu.Unlock()
+	}
+	f.answerNode(DeviceSessionItems, func(_ string, raw json.RawMessage) (any, error) {
+		var p struct {
+			Turns int `json:"turns"`
+		}
+		_ = json.Unmarshal(raw, &p)
+		mu.Lock()
+		items := runtimePageTurns(transcript, p.Turns)
+		mu.Unlock()
+		return map[string]any{"items": items}, nil
+	})
+
+	// Turn 1: valid card at t0.
+	turn1 := []proto.Item{
+		{ID: "u1#0", Seq: 1, Role: "user", Kind: proto.KindText, TS: t0.Add(-time.Second), Text: "turn 1"},
+		{ID: "turn1#0", Seq: 2, Role: "assistant", Kind: proto.KindText, TS: t0, Text: validCard},
+	}
+	setTranscript(turn1...)
+	s.registerInlineTurn(ctx, ref)
+
+	origBlock, ok := st.block(conversation, "turn1#0/0")
+	if !ok {
+		t.Fatal("turn1#0/0 not registered")
+	}
+	if got := strings.Count(f.eventTypes(), "assistant_view_block"); got != 1 {
+		t.Fatalf("after Turn 1: events=%d want 1", got)
+	}
+
+	// Turn 2: invalid card at t0+1m. Rescanning [Turn 1, Turn 2] must NOT let Turn 1 clear Turn 2's error.
+	turn2 := []proto.Item{
+		{ID: "u2#0", Seq: 3, Role: "user", Kind: proto.KindText, TS: t0.Add(59 * time.Second), Text: "turn 2"},
+		{ID: "turn2#0", Seq: 4, Role: "assistant", Kind: proto.KindText, TS: t0.Add(time.Minute), Text: invalidCard},
+	}
+	setTranscript(append(slices.Clone(turn1), turn2...)...)
+	s.registerInlineTurn(ctx, ref)
+	s.registerInlineTurnSettled(ctx, "server", conversation)
+
+	if got := st.pendingViewErrorItems(conversation, "server"); !slices.Equal(got, []string{"turn2#0"}) {
+		t.Fatalf("pending errors after Turn 2 rescan=%v, want [turn2#0]", got)
+	}
+	if got := strings.Count(f.eventTypes(), "assistant_view_block"); got != 1 {
+		t.Fatalf("after Turn 2 rescan: duplicate assistant_view_block emitted (%d)", got)
+	}
+	if afterBlock, _ := st.block(conversation, "turn1#0/0"); !afterBlock.CreatedAt.Equal(origBlock.CreatedAt) || string(afterBlock.View) != string(origBlock.View) {
+		t.Fatalf("turn1 block mutated on rescan: before=%+v after=%+v", origBlock, afterBlock)
+	}
+
+	// Ack Turn 2's error, then a background wake (Turn 3, plain text) runs. Rescanning must NOT reopen Turn 2's
+	// acked error or attribute it to Turn 3.
+	st.ackViewErrorItem(conversation, "server", "turn2#0")
+	turn3 := []proto.Item{
+		{ID: "u3#0", Seq: 5, Role: "user", Kind: proto.KindText, Wake: true, TS: t0.Add(2*time.Minute - time.Second), Text: "wake"},
+		{ID: "turn3#0", Seq: 6, Role: "assistant", Kind: proto.KindText, TS: t0.Add(2 * time.Minute), Text: "Background wake handled."},
+	}
+	setTranscript(append(append(slices.Clone(turn1), turn2...), turn3...)...)
+	s.registerInlineTurn(ctx, ref)
+	if got := st.pendingViewErrorItems(conversation, "server"); len(got) != 0 {
+		t.Fatalf("acked Turn 2 error resurfaced or leaked to Turn 3: %v", got)
+	}
+
+	// Turn 4: valid card at t0+3m advances the pass watermark. Even if Turn 2 later flushes to a new item id with
+	// its original timestamp (t0+1m < t0+3m), rescanning must treat it as already redone and keep pending errors empty.
+	turn4 := []proto.Item{
+		{ID: "u4#0", Seq: 7, Role: "user", Kind: proto.KindText, TS: t0.Add(3*time.Minute - time.Second), Text: "turn 4"},
+		{ID: "turn4#0", Seq: 8, Role: "assistant", Kind: proto.KindText, TS: t0.Add(3 * time.Minute), Text: validCard},
+	}
+	setTranscript(append(append(append(slices.Clone(turn1), turn2...), turn3...), turn4...)...)
+	s.registerInlineTurn(ctx, ref)
+
+	turn2Flushed := []proto.Item{
+		turn2[0],
+		{ID: "turn2@flushed#1", Seq: 4, Role: "assistant", Kind: proto.KindText, TS: t0.Add(time.Minute), Text: invalidCard},
+	}
+	setTranscript(append(append(append(slices.Clone(turn1), turn2Flushed...), turn3...), turn4...)...)
+	s.registerInlineTurnSettled(ctx, "server", conversation)
+
+	if got := st.pendingViewErrorItems(conversation, "server"); len(got) != 0 {
+		t.Fatalf("flushed older invalid Turn 2 resurfaced after newer valid Turn 4: %v", got)
+	}
+	keys, err := st.AssistantViewBlockKeys(ctx, conversation)
+	if err != nil || !slices.Equal(keys, []string{"turn1#0/0", "turn4#0/0"}) {
+		t.Fatalf("registered keys=%v err=%v", keys, err)
+	}
+	if got := strings.Count(f.eventTypes(), "assistant_view_block"); got != 2 {
+		t.Fatalf("after Turn 4 and rescan: assistant_view_block count=%d, want 2", got)
+	}
+}
+
+func TestInlineTurnRescanWithPostgresPreservesActionsAndErrors(t *testing.T) {
+	connection := os.Getenv("PERSONA_TEST_DATABASE_URL")
+	if connection == "" {
+		t.Skip("PERSONA_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	database, err := db.Open(ctx, connection, db.ManagerSet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(database.Close)
+
+	f := newFakeHub().withMachine()
+	conversation := "inline-rescan-pg-" + randomHex(8)
+	f.setSessions("server", proto.Session{SessionID: conversation, Assistant: true, Status: proto.StatusDone})
+	s := newServiceOn(t, f, database)
+	ref := SessionRef{MachineID: "server", SessionID: conversation}
+
+	validCard := "```persona-view\n{\"fallback\":\"Choose\",\"sections\":[{\"items\":[{\"type\":\"button\",\"title\":\"Yes\",\"action\":{\"id\":\"yes\",\"reply\":\"Trusted choice\"}}]}]}\n```\n"
+	invalidCard := "```persona-view\n{\"sections\":[]}\n```\n"
+	t0 := time.Now().UTC().Add(-5 * time.Minute).Truncate(time.Second)
+
+	var mu sync.Mutex
+	var transcript []proto.Item
+	setTranscript := func(items ...proto.Item) {
+		mu.Lock()
+		transcript = slices.Clone(items)
+		mu.Unlock()
+	}
+	f.answerNode(DeviceSessionItems, func(_ string, raw json.RawMessage) (any, error) {
+		var p struct {
+			Turns int `json:"turns"`
+		}
+		_ = json.Unmarshal(raw, &p)
+		mu.Lock()
+		items := runtimePageTurns(transcript, p.Turns)
+		mu.Unlock()
+		return map[string]any{"items": items}, nil
+	})
+
+	// Register Turn A's initial card and record a submitted user action against it.
+	turnAUser := proto.Item{ID: "uA#0", Seq: 1, Role: "user", Kind: proto.KindText, TS: t0.Add(-time.Second), Text: "Pick one"}
+	turnATemp := proto.Item{ID: "turnA#0", Seq: 2, Role: "assistant", Kind: proto.KindText, TS: t0, Text: validCard}
+	setTranscript(turnAUser, turnATemp)
+	s.registerInlineTurn(ctx, ref)
+
+	actionRow := db.AssistantViewActionRow{
+		Conversation: conversation,
+		Key:          "turnA#0/0",
+		Action:       "yes",
+		ClientMsgID:  "client-1",
+		MessageID:    "msg-1",
+		MachineID:    "server",
+		Text:         "Trusted choice",
+		At:           t0.Add(5 * time.Second),
+	}
+	if _, first, err := database.BeginAssistantViewAction(ctx, actionRow, 1); err != nil || !first {
+		t.Fatalf("BeginAssistantViewAction: first=%v err=%v", first, err)
+	}
+
+	// Turn A flushes to its final persisted item id while Turn B (invalid card) and Turn C (background wake) follow.
+	turnAFinal := proto.Item{ID: "turnA@final#1", Seq: 2, Role: "assistant", Kind: proto.KindText, TS: t0, Text: validCard}
+	turnBUser := proto.Item{ID: "uB#0", Seq: 3, Role: "user", Kind: proto.KindText, TS: t0.Add(59 * time.Second), Text: "Next"}
+	turnBInvalid := proto.Item{ID: "turnB#0", Seq: 4, Role: "assistant", Kind: proto.KindText, TS: t0.Add(time.Minute), Text: invalidCard}
+	turnCUser := proto.Item{ID: "uC#0", Seq: 5, Role: "user", Kind: proto.KindText, Wake: true, TS: t0.Add(2*time.Minute - time.Second), Text: "Background wake"}
+	turnCWake := proto.Item{ID: "turnC#0", Seq: 6, Role: "assistant", Kind: proto.KindText, TS: t0.Add(2 * time.Minute), Text: "Done."}
+	setTranscript(turnAUser, turnAFinal, turnBUser, turnBInvalid, turnCUser, turnCWake)
+
+	s.registerInlineTurn(ctx, ref)
+	s.registerInlineTurnSettled(ctx, "server", conversation)
+
+	keys, err := database.AssistantViewBlockKeys(ctx, conversation)
+	if err != nil || !slices.Equal(keys, []string{"turnA#0/0", "turnA@final#1/0"}) {
+		t.Fatalf("keys after rescan=%v err=%v", keys, err)
+	}
+	if got := strings.Count(f.eventTypes(), "assistant_view_block"); got != 2 {
+		t.Fatalf("assistant_view_block count=%d, want 2", got)
+	}
+	gotAction, err := database.AssistantViewAction(ctx, conversation, "turnA#0/0")
+	if err != nil || gotAction == nil || gotAction.Action != "yes" || gotAction.ClientMsgID != "client-1" {
+		t.Fatalf("submitted action lost or altered: %+v %v", gotAction, err)
+	}
+	pending, err := database.PeekAssistantViewErrors(ctx, conversation, "server", 5)
+	if err != nil || len(pending) != 1 || pending[0].ItemID != "turnB#0" {
+		t.Fatalf("Turn B error cleared or corrupted by Turn A rescan: %+v %v", pending, err)
+	}
+
+	// Ack Turn B's error and rescan again: it must stay acked.
+	if n, err := database.AckAssistantViewErrors(ctx, conversation, "server", []string{pending[0].ItemID}, []string{pending[0].Digest}); err != nil || n != 1 {
+		t.Fatalf("AckAssistantViewErrors: n=%d err=%v", n, err)
+	}
+	s.registerInlineTurnSettled(ctx, "server", conversation)
+	pending, err = database.PeekAssistantViewErrors(ctx, conversation, "server", 5)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("acked Turn B error resurfaced after rescan: %+v %v", pending, err)
+	}
 }
