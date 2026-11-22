@@ -24,6 +24,20 @@ class AssistantStartLauncherTest {
         override suspend fun assistant() = buildJsonObject { put("machine_id", "mac"); put("main", main); put("conversations", buildJsonArray { }) }
         override suspend fun createConversation(main: Boolean) = create(main, null)
         override suspend fun createConversation(main: Boolean, launcher: String) = create(main, launcher)
+        override suspend fun createConversationOf(
+            manager: String?,
+            main: Boolean,
+            pick: persona.core.contracts.ModelPick,
+        ): JsonObject {
+            created += main to listOfNotNull(pick.launcher, pick.model).joinToString(":")
+            return buildJsonObject {
+                put("session", buildJsonObject {
+                    put("machine_id", "mac")
+                    put("session_id", "c${created.size}")
+                    put("assistant", true)
+                })
+            }
+        }
         private fun create(main: Boolean, launcher: String?): JsonObject {
             created += main to launcher
             return buildJsonObject { put("session", buildJsonObject { put("machine_id", "mac"); put("session_id", "c${created.size}"); put("assistant", true) }) }
@@ -54,5 +68,16 @@ class AssistantStartLauncherTest {
         assertEquals(SessionKey("mac", "c2"), repository.startConversation("cc_y"))
         assertEquals(SessionKey("mac", "c3"), repository.startConversation())
         assertEquals(listOf(true to "cc_x", false to "cc_y", false to null), transport.created)
+    }
+
+    @Test fun startSideConversationAlwaysPassesMainFalseEvenWithoutExistingMain() = runTest {
+        val transport = Transport(main = "")
+        val connection = object : InboxAssistantConnection { override val current = MutableStateFlow<InboxAssistantTransport?>(transport) }
+        val repository = RealAssistantRepository(connection, Sessions(), backgroundScope)
+
+        val created = repository.startSideConversation(persona.core.contracts.ModelPick("gemini", "gemini-2.5-flash"))
+        assertEquals(SessionKey("mac", "c1"), created)
+        assertEquals(listOf(false to "gemini:gemini-2.5-flash"), transport.created)
+        assertEquals(null, repository.assistant.value.mainSession)
     }
 }

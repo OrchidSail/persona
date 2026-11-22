@@ -122,6 +122,7 @@
     <string name="app_assist_screen_attached">現在の画面を添付済み</string>
     <string name="app_assist_screen_preview">現在の画面プレビュー</string>
     <string name="app_assist_screen_unavailable">この保護されたページでは現在の画面を取得できません</string>
+    <string name="app_assist_screen_timeout">現在の画面を時間内に取得できませんでした</string>
     <string name="app_assist_screen_only_prompt">このスクリーンショットを見てください。</string>
     <string name="app_assist_replying">Persona が返信中…</string>
     <string name="app_assist_connecting">接続中…</string>
@@ -137,4 +138,18 @@
     <string name="app_assist_delivery_sending">送信中…</string>
     <string name="app_assist_delivery_queued">送信待ち</string>
     <string name="app_assist_delivery_failed">送信失敗</string>
+    <string name="app_assist_locked_title">ロックを解除して Persona を使用</string>
+    <string name="app_assist_locked_body">画面の取得や Hub への質問を行う前に、端末のロックを解除してください。</string>
+    <string name="app_assist_unlock_action">ロック解除</string>
+    <string name="app_assist_model_default_short">デフォルト</string>
+    <string name="app_assist_model_default_title">デフォルト（メインチャット）</string>
+    <string name="app_assist_model_default_subtitle">メインチャットへ直接送信</string>
+    <string name="app_assist_model_picker_title">クイックウィンドウのモデル</string>
+    <string name="app_assist_model_picker_description">クイックウィンドウのモデルを切替：%1$s</string>
+    <string name="app_assist_model_loading">モデルを読み込み中…</string>
+    <string name="app_assist_model_load_failed">Hub からモデルを読み込めませんでした</string>
+    <string name="app_assist_model_empty">他の選択可能なモデルはありません</string>
+    <string name="app_assist_model_start_failed">選択したモデルは現在利用できません</string>
+    <string name="app_assist_model_fallback_main">デフォルト（メインチャット）で送信</string>
+    <string name="app_assist_model_selected">選択中</string>
 </resources>

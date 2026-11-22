@@ -12,9 +12,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import persona.core.contracts.ModelPick
 import persona.core.contracts.SessionKey
 import persona.core.contracts.api.ChatSnapshot
 import persona.core.contracts.api.DeliveryState
+import persona.core.contracts.api.DigitalAssistantModelCatalog
+import persona.core.contracts.api.DigitalAssistantModelChoice
 import persona.core.contracts.api.OutboxMessage
 import persona.feature.chat.ChatLinkContext
 import persona.feature.chat.ComposerAttachment
@@ -31,10 +34,13 @@ internal enum class AssistCaptureStatus {
     /** User manually tapped "Attach current screen"; written to `cacheDir/assist/` for next send. */
     Attached,
 
-    /** Page is `FLAG_SECURE`, system returned null, or capture timed out without a bitmap. */
+    /** System explicitly returned null (`FLAG_SECURE` / protected page) or bitmap preparation failed. */
     Unavailable,
 
-    /** Entry point does not provide screenshots or capture was cleared after a text-only turn. */
+    /** System did not deliver `onHandleScreenshot` before timeout; still upgrades if a late bitmap arrives. */
+    TimedOut,
+
+    /** Entry point does not provide screenshots, device is locked, or capture was released after send. */
     NotSupported,
 }
 
@@ -64,6 +70,7 @@ internal data class AssistOverlayTurn(
 internal data class AssistHubSnapshot(
     val status: AssistHubStatus = AssistHubStatus.Connecting,
     val mainSession: SessionKey? = null,
+    val observedSession: SessionKey? = mainSession,
     val mainWorking: Boolean = false,
     val chatSnapshot: ChatSnapshot? = null,
     val outbox: List<OutboxMessage> = emptyList(),
@@ -71,6 +78,7 @@ internal data class AssistHubSnapshot(
 
 internal data class AssistOverlayUiState(
     val invocationId: String = "",
+    val deviceLocked: Boolean = false,
     val captureStatus: AssistCaptureStatus = AssistCaptureStatus.Waiting,
     val attachedScreenshot: ComposerAttachment? = null,
     val attachedThumbnail: Bitmap? = null,
@@ -79,15 +87,21 @@ internal data class AssistOverlayUiState(
     val attachingScreen: Boolean = false,
     val hubStatus: AssistHubStatus = AssistHubStatus.Connecting,
     val mainSession: SessionKey? = null,
+    val activeSession: SessionKey? = null,
+    val modelChoice: DigitalAssistantModelChoice = DigitalAssistantModelChoice(),
+    val modelPickerOpen: Boolean = false,
+    val modelCatalog: DigitalAssistantModelCatalog = DigitalAssistantModelCatalog(),
+    val modelFallbackAvailable: Boolean = false,
     val draftText: String = "",
     val sending: Boolean = false,
     val awaitingReply: Boolean = false,
     val errorMessage: String? = null,
     val turns: List<AssistOverlayTurn> = emptyList(),
 ) {
-    val expanded: Boolean get() = turns.isNotEmpty() || sending
+    val expanded: Boolean get() = !deviceLocked && (turns.isNotEmpty() || sending)
     val canSend: Boolean
-        get() = !sending &&
+        get() = !deviceLocked &&
+            !sending &&
             !attachingScreen &&
             hubStatus == AssistHubStatus.Ready &&
             (draftText.isNotBlank() || attachedScreenshot != null)
@@ -102,13 +116,16 @@ internal data class SentOverlayTurn(
 /**
  * Pure state machine and coordinator for Persona's floating Digital Assistant overlay.
  *
- * Privacy and lifecycle guarantees:
+ * Privacy, routing, and lifecycle guarantees:
+ * - While the device is locked (`deviceLocked == true`), incoming screenshots and assist context
+ *   are discarded immediately and sending to the Hub is blocked until unlocked.
  * - Incoming `onHandleScreenshot` bitmaps and filtered `onHandleAssist` context are staged ONLY
  *   in memory until the user explicitly taps "Attach current screen".
  * - Disk writes (`cacheDir/assist/`) happen strictly upon manual user confirmation, and are deleted
  *   immediately upon removal (`×`), successful upload/send, or overlay dismissal.
- * - Sending a text-only message or dismissing the overlay immediately recycles staged bitmaps and
- *   drops staged context so nothing lingers across turns or sessions.
+ * - When a dedicated overlay model is picked, the first send creates a lightweight non-main
+ *   conversation (`main = false`), keeping follow-ups in that same session and NEVER mutating
+ *   the Hub's main chat model binding.
  */
 internal class AssistOverlayController(
     private val mainScope: CoroutineScope,
@@ -118,21 +135,38 @@ internal class AssistOverlayController(
     private val deleteScreenshot: suspend (ComposerAttachment) -> Unit,
     private val sendTextToMain: suspend (String, String) -> Unit,
     private val sendWithScreenToMain: suspend (String, ComposerAttachment, ChatLinkContext?, String) -> Unit,
-    private val publishDraftForFullApp: (String, ComposerAttachment?, ChatLinkContext?, String) -> Unit,
+    private val createSideConversation: suspend (ModelPick) -> SessionKey = {
+        throw UnsupportedOperationException("Dedicated overlay model unavailable")
+    },
+    private val sendTextToSession: suspend (SessionKey, String, String) -> Unit = { _, prompt, clientId ->
+        sendTextToMain(prompt, clientId)
+    },
+    private val sendWithScreenToSession: suspend (SessionKey, String, ComposerAttachment, ChatLinkContext?, String) -> Unit =
+        { _, prompt, shot, ctx, clientId -> sendWithScreenToMain(prompt, shot, ctx, clientId) },
+    private val onActiveSessionChanged: (SessionKey?) -> Unit = {},
+    private val loadModelCatalog: suspend (Boolean) -> DigitalAssistantModelCatalog = {
+        DigitalAssistantModelCatalog(loading = false, groups = emptyList(), hubAvailable = false)
+    },
+    private val onPersistDefaultModel: () -> Unit = {},
+    private val onPersistModelChoice: (DigitalAssistantModelChoice) -> Unit = {},
+    private val publishDraftForFullApp: (String, ComposerAttachment?, ChatLinkContext?, String, SessionKey?) -> Unit,
     private val onWakeHub: () -> Unit,
     private val onLaunchFullApp: (SessionKey?) -> Unit,
     private val onDismiss: () -> Unit,
     private val screenOnlyDisplayLabel: () -> String,
     private val defaultSendError: () -> String,
+    private val defaultModelStartError: () -> String = defaultSendError,
+    private val initialModelChoice: DigitalAssistantModelChoice = DigitalAssistantModelChoice(),
     private val screenshotWaitTimeoutMillis: Long = SCREENSHOT_WAIT_TIMEOUT_MILLIS,
     private val nextId: () -> String = { UUID.randomUUID().toString() },
     private val log: (String) -> Unit = { message -> Log.i(ASSIST_LOG_TAG, message) },
 ) {
-    private val mutableState = MutableStateFlow(AssistOverlayUiState())
+    private val mutableState = MutableStateFlow(AssistOverlayUiState(modelChoice = initialModelChoice))
     val state: StateFlow<AssistOverlayUiState> = mutableState.asStateFlow()
 
     private var invocationOpen = false
     private var invocationId = ""
+    private var deviceLockedForInvocation = false
     private var captureDiscardedForInvocation = false
     private var stagedBitmap: Bitmap? = null
     private var stagedContext: ChatLinkContext? = null
@@ -140,54 +174,98 @@ internal class AssistOverlayController(
     private var handedOffAttachment: ComposerAttachment? = null
 
     private var hubSnapshot = AssistHubSnapshot()
+    private var activeOverlaySession: SessionKey? = null
     private var baselineItemIds: Set<String> = emptySet()
     private val sentTurns = mutableListOf<SentOverlayTurn>()
+    private var persistedModelChoice: DigitalAssistantModelChoice = initialModelChoice
+    private var cachedCatalog: DigitalAssistantModelCatalog? = null
 
     private var screenshotWaitJob: Job? = null
     private var stageJob: Job? = null
     private var attachJob: Job? = null
     private var sendJob: Job? = null
+    private var catalogJob: Job? = null
 
     /** Starts a fresh overlay session; idempotent within an active invocation (e.g. `onPrepareShow` -> `onShow`). */
-    fun beginSession(supportsScreenshot: Boolean, showFlags: Int = 0) {
-        if (invocationOpen) return
+    fun beginSession(supportsScreenshot: Boolean, showFlags: Int = 0, deviceLocked: Boolean = false) {
+        if (invocationOpen) {
+            if (deviceLocked && !deviceLockedForInvocation) {
+                lockSession()
+            }
+            return
+        }
         cleanupJobsAndResources(deleteAttached = true)
         invocationOpen = true
         invocationId = nextId()
-        captureDiscardedForInvocation = !supportsScreenshot
+        deviceLockedForInvocation = deviceLocked
+        val allowCapture = supportsScreenshot && !deviceLocked
+        captureDiscardedForInvocation = !allowCapture
         handedOffAttachment = null
+        activeOverlaySession = null
+        onActiveSessionChanged(null)
         baselineItemIds = emptySet()
         sentTurns.clear()
-        log("beginSession supportsScreenshot=$supportsScreenshot showFlags=$showFlags")
-        onWakeHub()
+        log("beginSession supportsScreenshot=$supportsScreenshot showFlags=$showFlags deviceLocked=$deviceLocked")
+        if (!deviceLocked) {
+            onWakeHub()
+        }
         mutableState.value = AssistOverlayUiState(
             invocationId = invocationId,
-            captureStatus = if (supportsScreenshot) AssistCaptureStatus.Waiting else AssistCaptureStatus.NotSupported,
+            deviceLocked = deviceLocked,
+            captureStatus = if (allowCapture) AssistCaptureStatus.Waiting else AssistCaptureStatus.NotSupported,
             hubStatus = hubSnapshot.status,
             mainSession = hubSnapshot.mainSession,
+            modelChoice = persistedModelChoice,
+            modelCatalog = cachedCatalog ?: DigitalAssistantModelCatalog(),
         )
-        if (supportsScreenshot && screenshotWaitTimeoutMillis > 0L) {
+        if (allowCapture && screenshotWaitTimeoutMillis > 0L) {
             val activeId = invocationId
             screenshotWaitJob = mainScope.launch {
                 delay(screenshotWaitTimeoutMillis)
                 if (invocationOpen && invocationId == activeId &&
                     mutableState.value.captureStatus == AssistCaptureStatus.Waiting
                 ) {
-                    log("screenshotWaitTimeout status=Unavailable")
-                    mutableState.update { it.copy(captureStatus = AssistCaptureStatus.Unavailable) }
+                    log("screenshotWaitTimeout status=TimedOut")
+                    mutableState.update { it.copy(captureStatus = AssistCaptureStatus.TimedOut) }
                 }
             }
         }
     }
 
-    /** Updates live Hub connection, main session, and streaming transcript snapshot. */
+    /** Transitions an already-open locked session into unlocked state (e.g., after keyguard dismissal). */
+    fun onDeviceUnlocked() {
+        if (!invocationOpen || !deviceLockedForInvocation) return
+        deviceLockedForInvocation = false
+        onWakeHub()
+        mutableState.update {
+            it.copy(
+                deviceLocked = false,
+                hubStatus = hubSnapshot.status,
+                mainSession = hubSnapshot.mainSession,
+            )
+        }
+    }
+
+    /** Keeps the overlay model pill synced live with Hub-scoped preferences (including changes from Settings). */
+    fun onModelChoiceUpdated(choice: DigitalAssistantModelChoice) {
+        persistedModelChoice = choice
+        mutableState.update { it.copy(modelChoice = choice) }
+    }
+
+    /** Updates live Hub connection, target session, and streaming transcript snapshot. */
     fun onHubUpdate(snapshot: AssistHubSnapshot) {
         hubSnapshot = snapshot
-        val projection = projectOverlayTurns(snapshot, sentTurns, baselineItemIds)
+        val expectedSession = activeOverlaySession ?: snapshot.mainSession
+        val projection = if (deviceLockedForInvocation) {
+            OverlayTurnsProjection(emptyList(), awaitingReply = false)
+        } else {
+            projectOverlayTurns(snapshot, sentTurns, baselineItemIds, expectedSession)
+        }
         mutableState.update { current ->
             current.copy(
                 hubStatus = snapshot.status,
                 mainSession = snapshot.mainSession,
+                activeSession = activeOverlaySession,
                 turns = projection.turns,
                 awaitingReply = projection.awaitingReply,
             )
@@ -198,6 +276,10 @@ internal class AssistOverlayController(
     fun onScreenshotReceived(bitmap: Bitmap?) {
         if (!invocationOpen) {
             beginSession(supportsScreenshot = true)
+        }
+        if (deviceLockedForInvocation) {
+            log("onHandleScreenshot dropped=deviceLocked")
+            return
         }
         val activeId = invocationId
         val valid = bitmap != null && !bitmap.isRecycled && bitmap.width > 0 && bitmap.height > 0
@@ -224,7 +306,7 @@ internal class AssistOverlayController(
             } catch (_: Exception) {
                 null
             }
-            if (!invocationOpen || invocationId != activeId || captureDiscardedForInvocation) {
+            if (!invocationOpen || invocationId != activeId || captureDiscardedForInvocation || deviceLockedForInvocation) {
                 prepared?.safeRecycle()
                 return@launch
             }
@@ -246,6 +328,10 @@ internal class AssistOverlayController(
 
     /** Handles filtered `onHandleAssist` context: staged in memory ONLY until user confirms attaching the screen. */
     fun onAssistContextReceived(context: ChatLinkContext?, isFocused: Boolean) {
+        if (deviceLockedForInvocation) {
+            log("onHandleAssist dropped=deviceLocked")
+            return
+        }
         log("onHandleAssist safeContext=${context != null} focused=$isFocused")
         if (context == null) return
         if (!invocationOpen) {
@@ -268,11 +354,65 @@ internal class AssistOverlayController(
         }
     }
 
+    /** Toggles the lightweight inline model picker inside the overlay sheet. */
+    fun toggleModelPicker() {
+        val current = mutableState.value
+        if (!invocationOpen || current.deviceLocked || current.sending) return
+        val opening = !current.modelPickerOpen
+        mutableState.update { it.copy(modelPickerOpen = opening) }
+        if (opening) {
+            val existing = cachedCatalog
+            val shouldRefresh = existing == null || existing.error != null || !existing.hubAvailable || existing.groups.isEmpty()
+            if (shouldRefresh) {
+                fetchModelCatalog(refresh = existing?.error != null)
+            }
+        }
+    }
+
+    fun closeModelPicker() {
+        mutableState.update { it.copy(modelPickerOpen = false) }
+    }
+
+    fun refreshModelCatalog() {
+        if (!invocationOpen || deviceLockedForInvocation) return
+        fetchModelCatalog(refresh = true)
+    }
+
+    fun selectDefaultModel() {
+        persistedModelChoice = DigitalAssistantModelChoice()
+        onPersistDefaultModel()
+        mutableState.update {
+            it.copy(
+                modelChoice = persistedModelChoice,
+                modelPickerOpen = false,
+                modelFallbackAvailable = false,
+                errorMessage = null,
+            )
+        }
+    }
+
+    fun selectModel(choice: DigitalAssistantModelChoice) {
+        if (choice.pick == null) {
+            selectDefaultModel()
+            return
+        }
+        persistedModelChoice = choice
+        onPersistModelChoice(choice)
+        mutableState.update {
+            it.copy(
+                modelChoice = choice,
+                modelPickerOpen = false,
+                modelFallbackAvailable = false,
+                errorMessage = null,
+            )
+        }
+    }
+
     /** Manual user confirmation: persists the staged screen to private `cacheDir/assist/` and previews it. */
     fun attachCurrentScreen() {
         val current = mutableState.value
         val source = stagedBitmap
-        if (!invocationOpen || current.attachingScreen || current.sending ||
+        if (!invocationOpen || current.deviceLocked || current.attachingScreen || current.sending ||
             current.captureStatus != AssistCaptureStatus.Available || source == null || source.isRecycled
         ) {
             return
@@ -299,7 +439,7 @@ internal class AssistOverlayController(
             } else {
                 null
             }
-            if (!invocationOpen || invocationId != activeId || captureDiscardedForInvocation) {
+            if (!invocationOpen || invocationId != activeId || captureDiscardedForInvocation || deviceLockedForInvocation) {
                 thumb?.safeRecycle()
                 if (saved != null) runCatching { deleteScreenshot(saved) }
                 return@launch
@@ -336,7 +476,8 @@ internal class AssistOverlayController(
         attachJob?.cancel()
         attachJob = null
         val previous = current.attachedScreenshot
-        val canReattach = !captureDiscardedForInvocation && stagedBitmap?.let { !it.isRecycled } == true
+        val canReattach = !deviceLockedForInvocation && !captureDiscardedForInvocation &&
+            stagedBitmap?.let { !it.isRecycled } == true
         mutableState.update {
             it.copy(
                 captureStatus = if (canReattach) AssistCaptureStatus.Available else AssistCaptureStatus.NotSupported,
@@ -353,15 +494,15 @@ internal class AssistOverlayController(
     }
 
     fun updateDraftText(value: String) {
-        mutableState.update { it.copy(draftText = value, errorMessage = null) }
+        mutableState.update { it.copy(draftText = value, errorMessage = null, modelFallbackAvailable = false) }
     }
 
     fun appendDictation(heard: String) {
         val trimmed = heard.trim()
-        if (trimmed.isEmpty()) return
+        if (trimmed.isEmpty() || deviceLockedForInvocation) return
         mutableState.update { current ->
             val updated = persona.feature.chat.withDictation(current.draftText, trimmed)
-            current.copy(draftText = updated, errorMessage = null)
+            current.copy(draftText = updated, errorMessage = null, modelFallbackAvailable = false)
         }
     }
 
@@ -369,8 +510,13 @@ internal class AssistOverlayController(
         mutableState.update { it.copy(errorMessage = message) }
     }
 
-    /** Sends the message directly to the Hub's main conversation and begins streaming the reply in place. */
-    fun send() {
+    /** Sends the message using the selected overlay model (or main chat if Default) and streams the reply in place. */
+    fun send() = sendInternal(forceMainDefault = false)
+
+    /** One-tap fallback after a dedicated overlay model fails: retries sending to Main chat without mutating main's model. */
+    fun retryWithDefaultMain() = sendInternal(forceMainDefault = true)
+
+    private fun sendInternal(forceMainDefault: Boolean) {
         val current = mutableState.value
         if (!invocationOpen || !current.canSend) return
         val prompt = current.draftText.trim()
@@ -378,21 +524,57 @@ internal class AssistOverlayController(
         val contextCard = current.attachedContext
         val clientId = nextId()
         val activeId = invocationId
-        if (sentTurns.isEmpty()) {
-            baselineItemIds = hubSnapshot.chatSnapshot?.items.orEmpty().mapTo(HashSet()) { it.id }
+        val existingSideSession = activeOverlaySession
+        val selectedPick = if (forceMainDefault) null else current.modelChoice.pick
+
+        mutableState.update {
+            it.copy(
+                sending = true,
+                modelPickerOpen = false,
+                modelFallbackAvailable = false,
+                errorMessage = null,
+            )
         }
-        if (screenshot == null) {
-            // Text-only send without attaching the screen: immediately release staged capture & context.
-            releaseStagedCaptureOnly()
-        }
-        mutableState.update { it.copy(sending = true, errorMessage = null) }
         sendJob = mainScope.launch {
+            var createdSideSession = false
             try {
-                if (screenshot != null) {
-                    sendWithScreenToMain(prompt, screenshot, contextCard, clientId)
-                } else {
-                    sendTextToMain(prompt, clientId)
+                val targetSession: SessionKey? = when {
+                    existingSideSession != null -> existingSideSession
+                    selectedPick != null -> {
+                        val created = createSideConversation(selectedPick)
+                        if (!invocationOpen || invocationId != activeId) return@launch
+                        activeOverlaySession = created
+                        createdSideSession = true
+                        baselineItemIds = emptySet()
+                        onActiveSessionChanged(created)
+                        created
+                    }
+                    else -> {
+                        if (sentTurns.isEmpty()) {
+                            baselineItemIds = if (hubSnapshot.observedSession == hubSnapshot.mainSession) {
+                                hubSnapshot.chatSnapshot?.items.orEmpty().mapTo(HashSet()) { it.id }
+                            } else {
+                                emptySet()
+                            }
+                        }
+                        null
+                    }
                 }
+
+                if (targetSession != null) {
+                    if (screenshot != null) {
+                        sendWithScreenToSession(targetSession, prompt, screenshot, contextCard, clientId)
+                    } else {
+                        sendTextToSession(targetSession, prompt, clientId)
+                    }
+                } else {
+                    if (screenshot != null) {
+                        sendWithScreenToMain(prompt, screenshot, contextCard, clientId)
+                    } else {
+                        sendTextToMain(prompt, clientId)
+                    }
+                }
+
                 if (!invocationOpen || invocationId != activeId) {
                     if (screenshot != null) runCatching { deleteScreenshot(screenshot) }
                     return@launch
@@ -404,13 +586,17 @@ internal class AssistOverlayController(
                 )
                 if (screenshot != null) {
                     runCatching { deleteScreenshot(screenshot) }
-                    releaseStagedCaptureOnly()
                 }
-                val projection = projectOverlayTurns(hubSnapshot, sentTurns, baselineItemIds)
+                // Release staged capture immediately after any successful turn (text-only or with screen).
+                releaseStagedCaptureOnly()
+                val expectedSession = activeOverlaySession ?: hubSnapshot.mainSession
+                val projection = projectOverlayTurns(hubSnapshot, sentTurns, baselineItemIds, expectedSession)
                 mutableState.update {
                     it.copy(
                         draftText = "",
                         sending = false,
+                        activeSession = activeOverlaySession,
+                        modelFallbackAvailable = false,
                         errorMessage = null,
                         turns = projection.turns,
                         awaitingReply = projection.awaitingReply,
@@ -420,10 +606,13 @@ internal class AssistOverlayController(
                 throw cancelled
             } catch (error: Exception) {
                 if (!invocationOpen || invocationId != activeId) return@launch
+                val failedDedicatedModel = selectedPick != null && existingSideSession == null && !createdSideSession
+                val fallbackMessage = if (failedDedicatedModel) defaultModelStartError() else defaultSendError()
                 mutableState.update {
                     it.copy(
                         sending = false,
-                        errorMessage = error.message?.takeIf(String::isNotBlank) ?: defaultSendError(),
+                        modelFallbackAvailable = failedDedicatedModel,
+                        errorMessage = error.message?.takeIf(String::isNotBlank) ?: fallbackMessage,
                     )
                 }
             }
@@ -431,29 +620,33 @@ internal class AssistOverlayController(
     }
 
     /**
-     * Opens Persona's full `MainActivity` main conversation. Preserves any unsent text or
-     * manually-attached screen (never unconfirmed screenshots) via [publishDraftForFullApp],
-     * then dismisses the overlay.
+     * Opens Persona's full `MainActivity` at the active conversation (dedicated lightweight overlay
+     * session if started, else main chat). Preserves any unsent text or manually-attached screen
+     * (never unconfirmed screenshots, never while device is locked), then dismisses the overlay.
      */
     fun openInPersona() {
         val current = mutableState.value
-        val unsentText = current.draftText.trim()
-        val confirmedShot = current.attachedScreenshot
-        val confirmedContext = if (confirmedShot != null) current.attachedContext else null
-        if (unsentText.isNotEmpty() || confirmedShot != null) {
-            handedOffAttachment = confirmedShot
-            publishDraftForFullApp(
-                invocationId.ifEmpty { nextId() },
-                confirmedShot,
-                confirmedContext,
-                unsentText,
-            )
+        val targetSession = activeOverlaySession ?: current.mainSession
+        if (!current.deviceLocked) {
+            val unsentText = current.draftText.trim()
+            val confirmedShot = current.attachedScreenshot
+            val confirmedContext = if (confirmedShot != null) current.attachedContext else null
+            if (unsentText.isNotEmpty() || confirmedShot != null) {
+                handedOffAttachment = confirmedShot
+                publishDraftForFullApp(
+                    invocationId.ifEmpty { nextId() },
+                    confirmedShot,
+                    confirmedContext,
+                    unsentText,
+                    targetSession,
+                )
+            }
         }
         stagedBitmap?.safeRecycle()
         stagedBitmap = null
         stagedContext = null
         stagedContextFocused = false
-        onLaunchFullApp(current.mainSession)
+        onLaunchFullApp(if (current.deviceLocked) null else targetSession)
         onDismiss()
     }
 
@@ -461,7 +654,10 @@ internal class AssistOverlayController(
     fun endSession() {
         if (!invocationOpen && stagedBitmap == null && mutableState.value.attachedScreenshot == null) return
         invocationOpen = false
+        deviceLockedForInvocation = false
         cleanupJobsAndResources(deleteAttached = true)
+        activeOverlaySession = null
+        onActiveSessionChanged(null)
         baselineItemIds = emptySet()
         sentTurns.clear()
         handedOffAttachment = null
@@ -469,7 +665,49 @@ internal class AssistOverlayController(
             captureStatus = AssistCaptureStatus.NotSupported,
             hubStatus = hubSnapshot.status,
             mainSession = hubSnapshot.mainSession,
+            modelChoice = persistedModelChoice,
+            modelCatalog = cachedCatalog ?: DigitalAssistantModelCatalog(),
         )
+    }
+
+    private fun lockSession() {
+        deviceLockedForInvocation = true
+        releaseStagedCaptureOnly()
+        mutableState.update {
+            it.copy(
+                deviceLocked = true,
+                modelPickerOpen = false,
+                modelFallbackAvailable = false,
+                errorMessage = null,
+                turns = emptyList(),
+                awaitingReply = false,
+            )
+        }
+    }
+
+    private fun fetchModelCatalog(refresh: Boolean) {
+        val activeId = invocationId
+        catalogJob?.cancel()
+        mutableState.update {
+            it.copy(modelCatalog = it.modelCatalog.copy(loading = true, error = null))
+        }
+        catalogJob = mainScope.launch {
+            val loaded = try {
+                loadModelCatalog(refresh)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                DigitalAssistantModelCatalog(
+                    loading = false,
+                    groups = emptyList(),
+                    error = error.message?.takeIf(String::isNotBlank) ?: defaultSendError(),
+                    hubAvailable = true,
+                )
+            }
+            if (!invocationOpen || invocationId != activeId) return@launch
+            cachedCatalog = loaded
+            mutableState.update { it.copy(modelCatalog = loaded) }
+        }
     }
 
     private fun releaseStagedCaptureOnly() {
@@ -505,6 +743,8 @@ internal class AssistOverlayController(
         attachJob = null
         sendJob?.cancel()
         sendJob = null
+        catalogJob?.cancel()
+        catalogJob = null
 
         stagedBitmap?.safeRecycle()
         stagedBitmap = null
@@ -529,18 +769,20 @@ internal data class OverlayTurnsProjection(
 )
 
 /**
- * Projects only the conversation turns belonging to the current overlay session from the main
- * chat's live [AssistHubSnapshot], preserving real-time streaming state and immediate optimistic
- * user bubbles.
+ * Projects only the conversation turns belonging to the current overlay session from the active
+ * conversation's live [AssistHubSnapshot], preserving real-time streaming state and immediate
+ * optimistic user bubbles.
  */
 internal fun projectOverlayTurns(
     hub: AssistHubSnapshot,
     sentTurns: List<SentOverlayTurn>,
     baselineItemIds: Set<String>,
+    expectedSession: SessionKey? = hub.observedSession,
 ): OverlayTurnsProjection {
     if (sentTurns.isEmpty()) return OverlayTurnsProjection(emptyList(), awaitingReply = false)
-    val items = hub.chatSnapshot?.items.orEmpty()
-    val streamingIds = hub.chatSnapshot?.streamingItemIds.orEmpty()
+    val snapshotMatches = expectedSession == null || hub.observedSession == expectedSession
+    val items = if (snapshotMatches) hub.chatSnapshot?.items.orEmpty() else emptyList()
+    val streamingIds = if (snapshotMatches) hub.chatSnapshot?.streamingItemIds.orEmpty() else emptySet()
     val sentById = sentTurns.associateBy { it.clientMessageId }
     val matchedClientIds = mutableSetOf<String>()
 
@@ -617,7 +859,7 @@ internal fun projectOverlayTurns(
     val awaitingReply = last != null &&
         last.fromUser &&
         last.delivery != AssistTurnDelivery.Failed &&
-        (hub.mainWorking || last.delivery == AssistTurnDelivery.Sending || last.delivery == AssistTurnDelivery.Sent)
+        ((snapshotMatches && hub.mainWorking) || last.delivery == AssistTurnDelivery.Sending || last.delivery == AssistTurnDelivery.Sent)
 
     return OverlayTurnsProjection(projected, awaitingReply)
 }

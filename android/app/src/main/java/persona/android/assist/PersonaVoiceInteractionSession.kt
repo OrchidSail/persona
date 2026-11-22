@@ -1,5 +1,6 @@
 package persona.android.assist
 
+import android.app.KeyguardManager
 import android.app.assist.AssistContent
 import android.app.assist.AssistStructure
 import android.content.Context
@@ -33,6 +34,7 @@ import persona.core.designsystem.AppLanguages
 import persona.core.navigation.AskPersonaLink
 import persona.core.navigation.NotificationRoute
 import persona.feature.chat.AssistDraftBus
+import persona.feature.chat.AssistDraftTarget
 import persona.feature.chat.ChatLinkContext
 
 /**
@@ -40,10 +42,13 @@ import persona.feature.chat.ChatLinkContext
  * triggered as Android's Default Digital Assistant (`ROLE_ASSISTANT`).
  *
  * - Keeps the session alive (`setUiEnabled(true)`) so async `onHandleScreenshot` and `onHandleAssist`
- *   callbacks reliably arrive even when the OS passes gesture flags without `SHOW_WITH_SCREENSHOT`.
+ *   callbacks reliably arrive.
+ * - Gates lockscreen invocations (`KeyguardManager.isKeyguardLocked || isDeviceLocked`) so screen
+ *   content is never captured and nothing is sent to the Hub while the device is locked.
+ * - Configures `SOFT_INPUT_ADJUST_NOTHING` in `onCreateContentView`, after `super.onShow`, and in
+ *   `onWindowShown` so `VoiceInteractionWindow` never stacks `ADJUST_PAN` on top of Compose insets.
  * - Stages any received screenshot and filtered safe context strictly in memory; disk persistence
  *   and attachment occur only upon explicit user tap on "Attach current screen".
- * - Sends directly to the connected Hub main conversation and streams Persona's reply in place.
  */
 class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession(context) {
     private val uiContext: Context by lazy { AppLanguages.wrap(context) }
@@ -62,12 +67,13 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
             context = uiContext,
             scope = sessionScope,
             onSnapshot = { snapshot -> controller.onHubUpdate(snapshot) },
+            onModelChoice = { choice -> controller.onModelChoiceUpdated(choice) },
         )
         controller = createOverlayController(
             uiContext = uiContext,
             scope = sessionScope,
             bridge = bridge,
-            launchFullApp = { mainSession -> launchMainActivity(mainSession) },
+            launchFullApp = { targetSession -> launchMainActivity(targetSession) },
             dismiss = ::dismissOverlay,
         )
     }
@@ -93,6 +99,13 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
                         onNotice = controller::showNotice,
                         onAttachScreen = controller::attachCurrentScreen,
                         onRemoveScreen = controller::removeAttachedScreen,
+                        onToggleModelPicker = controller::toggleModelPicker,
+                        onCloseModelPicker = controller::closeModelPicker,
+                        onRefreshModels = controller::refreshModelCatalog,
+                        onSelectDefaultModel = controller::selectDefaultModel,
+                        onSelectModel = controller::selectModel,
+                        onRetryWithDefaultMain = controller::retryWithDefaultMain,
+                        onUnlock = controller::openInPersona,
                         onSend = controller::send,
                         onOpenInPersona = controller::openInPersona,
                         onDismiss = ::dismissOverlay,
@@ -115,27 +128,59 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
     override fun onPrepareShow(args: Bundle?, showFlags: Int) {
         super.onPrepareShow(args, showFlags)
         setUiEnabled(true)
-        Log.i(ASSIST_LOG_TAG, "onPrepareShow showFlags=$showFlags hasArgs=${args != null}")
+        val locked = isDeviceLocked(context)
+        val hasAssist = (showFlags and SHOW_WITH_ASSIST) != 0
+        val hasShot = (showFlags and SHOW_WITH_SCREENSHOT) != 0
+        Log.i(
+            ASSIST_LOG_TAG,
+            "onPrepareShow showFlags=$showFlags withAssist=$hasAssist withScreenshot=$hasShot " +
+                "hasArgs=${args != null} locked=$locked",
+        )
         if (::bridge.isInitialized && ::controller.isInitialized) {
-            bridge.start()
-            controller.beginSession(supportsScreenshot = true, showFlags = showFlags)
+            if (!locked) bridge.start()
+            controller.beginSession(
+                supportsScreenshot = !locked,
+                showFlags = showFlags,
+                deviceLocked = locked,
+            )
         }
     }
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
-        Log.i(ASSIST_LOG_TAG, "onShow showFlags=$showFlags hasArgs=${args != null}")
+        // Re-apply AFTER super.onShow() to override VoiceInteractionWindow's default ADJUST_PAN.
         configureOverlayWindow(window?.window)
+        val locked = isDeviceLocked(context)
+        val hasAssist = (showFlags and SHOW_WITH_ASSIST) != 0
+        val hasShot = (showFlags and SHOW_WITH_SCREENSHOT) != 0
+        Log.i(
+            ASSIST_LOG_TAG,
+            "onShow showFlags=$showFlags withAssist=$hasAssist withScreenshot=$hasShot " +
+                "hasArgs=${args != null} locked=$locked",
+        )
         rootFrame?.let { frame -> lifecycleOwner.attachTo(window?.window?.decorView, frame) }
         lifecycleOwner.onShow()
         if (::bridge.isInitialized && ::controller.isInitialized) {
-            bridge.start()
-            controller.beginSession(supportsScreenshot = true, showFlags = showFlags)
+            if (!locked) bridge.start()
+            controller.beginSession(
+                supportsScreenshot = !locked,
+                showFlags = showFlags,
+                deviceLocked = locked,
+            )
         }
+    }
+
+    override fun onWindowShown() {
+        super.onWindowShown()
+        configureOverlayWindow(window?.window)
     }
 
     override fun onHandleAssist(state: AssistState) {
         if (!::controller.isInitialized) return
+        if (isDeviceLocked(context)) {
+            Log.i(ASSIST_LOG_TAG, "onHandleAssist(state) dropped=deviceLocked")
+            return
+        }
         val contextCard = buildSafeContextCard(state.assistData, state.assistStructure, state.assistContent)
         Log.i(
             ASSIST_LOG_TAG,
@@ -149,6 +194,10 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
     @Suppress("DEPRECATION")
     override fun onHandleAssist(data: Bundle?, structure: AssistStructure?, content: AssistContent?) {
         if (!::controller.isInitialized) return
+        if (isDeviceLocked(context)) {
+            Log.i(ASSIST_LOG_TAG, "onHandleAssist(legacy) dropped=deviceLocked")
+            return
+        }
         val contextCard = buildSafeContextCard(data, structure, content)
         Log.i(
             ASSIST_LOG_TAG,
@@ -160,6 +209,10 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
 
     override fun onHandleScreenshot(screenshot: Bitmap?) {
         if (!::controller.isInitialized) return
+        if (isDeviceLocked(context)) {
+            Log.i(ASSIST_LOG_TAG, "onHandleScreenshot dropped=deviceLocked")
+            return
+        }
         controller.onScreenshotReceived(screenshot)
     }
 
@@ -171,6 +224,10 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
     }
 
     override fun onBackPressed() {
+        if (::controller.isInitialized && controller.state.value.modelPickerOpen) {
+            controller.closeModelPicker()
+            return
+        }
         lifecycleOwner.dispatchBackPressed()
     }
 
@@ -197,6 +254,7 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
     }
 
     private fun dismissOverlay() {
+        // Hide the IME while rootFrame / decorView is still attached and holds a valid windowToken.
         hideKeyboard()
         if (::controller.isInitialized) controller.endSession()
         if (::bridge.isInitialized) bridge.stop()
@@ -205,7 +263,12 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
     }
 
     private fun hideKeyboard() {
-        val token = rootFrame?.windowToken ?: window?.window?.decorView?.windowToken ?: return
+        val targetView = rootFrame?.takeIf { it.isAttachedToWindow }
+            ?: window?.window?.peekDecorView()?.takeIf { it.isAttachedToWindow }
+            ?: rootFrame
+            ?: window?.window?.peekDecorView()
+        targetView?.clearFocus()
+        val token = targetView?.windowToken ?: return
         runCatching {
             context.getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(token, 0)
         }
@@ -225,8 +288,9 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
         )
     }
 
-    private fun launchMainActivity(mainSession: SessionKey?) {
-        val intent = assistMainIntent(context, mainSession)
+    private fun launchMainActivity(targetSession: SessionKey?) {
+        hideKeyboard()
+        val intent = assistMainIntent(context, targetSession)
         val launched = runCatching {
             startAssistantActivity(intent)
             true
@@ -237,6 +301,7 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
     }
 
     private fun openExternalUri(uri: String) {
+        hideKeyboard()
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uri)).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
@@ -251,6 +316,15 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
     }
 }
 
+internal fun isDeviceLocked(context: Context): Boolean = runCatching {
+    val km = context.getSystemService(KeyguardManager::class.java) ?: return@runCatching false
+    km.isKeyguardLocked || km.isDeviceLocked
+}.getOrDefault(false)
+
+/**
+ * Configures the transparent floating overlay window so WindowManager never applies `ADJUST_PAN`
+ * on top of Compose's single-layer `WindowInsets.ime.union(WindowInsets.navigationBars)` avoidance.
+ */
 internal fun configureOverlayWindow(window: Window?) {
     if (window == null) return
     window.setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
@@ -259,7 +333,7 @@ internal fun configureOverlayWindow(window: Window?) {
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM,
     )
     window.setSoftInputMode(
-        WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN,
+        WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING or WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN,
     )
     WindowCompat.setDecorFitsSystemWindows(window, false)
 }
@@ -288,21 +362,33 @@ internal fun createOverlayController(
         },
         sendTextToMain = bridge::sendTextToMain,
         sendWithScreenToMain = bridge::sendWithScreenToMain,
-        publishDraftForFullApp = { id, screenshot, contextCard, text ->
+        createSideConversation = bridge::createSideConversation,
+        sendTextToSession = bridge::sendTextToSession,
+        sendWithScreenToSession = bridge::sendWithScreenToSession,
+        onActiveSessionChanged = bridge::setObservedSession,
+        loadModelCatalog = bridge::loadModelCatalog,
+        onPersistDefaultModel = bridge::selectDefaultModel,
+        onPersistModelChoice = bridge::selectModel,
+        publishDraftForFullApp = { id, screenshot, contextCard, text, targetSession ->
             AssistDraftBus.publish(id = id, screenshot = screenshot, context = contextCard, text = text)
+            if (targetSession != null) {
+                AssistDraftBus.claim(AssistDraftTarget.Session(targetSession))
+            }
         },
         onWakeHub = bridge::wakeHub,
         onLaunchFullApp = launchFullApp,
         onDismiss = dismiss,
         screenOnlyDisplayLabel = { uiContext.getString(R.string.app_assist_screen_only_prompt) },
         defaultSendError = { uiContext.getString(R.string.app_assist_send_failed) },
+        defaultModelStartError = { uiContext.getString(R.string.app_assist_model_start_failed) },
+        initialModelChoice = bridge.currentModelChoice(),
     )
 }
 
-/** Builds the launch intent that opens Persona's main chat (or specific [mainSession]) in full screen. */
-internal fun assistMainIntent(context: Context, mainSession: SessionKey? = null): Intent {
-    val targetUri = if (mainSession != null) {
-        NotificationRoute.conversation(mainSession.machineId, mainSession.sessionId, assistant = true).uri()
+/** Builds the launch intent that opens Persona's main chat (or specific [targetSession]) in full screen. */
+internal fun assistMainIntent(context: Context, targetSession: SessionKey? = null): Intent {
+    val targetUri = if (targetSession != null) {
+        NotificationRoute.conversation(targetSession.machineId, targetSession.sessionId, assistant = true).uri()
     } else {
         Uri.parse(AskPersonaLink)
     }

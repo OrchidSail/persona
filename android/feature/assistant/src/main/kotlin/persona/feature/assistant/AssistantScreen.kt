@@ -685,27 +685,27 @@ fun AssistantScreen(
                     askMain(main)
                     return@collect
                 }
-                // On a cold start the conversations may still be on their way: the main one takes the cursor when it comes.
+                // On a cold start the conversations may still be on their way: wait before claiming
+                // the starter composer so a pending assist draft lands in the main chat once ready.
                 if (!openedMain) {
-                    val arrived = kotlinx.coroutines.withTimeoutOrNull(300) { snapshotFlow { latestMain }.first { it != null } }
-                    if (arrived != null && (!openedMain || arrived == SessionKey(activeMachine.orEmpty(), activeSession.orEmpty()))) {
-                        persona.feature.chat.AssistDraftBus.claim(persona.feature.chat.AssistDraftTarget.Session(arrived))
-                        askMain(arrived)
-                        return@collect
-                    }
                     scope.launch {
-                        kotlinx.coroutines.withTimeoutOrNull(3_000) { snapshotFlow { latestMain }.first { it != null } }
-                            ?.let { main ->
-                                if (!openedMain || main == SessionKey(activeMachine.orEmpty(), activeSession.orEmpty())) {
-                                    persona.feature.chat.AssistDraftBus.retarget(persona.feature.chat.AssistDraftTarget.Session(main))
-                                    askMain(main)
-                                }
-                            }
+                        val arrived = kotlinx.coroutines.withTimeoutOrNull(3_000) {
+                            snapshotFlow { latestMain }.first { it != null }
+                        }
+                        if (arrived != null && (!openedMain || arrived == SessionKey(activeMachine.orEmpty(), activeSession.orEmpty()))) {
+                            persona.feature.chat.AssistDraftBus.claim(persona.feature.chat.AssistDraftTarget.Session(arrived))
+                            askMain(arrived)
+                        } else if (latestMain == null && activeSession == null) {
+                            persona.feature.chat.AssistDraftBus.claim(persona.feature.chat.AssistDraftTarget.Starter)
+                        }
                     }
+                } else {
+                    persona.feature.chat.AssistDraftBus.claim(persona.feature.chat.AssistDraftTarget.Starter)
                 }
                 if (activeSession != null || newChat != null) newConversation()
+            } else {
+                persona.feature.chat.AssistDraftBus.claim(persona.feature.chat.AssistDraftTarget.Starter)
             }
-            persona.feature.chat.AssistDraftBus.claim(persona.feature.chat.AssistDraftTarget.Starter)
             // After the tab's first layout and the saved draft: the text field has to be attached (the old app waited 300 ms).
             kotlinx.coroutines.withTimeoutOrNull(3_000) { snapshotFlow { draftEditor == null || savedComposer != null }.first { it } }
             kotlinx.coroutines.delay(300)

@@ -36,5 +36,16 @@
     <string name="settings_digital_assistant_detail">侧键长按或手势唤起，附带当前截屏提问</string>
     <string name="settings_digital_assistant_active">已设为默认</string>
     <string name="settings_digital_assistant_inactive">未设为默认</string>
-    <string name="settings_search_digital_assistant_aliases">默认数字助理 数字助理 语音助手 侧键 长按 截屏 屏幕截图 助理</string>
+    <string name="settings_search_digital_assistant_aliases">默认数字助理 数字助理 语音助手 侧键 长按 截屏 屏幕截图 助理 快捷浮窗 模型</string>
+    <string name="settings_digital_assistant_system_header">系统默认助理</string>
+    <string name="settings_digital_assistant_model_header">快捷浮窗模型</string>
+    <string name="settings_digital_assistant_model_caption">当前：%1$s。选择专用模型后会使用轻量会话快速回答，不会改动主对话的模型设置。</string>
+    <string name="settings_digital_assistant_model_summary">快捷浮窗模型：%1$s</string>
+    <string name="settings_digital_assistant_model_default">默认（主对话）</string>
+    <string name="settings_digital_assistant_model_default_detail">直接发往主对话并流式查看回复</string>
+    <string name="settings_digital_assistant_model_selected">已选中</string>
+    <string name="settings_digital_assistant_model_refresh">刷新</string>
+    <string name="settings_digital_assistant_model_loading">正在从 Hub 加载模型…</string>
+    <string name="settings_digital_assistant_model_offline">连接 Hub 后即可为快捷浮窗选择专用快速模型。</string>
+    <string name="settings_digital_assistant_model_empty">当前 Hub 暂无可选的其他模型。</string>
 </resources>

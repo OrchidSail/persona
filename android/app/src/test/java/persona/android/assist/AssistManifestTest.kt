@@ -25,6 +25,12 @@ class AssistManifestTest {
     @Test
     fun manifestDeclaresVoiceInteractionServicesAndAssistActivity() {
         val manifest = parse("src/main/AndroidManifest.xml").documentElement
+        val permissions = elements(manifest, "uses-permission")
+            .map { it.getAttributeNS(androidNs, "name") }
+        assertTrue(
+            "Android 17+ (targetSdk=37) requires READ_ASSIST_STRUCTURE_SCREEN_CONTENT for assist context & screenshots",
+            permissions.contains("android.permission.READ_ASSIST_STRUCTURE_SCREEN_CONTENT"),
+        )
         val app = elements(manifest, "application").single()
         val services = elements(app, "service").associateBy { it.getAttributeNS(androidNs, "name") }
 
@@ -55,6 +61,7 @@ class AssistManifestTest {
         assertEquals("true", assistActivity!!.getAttributeNS(androidNs, "exported"))
         assertEquals("true", assistActivity.getAttributeNS(androidNs, "excludeFromRecents"))
         assertEquals("@android:style/Theme.Translucent.NoTitleBar", assistActivity.getAttributeNS(androidNs, "theme"))
+        assertEquals("adjustNothing|stateHidden", assistActivity.getAttributeNS(androidNs, "windowSoftInputMode"))
         val assistActions = elements(assistActivity, "action").map { it.getAttributeNS(androidNs, "name") }
         val assistCategories = elements(assistActivity, "category").map { it.getAttributeNS(androidNs, "name") }
         assertTrue(assistActions.contains("android.intent.action.ASSIST"))

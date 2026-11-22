@@ -123,6 +123,7 @@
     <string name="app_assist_screen_attached">Current screen attached</string>
     <string name="app_assist_screen_preview">Current screen preview</string>
     <string name="app_assist_screen_unavailable">Current screen unavailable on this protected page</string>
+    <string name="app_assist_screen_timeout">Couldn\'t capture the current screen in time</string>
     <string name="app_assist_screen_only_prompt">Please look at this screenshot.</string>
     <string name="app_assist_replying">Persona is replying…</string>
     <string name="app_assist_connecting">Connecting…</string>
@@ -138,4 +139,18 @@
     <string name="app_assist_delivery_sending">Sending…</string>
     <string name="app_assist_delivery_queued">Queued</string>
     <string name="app_assist_delivery_failed">Not sent</string>
+    <string name="app_assist_locked_title">Unlock to use Persona</string>
+    <string name="app_assist_locked_body">Unlock your device before capturing the screen or sending questions to your Hub.</string>
+    <string name="app_assist_unlock_action">Unlock</string>
+    <string name="app_assist_model_default_short">Default</string>
+    <string name="app_assist_model_default_title">Default (Main chat)</string>
+    <string name="app_assist_model_default_subtitle">Send directly to your main conversation</string>
+    <string name="app_assist_model_picker_title">Quick window model</string>
+    <string name="app_assist_model_picker_description">Switch quick window model: %1$s</string>
+    <string name="app_assist_model_loading">Loading models…</string>
+    <string name="app_assist_model_load_failed">Couldn\'t load models from Hub</string>
+    <string name="app_assist_model_empty">No additional models available</string>
+    <string name="app_assist_model_start_failed">Selected model is unavailable right now</string>
+    <string name="app_assist_model_fallback_main">Use Default (Main chat)</string>
+    <string name="app_assist_model_selected">Selected</string>
 </resources>

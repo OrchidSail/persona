@@ -1,8 +1,11 @@
 package persona.android.assist
 
 import android.content.Intent
+import android.net.Uri
+import android.view.WindowManager
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -21,10 +24,13 @@ class AssistActivityTest {
     }
 
     @Test
-    fun actionAssistHostsOverlayWithoutImmediatelySwitchingToMainOrAutoPublishingDraft() {
+    fun actionAssistHostsOverlayWithAdjustNothingAndIgnoresUntrustedIntentExtras() {
         val intent = Intent(Intent.ACTION_ASSIST).apply {
+            data = Uri.parse("https://untrusted.example.com/spoofed")
             putExtra(Intent.EXTRA_ASSIST_PACKAGE, "com.android.chrome")
-            putExtra(Intent.EXTRA_TITLE, "Release Notes")
+            putExtra(Intent.EXTRA_TITLE, "Spoofed Title")
+            putExtra(Intent.EXTRA_SUBJECT, "Spoofed Subject")
+            putExtra(Intent.EXTRA_TEXT, "https://untrusted.example.com/injected")
         }
         val controller = Robolectric.buildActivity(AssistActivity::class.java, intent).create()
         val activity = controller.get()
@@ -32,7 +38,10 @@ class AssistActivityTest {
         // Must remain hosted as an in-place overlay over the current app instead of jumping away immediately.
         assertFalse(activity.isFinishing)
         assertNull(shadowOf(activity).nextStartedActivity)
-        // Must never auto-attach or auto-publish assist context into MainActivity's draft bus.
+        // Must configure SOFT_INPUT_ADJUST_NOTHING so WindowManager never stacks ADJUST_PAN over Compose insets.
+        val adjustMode = activity.window.attributes.softInputMode and WindowManager.LayoutParams.SOFT_INPUT_MASK_ADJUST
+        assertEquals(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING, adjustMode)
+        // Must never trust or auto-publish caller-supplied ACTION_ASSIST extras into MainActivity's draft bus.
         assertNull(AssistDraftBus.current())
 
         controller.destroy()

@@ -17,9 +17,14 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import persona.core.contracts.Item
+import persona.core.contracts.ModelPick
 import persona.core.contracts.SessionKey
 import persona.core.contracts.api.ChatSnapshot
 import persona.core.contracts.api.ConnectionState
+import persona.core.contracts.api.DigitalAssistantModelCatalog
+import persona.core.contracts.api.DigitalAssistantModelChoice
+import persona.core.contracts.api.DigitalAssistantModelGroup
+import persona.core.contracts.api.DigitalAssistantModelOption
 import persona.feature.chat.ChatLinkContext
 import persona.feature.chat.ComposerAttachment
 
@@ -28,6 +33,13 @@ import persona.feature.chat.ComposerAttachment
 @Config(sdk = [35])
 class AssistOverlayControllerTest {
     private val mainKey = SessionKey("machine-1", "main-1")
+    private val sideKey = SessionKey("machine-1", "quick-side-1")
+    private val fastPick = ModelPick(launcher = "gemini", model = "gemini-2.5-flash")
+    private val fastChoice = DigitalAssistantModelChoice(
+        pick = fastPick,
+        modelLabel = "Gemini 2.5 Flash",
+        launcherLabel = "Gemini",
+    )
     private val sampleContext = ChatLinkContext(
         kind = "context",
         title = "Pricing Page",
@@ -41,14 +53,42 @@ class AssistOverlayControllerTest {
         val screenshot: ComposerAttachment?,
         val context: ChatLinkContext?,
         val text: String,
+        val targetSession: SessionKey?,
     )
 
-    private class Harness(scope: TestScope, timeoutMs: Long = 4_000L) {
+    private class Harness(
+        scope: TestScope,
+        timeoutMs: Long = 4_000L,
+        initialModelChoice: DigitalAssistantModelChoice = DigitalAssistantModelChoice(),
+        private val sideConversationKey: SessionKey = SessionKey("machine-1", "quick-side-1"),
+    ) {
         val preparedBitmaps = mutableListOf<Bitmap>()
         var saveCount = 0
         val deletedAttachments = mutableListOf<ComposerAttachment>()
         val sentTexts = mutableListOf<Pair<String, String>>()
         val sentWithScreen = mutableListOf<Triple<String, ComposerAttachment, ChatLinkContext?>>()
+        val createdSidePicks = mutableListOf<ModelPick>()
+        val sentSessionTexts = mutableListOf<Triple<SessionKey, String, String>>()
+        val sentSessionScreens = mutableListOf<Triple<SessionKey, String, ComposerAttachment>>()
+        val observedSessions = mutableListOf<SessionKey?>()
+        val persistedChoices = mutableListOf<DigitalAssistantModelChoice>()
+        var sideCreateFailure: Exception? = null
+        var catalogLoads = 0
+        var catalogResponse = DigitalAssistantModelCatalog(
+            groups = listOf(
+                DigitalAssistantModelGroup(
+                    launcher = "gemini",
+                    title = "Gemini",
+                    options = listOf(
+                        DigitalAssistantModelOption(
+                            pick = ModelPick("gemini", "gemini-2.5-flash"),
+                            modelLabel = "Gemini 2.5 Flash",
+                            launcherLabel = "Gemini",
+                        ),
+                    ),
+                ),
+            ),
+        )
         val publishedDrafts = mutableListOf<PublishedDraft>()
         val launchedTargets = mutableListOf<SessionKey?>()
         var wakeCount = 0
@@ -76,12 +116,34 @@ class AssistOverlayControllerTest {
             deleteScreenshot = { deletedAttachments += it },
             sendTextToMain = { prompt, clientId -> sentTexts += prompt to clientId },
             sendWithScreenToMain = { prompt, shot, ctx, _ -> sentWithScreen += Triple(prompt, shot, ctx) },
-            publishDraftForFullApp = { id, shot, ctx, text -> publishedDrafts += PublishedDraft(id, shot, ctx, text) },
+            createSideConversation = { pick ->
+                createdSidePicks += pick
+                sideCreateFailure?.let { throw it }
+                sideConversationKey
+            },
+            sendTextToSession = { session, prompt, clientId ->
+                sentSessionTexts += Triple(session, prompt, clientId)
+            },
+            sendWithScreenToSession = { session, prompt, shot, _, _ ->
+                sentSessionScreens += Triple(session, prompt, shot)
+            },
+            onActiveSessionChanged = { observedSessions += it },
+            loadModelCatalog = {
+                catalogLoads++
+                catalogResponse
+            },
+            onPersistDefaultModel = { persistedChoices += DigitalAssistantModelChoice() },
+            onPersistModelChoice = { persistedChoices += it },
+            publishDraftForFullApp = { id, shot, ctx, text, target ->
+                publishedDrafts += PublishedDraft(id, shot, ctx, text, target)
+            },
             onWakeHub = { wakeCount++ },
             onLaunchFullApp = { launchedTargets += it },
             onDismiss = { dismissCount++ },
             screenOnlyDisplayLabel = { "Please look at this screenshot." },
             defaultSendError = { "Couldn't send message" },
+            defaultModelStartError = { "Selected model is unavailable right now" },
+            initialModelChoice = initialModelChoice,
             screenshotWaitTimeoutMillis = timeoutMs,
             nextId = { "id-${++idSeq}" },
             log = {},
@@ -186,6 +248,7 @@ class AssistOverlayControllerTest {
         assertEquals(0, harness.saveCount)
         assertTrue(harness.preparedBitmaps.single().isRecycled)
         assertTrue(harness.sentWithScreen.isEmpty())
+        assertTrue(harness.createdSidePicks.isEmpty())
         assertEquals(1, harness.sentTexts.size)
         assertEquals("What is the weather?", harness.sentTexts.single().first)
         assertEquals(AssistCaptureStatus.NotSupported, controller.state.value.captureStatus)
@@ -233,7 +296,7 @@ class AssistOverlayControllerTest {
     }
 
     @Test
-    fun flagSecureNullScreenshotDegradesGracefullyWithoutBlockingTextSend() = runTest {
+    fun flagSecureNullScreenshotIsDistinctFromTimeoutAndStillAllowsTextSend() = runTest {
         val harness = Harness(this)
         val controller = harness.controller
         controller.onHubUpdate(AssistHubSnapshot(status = AssistHubStatus.Ready, mainSession = mainKey))
@@ -257,7 +320,7 @@ class AssistOverlayControllerTest {
     }
 
     @Test
-    fun delayedScreenshotArrivalEvenAfterTimeoutStillBecomesAvailable() = runTest {
+    fun screenshotWaitTimeoutReportsTimedOutNotProtectedAndStillUpgradesOnLateBitmap() = runTest {
         val harness = Harness(this, timeoutMs = 1_000L)
         val controller = harness.controller
         controller.beginSession(supportsScreenshot = true)
@@ -265,7 +328,7 @@ class AssistOverlayControllerTest {
 
         advanceTimeBy(1_500L)
         runCurrent()
-        assertEquals(AssistCaptureStatus.Unavailable, controller.state.value.captureStatus)
+        assertEquals(AssistCaptureStatus.TimedOut, controller.state.value.captureStatus)
 
         // Late onHandleScreenshot from a busy compositor still upgrades seamlessly to Available.
         val shot = sampleBitmap()
@@ -275,6 +338,188 @@ class AssistOverlayControllerTest {
         assertEquals(0, harness.saveCount)
 
         shot.recycle()
+        controller.endSession()
+        runCurrent()
+    }
+
+    @Test
+    fun lockedDeviceBlocksCaptureContextSendAndHandoffDrafts() = runTest {
+        val harness = Harness(this)
+        val controller = harness.controller
+        controller.onHubUpdate(AssistHubSnapshot(status = AssistHubStatus.Ready, mainSession = mainKey))
+        controller.beginSession(supportsScreenshot = true, showFlags = 0, deviceLocked = true)
+
+        assertTrue(controller.state.value.deviceLocked)
+        assertEquals(AssistCaptureStatus.NotSupported, controller.state.value.captureStatus)
+        assertEquals(0, harness.wakeCount)
+
+        val shot = sampleBitmap()
+        controller.onAssistContextReceived(sampleContext, isFocused = true)
+        controller.onScreenshotReceived(shot)
+        runCurrent()
+
+        assertEquals(0, harness.preparedBitmaps.size)
+        assertEquals(0, harness.saveCount)
+        assertFalse(controller.state.value.hasStagedContext)
+
+        controller.updateDraftText("Secret locked query")
+        assertFalse(controller.state.value.canSend)
+        controller.send()
+        runCurrent()
+        assertTrue(harness.sentTexts.isEmpty())
+
+        controller.openInPersona()
+        assertTrue(harness.publishedDrafts.isEmpty())
+        assertEquals(listOf<SessionKey?>(null), harness.launchedTargets)
+        assertEquals(1, harness.dismissCount)
+
+        shot.recycle()
+        controller.endSession()
+        runCurrent()
+    }
+
+    @Test
+    fun dedicatedOverlayModelCreatesNonMainSessionReusesItOnFollowUpsAndOpensExactSession() = runTest {
+        val harness = Harness(this, initialModelChoice = fastChoice, sideConversationKey = sideKey)
+        val controller = harness.controller
+        val mainHistoryItem = Item(id = "main-old", role = "assistant", kind = "text", text = "Main history")
+        controller.onHubUpdate(
+            AssistHubSnapshot(
+                status = AssistHubStatus.Ready,
+                mainSession = mainKey,
+                observedSession = mainKey,
+                chatSnapshot = ChatSnapshot(items = listOf(mainHistoryItem), loading = false),
+            ),
+        )
+        controller.beginSession(supportsScreenshot = false)
+
+        // First send creates a lightweight side conversation with the chosen ModelPick (never main).
+        controller.updateDraftText("Quick translate hello")
+        controller.send()
+        runCurrent()
+
+        assertEquals(listOf(fastPick), harness.createdSidePicks)
+        assertTrue(harness.sentTexts.isEmpty())
+        assertEquals(1, harness.sentSessionTexts.size)
+        assertEquals(sideKey, harness.sentSessionTexts[0].first)
+        assertEquals("Quick translate hello", harness.sentSessionTexts[0].second)
+        assertEquals(sideKey, controller.state.value.activeSession)
+        assertEquals(sideKey, harness.observedSessions.last())
+
+        // While bridge is still switching from main -> side, main chat history must not leak into overlay turns.
+        controller.onHubUpdate(
+            AssistHubSnapshot(
+                status = AssistHubStatus.Ready,
+                mainSession = mainKey,
+                observedSession = mainKey,
+                chatSnapshot = ChatSnapshot(items = listOf(mainHistoryItem), loading = false),
+            ),
+        )
+        assertEquals(1, controller.state.value.turns.size)
+        assertTrue(controller.state.value.turns.single().fromUser)
+
+        // Streaming reply arrives on the dedicated side conversation.
+        val firstClientId = harness.sentSessionTexts[0].third
+        controller.onHubUpdate(
+            AssistHubSnapshot(
+                status = AssistHubStatus.Ready,
+                mainSession = mainKey,
+                observedSession = sideKey,
+                mainWorking = false,
+                chatSnapshot = ChatSnapshot(
+                    items = listOf(
+                        Item(id = "su-1", role = "user", kind = "text", text = "Quick translate hello", clientMsgId = firstClientId),
+                        Item(id = "sa-1", role = "assistant", kind = "text", text = "你好"),
+                    ),
+                    loading = false,
+                ),
+            ),
+        )
+        assertEquals(2, controller.state.value.turns.size)
+        assertEquals("你好", controller.state.value.turns[1].text)
+
+        // Follow-up in the same overlay session reuses sideKey instead of creating a second conversation.
+        controller.updateDraftText("And in Japanese?")
+        controller.send()
+        runCurrent()
+        assertEquals(1, harness.createdSidePicks.size)
+        assertEquals(2, harness.sentSessionTexts.size)
+        assertEquals(sideKey, harness.sentSessionTexts[1].first)
+
+        // "Open in Persona" opens the exact side session and claims any unsent draft for it.
+        controller.updateDraftText("Draft for full app")
+        controller.openInPersona()
+        assertEquals(listOf<SessionKey?>(sideKey), harness.launchedTargets)
+        assertEquals(sideKey, harness.publishedDrafts.single().targetSession)
+
+        controller.endSession()
+        runCurrent()
+    }
+
+    @Test
+    fun dedicatedModelFailureOffersOneTapFallbackToMainWithoutLosingDraftOrScreen() = runTest {
+        val harness = Harness(this, initialModelChoice = fastChoice)
+        harness.sideCreateFailure = IllegalStateException("Launcher gemini is offline")
+        val controller = harness.controller
+        controller.onHubUpdate(AssistHubSnapshot(status = AssistHubStatus.Ready, mainSession = mainKey))
+        controller.beginSession(supportsScreenshot = true)
+
+        val shot = sampleBitmap()
+        controller.onScreenshotReceived(shot)
+        runCurrent()
+        controller.attachCurrentScreen()
+        runCurrent()
+        val confirmed = controller.state.value.attachedScreenshot!!
+
+        controller.updateDraftText("Explain this error")
+        controller.send()
+        runCurrent()
+
+        assertEquals("Launcher gemini is offline", controller.state.value.errorMessage)
+        assertTrue(controller.state.value.modelFallbackAvailable)
+        assertEquals("Explain this error", controller.state.value.draftText)
+        assertEquals(confirmed, controller.state.value.attachedScreenshot)
+        assertTrue(harness.deletedAttachments.isEmpty())
+
+        // One-tap fallback retries cleanly against Main chat without mutating main chat's model.
+        controller.retryWithDefaultMain()
+        runCurrent()
+
+        assertFalse(controller.state.value.modelFallbackAvailable)
+        assertNull(controller.state.value.errorMessage)
+        assertEquals(1, harness.sentWithScreen.size)
+        assertEquals("Explain this error", harness.sentWithScreen.single().first)
+        assertEquals(confirmed, harness.sentWithScreen.single().second)
+        assertEquals(listOf(confirmed), harness.deletedAttachments)
+
+        shot.recycle()
+        controller.endSession()
+        runCurrent()
+    }
+
+    @Test
+    fun modelPickerLoadsCatalogPersistsSelectionAndSyncsDefaultSwitch() = runTest {
+        val harness = Harness(this)
+        val controller = harness.controller
+        controller.onHubUpdate(AssistHubSnapshot(status = AssistHubStatus.Ready, mainSession = mainKey))
+        controller.beginSession(supportsScreenshot = false)
+
+        controller.toggleModelPicker()
+        runCurrent()
+        assertTrue(controller.state.value.modelPickerOpen)
+        assertEquals(1, harness.catalogLoads)
+        assertEquals(1, controller.state.value.modelCatalog.groups.size)
+
+        controller.selectModel(fastChoice)
+        assertFalse(controller.state.value.modelPickerOpen)
+        assertEquals(fastChoice, controller.state.value.modelChoice)
+        assertEquals(listOf(fastChoice), harness.persistedChoices)
+
+        controller.selectDefaultModel()
+        assertTrue(controller.state.value.modelChoice.isDefault)
+        assertEquals(2, harness.persistedChoices.size)
+        assertTrue(harness.persistedChoices.last().isDefault)
+
         controller.endSession()
         runCurrent()
     }
@@ -385,7 +630,7 @@ class AssistOverlayControllerTest {
         runCurrent()
 
         assertTrue(harness.publishedDrafts.isEmpty())
-        assertEquals(listOf(mainKey), harness.launchedTargets)
+        assertEquals(listOf<SessionKey?>(mainKey), harness.launchedTargets)
         assertEquals(1, harness.dismissCount)
         assertTrue(harness.preparedBitmaps[0].isRecycled)
 
@@ -409,6 +654,7 @@ class AssistOverlayControllerTest {
         assertEquals(confirmedShot, handoff.screenshot)
         assertEquals(sampleContext, handoff.context)
         assertEquals("Continue in full app", handoff.text)
+        assertEquals(mainKey, handoff.targetSession)
         assertTrue("Handed-off screenshot must not be deleted on overlay close", harness.deletedAttachments.isEmpty())
 
         shot1.recycle()

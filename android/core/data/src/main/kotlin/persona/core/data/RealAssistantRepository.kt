@@ -337,6 +337,15 @@ class RealAssistantRepository(
 
     override suspend fun startConversation(pick: persona.core.contracts.ModelPick): SessionKey = start(pick)
 
+    override suspend fun startSideConversation(pick: persona.core.contracts.ModelPick): SessionKey {
+        val request = request()
+        return creationLock.withLock {
+            val config = request.transport.assistantOf(request.owner)
+            check(connection.current.value === request.transport) { CoreText.of(Key.ConnectionSwitched).shown }
+            create(request, isMain = false, pick = pick, config = config)
+        }
+    }
+
     override suspend fun mainConversationOf(manager: String): SessionKey {
         val captured = request()
         val request = captured.copy(choice = captured.choice.copy(

@@ -25,6 +25,7 @@ private data class HomeEntry(
     val value: String? = null,
     val itemKey: String = key.toString(),
     val onClick: (() -> Unit)? = null,
+    val subtitleText: String? = null,
 )
 
 /** Navigation only. The first scope uses the same current-assistant roster and bound services as before. */
@@ -43,6 +44,10 @@ internal fun SettingsHomePage(
     val assistant = currentAssistant()
     val styleStore = LocalAppStyleStore.current
     var defaultDigitalAssistant by remember(context) { mutableStateOf(DigitalAssistantSettings.isDefaultAssistant(context)) }
+    val digitalAssistantChoice = services.digitalAssistantModel?.choice?.collectAsState()?.value
+    val digitalAssistantSubtitle = digitalAssistantChoice?.takeUnless { it.isDefault }?.fullLabel
+        ?.takeIf(String::isNotBlank)
+        ?.let { stringResource(R.string.settings_digital_assistant_model_summary, it) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         defaultDigitalAssistant = DigitalAssistantSettings.isDefaultAssistant(context)
     }
@@ -70,7 +75,7 @@ internal fun SettingsHomePage(
         entry(SettingsPage.NotificationBackground, R.string.settings_notification_background_title, PersonaIcons.notifications,
             R.string.settings_home_notifications_detail, R.string.settings_search_notifications_aliases),
         HomeEntry(
-            key = null,
+            key = SettingsPageRoute(SettingsPage.DigitalAssistant),
             title = R.string.settings_digital_assistant_title,
             icon = PersonaIcons.ai,
             subtitle = R.string.settings_digital_assistant_detail,
@@ -80,7 +85,7 @@ internal fun SettingsHomePage(
                 else R.string.settings_digital_assistant_inactive,
             ),
             itemKey = "device-digital-assistant",
-            onClick = { DigitalAssistantSettings.openSystemSettings(context) },
+            subtitleText = digitalAssistantSubtitle,
         ),
         entry(SettingsPage.Translation, R.string.settings_translation_title, PersonaIcons.translate, R.string.settings_row_translation_subtitle, value = translationValue),
         entry(SettingsPage.Storage, R.string.settings_storage_title, PersonaIcons.archive),
@@ -121,7 +126,7 @@ internal fun SettingsHomePage(
                 if (row.key == SettingsPageRoute(SettingsPage.Channels)) ChannelsSettingsRow(channelList, GroupPosition.of(index, rows.size),
                     selected == row.key, onClick = { onOpen(SettingsPage.Channels) })
                 else JGroupItem(GroupPosition.of(index, rows.size)) {
-                JRow(title = stringResource(row.title), leadingIcon = row.icon, subtitle = row.subtitle?.let { stringResource(it) }, value = row.value,
+                JRow(title = stringResource(row.title), leadingIcon = row.icon, subtitle = row.subtitleText ?: row.subtitle?.let { stringResource(it) }, value = row.value,
                     selected = row.key != null && selected == row.key, onClick = {
                         when {
                             row.onClick != null -> row.onClick.invoke()

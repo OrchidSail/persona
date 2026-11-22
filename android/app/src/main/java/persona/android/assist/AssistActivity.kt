@@ -1,5 +1,6 @@
 package persona.android.assist
 
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -10,13 +11,16 @@ import androidx.activity.compose.setContent
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.lifecycleScope
-import persona.android.R
 import persona.core.designsystem.AppLanguages
 
 /**
  * Fallback entry point for launchers and OEM paths that dispatch `android.intent.action.ASSIST`
  * directly rather than binding a [android.service.voice.VoiceInteractionSession]. Renders the
  * same transparent bottom floating overlay card over the previous app.
+ *
+ * Security: because this Activity is exported for `ACTION_ASSIST`, caller-supplied Intent extras
+ * are never trusted or converted into `<persona-context>`; only system `VoiceInteractionSession`
+ * callbacks provide page context.
  */
 class AssistActivity : ComponentActivity() {
     override fun attachBaseContext(base: Context) = super.attachBaseContext(AppLanguages.wrap(base))
@@ -32,26 +36,33 @@ class AssistActivity : ComponentActivity() {
             context = this,
             scope = lifecycleScope,
             onSnapshot = { snapshot -> controller.onHubUpdate(snapshot) },
+            onModelChoice = { choice -> controller.onModelChoiceUpdated(choice) },
         )
         controller = createOverlayController(
             uiContext = this,
             scope = lifecycleScope,
             bridge = bridge,
-            launchFullApp = { mainSession ->
-                runCatching { startActivity(assistMainIntent(this, mainSession)) }
+            launchFullApp = { targetSession ->
+                runCatching { startActivity(assistMainIntent(this, targetSession)) }
             },
             dismiss = { finish() },
         )
 
-        bridge.start()
-        controller.beginSession(supportsScreenshot = false)
-        stageSafeIntentContext(intent)
+        val locked = isDeviceLocked(this)
+        if (!locked) {
+            bridge.start()
+        }
+        controller.beginSession(supportsScreenshot = false, deviceLocked = locked)
 
         setContent {
             val ui by controller.state.collectAsState()
             BackHandler {
-                controller.endSession()
-                finish()
+                if (ui.modelPickerOpen) {
+                    controller.closeModelPicker()
+                } else {
+                    controller.endSession()
+                    finish()
+                }
             }
             AssistOverlayEnvironment(onOpenExternalUri = ::openExternalUri) {
                 AssistOverlaySheet(
@@ -61,6 +72,13 @@ class AssistActivity : ComponentActivity() {
                     onNotice = controller::showNotice,
                     onAttachScreen = controller::attachCurrentScreen,
                     onRemoveScreen = controller::removeAttachedScreen,
+                    onToggleModelPicker = controller::toggleModelPicker,
+                    onCloseModelPicker = controller::closeModelPicker,
+                    onRefreshModels = controller::refreshModelCatalog,
+                    onSelectDefaultModel = controller::selectDefaultModel,
+                    onSelectModel = controller::selectModel,
+                    onRetryWithDefaultMain = controller::retryWithDefaultMain,
+                    onUnlock = ::requestUnlock,
                     onSend = controller::send,
                     onOpenInPersona = controller::openInPersona,
                     onDismiss = {
@@ -78,15 +96,23 @@ class AssistActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    private fun stageSafeIntentContext(source: Intent?) {
-        val snapshot = AssistContextExtractor.snapshotFromIntent(source)
-        val safe = AssistContextExtractor.extract(snapshot, packageName)
-        val contextCard = AssistContextExtractor.toLinkContext(
-            safe = safe,
-            id = controller.state.value.invocationId.ifEmpty { "assist-activity" },
-            fallbackTitle = getString(R.string.app_assist_context_title),
-        )
-        controller.onAssistContextReceived(contextCard, isFocused = true)
+    private fun requestUnlock() {
+        val km = getSystemService(KeyguardManager::class.java)
+        if (km != null && (km.isKeyguardLocked || km.isDeviceLocked)) {
+            runCatching {
+                km.requestDismissKeyguard(
+                    this,
+                    object : KeyguardManager.KeyguardDismissCallback() {
+                        override fun onDismissSucceeded() {
+                            bridge.start()
+                            controller.onDeviceUnlocked()
+                        }
+                    },
+                )
+                return
+            }
+        }
+        controller.openInPersona()
     }
 
     private fun openExternalUri(uri: String) {
