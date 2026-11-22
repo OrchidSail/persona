@@ -9,23 +9,32 @@ import (
 	"time"
 
 	"github.com/nwverse/persona/server/internal/prompts"
+	"github.com/nwverse/persona/server/internal/proto"
 )
 
-// relayLaterSend is the quiet context reserved before the first node write under a once_id. An empty reservation
-// matters too: a retry of a send that originally carried nothing must not consume newly arrived quiet messages.
+// relayLaterSend is the quiet context reserved before the first node write under a delivery ID (an assistant.send
+// once_id or a scoped owner client_msg_id). An empty reservation matters too: a retry of a send that originally
+// carried nothing must not consume newly arrived quiet messages.
 type relayLaterSend struct {
 	At    time.Time  `json:"at"`
 	Text  string     `json:"text,omitempty"`
 	Items []relayMsg `json:"items,omitempty"`
 }
 
-// conversation_send with wake: false (#11614). Every turn of a supervising conversation re-reads its whole context, so
-// a message that only acknowledges or informs should not start one. Such a message is kept for its receiver
-// (relayState.Later) and goes in, as a context block in front of it, with the next message the manager delivers there
-// for any other reason: a supervision message, another conversation's message, a scheduled follow-up, a notice. It
-// never starts a turn of its own, costs no hop and no place in the relay rate, and is never guessed from its words.
-// A turn the owner starts from an app goes to the node without this manager: what is kept waits for the next one the
-// manager delivers, and shows above the composer meanwhile (queuedRelays).
+// ownerLaterSend is an in-flight owner send prepared by assistant.send_params waiting for session.assistant_sent.
+type ownerLaterSend struct {
+	msg  string
+	done func(bool)
+	at   time.Time
+}
+
+// conversation_send with wake: false (#11614, #12867). Every turn of a supervising conversation re-reads its whole
+// context, so a message that only acknowledges or informs should not start one. Such a message is kept for its
+// receiver (relayState.Later) and goes in, as a context block in front of it, with the next message delivered there
+// for any other reason: a supervision message, another conversation's message, a scheduled follow-up, a notice, or an
+// owner message sent from an app/web client (via assistant.send_params and settled on session.assistant_sent, or
+// retried from undelivered). It never starts a turn of its own, costs no hop and no place in the relay rate, and is
+// never guessed from its words. While kept, it shows above the composer (queuedRelays) and clears once consumed.
 
 const (
 	// relayLaterMax bounds what one conversation keeps; past it the oldest goes.
@@ -33,7 +42,25 @@ const (
 	// relayLaterKeep is how long a kept message waits for a delivery to go with; a conversation that got nothing in
 	// that long (deleted, abandoned) lets it go.
 	relayLaterKeep = 7 * 24 * time.Hour
+	// ownerLaterInFlightMost bounds in-flight hub owner sends tracked per conversation for unnamed/legacy settlement.
+	ownerLaterInFlightMost = 8
+	// ownerLaterWait is how long an in-flight hub owner send waits for session.assistant_sent before expiring.
+	ownerLaterWait = 10 * time.Minute
 )
+
+func relayLaterKey(to, once string) string {
+	identity, _ := json.Marshal([2]string{to, once})
+	return string(identity) // JSON strings are safe as Postgres jsonb keys, unlike a NUL separator.
+}
+
+// relayLaterOwnerOnce scopes an app message's client_msg_id in LaterSends so it never collides with a manager
+// assistant.send once_id (relay_once.go).
+func relayLaterOwnerOnce(clientMsgID string) string {
+	if clientMsgID == "" {
+		return ""
+	}
+	return "owner:" + clientMsgID
+}
 
 // keepRelayLater keeps msg for conversation to, answering how many wait there now; false when the relay state could not
 // be read (nothing was kept).
@@ -78,8 +105,7 @@ func (s *Service) relayLaterSendFor(ctx context.Context, to, once string) (strin
 		return "", func(bool) {}, errors.New("cannot read quiet-message delivery state")
 	}
 	s.pruneRelayLaterLocked(time.Now())
-	identity, _ := json.Marshal([2]string{to, once})
-	key := string(identity) // JSON strings are safe as Postgres jsonb keys, unlike a NUL separator.
+	key := relayLaterKey(to, once)
 	carry, reserved := b.st.LaterSends[key]
 	if once == "" || !reserved {
 		carry = relayLaterSend{At: time.Now().UTC(), Items: slices.Clone(b.st.Later[to])}
@@ -107,25 +133,203 @@ func (s *Service) relayLaterSendFor(ctx context.Context, to, once string) (strin
 		if !taken {
 			return
 		}
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		if !s.relayLocked(ctx) {
-			return
-		}
-		q := b.st.Later[to]
-		rest := slices.DeleteFunc(slices.Clone(q), func(m relayMsg) bool { return slices.Contains(carry.Items, m) })
-		if len(rest) == len(q) {
-			return
-		}
-		if len(rest) == 0 {
-			delete(b.st.Later, to)
-		} else {
-			b.st.Later[to] = rest
-		}
-		if err := s.saveRelayLocked(); err != nil {
-			b.loaded = false
-		}
+		s.dropRelayLater(context.WithoutCancel(ctx), to, carry.Items)
 	}, nil
+}
+
+// dropRelayLater removes exactly items from relayState.Later[to], saves, and publishes an updated snapshot so clients
+// drop cleared quiet relays from queuedRelays immediately.
+func (s *Service) dropRelayLater(ctx context.Context, to string, items []relayMsg) bool {
+	if len(items) == 0 {
+		return false
+	}
+	b := &s.relays
+	b.mu.Lock()
+	if !s.relayLocked(ctx) {
+		b.mu.Unlock()
+		return false
+	}
+	q := b.st.Later[to]
+	rest := slices.DeleteFunc(slices.Clone(q), func(m relayMsg) bool { return slices.Contains(items, m) })
+	if len(rest) == len(q) {
+		b.mu.Unlock()
+		return false
+	}
+	if len(rest) == 0 {
+		delete(b.st.Later, to)
+	} else {
+		b.st.Later[to] = rest
+	}
+	if err := s.saveRelayLocked(); err != nil {
+		b.loaded = false
+	}
+	b.mu.Unlock()
+	if s.hub != nil {
+		s.publish(context.WithoutCancel(ctx))
+	}
+	return true
+}
+
+// managedAssistantConversation reports whether sid on machine is a managed assistant conversation (main chat or a
+// known headless assistant conversation, excluding guest rooms and ordinary Agent sessions).
+func (s *Service) managedAssistantConversation(ctx context.Context, machine, sid string) bool {
+	if sid == "" || s.isGuest(ctx, machine, sid) {
+		return false
+	}
+	cfg := s.settings(ctx)
+	if cfg.Main != "" && cfg.Main == sid && (machine == cfg.mainRouteMachine() || s.sameMachine(machine, cfg.mainRouteMachine())) {
+		return true
+	}
+	c, known := s.session(ctx, machine, sid)
+	return known && c.Assistant && c.PaneID == ""
+}
+
+// canCarryOwnerRelayLater reports whether owner send params p represent a turn that reads messages (non-empty user
+// text or images, not a slash command, not a meeting batch, and not a public channel turn).
+func canCarryOwnerRelayLater(p map[string]any) bool {
+	if p == nil || meetingSource(p) || p["public"] == true {
+		return false
+	}
+	text, _ := p["text"].(string)
+	trimmed := strings.TrimSpace(text)
+	if strings.HasPrefix(trimmed, "/") {
+		return false
+	}
+	if trimmed != "" {
+		return true
+	}
+	switch imgs := p["images"].(type) {
+	case []any:
+		return len(imgs) > 0
+	case []proto.Image:
+		return len(imgs) > 0
+	}
+	return false
+}
+
+// withOwnerRelayLater reserves and prepends quiet messages kept in relayState.Later for an owner send to a managed
+// assistant conversation (#12867). Retries with the same clientMsgID reuse the original reservation so quiet messages
+// that arrive later are never consumed by a retry.
+func (s *Service) withOwnerRelayLater(ctx context.Context, machine, sid, clientMsgID string, p map[string]any) (func(bool), error) {
+	if !s.managedAssistantConversation(ctx, machine, sid) || !canCarryOwnerRelayLater(p) {
+		return func(bool) {}, nil
+	}
+	later, done, err := s.relayLaterSendFor(ctx, sid, relayLaterOwnerOnce(clientMsgID))
+	if err != nil || later == "" {
+		return done, err
+	}
+	if text, _ := p["text"].(string); text != "" {
+		p["text"] = later + "\n" + text
+	} else {
+		p["text"] = later
+	}
+	s.humanSent.markReplyOnly(sid, clientMsgID)
+	return done, nil
+}
+
+// pruneOwnerLaterLocked drops expired in-flight owner sends for sid; b.mu is held.
+func (s *Service) pruneOwnerLaterLocked(sid string, now time.Time) {
+	q := s.relays.ownerLater[sid]
+	if len(q) == 0 {
+		return
+	}
+	i := 0
+	for i < len(q) && now.Sub(q[i].at) >= ownerLaterWait {
+		i++
+	}
+	if i == 0 {
+		return
+	}
+	q = slices.Clone(q[i:])
+	if len(q) == 0 {
+		delete(s.relays.ownerLater, sid)
+	} else {
+		s.relays.ownerLater[sid] = q
+	}
+}
+
+// relayLaterOwnerSent records an in-flight hub owner send after assistant.send_params succeeds so an unnamed send (or
+// an older hub's unnamed session.assistant_sent notice) settles its reserved quiet relays.
+func (s *Service) relayLaterOwnerSent(sid, clientMsgID string, done func(bool)) {
+	if sid == "" || done == nil {
+		return
+	}
+	b := &s.relays
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := time.Now()
+	s.pruneOwnerLaterLocked(sid, now)
+	if b.ownerLater == nil {
+		b.ownerLater = map[string][]ownerLaterSend{}
+	}
+	q := b.ownerLater[sid]
+	if clientMsgID != "" {
+		if i := slices.IndexFunc(q, func(o ownerLaterSend) bool { return o.msg == clientMsgID }); i >= 0 {
+			o := q[i]
+			o.done, o.at = done, now
+			b.ownerLater[sid] = append(slices.Delete(q, i, i+1), o)
+			return
+		}
+	}
+	q = append(q, ownerLaterSend{msg: clientMsgID, done: done, at: now})
+	if len(q) > ownerLaterInFlightMost {
+		q = q[len(q)-ownerLaterInFlightMost:]
+	}
+	b.ownerLater[sid] = q
+}
+
+// relayLaterOwnerOutcome settles quiet relays reserved for an owner send when session.assistant_sent (or undelivered
+// landed detection) reports its outcome (#12867). Only confirmed acceptance (delivered) drops the reserved items; failed
+// or unknown outcomes keep them in relayState.Later. Named sends settle from durable LaterSends so settlement survives
+// a manager restart between assistant.send_params and session.assistant_sent.
+func (s *Service) relayLaterOwnerOutcome(ctx context.Context, sid, clientMsgID string, delivered bool) {
+	if sid == "" {
+		return
+	}
+	b := &s.relays
+	b.mu.Lock()
+	conn := hubConnOf(ctx)
+	if clientMsgID != "" {
+		b.ownerLaterNamedOn = max(b.ownerLaterNamedOn, conn+1)
+	}
+	s.pruneOwnerLaterLocked(sid, time.Now())
+	var done func(bool)
+	if q := b.ownerLater[sid]; len(q) > 0 {
+		i := slices.IndexFunc(q, func(o ownerLaterSend) bool { return o.msg == clientMsgID })
+		if i < 0 && clientMsgID == "" && b.ownerLaterNamedOn != conn+1 {
+			i = 0
+		}
+		if i >= 0 {
+			done = q[i].done
+			q = slices.Delete(q, i, i+1)
+			if len(q) == 0 {
+				delete(b.ownerLater, sid)
+			} else {
+				b.ownerLater[sid] = q
+			}
+		}
+	}
+	if !delivered {
+		b.mu.Unlock()
+		return
+	}
+	if clientMsgID != "" {
+		var items []relayMsg
+		if s.relayLocked(context.WithoutCancel(ctx)) {
+			if carry, ok := b.st.LaterSends[relayLaterKey(sid, relayLaterOwnerOnce(clientMsgID))]; ok {
+				items = slices.Clone(carry.Items)
+			}
+		}
+		b.mu.Unlock()
+		if len(items) > 0 {
+			s.dropRelayLater(context.WithoutCancel(ctx), sid, items)
+		}
+		return
+	}
+	b.mu.Unlock()
+	if done != nil {
+		done(true)
+	}
 }
 
 // withRelayLater puts what is kept for the receiver of an assistant.send in front of its text (params p), answering
