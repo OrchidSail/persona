@@ -158,7 +158,10 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
             "onShow showFlags=$showFlags withAssist=$hasAssist withScreenshot=$hasShot " +
                 "hasArgs=${args != null} locked=$locked",
         )
-        rootFrame?.let { frame -> lifecycleOwner.attachTo(window?.window?.decorView, frame) }
+        rootFrame?.let { frame ->
+            lifecycleOwner.attachTo(window?.window?.decorView, frame)
+            frame.post { configureOverlayWindow(window?.window) }
+        }
         lifecycleOwner.onShow()
         if (::bridge.isInitialized && ::controller.isInitialized) {
             if (!locked) bridge.start()
@@ -168,11 +171,6 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
                 deviceLocked = locked,
             )
         }
-    }
-
-    override fun onWindowShown() {
-        super.onWindowShown()
-        configureOverlayWindow(window?.window)
     }
 
     override fun onHandleAssist(state: AssistState) {
