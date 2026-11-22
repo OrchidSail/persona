@@ -247,7 +247,11 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
             Log.i(ASSIST_LOG_TAG, "onHandleScreenshot dropped=deviceLocked")
             return
         }
-        controller.onScreenshotReceived(screenshot)
+        val probe = if (screenshot == null) probeScreenshotSettings() else null
+        controller.onScreenshotReceived(
+            bitmap = screenshot,
+            screenshotDisabledBySettings = probe?.screenshotDisabledBySettings == true,
+        )
     }
 
     override fun onComputeInsets(outInsets: Insets) {

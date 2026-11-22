@@ -19,6 +19,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -65,14 +66,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalResources
@@ -82,6 +86,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -97,22 +102,21 @@ import persona.core.contracts.api.DigitalAssistantModelCatalog
 import persona.core.contracts.api.DigitalAssistantModelChoice
 import persona.core.designsystem.AppFeedback
 import persona.core.designsystem.AppStyle
-import persona.core.designsystem.AttachmentState
-import persona.core.designsystem.AttachmentThumb
 import persona.core.designsystem.JButton
 import persona.core.designsystem.JButtonSize
-import persona.core.designsystem.JChip
 import persona.core.designsystem.JDivider
 import persona.core.designsystem.JIcon
 import persona.core.designsystem.JIconButton
 import persona.core.designsystem.JNotice
 import persona.core.designsystem.JSpinner
-import persona.core.designsystem.JTextButton
 import persona.core.designsystem.LocalAppFeedback
 import persona.core.designsystem.LocalAppStyleStore
 import persona.core.designsystem.LocalPersonaDesign
 import persona.core.designsystem.LocalPersonaName
 import persona.core.designsystem.LocalPersonaPack
+import persona.core.designsystem.LocalPersonaStore
+import persona.core.designsystem.PersonaFace
+import persona.core.designsystem.PersonaState
 import persona.core.designsystem.PersonaTheme
 import persona.core.designsystem.SharedMotion
 import persona.core.designsystem.Status
@@ -157,7 +161,10 @@ internal fun AssistOverlayEnvironment(
     }
     PersonaTheme(style = currentStyle) {
         val providers = buildList<androidx.compose.runtime.ProvidedValue<*>> {
-            if (app != null) add(LocalAppStyleStore provides app.appearance)
+            if (app != null) {
+                add(LocalAppStyleStore provides app.appearance)
+                add(LocalPersonaStore provides app.personas)
+            }
             if (face != null) add(LocalPersonaDesign provides face)
             add(LocalPersonaPack provides pack)
             add(LocalPersonaName provides (pack?.manifest?.name ?: "Persona"))
@@ -169,16 +176,17 @@ internal fun AssistOverlayEnvironment(
 }
 
 /**
- * Muse / Gemini-inspired floating card shown over the foreground app when Persona is invoked
- * as Android's Default Digital Assistant (`ROLE_ASSISTANT`) or via `ACTION_ASSIST`.
+ * Dual-Island Spatial floating quick-ask overlay shown over the foreground app when Persona is
+ * invoked as Android's Default Digital Assistant (`ROLE_ASSISTANT`) or via `ACTION_ASSIST`.
  *
- * Visual & layout highlights:
- * - True independent floating card with generous four-corner rounding, horizontal breathing margins,
- *   and bottom lift above `WindowInsets.ime.union(WindowInsets.navigationBars)` (paired with
- *   `SOFT_INPUT_ADJUST_NOTHING` on the overlay window so IME never double-shifts the card).
- * - Layered vertical gradient depth scrim keeping the top of the underlying app crystal clear.
- * - Restrained AI luminous rim border (`palette.ai` -> `palette.accent`) that softly breathes
- *   while Persona is replying or streaming, strictly backed by `PersonaTheme` tokens & motion specs.
+ * Spatial hierarchy (separated by real transparent `8dp` air gaps showing the underlying app):
+ * - Layer 3 (top, on demand): Independent floating streaming reply card (`24dp` glass card) grown
+ *   above the upper context island once the user sends a prompt.
+ * - Layer 2 (middle): Upper Context Island (`44–48dp` frosted glass capsule) hosting live miniature
+ *   screenshot preview + one-tap attach toggle on the left, compact model pill + `↗` on the right.
+ * - Layer 1 (bottom): Primary Composer Island (`56–60dp` full capsule pill) unifying the luminous
+ *   Persona sparkle emblem, borderless input field, optional voice mic, and pearlescent `↑` send key.
+ * - Dismisses via tapping the ultra-light backdrop scrim, system Back, or swiping down — no `×` clutter.
  */
 @Composable
 internal fun AssistOverlaySheet(
@@ -202,6 +210,7 @@ internal fun AssistOverlaySheet(
 ) {
     val palette = PersonaTheme.palette
     val shapes = PersonaTheme.shapes
+    val style = PersonaTheme.style
     val reduceMotion = PersonaTheme.reduceMotion
     val density = LocalDensity.current
     val dismissThresholdPx = with(density) { Tokens.MinTouch.android.toPx() }
@@ -226,11 +235,17 @@ internal fun AssistOverlaySheet(
     )
 
     val aiActive = !ui.deviceLocked && (ui.awaitingReply || ui.sending || ui.turns.any { it.streaming })
+    val personaState = when {
+        ui.hubStatus == AssistHubStatus.Offline || ui.hubStatus == AssistHubStatus.Unpaired -> PersonaState.Offline
+        ui.turns.any { it.streaming } -> PersonaState.Working
+        ui.sending || ui.awaitingReply -> PersonaState.Thinking
+        else -> PersonaState.Idle
+    }
     val glowAlpha = if (aiActive && !reduceMotion) {
         val transition = rememberInfiniteTransition(label = "assist-ai-rim")
         transition.animateFloat(
             initialValue = 0.28f,
-            targetValue = 0.62f,
+            targetValue = 0.64f,
             animationSpec = infiniteRepeatable(
                 animation = tween(durationMillis = PersonaTheme.motion.breathe, easing = LinearEasing),
                 repeatMode = RepeatMode.Reverse,
@@ -238,15 +253,18 @@ internal fun AssistOverlaySheet(
             label = "assist-ai-rim-alpha",
         ).value
     } else if (aiActive) {
-        0.48f
+        0.50f
     } else {
-        if (palette.dark) 0.24f else 0.18f
+        0f
     }
 
     val scrimInteraction = remember { MutableInteractionSource() }
     val latestOnCloseModelPicker by rememberUpdatedState(onCloseModelPicker)
+    val latestOnDismiss by rememberUpdatedState(onDismiss)
     val closeDescription = stringResource(R.string.app_assist_close)
     val dictation = rememberOverlayDictation(onHeard = onDictationHeard, onError = onNotice)
+    val latestDictation by rememberUpdatedState(dictation)
+    var composerFocused by remember { mutableStateOf(false) }
 
     // Single unified inset layer: max(IME, navigation bar) when IME is open, navigation bar when closed.
     val imeBottomPx = WindowInsets.ime.getBottom(density)
@@ -257,47 +275,59 @@ internal fun AssistOverlaySheet(
     val topInsetDp = with(density) {
         WindowInsets.statusBars.getTop(density).toDp()
     }
-    val floatingBottomLift = if (imeOpen) Tokens.Space.s else Tokens.Space.m
+    val horizontalMargin = Tokens.Space.m + Tokens.Space.xxs // 14dp
+    val floatingBottomLift = if (imeOpen) {
+        Tokens.Space.s + Tokens.Space.xxs // 10dp tight float above IME
+    } else {
+        Tokens.Space.m + Tokens.Space.xxs // 14dp spatial float above navigation bar
+    }
+    val islandGap = Tokens.Space.s // 8dp real transparent air gap
 
-    // Generous four-corner floating card radius (28.dp in Glass/Brief, panel radius in Board).
-    val floatingCardRadius = if (PersonaTheme.style == AppStyle.Board) shapes.panel else Tokens.Size.wellXS
-    val floatingCardShape = remember(floatingCardRadius) { RoundedCornerShape(floatingCardRadius) }
+    // Island shapes anchored strictly to PersonaTheme / Tokens.
+    val panelRadius = Tokens.Radius.panel
+    val composerRadius = Tokens.Size.wellXS + Tokens.Space.xxs // 30dp full capsule pill
+    val replyRadius = Tokens.Space.xl // 24dp
+    val contextIslandShape = remember(style, shapes.panelShape, panelRadius) {
+        if (style == AppStyle.Board) shapes.panelShape else RoundedCornerShape(panelRadius)
+    }
+    val composerIslandShape = remember(style, shapes.panelShape, composerRadius) {
+        if (style == AppStyle.Board) shapes.panelShape else RoundedCornerShape(composerRadius)
+    }
+    val replyIslandShape = remember(style, shapes.panelShape, replyRadius) {
+        if (style == AppStyle.Board) shapes.panelShape else RoundedCornerShape(replyRadius)
+    }
 
+    // Ultra-light bottom-only vertical vignette: top ~70% remains crystal clear.
     val scrimBrush = remember(palette.scrim, palette.dark) {
         Brush.verticalGradient(
             0.0f to palette.scrim.copy(alpha = 0f),
-            0.40f to palette.scrim.copy(alpha = 0.04f),
-            0.72f to palette.scrim.copy(alpha = if (palette.dark) 0.18f else 0.14f),
-            1.0f to palette.scrim.copy(alpha = if (palette.dark) 0.36f else 0.28f),
+            0.62f to palette.scrim.copy(alpha = 0f),
+            0.82f to palette.scrim.copy(alpha = if (palette.dark) 0.16f else 0.10f),
+            1.0f to palette.scrim.copy(alpha = if (palette.dark) 0.36f else 0.24f),
         )
     }
-    val cardFill = palette.surfaceOpaque.copy(alpha = if (palette.dark) 0.96f else 0.98f)
-    val surfaceSheen = remember(palette.strokeTop, palette.surfaceOpaque, palette.dark) {
-        Brush.verticalGradient(
-            0.0f to palette.strokeTop.copy(alpha = if (palette.dark) 0.14f else 0.34f),
-            0.28f to palette.surfaceOpaque.copy(alpha = 0f),
+
+    val swipeDownModifier = Modifier.pointerInput(dismissThresholdPx) {
+        detectVerticalDragGestures(
+            onDragStart = { dragging = true },
+            onDragEnd = {
+                dragging = false
+                if (dragOffsetPx >= dismissThresholdPx) {
+                    dragOffsetPx = 0f
+                    latestDictation?.stop()
+                    latestOnDismiss()
+                } else {
+                    dragOffsetPx = 0f
+                }
+            },
+            onDragCancel = {
+                dragging = false
+                dragOffsetPx = 0f
+            },
+            onVerticalDrag = { _, dragAmount ->
+                dragOffsetPx = (dragOffsetPx + dragAmount).coerceAtLeast(0f)
+            },
         )
-    }
-    val rimBrush = remember(palette.ai, palette.accent, palette.strokeTop, palette.strokeBottom, glowAlpha, aiActive) {
-        if (aiActive) {
-            Brush.linearGradient(
-                colors = listOf(
-                    palette.ai.copy(alpha = glowAlpha),
-                    palette.accent.copy(alpha = glowAlpha * 0.85f),
-                    palette.strokeTop,
-                    palette.ai.copy(alpha = glowAlpha * 0.55f),
-                ),
-            )
-        } else {
-            Brush.linearGradient(
-                colors = listOf(
-                    palette.ai.copy(alpha = glowAlpha),
-                    palette.accent.copy(alpha = glowAlpha * 0.72f),
-                    palette.strokeTop,
-                    palette.strokeBottom,
-                ),
-            )
-        }
     }
 
     BoxWithConstraints(
@@ -305,12 +335,12 @@ internal fun AssistOverlaySheet(
             .fillMaxSize()
             .testTag("assist-overlay-root"),
     ) {
-        val availableHeight = (maxHeight - bottomInsetDp - topInsetDp - floatingBottomLift - Tokens.Space.m)
+        val availableHeight = (maxHeight - bottomInsetDp - topInsetDp - floatingBottomLift - Tokens.Space.l)
             .coerceAtLeast(Tokens.Size.box150)
-        val sheetContentMaxHeight = availableHeight * 0.80f
-        val pickerMaxHeight = availableHeight * 0.42f
+        val replyMaxHeight = (availableHeight * 0.56f).coerceAtLeast(Tokens.Size.box120)
+        val pickerMaxHeight = (availableHeight * 0.40f).coerceAtLeast(Tokens.Size.box120)
 
-        // Layered translucent vertical depth scrim: clear at top, gently grounded behind the floating card.
+        // Subtle bottom-weighted backdrop scrim; tapping dismisses without needing an X button.
         Box(
             Modifier
                 .fillMaxSize()
@@ -330,13 +360,14 @@ internal fun AssistOverlaySheet(
                 .testTag("assist-overlay-scrim"),
         )
 
+        // Transparent spatial container: real 8dp air gaps between floating islands reveal the underlying app.
         Box(
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .padding(
-                    start = Tokens.Space.m,
-                    end = Tokens.Space.m,
+                    start = horizontalMargin,
+                    end = horizontalMargin,
                     bottom = bottomInsetDp + floatingBottomLift,
                 )
                 .graphicsLayer {
@@ -348,305 +379,543 @@ internal fun AssistOverlaySheet(
                 },
             contentAlignment = Alignment.BottomCenter,
         ) {
-            Box(
+            Column(
                 Modifier
                     .fillMaxWidth()
                     .widthIn(max = Tokens.Size.readable)
-                    .shadow(
-                        elevation = Tokens.Space.l,
-                        shape = floatingCardShape,
-                        ambientColor = palette.scrim,
-                        spotColor = if (aiActive) palette.ai else palette.scrim,
-                        clip = false,
+                    .heightIn(max = availableHeight)
+                    .testTag("assist-dual-island-stack"),
+                verticalArrangement = Arrangement.spacedBy(islandGap),
+            ) {
+                if (ui.deviceLocked) {
+                    AssistLockedIsland(
+                        shape = replyIslandShape,
+                        swipeModifier = swipeDownModifier,
+                        onUnlock = {
+                            dictation?.stop()
+                            onUnlock()
+                        },
                     )
-                    .shadow(
-                        elevation = Tokens.Space.xs,
-                        shape = floatingCardShape,
-                        ambientColor = palette.scrim,
-                        spotColor = palette.scrim,
-                        clip = false,
-                    )
-                    .clip(floatingCardShape)
-                    .background(cardFill)
-                    .background(surfaceSheen)
-                    .border(
-                        width = if (aiActive) Tokens.Size.line else Tokens.Size.hairline,
-                        brush = rimBrush,
-                        shape = floatingCardShape,
-                    )
-                    .pointerInput(ui.modelPickerOpen) {
-                        detectTapGestures(
-                            onTap = {
-                                if (ui.modelPickerOpen) latestOnCloseModelPicker()
-                            },
+                } else {
+                    // Layer 3 (on demand): Independent floating streaming reply card above the context island.
+                    if (ui.expanded) {
+                        AssistReplyIsland(
+                            turns = ui.turns,
+                            awaitingReply = ui.awaitingReply,
+                            personaState = personaState,
+                            shape = replyIslandShape,
+                            maxHeight = replyMaxHeight,
+                            aiActive = aiActive,
+                            glowAlpha = glowAlpha,
+                            modelPickerOpen = ui.modelPickerOpen,
+                            swipeModifier = swipeDownModifier,
+                            onCloseModelPicker = { latestOnCloseModelPicker() },
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .fillMaxWidth(),
                         )
                     }
-                    .testTag("assist-overlay-card"),
-            ) {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = sheetContentMaxHeight)
-                        .animateContentSize(animationSpec = PersonaTheme.motion.size())
-                        .padding(
-                            start = Tokens.Space.l,
-                            end = Tokens.Space.l,
-                            top = Tokens.Space.xs,
-                            bottom = Tokens.Space.m,
-                        ),
-                    verticalArrangement = Arrangement.spacedBy(Tokens.Space.s),
-                ) {
-                    // Drag handle + refined compact single-row header.
-                    AssistOverlayHeader(
+
+                    // Floating Hub connectivity or send error notices (appear only when actionable).
+                    AssistFloatingNoticeIslands(
                         ui = ui,
-                        closeDescription = closeDescription,
-                        dismissThresholdPx = dismissThresholdPx,
-                        onDragStart = { dragging = true },
-                        onDragOffset = { delta -> dragOffsetPx = (dragOffsetPx + delta).coerceAtLeast(0f) },
-                        onDragRelease = {
-                            dragging = false
-                            if (dragOffsetPx >= dismissThresholdPx) {
-                                dragOffsetPx = 0f
-                                dictation?.stop()
-                                onDismiss()
-                            } else {
-                                dragOffsetPx = 0f
-                            }
-                        },
-                        onDragCancel = {
-                            dragging = false
-                            dragOffsetPx = 0f
-                        },
-                        onToggleModelPicker = onToggleModelPicker,
+                        shape = contextIslandShape,
                         onOpenInPersona = {
                             dictation?.stop()
                             onOpenInPersona()
                         },
-                        onDismiss = {
+                        onRetryWithDefaultMain = onRetryWithDefaultMain,
+                    )
+
+                    // Floating Model Picker panel above the upper context island.
+                    if (ui.modelPickerOpen) {
+                        AssistModelPickerIsland(
+                            choice = ui.modelChoice,
+                            catalog = ui.modelCatalog,
+                            hubStatus = ui.hubStatus,
+                            shape = contextIslandShape,
+                            maxHeight = pickerMaxHeight,
+                            onRefresh = onRefreshModels,
+                            onSelectDefault = onSelectDefaultModel,
+                            onSelectModel = onSelectModel,
+                        )
+                    }
+
+                    // Layer 2: Upper Context Island (live screen preview toggle + model pill + Open in Persona ↗).
+                    AssistUpperContextIsland(
+                        ui = ui,
+                        shape = contextIslandShape,
+                        swipeModifier = swipeDownModifier,
+                        onAttachScreen = onAttachScreen,
+                        onRemoveScreen = onRemoveScreen,
+                        onOpenAssistantSettings = onOpenAssistantSettings,
+                        onToggleModelPicker = onToggleModelPicker,
+                        onCloseModelPicker = { latestOnCloseModelPicker() },
+                        onOpenInPersona = {
                             dictation?.stop()
-                            onDismiss()
+                            onOpenInPersona()
                         },
                     )
 
-                    if (ui.deviceLocked) {
-                        AssistLockedCard(
-                            onUnlock = {
-                                dictation?.stop()
-                                onUnlock()
-                            },
-                        )
-                    } else {
-                        if (ui.modelPickerOpen) {
-                            AssistModelPickerPanel(
-                                choice = ui.modelChoice,
-                                catalog = ui.modelCatalog,
-                                hubStatus = ui.hubStatus,
-                                maxHeight = pickerMaxHeight,
-                                onRefresh = onRefreshModels,
-                                onSelectDefault = onSelectDefaultModel,
-                                onSelectModel = onSelectModel,
-                            )
-                        }
-
-                        // Hub unpaired / offline banner with direct handoff to Persona App.
-                        when (ui.hubStatus) {
-                            AssistHubStatus.Unpaired -> JNotice(
-                                text = stringResource(R.string.app_assist_hub_unpaired_body),
-                                title = stringResource(R.string.app_assist_hub_unpaired_title),
-                                status = Status.Offline,
-                                icon = PersonaIcons.offline,
-                                actionLabel = stringResource(R.string.app_open_persona),
-                                onAction = onOpenInPersona,
-                                modifier = Modifier.testTag("assist-hub-unpaired"),
-                            )
-
-                            AssistHubStatus.Offline -> JNotice(
-                                text = stringResource(R.string.app_assist_hub_offline_body),
-                                title = stringResource(R.string.app_assist_hub_offline_title),
-                                status = Status.Offline,
-                                icon = PersonaIcons.offline,
-                                actionLabel = stringResource(R.string.app_open_persona),
-                                onAction = onOpenInPersona,
-                                modifier = Modifier.testTag("assist-hub-offline"),
-                            )
-
-                            else -> Unit
-                        }
-
-                        ui.errorMessage?.let { error ->
-                            JNotice(
-                                text = error,
-                                status = Status.NeedsYou,
-                                icon = PersonaIcons.error,
-                                actionLabel = if (ui.modelFallbackAvailable) {
-                                    stringResource(R.string.app_assist_model_fallback_main)
-                                } else {
-                                    null
-                                },
-                                onAction = if (ui.modelFallbackAvailable) onRetryWithDefaultMain else null,
-                                modifier = Modifier.testTag("assist-error-notice"),
-                            )
-                        }
-
-                        // Expanded live streaming reply viewport (adapts cleanly when IME opens).
-                        if (ui.expanded) {
-                            AssistStreamingTranscript(
-                                turns = ui.turns,
-                                awaitingReply = ui.awaitingReply,
-                                modifier = Modifier
-                                    .weight(1f, fill = false)
-                                    .fillMaxWidth()
-                                    .testTag("assist-transcript"),
-                            )
-                        }
-
-                        // Manual screen attachment bar above the input composer (NEVER attached automatically).
-                        AssistScreenAttachmentRow(
-                            ui = ui,
-                            onAttachScreen = onAttachScreen,
-                            onRemoveScreen = onRemoveScreen,
-                            onOpenAssistantSettings = onOpenAssistantSettings,
-                        )
-
-                        // Unified rounded composer bar with optional safe dictation and Send action.
-                        AssistInputBar(
-                            draftText = ui.draftText,
-                            canSend = ui.canSend,
-                            sending = ui.sending,
-                            inputEnabled = !ui.sending && ui.hubStatus != AssistHubStatus.Unpaired,
-                            dictating = dictation?.listening == true,
-                            onDraftChange = onDraftChange,
-                            onToggleDictation = dictation?.let { control -> { control.toggle() } },
-                            onSend = {
-                                dictation?.stop()
-                                onSend()
-                            },
-                        )
-                    }
+                    // Layer 1: Primary Composer Island (PersonaFace orb + borderless input + optional mic + pearlescent ↑).
+                    AssistPrimaryComposerIsland(
+                        draftText = ui.draftText,
+                        canSend = ui.canSend,
+                        sending = ui.sending,
+                        inputEnabled = !ui.sending && ui.hubStatus != AssistHubStatus.Unpaired,
+                        dictating = dictation?.listening == true,
+                        focused = composerFocused,
+                        aiActive = aiActive,
+                        glowAlpha = glowAlpha,
+                        personaState = personaState,
+                        modelPickerOpen = ui.modelPickerOpen,
+                        shape = composerIslandShape,
+                        swipeModifier = swipeDownModifier,
+                        onFocusChange = { composerFocused = it },
+                        onCloseModelPicker = { latestOnCloseModelPicker() },
+                        onDraftChange = onDraftChange,
+                        onToggleDictation = dictation?.let { control -> { control.toggle() } },
+                        onSend = {
+                            dictation?.stop()
+                            onSend()
+                        },
+                    )
                 }
             }
         }
     }
 }
 
+/**
+ * Shared frosted glass floating island surface backed strictly by `PersonaTheme` tokens:
+ * translucent smoked graphite in dark mode / translucent pearl in light mode, top specular
+ * sheen, crisp `1dp` top-lit bevel rim (or breathing AI luminous rim while replying), soft
+ * layered shadows, and semantics-safe tap interception (never swallows child testTags).
+ */
+private fun Modifier.floatingGlassIsland(
+    shape: Shape,
+    aiActive: Boolean = false,
+    glowAlpha: Float = 0f,
+    focused: Boolean = false,
+    modelPickerOpen: Boolean = false,
+    onCloseModelPicker: (() -> Unit)? = null,
+): Modifier = composed {
+    val palette = PersonaTheme.palette
+    val glassFill = palette.surfaceOpaque.copy(alpha = if (palette.dark) 0.84f else 0.90f)
+    val topSheen = remember(palette.strokeTop, palette.surfaceOpaque, palette.dark) {
+        Brush.verticalGradient(
+            0.0f to palette.strokeTop.copy(alpha = if (palette.dark) 0.16f else 0.56f),
+            0.38f to palette.surfaceOpaque.copy(alpha = 0f),
+        )
+    }
+    val rimBrush = remember(
+        palette.ai,
+        palette.accent,
+        palette.strokeTop,
+        palette.strokeBottom,
+        palette.line,
+        palette.dark,
+        aiActive,
+        glowAlpha,
+        focused,
+    ) {
+        when {
+            aiActive -> Brush.linearGradient(
+                colors = listOf(
+                    palette.ai.copy(alpha = glowAlpha),
+                    palette.accent.copy(alpha = glowAlpha * 0.82f),
+                    palette.strokeTop.copy(alpha = if (palette.dark) 0.45f else 0.72f),
+                    palette.ai.copy(alpha = glowAlpha * 0.44f),
+                ),
+            )
+            focused -> Brush.verticalGradient(
+                0.0f to palette.accent.copy(alpha = if (palette.dark) 0.56f else 0.64f),
+                0.45f to palette.strokeTop.copy(alpha = if (palette.dark) 0.36f else 0.62f),
+                1.0f to palette.strokeBottom,
+            )
+            else -> Brush.verticalGradient(
+                0.0f to palette.strokeTop.copy(alpha = if (palette.dark) 0.54f else 0.82f),
+                0.50f to palette.line.copy(alpha = if (palette.dark) 0.34f else 0.56f),
+                1.0f to palette.strokeBottom,
+            )
+        }
+    }
+
+    this
+        .shadow(
+            elevation = Tokens.Space.l,
+            shape = shape,
+            ambientColor = palette.scrim,
+            spotColor = if (aiActive) palette.ai else palette.scrim,
+            clip = false,
+        )
+        .shadow(
+            elevation = Tokens.Space.xs,
+            shape = shape,
+            ambientColor = palette.scrim,
+            spotColor = palette.scrim,
+            clip = false,
+        )
+        .clip(shape)
+        .background(glassFill)
+        .background(topSheen)
+        .border(
+            width = Tokens.Size.line,
+            brush = rimBrush,
+            shape = shape,
+        )
+        .pointerInput(modelPickerOpen, onCloseModelPicker) {
+            detectTapGestures(
+                onTap = {
+                    if (modelPickerOpen) onCloseModelPicker?.invoke()
+                },
+            )
+        }
+}
+
 @Composable
-private fun AssistOverlayHeader(
+private fun AssistUpperContextIsland(
     ui: AssistOverlayUiState,
-    closeDescription: String,
-    dismissThresholdPx: Float,
-    onDragStart: () -> Unit,
-    onDragOffset: (Float) -> Unit,
-    onDragRelease: () -> Unit,
-    onDragCancel: () -> Unit,
+    shape: Shape,
+    swipeModifier: Modifier,
+    onAttachScreen: () -> Unit,
+    onRemoveScreen: () -> Unit,
+    onOpenAssistantSettings: () -> Unit,
     onToggleModelPicker: () -> Unit,
+    onCloseModelPicker: () -> Unit,
     onOpenInPersona: () -> Unit,
-    onDismiss: () -> Unit,
 ) {
     val palette = PersonaTheme.palette
-    val type = PersonaTheme.type
-    val openInPersonaLabel = stringResource(R.string.app_assist_open_in_persona)
     val defaultShortLabel = stringResource(R.string.app_assist_model_default_short)
+    val openInPersonaLabel = stringResource(R.string.app_assist_open_in_persona)
     val modelPillLabel = if (ui.modelChoice.isDefault) {
         defaultShortLabel
     } else {
         ui.modelChoice.compactLabel.ifBlank { defaultShortLabel }
     }
-    val badgeBrush = remember(palette.ai, palette.accentSoft) {
-        Brush.linearGradient(listOf(palette.ai.copy(alpha = 0.22f), palette.accentSoft))
-    }
 
-    Column(
+    Row(
         Modifier
             .fillMaxWidth()
-            .pointerInput(dismissThresholdPx) {
-                detectVerticalDragGestures(
-                    onDragStart = { onDragStart() },
-                    onDragEnd = onDragRelease,
-                    onDragCancel = onDragCancel,
-                    onVerticalDrag = { _, dragAmount -> onDragOffset(dragAmount) },
-                )
-            },
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .heightIn(min = Tokens.MinTouch.ios)
+            .floatingGlassIsland(
+                shape = shape,
+                modelPickerOpen = ui.modelPickerOpen,
+                onCloseModelPicker = onCloseModelPicker,
+            )
+            .then(swipeModifier)
+            .padding(
+                start = Tokens.Space.s,
+                end = Tokens.Space.s,
+                top = Tokens.Space.sm,
+                bottom = Tokens.Space.sm,
+            )
+            .testTag("assist-context-island"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
     ) {
-        // Restrained centered drag handle pill.
+        // Left: Screen context control (live miniature thumbnail + toggle, instant settings shortcut, or micro-status).
         Box(
-            Modifier
-                .padding(top = Tokens.Space.xxs, bottom = Tokens.Space.xs)
-                .size(width = Tokens.Size.slimBar, height = Tokens.Size.bar)
-                .clip(CircleShape)
-                .background(palette.ink3.copy(alpha = 0.26f)),
-        )
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+            Modifier.weight(1f),
+            contentAlignment = Alignment.CenterStart,
         ) {
-            // Luminous brand mark badge.
+            AssistScreenContextControl(
+                ui = ui,
+                onAttachScreen = onAttachScreen,
+                onRemoveScreen = onRemoveScreen,
+                onOpenAssistantSettings = onOpenAssistantSettings,
+            )
+        }
+
+        // Right: Compact translucent model switcher pill + minimalist Open in Persona (↗).
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+        ) {
+            AssistCompactModelPill(
+                label = modelPillLabel,
+                open = ui.modelPickerOpen,
+                enabled = !ui.sending,
+                isCustom = !ui.modelChoice.isDefault,
+                onClick = onToggleModelPicker,
+            )
             Box(
                 Modifier
-                    .size(Tokens.Size.wellXS)
+                    .size(Tokens.Size.wellXS + Tokens.Space.s) // 36dp compact tactile circle
                     .clip(CircleShape)
-                    .background(badgeBrush)
-                    .border(Tokens.Size.hairline, palette.ai.copy(alpha = 0.28f), CircleShape),
+                    .clickable(
+                        role = Role.Button,
+                        onClickLabel = openInPersonaLabel,
+                        onClick = onOpenInPersona,
+                    )
+                    .semantics { contentDescription = openInPersonaLabel }
+                    .testTag("assist-open-in-persona"),
                 contentAlignment = Alignment.Center,
             ) {
                 JIcon(
-                    icon = PersonaIcons.persona,
+                    icon = PersonaIcons.open,
                     contentDescription = null,
-                    size = Tokens.Size.markS,
-                    tint = palette.accent,
+                    size = Tokens.Size.iconXS,
+                    tint = palette.ink2,
                 )
             }
-            Column(
-                Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(Tokens.Space.xxs),
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
-                ) {
-                    Text(
-                        text = LocalPersonaName.current,
-                        style = type.label.copy(fontWeight = FontWeight.SemiBold),
-                        color = palette.ink,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+        }
+    }
+}
+
+@Composable
+private fun AssistScreenContextControl(
+    ui: AssistOverlayUiState,
+    onAttachScreen: () -> Unit,
+    onRemoveScreen: () -> Unit,
+    onOpenAssistantSettings: () -> Unit,
+) {
+    val palette = PersonaTheme.palette
+    val type = PersonaTheme.type
+
+    when (ui.captureStatus) {
+        AssistCaptureStatus.Available, AssistCaptureStatus.Attached -> {
+            val attached = ui.captureStatus == AssistCaptureStatus.Attached
+            val thumbnail = remember(ui.attachedThumbnail, ui.previewThumbnail) {
+                (ui.attachedThumbnail ?: ui.previewThumbnail)
+                    ?.takeUnless { it.isRecycled }
+                    ?.asImageBitmap()
+            }
+            val actionLabel = stringResource(
+                if (attached) R.string.app_assist_remove_screen else R.string.app_assist_attach_screen,
+            )
+            val thumbSize = Tokens.Size.wellXS + Tokens.Space.xxs // 30dp miniature rounded square
+            val thumbRadius = Tokens.Space.s
+            val thumbShape = remember(thumbRadius) { RoundedCornerShape(thumbRadius) }
+
+            Row(
+                Modifier
+                    .clip(CircleShape)
+                    .clickable(
+                        enabled = !ui.attachingScreen && !ui.sending,
+                        role = Role.Checkbox,
+                        onClickLabel = actionLabel,
+                        onClick = if (attached) onRemoveScreen else onAttachScreen,
                     )
-                    if (!ui.deviceLocked) {
-                        AssistCompactModelPill(
-                            label = modelPillLabel,
-                            open = ui.modelPickerOpen,
-                            enabled = !ui.sending,
-                            isCustom = !ui.modelChoice.isDefault,
-                            onClick = onToggleModelPicker,
+                    .semantics {
+                        selected = attached
+                        contentDescription = actionLabel
+                    }
+                    .padding(end = Tokens.Space.xs)
+                    .testTag(if (attached) "assist-screen-attached-row" else "assist-attach-screen-chip"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+            ) {
+                // Miniature live screenshot thumbnail (30dp rounded square).
+                Box(
+                    Modifier
+                        .size(thumbSize)
+                        .clip(thumbShape)
+                        .background(palette.sunken)
+                        .border(
+                            width = if (attached) Tokens.Size.line else Tokens.Size.hairline,
+                            color = if (attached) palette.ai else palette.strokeTop,
+                            shape = thumbShape,
+                        )
+                        .testTag("assist-screen-thumbnail"),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (thumbnail != null) {
+                        Image(
+                            bitmap = thumbnail,
+                            contentDescription = stringResource(R.string.app_assist_screen_preview),
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else {
+                        JIcon(
+                            icon = PersonaIcons.screen,
+                            contentDescription = null,
+                            size = Tokens.Size.markS,
+                            tint = if (attached) palette.ai else palette.ink2,
                         )
                     }
+                    if (ui.attachingScreen) {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .background(palette.scrim.copy(alpha = 0.45f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            JSpinner(Modifier.size(Tokens.Size.markS), color = palette.onMediaBackdrop)
+                        }
+                    }
                 }
-                if (!ui.deviceLocked && ui.hubStatus == AssistHubStatus.Connecting) {
-                    Text(
-                        text = stringResource(R.string.app_assist_connecting),
-                        style = type.micro,
-                        color = palette.ink3,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+
+                Text(
+                    text = stringResource(R.string.app_assist_attach_screen),
+                    style = type.labelSmall.copy(
+                        fontWeight = if (attached) FontWeight.SemiBold else FontWeight.Medium,
+                    ),
+                    color = if (attached) palette.ink else palette.ink2,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+
+                // Soft brand/AI circular check badge: filled checkmark when attached, subtle hollow ring when ready.
+                if (attached) {
+                    Box(
+                        Modifier
+                            .size(Tokens.Size.badge)
+                            .clip(CircleShape)
+                            .background(palette.ai)
+                            .testTag("assist-screen-attached-badge"),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        JIcon(
+                            icon = PersonaIcons.done,
+                            contentDescription = null,
+                            size = Tokens.Size.markXS,
+                            tint = palette.onAccentFill(palette.ai),
+                        )
+                    }
+                } else {
+                    Box(
+                        Modifier
+                            .size(Tokens.Size.badge)
+                            .clip(CircleShape)
+                            .background(palette.sunken.copy(alpha = if (palette.dark) 0.55f else 0.72f))
+                            .border(Tokens.Size.line, palette.ink3.copy(alpha = 0.42f), CircleShape)
+                            .testTag("assist-screen-unattached-badge"),
                     )
                 }
             }
-            if (!ui.deviceLocked) {
-                JIconButton(
-                    icon = PersonaIcons.openExternal,
-                    contentDescription = openInPersonaLabel,
-                    onClick = onOpenInPersona,
+        }
+
+        AssistCaptureStatus.DisabledBySettings -> {
+            val openSettingsLabel = stringResource(R.string.app_assist_screen_open_settings)
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = Tokens.Space.xs)
+                    .testTag("assist-screen-disabled"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.sm),
+            ) {
+                JIcon(
+                    icon = PersonaIcons.settings,
+                    contentDescription = null,
+                    size = Tokens.Size.markS,
                     tint = palette.ink2,
-                    modifier = Modifier.testTag("assist-open-in-persona"),
+                )
+                Text(
+                    text = stringResource(R.string.app_assist_screen_disabled_by_settings),
+                    style = type.micro,
+                    color = palette.ink2,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                Box(
+                    Modifier
+                        .clip(CircleShape)
+                        .background(palette.accentSoft)
+                        .border(Tokens.Size.hairline, palette.accent.copy(alpha = 0.48f), CircleShape)
+                        .clickable(
+                            role = Role.Button,
+                            onClickLabel = openSettingsLabel,
+                            onClick = onOpenAssistantSettings,
+                        )
+                        .padding(horizontal = Tokens.Space.s, vertical = Tokens.Space.xs)
+                        .testTag("assist-open-settings-button"),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = openSettingsLabel,
+                        style = type.micro.copy(fontWeight = FontWeight.SemiBold),
+                        color = palette.accent,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+
+        AssistCaptureStatus.Waiting -> {
+            Row(
+                Modifier
+                    .padding(start = Tokens.Space.xs)
+                    .testTag("assist-screen-waiting"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.sm),
+            ) {
+                JSpinner(Modifier.size(Tokens.Size.markXS), color = palette.ink3)
+                Text(
+                    text = stringResource(R.string.app_assist_screen_preparing),
+                    style = type.micro,
+                    color = palette.ink3,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
-            JIconButton(
-                icon = PersonaIcons.close,
-                contentDescription = closeDescription,
-                onClick = onDismiss,
-                tint = palette.ink2,
-                modifier = Modifier.testTag("assist-close-button"),
+        }
+
+        AssistCaptureStatus.Unavailable -> {
+            Row(
+                Modifier
+                    .padding(start = Tokens.Space.xs)
+                    .testTag("assist-screen-unavailable"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+            ) {
+                JIcon(
+                    icon = PersonaIcons.privacy,
+                    contentDescription = null,
+                    size = Tokens.Size.markXS,
+                    tint = palette.ink3,
+                )
+                Text(
+                    text = stringResource(R.string.app_assist_screen_unavailable),
+                    style = type.micro,
+                    color = palette.ink3,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        AssistCaptureStatus.TimedOut -> {
+            Row(
+                Modifier
+                    .padding(start = Tokens.Space.xs)
+                    .testTag("assist-screen-timeout"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+            ) {
+                JIcon(
+                    icon = PersonaIcons.time,
+                    contentDescription = null,
+                    size = Tokens.Size.markXS,
+                    tint = palette.ink3,
+                )
+                Text(
+                    text = stringResource(R.string.app_assist_screen_timeout),
+                    style = type.micro,
+                    color = palette.ink3,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        AssistCaptureStatus.NotSupported -> {
+            val statusText = if (ui.hubStatus == AssistHubStatus.Connecting) {
+                stringResource(R.string.app_assist_connecting)
+            } else {
+                LocalPersonaName.current
+            }
+            Text(
+                text = statusText,
+                style = type.labelSmall.copy(fontWeight = FontWeight.Medium),
+                color = palette.ink2,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = Tokens.Space.xs),
             )
         }
     }
@@ -665,14 +934,18 @@ private fun AssistCompactModelPill(
     val description = stringResource(R.string.app_assist_model_picker_description, label)
     val fill = when {
         open || isCustom -> palette.accentSoft
-        else -> palette.surfaceStrong.copy(alpha = if (palette.dark) 0.55f else 0.72f)
+        else -> palette.surfaceStrong.copy(alpha = if (palette.dark) 0.44f else 0.52f)
     }
-    val stroke = if (open || isCustom) palette.accent.copy(alpha = 0.55f) else palette.line
+    val stroke = if (open || isCustom) {
+        palette.accent.copy(alpha = 0.55f)
+    } else {
+        palette.strokeTop.copy(alpha = if (palette.dark) 0.24f else 0.45f)
+    }
     val contentTint = if (open || isCustom) palette.accent else palette.ink2
 
     Row(
         Modifier
-            .heightIn(min = Tokens.Size.wellXS)
+            .heightIn(min = Tokens.Size.wellXS + Tokens.Space.xs) // 32dp compact glass pill
             .clip(CircleShape)
             .background(fill)
             .border(Tokens.Size.hairline, stroke, CircleShape)
@@ -700,7 +973,7 @@ private fun AssistCompactModelPill(
             color = contentTint,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.widthIn(max = Tokens.Size.box150),
+            modifier = Modifier.widthIn(max = Tokens.Size.box120),
         )
         JIcon(
             icon = if (open) PersonaIcons.collapse else PersonaIcons.expand,
@@ -712,10 +985,382 @@ private fun AssistCompactModelPill(
 }
 
 @Composable
-private fun AssistModelPickerPanel(
+private fun AssistPrimaryComposerIsland(
+    draftText: String,
+    canSend: Boolean,
+    sending: Boolean,
+    inputEnabled: Boolean,
+    dictating: Boolean,
+    focused: Boolean,
+    aiActive: Boolean,
+    glowAlpha: Float,
+    personaState: PersonaState,
+    modelPickerOpen: Boolean,
+    shape: Shape,
+    swipeModifier: Modifier,
+    onFocusChange: (Boolean) -> Unit,
+    onCloseModelPicker: () -> Unit,
+    onDraftChange: (String) -> Unit,
+    onToggleDictation: (() -> Unit)?,
+    onSend: () -> Unit,
+) {
+    val palette = PersonaTheme.palette
+    val type = PersonaTheme.type
+    val personaName = LocalPersonaName.current
+    val placeholder = stringResource(
+        when {
+            dictating -> R.string.app_assist_dictate_listening
+            onToggleDictation != null -> R.string.app_assist_input_placeholder_voice
+            else -> R.string.app_assist_input_placeholder
+        },
+    )
+    val orbBrush = remember(palette.ai, palette.accent, palette.surface, palette.dark) {
+        Brush.radialGradient(
+            colors = listOf(
+                palette.ai.copy(alpha = if (palette.dark) 0.36f else 0.24f),
+                palette.accent.copy(alpha = if (palette.dark) 0.14f else 0.08f),
+                palette.surface.copy(alpha = 0f),
+            ),
+        )
+    }
+    val sendBrush = remember(palette.action, palette.surfaceStrong, canSend) {
+        if (canSend) {
+            Brush.verticalGradient(
+                colors = listOf(
+                    palette.action,
+                    palette.action.copy(alpha = 0.88f),
+                ),
+            )
+        } else {
+            Brush.verticalGradient(
+                colors = listOf(
+                    palette.surfaceStrong,
+                    palette.surfaceStrong,
+                ),
+            )
+        }
+    }
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = Tokens.MinTouch.android + Tokens.Space.s) // 56dp full capsule pill
+            .floatingGlassIsland(
+                shape = shape,
+                aiActive = aiActive,
+                glowAlpha = glowAlpha,
+                focused = focused,
+                modelPickerOpen = modelPickerOpen,
+                onCloseModelPicker = onCloseModelPicker,
+            )
+            .then(swipeModifier)
+            .padding(
+                start = Tokens.Space.s + Tokens.Space.xxs, // 10dp
+                end = Tokens.Space.s, // 8dp
+                top = Tokens.Space.sm, // 6dp
+                bottom = Tokens.Space.sm, // 6dp
+            )
+            .testTag("assist-composer-island"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+    ) {
+        // Left: Official PersonaFace identity anchor inside a soft luminous circular halo (34dp face in 40dp orb).
+        Box(
+            Modifier
+                .size(Tokens.Size.slimBar) // 40dp halo container
+                .clip(CircleShape)
+                .background(orbBrush)
+                .border(
+                    width = Tokens.Size.hairline,
+                    color = palette.strokeTop.copy(alpha = if (palette.dark) 0.28f else 0.55f),
+                    shape = CircleShape,
+                )
+                .semantics { contentDescription = personaName }
+                .testTag("assist-brand-orb"),
+            contentAlignment = Alignment.Center,
+        ) {
+            PersonaFace(
+                state = personaState,
+                size = Tokens.Size.wellXS + Tokens.Space.sm, // 34dp
+            )
+        }
+
+        // Center: Borderless minimal text input (auto-expands cleanly up to 4 lines, zero nested box).
+        Box(
+            Modifier
+                .weight(1f)
+                .padding(vertical = Tokens.Space.xs),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            if (draftText.isEmpty()) {
+                Text(
+                    text = placeholder,
+                    style = type.body,
+                    color = palette.ink3,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            BasicTextField(
+                value = draftText,
+                onValueChange = onDraftChange,
+                enabled = inputEnabled,
+                textStyle = type.body.copy(color = palette.ink),
+                cursorBrush = SolidColor(palette.accent),
+                maxLines = 4,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { if (canSend) onSend() }),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { onFocusChange(it.isFocused) }
+                    .testTag("assist-input-field"),
+            )
+        }
+
+        // Right: Optional safe voice dictation icon + high-contrast circular Send button (↑).
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+        ) {
+            if (onToggleDictation != null) {
+                val dictateLabel = stringResource(
+                    if (dictating) R.string.app_assist_dictate_stop else R.string.app_assist_dictate,
+                )
+                Box(
+                    Modifier
+                        .size(Tokens.Size.slimBar)
+                        .clip(CircleShape)
+                        .background(if (dictating) palette.accentSoft else palette.surface.copy(alpha = 0f))
+                        .clickable(
+                            enabled = inputEnabled,
+                            role = Role.Button,
+                            onClickLabel = dictateLabel,
+                            onClick = onToggleDictation,
+                        )
+                        .semantics {
+                            contentDescription = dictateLabel
+                            selected = dictating
+                        }
+                        .testTag("assist-dictate-button"),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    JIcon(
+                        icon = if (dictating) PersonaIcons.dictating else PersonaIcons.dictate,
+                        contentDescription = null,
+                        size = Tokens.Size.iconXS,
+                        tint = if (dictating) palette.accent else palette.ink2,
+                    )
+                }
+            }
+
+            val sendLabel = stringResource(R.string.app_send)
+            Box(
+                Modifier
+                    .size(Tokens.MinTouch.ios) // 44dp touch target
+                    .clickable(
+                        enabled = canSend && !sending,
+                        role = Role.Button,
+                        onClickLabel = sendLabel,
+                        onClick = onSend,
+                    )
+                    .semantics { contentDescription = sendLabel }
+                    .padding(Tokens.Space.xxs)
+                    .testTag("assist-send-button"),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .shadow(
+                            elevation = if (canSend) Tokens.Space.s else Tokens.Space.flush,
+                            shape = CircleShape,
+                            ambientColor = palette.ai,
+                            spotColor = palette.ai,
+                            clip = false,
+                        )
+                        .clip(CircleShape)
+                        .background(sendBrush),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (sending) {
+                        JSpinner(
+                            Modifier.size(Tokens.Size.markS),
+                            color = if (canSend) palette.onAction else palette.ink2,
+                        )
+                    } else {
+                        JIcon(
+                            icon = PersonaIcons.send,
+                            contentDescription = null,
+                            size = Tokens.Size.iconXS,
+                            tint = if (canSend) palette.onAction else palette.ink3,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AssistReplyIsland(
+    turns: List<AssistOverlayTurn>,
+    awaitingReply: Boolean,
+    personaState: PersonaState,
+    shape: Shape,
+    maxHeight: Dp,
+    aiActive: Boolean,
+    glowAlpha: Float,
+    modelPickerOpen: Boolean,
+    swipeModifier: Modifier,
+    onCloseModelPicker: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val palette = PersonaTheme.palette
+    val type = PersonaTheme.type
+    val personaName = LocalPersonaName.current
+
+    Column(
+        modifier
+            .heightIn(max = maxHeight)
+            .floatingGlassIsland(
+                shape = shape,
+                aiActive = aiActive,
+                glowAlpha = glowAlpha,
+                modelPickerOpen = modelPickerOpen,
+                onCloseModelPicker = onCloseModelPicker,
+            )
+            .animateContentSize(animationSpec = PersonaTheme.motion.size())
+            .padding(
+                start = Tokens.Space.l,
+                end = Tokens.Space.l,
+                top = Tokens.Space.s,
+                bottom = Tokens.Space.m,
+            )
+            .testTag("assist-reply-island"),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+    ) {
+        // Minimal top drag pill + compact Persona brand identity header.
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .then(swipeModifier),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(Tokens.Space.sm),
+        ) {
+            Box(
+                Modifier
+                    .padding(top = Tokens.Space.xxs)
+                    .size(width = Tokens.Size.slimBar, height = Tokens.Size.bar)
+                    .clip(CircleShape)
+                    .background(palette.ink3.copy(alpha = 0.28f)),
+            )
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .testTag("assist-reply-brand"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+            ) {
+                PersonaFace(
+                    state = personaState,
+                    size = Tokens.Size.iconS, // 22dp crisp mini Persona identity
+                )
+                Text(
+                    text = personaName,
+                    style = type.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = palette.ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        AssistStreamingTranscript(
+            turns = turns,
+            awaitingReply = awaitingReply,
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .fillMaxWidth()
+                .testTag("assist-transcript"),
+        )
+    }
+}
+
+@Composable
+private fun AssistFloatingNoticeIslands(
+    ui: AssistOverlayUiState,
+    shape: Shape,
+    onOpenInPersona: () -> Unit,
+    onRetryWithDefaultMain: () -> Unit,
+) {
+    when (ui.hubStatus) {
+        AssistHubStatus.Unpaired -> Box(
+            Modifier
+                .fillMaxWidth()
+                .floatingGlassIsland(shape = shape)
+                .padding(Tokens.Space.s),
+        ) {
+            JNotice(
+                text = stringResource(R.string.app_assist_hub_unpaired_body),
+                title = stringResource(R.string.app_assist_hub_unpaired_title),
+                status = Status.Offline,
+                icon = PersonaIcons.offline,
+                actionLabel = stringResource(R.string.app_open_persona),
+                onAction = onOpenInPersona,
+                modifier = Modifier.testTag("assist-hub-unpaired"),
+            )
+        }
+
+        AssistHubStatus.Offline -> Box(
+            Modifier
+                .fillMaxWidth()
+                .floatingGlassIsland(shape = shape)
+                .padding(Tokens.Space.s),
+        ) {
+            JNotice(
+                text = stringResource(R.string.app_assist_hub_offline_body),
+                title = stringResource(R.string.app_assist_hub_offline_title),
+                status = Status.Offline,
+                icon = PersonaIcons.offline,
+                actionLabel = stringResource(R.string.app_open_persona),
+                onAction = onOpenInPersona,
+                modifier = Modifier.testTag("assist-hub-offline"),
+            )
+        }
+
+        else -> Unit
+    }
+
+    ui.errorMessage?.let { error ->
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .floatingGlassIsland(shape = shape)
+                .padding(Tokens.Space.s),
+        ) {
+            JNotice(
+                text = error,
+                status = Status.NeedsYou,
+                icon = PersonaIcons.error,
+                actionLabel = if (ui.modelFallbackAvailable) {
+                    stringResource(R.string.app_assist_model_fallback_main)
+                } else {
+                    null
+                },
+                onAction = if (ui.modelFallbackAvailable) onRetryWithDefaultMain else null,
+                modifier = Modifier.testTag("assist-error-notice"),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AssistModelPickerIsland(
     choice: DigitalAssistantModelChoice,
     catalog: DigitalAssistantModelCatalog,
     hubStatus: AssistHubStatus,
+    shape: Shape,
     maxHeight: Dp,
     onRefresh: () -> Unit,
     onSelectDefault: () -> Unit,
@@ -723,16 +1368,13 @@ private fun AssistModelPickerPanel(
 ) {
     val palette = PersonaTheme.palette
     val type = PersonaTheme.type
-    val shapes = PersonaTheme.shapes
     val selectedDescription = stringResource(R.string.app_assist_model_selected)
 
     Column(
         Modifier
             .fillMaxWidth()
             .heightIn(max = maxHeight)
-            .clip(shapes.cardShape)
-            .background(palette.sunken.copy(alpha = if (palette.dark) 0.90f else 0.78f))
-            .border(Tokens.Size.hairline, palette.line, shapes.cardShape)
+            .floatingGlassIsland(shape = shape)
             .padding(vertical = Tokens.Space.s)
             .testTag("assist-model-picker"),
         verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
@@ -915,16 +1557,18 @@ private fun AssistModelPickerRow(
 }
 
 @Composable
-private fun AssistLockedCard(onUnlock: () -> Unit) {
+private fun AssistLockedIsland(
+    shape: Shape,
+    swipeModifier: Modifier,
+    onUnlock: () -> Unit,
+) {
     val palette = PersonaTheme.palette
     val type = PersonaTheme.type
-    val shapes = PersonaTheme.shapes
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(shapes.cardShape)
-            .background(palette.sunken)
-            .border(Tokens.Size.hairline, palette.line, shapes.cardShape)
+            .floatingGlassIsland(shape = shape)
+            .then(swipeModifier)
             .padding(Tokens.Space.l)
             .testTag("assist-locked-card"),
         verticalArrangement = Arrangement.spacedBy(Tokens.Space.m),
@@ -1097,305 +1741,10 @@ private fun AssistStreamingTranscript(
     }
 }
 
-@Composable
-private fun AssistScreenAttachmentRow(
-    ui: AssistOverlayUiState,
-    onAttachScreen: () -> Unit,
-    onRemoveScreen: () -> Unit,
-    onOpenAssistantSettings: () -> Unit,
-) {
-    val palette = PersonaTheme.palette
-    val type = PersonaTheme.type
-    val shapes = PersonaTheme.shapes
-    when (ui.captureStatus) {
-        AssistCaptureStatus.Waiting -> {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Tokens.Space.xs)
-                    .testTag("assist-screen-waiting"),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
-            ) {
-                JSpinner(Modifier.size(Tokens.Size.markXS), color = palette.ink3)
-                Text(
-                    text = stringResource(R.string.app_assist_screen_preparing),
-                    style = type.micro,
-                    color = palette.ink3,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-
-        AssistCaptureStatus.Available -> {
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
-            ) {
-                JChip(
-                    text = stringResource(R.string.app_assist_attach_screen),
-                    icon = PersonaIcons.screen,
-                    accent = true,
-                    role = Role.Button,
-                    onClick = if (ui.attachingScreen || ui.sending) null else onAttachScreen,
-                    modifier = Modifier.testTag("assist-attach-screen-chip"),
-                )
-                if (ui.attachingScreen) {
-                    JSpinner(Modifier.size(Tokens.Size.markS), color = palette.accent)
-                }
-            }
-        }
-
-        AssistCaptureStatus.Attached -> {
-            val thumb = remember(ui.attachedThumbnail) {
-                ui.attachedThumbnail?.takeUnless { it.isRecycled }?.asImageBitmap()
-            }
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(shapes.controlShape)
-                    .background(palette.sunken.copy(alpha = if (palette.dark) 0.88f else 0.72f))
-                    .border(Tokens.Size.hairline, palette.line, shapes.controlShape)
-                    .padding(Tokens.Space.s)
-                    .testTag("assist-screen-attached-row"),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.m),
-            ) {
-                AttachmentThumb(
-                    image = thumb,
-                    contentDescription = stringResource(R.string.app_assist_screen_preview),
-                    state = if (ui.sending) AttachmentState.Uploading else AttachmentState.Ready,
-                    onRemove = if (ui.sending) null else onRemoveScreen,
-                )
-                Column(
-                    Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(Tokens.Space.xxs),
-                ) {
-                    Text(
-                        text = stringResource(R.string.app_assist_screen_attached),
-                        style = type.labelSmall.copy(fontWeight = FontWeight.Medium),
-                        color = palette.ink,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    ui.attachedContext?.title?.takeIf(String::isNotBlank)?.let { title ->
-                        Text(
-                            text = title,
-                            style = type.micro,
-                            color = palette.ink2,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-            }
-        }
-
-        AssistCaptureStatus.Unavailable -> {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Tokens.Space.xs)
-                    .testTag("assist-screen-unavailable"),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
-            ) {
-                JIcon(
-                    icon = PersonaIcons.privacy,
-                    contentDescription = null,
-                    size = Tokens.Size.markXS,
-                    tint = palette.ink3,
-                )
-                Text(
-                    text = stringResource(R.string.app_assist_screen_unavailable),
-                    style = type.micro,
-                    color = palette.ink3,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-
-        AssistCaptureStatus.TimedOut -> {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Tokens.Space.xs)
-                    .testTag("assist-screen-timeout"),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
-            ) {
-                JIcon(
-                    icon = PersonaIcons.time,
-                    contentDescription = null,
-                    size = Tokens.Size.markXS,
-                    tint = palette.ink3,
-                )
-                Text(
-                    text = stringResource(R.string.app_assist_screen_timeout),
-                    style = type.micro,
-                    color = palette.ink3,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-
-        AssistCaptureStatus.DisabledBySettings -> {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(shapes.controlShape)
-                    .background(palette.sunken.copy(alpha = if (palette.dark) 0.85f else 0.72f))
-                    .border(Tokens.Size.hairline, palette.line, shapes.controlShape)
-                    .padding(start = Tokens.Space.m, end = Tokens.Space.xs, top = Tokens.Space.xs, bottom = Tokens.Space.xs)
-                    .testTag("assist-screen-disabled"),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
-            ) {
-                JIcon(
-                    icon = PersonaIcons.settings,
-                    contentDescription = null,
-                    size = Tokens.Size.markS,
-                    tint = palette.ink2,
-                )
-                Text(
-                    text = stringResource(R.string.app_assist_screen_disabled_by_settings),
-                    style = type.micro,
-                    color = palette.ink2,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                JTextButton(
-                    text = stringResource(R.string.app_assist_screen_open_settings),
-                    onClick = onOpenAssistantSettings,
-                    modifier = Modifier.testTag("assist-open-settings-button"),
-                )
-            }
-        }
-
-        AssistCaptureStatus.NotSupported -> Unit
-    }
-}
-
-@Composable
-private fun AssistInputBar(
-    draftText: String,
-    canSend: Boolean,
-    sending: Boolean,
-    inputEnabled: Boolean,
-    dictating: Boolean,
-    onDraftChange: (String) -> Unit,
-    onToggleDictation: (() -> Unit)?,
-    onSend: () -> Unit,
-) {
-    val palette = PersonaTheme.palette
-    val type = PersonaTheme.type
-    val shapes = PersonaTheme.shapes
-    var focused by remember { mutableStateOf(false) }
-    val placeholder = stringResource(
-        if (dictating) R.string.app_assist_dictate_listening else R.string.app_assist_input_placeholder,
-    )
-
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(shapes.panelShape)
-            .background(palette.sunken.copy(alpha = if (palette.dark) 0.88f else 0.72f))
-            .border(
-                width = if (focused) Tokens.Size.line else Tokens.Size.hairline,
-                color = if (focused) palette.accent.copy(alpha = 0.78f) else palette.line,
-                shape = shapes.panelShape,
-            )
-            .padding(start = Tokens.Space.l, end = Tokens.Space.xs, top = Tokens.Space.xs, bottom = Tokens.Space.xs),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
-    ) {
-        Box(
-            Modifier
-                .weight(1f)
-                .padding(vertical = Tokens.Space.s),
-            contentAlignment = Alignment.CenterStart,
-        ) {
-            if (draftText.isEmpty()) {
-                Text(
-                    text = placeholder,
-                    style = type.body,
-                    color = palette.ink3,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            BasicTextField(
-                value = draftText,
-                onValueChange = onDraftChange,
-                enabled = inputEnabled,
-                textStyle = type.body.copy(color = palette.ink),
-                cursorBrush = SolidColor(palette.accent),
-                maxLines = 4,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = { if (canSend) onSend() }),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .onFocusChanged { focused = it.isFocused }
-                    .testTag("assist-input-field"),
-            )
-        }
-        if (onToggleDictation != null) {
-            JIconButton(
-                icon = if (dictating) PersonaIcons.dictating else PersonaIcons.dictate,
-                contentDescription = stringResource(
-                    if (dictating) R.string.app_assist_dictate_stop else R.string.app_assist_dictate,
-                ),
-                onClick = onToggleDictation,
-                enabled = inputEnabled,
-                selected = dictating,
-                tint = if (dictating) palette.accent else palette.ink2,
-                modifier = Modifier.testTag("assist-dictate-button"),
-            )
-        }
-        Box(
-            Modifier
-                .size(Tokens.MinTouch.android)
-                .clickable(
-                    enabled = canSend && !sending,
-                    role = Role.Button,
-                    onClickLabel = stringResource(R.string.app_send),
-                    onClick = onSend,
-                )
-                .padding(Tokens.Space.xs)
-                .testTag("assist-send-button"),
-            contentAlignment = Alignment.Center,
-        ) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .clip(CircleShape)
-                    .background(if (canSend) palette.action else palette.surfaceStrong),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (sending) {
-                    JSpinner(Modifier.size(Tokens.Size.markS), color = palette.ink2)
-                } else {
-                    JIcon(
-                        icon = PersonaIcons.send,
-                        contentDescription = stringResource(R.string.app_send),
-                        size = Tokens.Size.iconXS,
-                        tint = if (canSend) palette.onAction else palette.ink3,
-                    )
-                }
-            }
-        }
-    }
-}
-
 /**
  * Overlay-safe voice dictation helper that never requires `LocalActivityResultRegistryOwner`
  * (which is unavailable inside a `VoiceInteractionSession`). Activates only when `RECORD_AUDIO`
- * is already granted and platform speech recognition is available.
+ * is already granted and platform speech recognition is available; hides automatically otherwise.
  */
 private class OverlayDictationHandle(
     private val context: Context,
@@ -1488,12 +1837,16 @@ private fun rememberOverlayDictation(
     }
     if (!available) return null
 
-    val language = remember(resources) { resources.configuration.locales[0]?.toLanguageTag() }
+    val locale = remember(resources) { resources.configuration.locales[0] }
+    val language = remember(locale) {
+        if (locale?.language == "zh") "zh-CN" else locale?.toLanguageTag()
+    }
     val intent = remember(context.packageName, language) {
         Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             language?.let { putExtra(RecognizerIntent.EXTRA_LANGUAGE, it) }
         }
     }

@@ -772,4 +772,105 @@ class AssistOverlayControllerTest {
             ).screenshotDisabledBySettings,
         )
     }
+
+    @Test
+    fun outOfOrderNullScreenshotBeforeOnPrepareShowCorrectsToDisabledBySettings() = runTest {
+        // Case A: onHandleScreenshot(null) arrives 1ms before onPrepareShow detects disabled settings.
+        val harnessA = Harness(this)
+        val controllerA = harnessA.controller
+        controllerA.onScreenshotReceived(bitmap = null, screenshotDisabledBySettings = false)
+        assertEquals(AssistCaptureStatus.Unavailable, controllerA.state.value.captureStatus)
+
+        controllerA.beginSession(
+            supportsScreenshot = true,
+            showFlags = 4,
+            deviceLocked = false,
+            screenshotDisabledBySettings = true,
+            expectScreenshotFromFlags = false,
+        )
+        assertEquals(AssistCaptureStatus.DisabledBySettings, controllerA.state.value.captureStatus)
+        controllerA.endSession()
+        runCurrent()
+
+        // Case B: onHandleScreenshot(null) itself probes disabled settings before onPrepareShow.
+        val harnessB = Harness(this)
+        val controllerB = harnessB.controller
+        controllerB.onScreenshotReceived(bitmap = null, screenshotDisabledBySettings = true)
+        assertEquals(AssistCaptureStatus.DisabledBySettings, controllerB.state.value.captureStatus)
+        controllerB.endSession()
+        runCurrent()
+
+        // Case C: onHandleScreenshot(null) arriving after DisabledBySettings never regresses to Unavailable.
+        val harnessC = Harness(this)
+        val controllerC = harnessC.controller
+        controllerC.beginSession(
+            supportsScreenshot = true,
+            showFlags = 4,
+            deviceLocked = false,
+            screenshotDisabledBySettings = true,
+            expectScreenshotFromFlags = false,
+        )
+        controllerC.onScreenshotReceived(bitmap = null, screenshotDisabledBySettings = false)
+        assertEquals(AssistCaptureStatus.DisabledBySettings, controllerC.state.value.captureStatus)
+        controllerC.endSession()
+        runCurrent()
+
+        // Case D: a real captured bitmap is never overwritten by a subsequent disabledBySettings probe.
+        val harnessD = Harness(this)
+        val controllerD = harnessD.controller
+        val shot = sampleBitmap()
+        controllerD.onScreenshotReceived(bitmap = shot)
+        runCurrent()
+        assertEquals(AssistCaptureStatus.Available, controllerD.state.value.captureStatus)
+        controllerD.beginSession(
+            supportsScreenshot = true,
+            showFlags = 263,
+            deviceLocked = false,
+            screenshotDisabledBySettings = true,
+            expectScreenshotFromFlags = true,
+        )
+        assertEquals(AssistCaptureStatus.Available, controllerD.state.value.captureStatus)
+        shot.recycle()
+        controllerD.endSession()
+        runCurrent()
+    }
+
+    @Test
+    fun stagesInMemoryPreviewThumbnailWithoutWritingToDiskUntilConfirmed() = runTest {
+        val harness = Harness(this)
+        val controller = harness.controller
+        controller.beginSession(supportsScreenshot = true)
+
+        val shot = sampleBitmap()
+        controller.onScreenshotReceived(shot)
+        runCurrent()
+
+        assertEquals(AssistCaptureStatus.Available, controller.state.value.captureStatus)
+        assertNotNull(controller.state.value.previewThumbnail)
+        assertNull(controller.state.value.attachedScreenshot)
+        assertNull(controller.state.value.attachedThumbnail)
+        assertEquals(0, harness.saveCount)
+
+        // Confirming attach persists to cacheDir/assist and keeps preview thumbnail intact.
+        controller.attachCurrentScreen()
+        runCurrent()
+        assertEquals(AssistCaptureStatus.Attached, controller.state.value.captureStatus)
+        assertEquals(1, harness.saveCount)
+        assertNotNull(controller.state.value.attachedThumbnail)
+        assertNotNull(controller.state.value.previewThumbnail)
+
+        // Toggling off deletes the temp file and returns to Available with the live preview thumbnail preserved.
+        controller.removeAttachedScreen()
+        runCurrent()
+        assertEquals(AssistCaptureStatus.Available, controller.state.value.captureStatus)
+        assertEquals(1, harness.deletedAttachments.size)
+        assertNull(controller.state.value.attachedScreenshot)
+        assertNull(controller.state.value.attachedThumbnail)
+        assertNotNull(controller.state.value.previewThumbnail)
+
+        shot.recycle()
+        controller.endSession()
+        runCurrent()
+        assertNull(controller.state.value.previewThumbnail)
+    }
 }
