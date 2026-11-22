@@ -117,7 +117,7 @@
     <string name="app_assist_open_in_persona">在 Persona 中打开</string>
     <string name="app_assist_close">关闭</string>
     <string name="app_assist_input_placeholder">直接提问…</string>
-    <string name="app_assist_input_placeholder_voice">直接提问或语音…</string>
+    <string name="app_assist_input_placeholder_voice">直接提问，长按语音…</string>
     <string name="app_assist_attach_screen">附带当前屏幕</string>
     <string name="app_assist_attach_screen_short">附带屏幕</string>
     <string name="app_assist_remove_screen">取消附带当前屏幕</string>
@@ -137,7 +137,7 @@
     <string name="app_assist_send_failed">发送失败，请重试</string>
     <string name="app_assist_dictate">语音输入</string>
     <string name="app_assist_dictate_stop">停止语音输入</string>
-    <string name="app_assist_dictate_listening">正在聆听…</string>
+    <string name="app_assist_dictate_listening">正在聆听，点此停止</string>
     <string name="app_assist_dictate_stopped">语音输入已停止</string>
     <string name="app_assist_delivery_sending">发送中…</string>
     <string name="app_assist_delivery_queued">排队中</string>

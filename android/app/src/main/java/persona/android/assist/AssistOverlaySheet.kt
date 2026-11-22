@@ -22,6 +22,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -75,16 +77,22 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -179,12 +187,14 @@ internal fun AssistOverlayEnvironment(
  *
  * Adapts natively to Persona's three official styles (`AppStyle.Glass`, `AppStyle.Brief`,
  * `AppStyle.Board`), active `ThemeColor`, and `LayoutDensity`:
- * - Single clean opaque composer card (`~120dp` tall) integrating `PersonaFace` + borderless
- *   multi-line input on the top row and privacy-first screen toggle, restrained model switcher,
- *   `Open in Persona ↗`, optional voice dictation, and high-contrast Send button on the bottom row.
+ * - Single clean opaque composer card (`~125dp` tall) integrating a subtle top drag handle,
+ *   `PersonaFace` + borderless multi-line input (long-press toggles voice dictation when
+ *   supported) on the top row, and privacy-first screen toggle, restrained model switcher,
+ *   `Open in Persona ↗`, and high-contrast Send button on the bottom row.
  * - Independent single-layer floating cards (streaming reply transcript, model picker, Hub/error
  *   notices) grow cleanly `8dp` above the unified composer card only when needed — zero nested boxes.
- * - Dismisses via tapping the dimmed backdrop scrim, system Back, or swiping down (no `×` clutter).
+ * - Bidirectional vertical drag: swipe down to dismiss, swipe up to expand directly into full-screen
+ *   Persona carrying the current draft, attached screen, and conversation target.
  */
 @Composable
 internal fun AssistOverlaySheet(
@@ -205,13 +215,20 @@ internal fun AssistOverlaySheet(
     onOpenInPersona: () -> Unit,
     onDismiss: () -> Unit,
     onUnlock: () -> Unit = onOpenInPersona,
+    dictationOverride: AssistDictationController? = null,
 ) {
     val palette = PersonaTheme.palette
     val shapes = PersonaTheme.shapes
     val style = PersonaTheme.style
     val reduceMotion = PersonaTheme.reduceMotion
     val density = LocalDensity.current
-    val dismissThresholdPx = with(density) { Tokens.MinTouch.android.toPx() }
+    val haptic = LocalHapticFeedback.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    val dismissThresholdPx = with(density) { Tokens.MinTouch.android.toPx() } // 48dp swipe-down dismiss
+    val expandThresholdPx = with(density) { (Tokens.MinTouch.android + Tokens.Space.s).toPx() } // 56dp swipe-up open
+    val maxUpVisualOffsetPx = with(density) { (Tokens.Size.box120 + Tokens.Space.l).toPx() }
     val enterOffsetPx = with(density) { Tokens.Space.xl.toPx() }
 
     var entered by remember(ui.invocationId) { mutableStateOf(reduceMotion) }
@@ -224,10 +241,29 @@ internal fun AssistOverlaySheet(
         label = "assist-overlay-enter",
     )
 
+    val dictation = dictationOverride ?: rememberOverlayDictation(onHeard = onDictationHeard, onError = onNotice)
+    val dictating = dictation?.listening == true
+    val latestDictation by rememberUpdatedState(dictation)
+    var composerFocused by remember { mutableStateOf(false) }
+
     var dragging by remember { mutableStateOf(false) }
-    var dragOffsetPx by remember { mutableFloatStateOf(0f) }
+    var rawDragPx by remember { mutableFloatStateOf(0f) }
+    var expandHapticFired by remember { mutableStateOf(false) }
+    val expandDragReady = !ui.deviceLocked && dragging && rawDragPx <= -expandThresholdPx
+    val targetDragOffsetPx = when {
+        rawDragPx >= 0f -> rawDragPx
+        else -> {
+            val up = -rawDragPx
+            val damped = if (up <= expandThresholdPx) {
+                up * 0.85f
+            } else {
+                (expandThresholdPx * 0.85f) + ((up - expandThresholdPx) * 0.35f)
+            }
+            -damped.coerceAtMost(maxUpVisualOffsetPx)
+        }
+    }
     val animatedDragOffsetPx by animateFloatAsState(
-        targetValue = dragOffsetPx,
+        targetValue = targetDragOffsetPx,
         animationSpec = if (dragging || reduceMotion) SharedMotion.instant() else SharedMotion.springBack(),
         label = "assist-overlay-drag",
     )
@@ -235,6 +271,7 @@ internal fun AssistOverlaySheet(
     val aiActive = !ui.deviceLocked && (ui.awaitingReply || ui.sending || ui.turns.any { it.streaming })
     val personaState = when {
         ui.hubStatus == AssistHubStatus.Offline || ui.hubStatus == AssistHubStatus.Unpaired -> PersonaState.Offline
+        dictating -> PersonaState.Working
         ui.turns.any { it.streaming } -> PersonaState.Working
         ui.sending || ui.awaitingReply -> PersonaState.Thinking
         else -> PersonaState.Idle
@@ -258,11 +295,12 @@ internal fun AssistOverlaySheet(
 
     val scrimInteraction = remember { MutableInteractionSource() }
     val latestOnCloseModelPicker by rememberUpdatedState(onCloseModelPicker)
+    val latestOnOpenInPersona by rememberUpdatedState(onOpenInPersona)
     val latestOnDismiss by rememberUpdatedState(onDismiss)
+    val latestDeviceLocked by rememberUpdatedState(ui.deviceLocked)
+    val latestKeyboardController by rememberUpdatedState(keyboardController)
+    val latestHaptic by rememberUpdatedState(haptic)
     val closeDescription = stringResource(R.string.app_assist_close)
-    val dictation = rememberOverlayDictation(onHeard = onDictationHeard, onError = onNotice)
-    val latestDictation by rememberUpdatedState(dictation)
-    var composerFocused by remember { mutableStateOf(false) }
 
     // Single unified inset layer: max(IME, navigation bar) when IME is open, navigation bar when closed.
     val imeBottomPx = WindowInsets.ime.getBottom(density)
@@ -297,25 +335,50 @@ internal fun AssistOverlaySheet(
         )
     }
 
-    val swipeDownModifier = Modifier.pointerInput(dismissThresholdPx) {
+    val verticalDragModifier = Modifier.pointerInput(dismissThresholdPx, expandThresholdPx) {
         detectVerticalDragGestures(
-            onDragStart = { dragging = true },
+            onDragStart = {
+                dragging = true
+                expandHapticFired = false
+            },
             onDragEnd = {
                 dragging = false
-                if (dragOffsetPx >= dismissThresholdPx) {
-                    dragOffsetPx = 0f
-                    latestDictation?.stop()
-                    latestOnDismiss()
-                } else {
-                    dragOffsetPx = 0f
+                val finalDrag = rawDragPx
+                rawDragPx = 0f
+                expandHapticFired = false
+                when {
+                    finalDrag >= dismissThresholdPx -> {
+                        latestDictation?.stop()
+                        latestKeyboardController?.hide()
+                        latestOnDismiss()
+                    }
+                    !latestDeviceLocked && finalDrag <= -expandThresholdPx -> {
+                        latestDictation?.stop()
+                        latestKeyboardController?.hide()
+                        latestOnOpenInPersona()
+                    }
                 }
             },
             onDragCancel = {
                 dragging = false
-                dragOffsetPx = 0f
+                rawDragPx = 0f
+                expandHapticFired = false
             },
             onVerticalDrag = { _, dragAmount ->
-                dragOffsetPx = (dragOffsetPx + dragAmount).coerceAtLeast(0f)
+                val updated = if (latestDeviceLocked) {
+                    (rawDragPx + dragAmount).coerceAtLeast(0f)
+                } else {
+                    rawDragPx + dragAmount
+                }
+                rawDragPx = updated
+                if (!latestDeviceLocked) {
+                    if (updated <= -expandThresholdPx && !expandHapticFired) {
+                        expandHapticFired = true
+                        latestHaptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    } else if (updated > -expandThresholdPx * 0.75f) {
+                        expandHapticFired = false
+                    }
+                }
             },
         )
     }
@@ -343,6 +406,7 @@ internal fun AssistOverlaySheet(
                     onClickLabel = closeDescription,
                     onClick = {
                         dictation?.stop()
+                        keyboardController?.hide()
                         onDismiss()
                     },
                 )
@@ -379,9 +443,10 @@ internal fun AssistOverlaySheet(
                 if (ui.deviceLocked) {
                     AssistLockedIsland(
                         shape = cardShape,
-                        swipeModifier = swipeDownModifier,
+                        swipeModifier = verticalDragModifier,
                         onUnlock = {
                             dictation?.stop()
+                            keyboardController?.hide()
                             onUnlock()
                         },
                     )
@@ -397,7 +462,7 @@ internal fun AssistOverlaySheet(
                             aiActive = aiActive,
                             glowAlpha = glowAlpha,
                             modelPickerOpen = ui.modelPickerOpen,
-                            swipeModifier = swipeDownModifier,
+                            swipeModifier = verticalDragModifier,
                             onCloseModelPicker = { latestOnCloseModelPicker() },
                             modifier = Modifier
                                 .weight(1f, fill = false)
@@ -412,6 +477,7 @@ internal fun AssistOverlaySheet(
                         buttonShape = buttonShape,
                         onOpenInPersona = {
                             dictation?.stop()
+                            keyboardController?.hide()
                             onOpenInPersona()
                         },
                         onRetryWithDefaultMain = onRetryWithDefaultMain,
@@ -431,7 +497,7 @@ internal fun AssistOverlaySheet(
                         )
                     }
 
-                    // Unified Flagship Composer Card (PersonaFace + input on top; actions on bottom).
+                    // Unified Flagship Composer Card (drag handle + PersonaFace + input on top; actions on bottom).
                     AssistUnifiedComposerCard(
                         ui = ui,
                         style = style,
@@ -439,11 +505,12 @@ internal fun AssistOverlaySheet(
                         chipShape = chipShape,
                         buttonShape = buttonShape,
                         personaState = personaState,
-                        dictating = dictation?.listening == true,
-                        focused = composerFocused,
+                        dictating = dictating,
+                        focused = composerFocused || dictating,
                         aiActive = aiActive,
                         glowAlpha = glowAlpha,
-                        swipeModifier = swipeDownModifier,
+                        expandDragReady = expandDragReady,
+                        swipeModifier = verticalDragModifier,
                         onFocusChange = { composerFocused = it },
                         onDraftChange = onDraftChange,
                         onAttachScreen = onAttachScreen,
@@ -453,9 +520,21 @@ internal fun AssistOverlaySheet(
                         onCloseModelPicker = { latestOnCloseModelPicker() },
                         onOpenInPersona = {
                             dictation?.stop()
+                            keyboardController?.hide()
                             onOpenInPersona()
                         },
-                        onToggleDictation = dictation?.let { control -> { control.toggle() } },
+                        onStartVoiceInput = dictation?.let { control ->
+                            {
+                                keyboardController?.hide()
+                                focusManager.clearFocus(force = true)
+                                if (!control.listening) control.toggle()
+                            }
+                        },
+                        onStopDictation = dictation?.let { control ->
+                            {
+                                control.stop()
+                            }
+                        },
                         onSend = {
                             dictation?.stop()
                             onSend()
@@ -596,6 +675,7 @@ private fun AssistUnifiedComposerCard(
     focused: Boolean,
     aiActive: Boolean,
     glowAlpha: Float,
+    expandDragReady: Boolean,
     swipeModifier: Modifier,
     onFocusChange: (Boolean) -> Unit,
     onDraftChange: (String) -> Unit,
@@ -605,28 +685,40 @@ private fun AssistUnifiedComposerCard(
     onToggleModelPicker: () -> Unit,
     onCloseModelPicker: () -> Unit,
     onOpenInPersona: () -> Unit,
-    onToggleDictation: (() -> Unit)?,
+    onStartVoiceInput: (() -> Unit)?,
+    onStopDictation: (() -> Unit)?,
     onSend: () -> Unit,
 ) {
     val palette = PersonaTheme.palette
     val type = PersonaTheme.type
+    val reduceMotion = PersonaTheme.reduceMotion
+    val haptic = LocalHapticFeedback.current
     val personaName = LocalPersonaName.current
     val tonalFill = assistTonalFill(style)
     val inputEnabled = !ui.sending && ui.hubStatus != AssistHubStatus.Unpaired
+    val voiceAvailable = onStartVoiceInput != null && onStopDictation != null
     val defaultShortLabel = stringResource(R.string.app_assist_model_default_short)
     val openInPersonaLabel = stringResource(R.string.app_assist_open_in_persona)
+    val dictateLabel = stringResource(R.string.app_assist_dictate)
+    val stopDictateLabel = stringResource(R.string.app_assist_dictate_stop)
     val modelPillLabel = if (ui.modelChoice.isDefault) {
         defaultShortLabel
     } else {
         ui.modelChoice.compactLabel.ifBlank { defaultShortLabel }
     }
     val placeholder = stringResource(
-        when {
-            dictating -> R.string.app_assist_dictate_listening
-            onToggleDictation != null -> R.string.app_assist_input_placeholder_voice
-            else -> R.string.app_assist_input_placeholder
+        if (voiceAvailable) {
+            R.string.app_assist_input_placeholder_voice
+        } else {
+            R.string.app_assist_input_placeholder
         },
     )
+    val latestInputEnabled by rememberUpdatedState(inputEnabled)
+    val latestDictating by rememberUpdatedState(dictating)
+    val latestHaptic by rememberUpdatedState(haptic)
+    val latestOnStartVoiceInput by rememberUpdatedState(onStartVoiceInput)
+    val latestOnStopDictation by rememberUpdatedState(onStopDictation)
+
     val glassOrbBrush = remember(palette.ai, palette.accent, palette.surface, palette.dark) {
         Brush.radialGradient(
             colors = listOf(
@@ -636,6 +728,7 @@ private fun AssistUnifiedComposerCard(
             ),
         )
     }
+    val handleShape = if (style == AppStyle.Board) chipShape else CircleShape
 
     Column(
         Modifier
@@ -653,191 +746,326 @@ private fun AssistUnifiedComposerCard(
             .padding(
                 start = Tokens.Space.m,
                 end = Tokens.Space.m,
-                top = Tokens.Space.m,
+                top = Tokens.Space.sm,
                 bottom = Tokens.Space.s,
             ),
-        verticalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+        verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
     ) {
-        // Top row: Official PersonaFace identity anchor + spacious borderless multi-line input.
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .heightIn(min = Tokens.MinTouch.android),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+        // Restrained top drag handle hinting bidirectional drag (pull up for full Persona, down to dismiss).
+        Box(
+            Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center,
         ) {
             Box(
                 Modifier
-                    .size(Tokens.Size.slimBar) // 40dp borderless identity anchor
-                    .then(
-                        if (style == AppStyle.Glass) {
-                            Modifier
-                                .clip(CircleShape)
-                                .background(glassOrbBrush)
+                    .size(width = Tokens.Space.Standard.xxl, height = Tokens.Size.bar)
+                    .clip(handleShape)
+                    .background(
+                        if (expandDragReady) {
+                            palette.accent.copy(alpha = 0.72f)
                         } else {
-                            Modifier
+                            palette.ink3.copy(alpha = 0.22f)
                         },
                     )
-                    .semantics { contentDescription = personaName }
-                    .testTag("assist-brand-orb"),
-                contentAlignment = Alignment.Center,
-            ) {
-                PersonaFace(
-                    state = personaState,
-                    size = Tokens.Size.wellXS + Tokens.Space.s, // 36dp crisp PersonaFace
-                )
-            }
-
-            Box(
-                Modifier
-                    .weight(1f)
-                    .padding(horizontal = Tokens.Space.xs, vertical = Tokens.Space.xs),
-                contentAlignment = Alignment.CenterStart,
-            ) {
-                if (ui.draftText.isEmpty()) {
-                    Text(
-                        text = placeholder,
-                        style = type.body,
-                        color = palette.ink3,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                BasicTextField(
-                    value = ui.draftText,
-                    onValueChange = onDraftChange,
-                    enabled = inputEnabled,
-                    textStyle = type.body.copy(color = palette.ink),
-                    cursorBrush = SolidColor(palette.accent),
-                    maxLines = 4,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = { if (ui.canSend) onSend() }),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .onFocusChanged { onFocusChange(it.isFocused) }
-                        .testTag("assist-input-field"),
-                )
-            }
+                    .testTag("assist-drag-handle"),
+            )
         }
 
-        // Bottom integrated action row: privacy screen toggle on left; model, ↗, mic, and Send on right.
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .heightIn(min = Tokens.MinTouch.android),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+        Column(
+            Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(Tokens.Space.s),
         ) {
-            Box(
-                Modifier.weight(1f),
-                contentAlignment = Alignment.CenterStart,
-            ) {
-                AssistScreenContextControl(
-                    ui = ui,
-                    style = style,
-                    chipShape = chipShape,
-                    tonalFill = tonalFill,
-                    onAttachScreen = onAttachScreen,
-                    onRemoveScreen = onRemoveScreen,
-                    onOpenAssistantSettings = onOpenAssistantSettings,
-                )
-            }
-
+            // Top row: Official PersonaFace identity anchor + spacious borderless multi-line input
+            // (long-press toggles voice dictation when supported).
             Row(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = Tokens.MinTouch.android),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
             ) {
-                AssistModelSwitcherButton(
-                    label = modelPillLabel,
-                    open = ui.modelPickerOpen,
-                    enabled = !ui.sending,
-                    isCustom = !ui.modelChoice.isDefault,
-                    style = style,
-                    chipShape = chipShape,
-                    onClick = onToggleModelPicker,
-                )
+                Box(
+                    Modifier
+                        .size(Tokens.Size.slimBar) // 40dp borderless identity anchor
+                        .then(
+                            if (style == AppStyle.Glass) {
+                                Modifier
+                                    .clip(CircleShape)
+                                    .background(glassOrbBrush)
+                            } else {
+                                Modifier
+                            },
+                        )
+                        .semantics { contentDescription = personaName }
+                        .testTag("assist-brand-orb"),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    PersonaFace(
+                        state = personaState,
+                        size = Tokens.Size.wellXS + Tokens.Space.s, // 36dp crisp PersonaFace
+                    )
+                }
 
                 Box(
                     Modifier
-                        .size(Tokens.MinTouch.ios) // 44dp borderless tonal icon button
-                        .clip(buttonShape)
-                        .background(tonalFill)
-                        .clickable(
-                            role = Role.Button,
-                            onClickLabel = openInPersonaLabel,
-                            onClick = onOpenInPersona,
+                        .weight(1f)
+                        .then(
+                            if (voiceAvailable) {
+                                Modifier
+                                    .pointerInput(Unit) {
+                                        val touchSlop = viewConfiguration.touchSlop
+                                        awaitEachGesture {
+                                            val down = awaitFirstDown(
+                                                requireUnconsumed = false,
+                                                pass = PointerEventPass.Initial,
+                                            )
+                                            if (!latestInputEnabled) return@awaitEachGesture
+                                            val startedDictating = latestDictating
+                                            // Fire just ahead of BasicTextField's internal long-press selection
+                                            // menu while staying well above normal taps.
+                                            val longPressTimeout =
+                                                (viewConfiguration.longPressTimeoutMillis - 50L).coerceAtLeast(300L)
+                                            var movedOrMultiTouch = false
+                                            val endedEarly = withTimeoutOrNull(longPressTimeout) {
+                                                while (true) {
+                                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                                    if (event.changes.size > 1) {
+                                                        movedOrMultiTouch = true
+                                                        return@withTimeoutOrNull true
+                                                    }
+                                                    val change = event.changes.firstOrNull { it.id == down.id }
+                                                    if (change == null || !change.pressed) {
+                                                        return@withTimeoutOrNull true
+                                                    }
+                                                    if ((change.position - down.position).getDistance() > touchSlop) {
+                                                        movedOrMultiTouch = true
+                                                        return@withTimeoutOrNull true
+                                                    }
+                                                }
+                                            }
+                                            if (endedEarly == null && !movedOrMultiTouch) {
+                                                latestHaptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                if (startedDictating) {
+                                                    latestOnStopDictation?.invoke()
+                                                } else {
+                                                    latestOnStartVoiceInput?.invoke()
+                                                }
+                                                // Swallow the rest of this gesture so lifting the finger never
+                                                // triggers selection menus or accidentally stops listening.
+                                                while (true) {
+                                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                                    event.changes.forEach { it.consume() }
+                                                    if (!event.changes.any { it.pressed }) break
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .semantics {
+                                        if (inputEnabled && !dictating) {
+                                            onLongClick(label = dictateLabel) {
+                                                latestOnStartVoiceInput?.invoke()
+                                                true
+                                            }
+                                        }
+                                    }
+                            } else {
+                                Modifier
+                            },
                         )
-                        .semantics { contentDescription = openInPersonaLabel }
-                        .testTag("assist-open-in-persona"),
-                    contentAlignment = Alignment.Center,
+                        .padding(horizontal = Tokens.Space.xs, vertical = Tokens.Space.xs),
+                    contentAlignment = Alignment.CenterStart,
                 ) {
-                    JIcon(
-                        icon = PersonaIcons.open,
-                        contentDescription = null,
-                        size = Tokens.Size.iconS,
-                        tint = palette.ink2,
-                    )
-                }
-
-                if (onToggleDictation != null) {
-                    val dictateLabel = stringResource(
-                        if (dictating) R.string.app_assist_dictate_stop else R.string.app_assist_dictate,
-                    )
-                    Box(
-                        Modifier
-                            .size(Tokens.MinTouch.ios) // 44dp comfortable touch target
-                            .clip(buttonShape)
-                            .background(if (dictating) palette.accentSoft else tonalFill)
-                            .clickable(
-                                enabled = inputEnabled,
-                                role = Role.Button,
-                                onClickLabel = dictateLabel,
-                                onClick = onToggleDictation,
-                            )
-                            .semantics {
-                                contentDescription = dictateLabel
-                                selected = dictating
+                    if (dictating && onStopDictation != null) {
+                        val pulseAlpha = if (!reduceMotion) {
+                            val transition = rememberInfiniteTransition(label = "assist-dictate-pulse")
+                            transition.animateFloat(
+                                initialValue = 0.55f,
+                                targetValue = 1f,
+                                animationSpec = infiniteRepeatable(
+                                    animation = tween(
+                                        durationMillis = PersonaTheme.motion.breathe,
+                                        easing = LinearEasing,
+                                    ),
+                                    repeatMode = RepeatMode.Reverse,
+                                ),
+                                label = "assist-dictate-pulse-alpha",
+                            ).value
+                        } else {
+                            1f
+                        }
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = Tokens.MinTouch.ios)
+                                .clip(chipShape)
+                                .background(palette.accentSoft)
+                                .border(Tokens.Size.hairline, palette.accent.copy(alpha = 0.45f), chipShape)
+                                .clickable(
+                                    role = Role.Button,
+                                    onClickLabel = stopDictateLabel,
+                                    onClick = onStopDictation,
+                                )
+                                .semantics {
+                                    contentDescription = stopDictateLabel
+                                    selected = true
+                                }
+                                .testTag("assist-dictate-listening")
+                                .padding(horizontal = Tokens.Space.s, vertical = Tokens.Space.xs),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+                        ) {
+                            Box(
+                                Modifier
+                                    .size(Tokens.Size.wellXS)
+                                    .clip(handleShape)
+                                    .background(palette.accent.copy(alpha = 0.16f * pulseAlpha)),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                JIcon(
+                                    icon = PersonaIcons.dictating,
+                                    contentDescription = null,
+                                    size = Tokens.Size.iconXS,
+                                    tint = palette.accent.copy(alpha = pulseAlpha),
+                                )
                             }
-                            .testTag("assist-dictate-button"),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        JIcon(
-                            icon = if (dictating) PersonaIcons.dictating else PersonaIcons.dictate,
-                            contentDescription = null,
-                            size = Tokens.Size.iconS,
-                            tint = if (dictating) palette.accent else palette.ink2,
+                            Column(
+                                Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(Tokens.Space.xxs),
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.app_assist_dictate_listening),
+                                    style = type.body.copy(fontWeight = FontWeight.Medium),
+                                    color = palette.accent,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                if (ui.draftText.isNotBlank()) {
+                                    Text(
+                                        text = ui.draftText,
+                                        style = type.caption,
+                                        color = palette.ink2,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        if (ui.draftText.isEmpty()) {
+                            Text(
+                                text = placeholder,
+                                style = type.body,
+                                color = palette.ink3,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        BasicTextField(
+                            value = ui.draftText,
+                            onValueChange = onDraftChange,
+                            enabled = inputEnabled,
+                            textStyle = type.body.copy(color = palette.ink),
+                            cursorBrush = SolidColor(palette.accent),
+                            maxLines = 4,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                            keyboardActions = KeyboardActions(onSend = { if (ui.canSend) onSend() }),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .onFocusChanged { onFocusChange(it.isFocused) }
+                                .testTag("assist-input-field"),
                         )
                     }
                 }
+            }
 
-                val sendLabel = stringResource(R.string.app_send)
+            // Bottom integrated action row: privacy screen toggle on left; model, ↗, and Send on right.
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = Tokens.MinTouch.android),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+            ) {
                 Box(
-                    Modifier
-                        .size(Tokens.MinTouch.ios) // 44dp high-contrast Send button
-                        .clip(buttonShape)
-                        .background(if (ui.canSend) palette.action else tonalFill)
-                        .clickable(
-                            enabled = ui.canSend && !ui.sending,
-                            role = Role.Button,
-                            onClickLabel = sendLabel,
-                            onClick = onSend,
-                        )
-                        .semantics { contentDescription = sendLabel }
-                        .testTag("assist-send-button"),
-                    contentAlignment = Alignment.Center,
+                    Modifier.weight(1f),
+                    contentAlignment = Alignment.CenterStart,
                 ) {
-                    if (ui.sending) {
-                        JSpinner(
-                            Modifier.size(Tokens.Size.iconXS),
-                            color = if (ui.canSend) palette.onAction else palette.ink2,
-                        )
-                    } else {
+                    AssistScreenContextControl(
+                        ui = ui,
+                        style = style,
+                        chipShape = chipShape,
+                        tonalFill = tonalFill,
+                        onAttachScreen = onAttachScreen,
+                        onRemoveScreen = onRemoveScreen,
+                        onOpenAssistantSettings = onOpenAssistantSettings,
+                    )
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+                ) {
+                    AssistModelSwitcherButton(
+                        label = modelPillLabel,
+                        open = ui.modelPickerOpen,
+                        enabled = !ui.sending,
+                        isCustom = !ui.modelChoice.isDefault,
+                        style = style,
+                        chipShape = chipShape,
+                        onClick = onToggleModelPicker,
+                    )
+
+                    Box(
+                        Modifier
+                            .size(Tokens.MinTouch.ios) // 44dp borderless tonal icon button
+                            .clip(buttonShape)
+                            .background(tonalFill)
+                            .clickable(
+                                role = Role.Button,
+                                onClickLabel = openInPersonaLabel,
+                                onClick = onOpenInPersona,
+                            )
+                            .semantics { contentDescription = openInPersonaLabel }
+                            .testTag("assist-open-in-persona"),
+                        contentAlignment = Alignment.Center,
+                    ) {
                         JIcon(
-                            icon = PersonaIcons.send,
+                            icon = PersonaIcons.open,
                             contentDescription = null,
                             size = Tokens.Size.iconS,
-                            tint = if (ui.canSend) palette.onAction else palette.ink3,
+                            tint = palette.ink2,
                         )
+                    }
+
+                    val sendLabel = stringResource(R.string.app_send)
+                    Box(
+                        Modifier
+                            .size(Tokens.MinTouch.ios) // 44dp high-contrast Send button
+                            .clip(buttonShape)
+                            .background(if (ui.canSend) palette.action else tonalFill)
+                            .clickable(
+                                enabled = ui.canSend && !ui.sending,
+                                role = Role.Button,
+                                onClickLabel = sendLabel,
+                                onClick = onSend,
+                            )
+                            .semantics { contentDescription = sendLabel }
+                            .testTag("assist-send-button"),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (ui.sending) {
+                            JSpinner(
+                                Modifier.size(Tokens.Size.iconXS),
+                                color = if (ui.canSend) palette.onAction else palette.ink2,
+                            )
+                        } else {
+                            JIcon(
+                                icon = PersonaIcons.send,
+                                contentDescription = null,
+                                size = Tokens.Size.iconS,
+                                tint = if (ui.canSend) palette.onAction else palette.ink3,
+                            )
+                        }
                     }
                 }
             }
@@ -1770,6 +1998,13 @@ private fun AssistStreamingTranscript(
     }
 }
 
+/** Controls voice dictation inside the Digital Assistant overlay without requiring Activity result APIs. */
+internal interface AssistDictationController {
+    val listening: Boolean
+    fun toggle()
+    fun stop()
+}
+
 /**
  * Overlay-safe voice dictation helper that never requires `LocalActivityResultRegistryOwner`
  * (which is unavailable inside a `VoiceInteractionSession`). Activates only when `RECORD_AUDIO`
@@ -1782,13 +2017,13 @@ private class OverlayDictationHandle(
     private val onHeard: () -> (String) -> Unit,
     private val onError: () -> (String) -> Unit,
     private val stoppedMessage: String,
-) {
-    var listening by mutableStateOf(false)
+) : AssistDictationController {
+    override var listening by mutableStateOf(false)
         private set
 
     private var recognizer: SpeechRecognizer? = null
 
-    fun toggle() {
+    override fun toggle() {
         if (listening) stop() else start()
     }
 
@@ -1829,7 +2064,7 @@ private class OverlayDictationHandle(
         }
     }
 
-    fun stop() {
+    override fun stop() {
         listening = false
         val current = recognizer
         recognizer = null
@@ -1844,7 +2079,7 @@ private class OverlayDictationHandle(
 private fun rememberOverlayDictation(
     onHeard: (String) -> Unit,
     onError: (String) -> Unit,
-): OverlayDictationHandle? {
+): AssistDictationController? {
     val context = LocalContext.current
     val resources = LocalResources.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle

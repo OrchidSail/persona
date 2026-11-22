@@ -1,18 +1,28 @@
 package persona.android.assist
 
 import android.app.Application
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.hapticfeedback.HapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.SoftwareKeyboardController
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.height
 import androidx.compose.ui.unit.width
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -90,10 +100,13 @@ class AssistOverlaySheetUiTest {
             assertTrue("$tag: send button must be >= 44dp tall, got ${sendBounds.height}", sendBounds.height >= 44.dp)
             assertTrue("$tag: send button must be >= 44dp wide, got ${sendBounds.width}", sendBounds.width >= 44.dp)
 
-            // Concise non-truncating screen label, zero screenshot thumbnail, zero X close clutter.
+            // Concise non-truncating screen label, top drag handle, zero screenshot thumbnail,
+            // zero X close clutter, and zero standalone bottom-bar microphone button.
             rule.onNodeWithText("Attach screen").assertExists()
+            rule.onNodeWithTag("assist-drag-handle").assertExists()
             rule.onNodeWithTag("assist-screen-thumbnail", useUnmergedTree = true).assertDoesNotExist()
             rule.onNodeWithTag("assist-close-button").assertDoesNotExist()
+            rule.onNodeWithTag("assist-dictate-button", useUnmergedTree = true).assertDoesNotExist()
             rule.onNodeWithTag("assist-input-field").assertExists()
         }
     }
@@ -270,5 +283,243 @@ class AssistOverlaySheetUiTest {
         rule.onNodeWithTag("assist-hub-offline").assertExists()
         rule.onNodeWithTag("assist-error-notice").assertExists()
         rule.onNodeWithTag("assist-composer-island").assertExists()
+    }
+
+    @Test
+    fun longPressInputTogglesVoiceDictationWithoutBottomMicButtonAndFallsBackGracefully() {
+        val haptics = mutableListOf<HapticFeedbackType>()
+        var keyboardShows = 0
+        var keyboardHides = 0
+        val fakeKeyboard = object : SoftwareKeyboardController {
+            override fun show() { keyboardShows++ }
+            override fun hide() { keyboardHides++ }
+        }
+        val fakeHaptics = object : HapticFeedback {
+            override fun performHapticFeedback(hapticFeedbackType: HapticFeedbackType) {
+                haptics += hapticFeedbackType
+            }
+        }
+        val fakeDictation = FakeDictationController()
+        var dictationControl by mutableStateOf<AssistDictationController?>(fakeDictation)
+        var uiState by mutableStateOf(
+            AssistOverlayUiState(
+                invocationId = "inv-voice-long-press",
+                captureStatus = AssistCaptureStatus.Available,
+                hubStatus = AssistHubStatus.Ready,
+            ),
+        )
+
+        rule.setContent {
+            CompositionLocalProvider(
+                LocalHapticFeedback provides fakeHaptics,
+                LocalSoftwareKeyboardController provides fakeKeyboard,
+            ) {
+                PersonaTheme(darkTheme = true, reduceMotion = true, style = AppStyle.Glass) {
+                    AssistOverlaySheet(
+                        ui = uiState,
+                        onDraftChange = { uiState = uiState.copy(draftText = it) },
+                        onDictationHeard = { words ->
+                            uiState = uiState.copy(draftText = words)
+                        },
+                        onNotice = {},
+                        onAttachScreen = {},
+                        onRemoveScreen = {},
+                        onSend = {},
+                        onOpenInPersona = {},
+                        onDismiss = {},
+                        dictationOverride = dictationControl,
+                    )
+                }
+            }
+        }
+
+        // Bottom bar has no standalone mic button, overlay never auto-opens keyboard,
+        // and placeholder naturally hints holding for voice.
+        rule.onNodeWithTag("assist-dictate-button", useUnmergedTree = true).assertDoesNotExist()
+        rule.onNodeWithText("Ask Persona · hold for voice").assertExists()
+        assertEquals(0, keyboardShows)
+
+        // Long-pressing input hides soft keyboard, fires LongPress haptic, and enters listening mode.
+        rule.onNodeWithTag("assist-input-field").performTouchInput { longClick() }
+        rule.waitForIdle()
+        assertTrue("Long-press should start voice dictation", fakeDictation.listening)
+        assertTrue("Long-press should fire LongPress haptic", haptics.contains(HapticFeedbackType.LongPress))
+        assertTrue("Starting dictation should hide soft keyboard", keyboardHides >= 1)
+        rule.onNodeWithTag("assist-dictate-listening").assertExists()
+        rule.onNodeWithText("Listening… Tap to stop").assertExists()
+
+        // Tapping the listening bar stops dictation cleanly without auto-popping the keyboard.
+        rule.onNodeWithTag("assist-dictate-listening").performClick()
+        rule.waitForIdle()
+        assertFalse("Tap on listening bar should stop dictation", fakeDictation.listening)
+        rule.onNodeWithTag("assist-input-field").assertExists()
+        assertEquals(0, keyboardShows)
+
+        // Re-entering via long-press and stopping via a second long-press also works cleanly.
+        rule.onNodeWithTag("assist-input-field").performTouchInput { longClick() }
+        rule.waitForIdle()
+        assertTrue(fakeDictation.listening)
+        rule.onNodeWithTag("assist-dictate-listening").performTouchInput { longClick() }
+        rule.waitForIdle()
+        assertFalse("Second long-press should stop dictation", fakeDictation.listening)
+        rule.onNodeWithTag("assist-input-field").assertExists()
+
+        // When speech recognition is unavailable, placeholder gracefully falls back without mic UI.
+        rule.runOnIdle { dictationControl = null }
+        rule.waitForIdle()
+        rule.onNodeWithText("Ask Persona…").assertExists()
+        rule.onNodeWithTag("assist-dictate-button", useUnmergedTree = true).assertDoesNotExist()
+        rule.onNodeWithTag("assist-input-field").performTouchInput { longClick() }
+        rule.waitForIdle()
+        rule.onNodeWithTag("assist-dictate-listening").assertDoesNotExist()
+    }
+
+    @Test
+    fun bidirectionalVerticalDragUpOpensFullPersonaDownDismissesAndShortDragSpringsBack() {
+        val haptics = mutableListOf<HapticFeedbackType>()
+        val fakeHaptics = object : HapticFeedback {
+            override fun performHapticFeedback(hapticFeedbackType: HapticFeedbackType) {
+                haptics += hapticFeedbackType
+            }
+        }
+        val fakeDictation = FakeDictationController()
+        var openedPersona = 0
+        var dismissed = 0
+        var uiState by mutableStateOf(
+            AssistOverlayUiState(
+                invocationId = "inv-bidirectional-drag",
+                captureStatus = AssistCaptureStatus.Available,
+                hubStatus = AssistHubStatus.Ready,
+                draftText = "Check this screen",
+            ),
+        )
+
+        rule.setContent {
+            CompositionLocalProvider(LocalHapticFeedback provides fakeHaptics) {
+                PersonaTheme(darkTheme = false, reduceMotion = true, style = AppStyle.Board) {
+                    AssistOverlaySheet(
+                        ui = uiState,
+                        onDraftChange = {},
+                        onDictationHeard = {},
+                        onNotice = {},
+                        onAttachScreen = {},
+                        onRemoveScreen = {},
+                        onSend = {},
+                        onOpenInPersona = { openedPersona++ },
+                        onDismiss = { dismissed++ },
+                        dictationOverride = fakeDictation,
+                    )
+                }
+            }
+        }
+
+        val restingTop = rule.onNodeWithTag("assist-composer-island").getUnclippedBoundsInRoot().top
+        val shortUpPx = with(rule.density) { 24.dp.toPx() }
+        val shortDownPx = with(rule.density) { 20.dp.toPx() }
+        val stepPx = with(rule.density) { 20.dp.toPx() }
+
+        // Short upward drag below threshold springs back cleanly without opening Persona.
+        rule.onNodeWithTag("assist-composer-island").performTouchInput {
+            down(center)
+            moveBy(Offset(0f, -shortUpPx))
+            up()
+        }
+        rule.waitForIdle()
+        assertEquals(0, openedPersona)
+        assertEquals(0, dismissed)
+        assertEquals(
+            restingTop.value,
+            rule.onNodeWithTag("assist-composer-island").getUnclippedBoundsInRoot().top.value,
+            1f,
+        )
+
+        // Short downward drag below threshold springs back cleanly without dismissing.
+        rule.onNodeWithTag("assist-composer-island").performTouchInput {
+            down(center)
+            moveBy(Offset(0f, shortDownPx))
+            up()
+        }
+        rule.waitForIdle()
+        assertEquals(0, openedPersona)
+        assertEquals(0, dismissed)
+        assertEquals(
+            restingTop.value,
+            rule.onNodeWithTag("assist-composer-island").getUnclippedBoundsInRoot().top.value,
+            1f,
+        )
+
+        // Upward drag past 56dp threshold triggers detent haptic, stops dictation, and opens Persona.
+        rule.runOnIdle { fakeDictation.toggle() }
+        rule.waitForIdle()
+        assertTrue(fakeDictation.listening)
+        rule.onNodeWithTag("assist-composer-island").performTouchInput {
+            down(Offset(centerX, top + 8f))
+            repeat(5) {
+                advanceEventTime(16L)
+                moveBy(Offset(0f, -stepPx))
+            }
+            up()
+        }
+        rule.waitForIdle()
+        assertTrue(
+            "Crossing swipe-up threshold should trigger light haptic feedback",
+            haptics.contains(HapticFeedbackType.TextHandleMove),
+        )
+        assertFalse("Swipe-up into Persona should stop active dictation", fakeDictation.listening)
+        assertEquals(1, openedPersona)
+        assertEquals(0, dismissed)
+
+        // Downward drag past 48dp threshold dismisses cleanly.
+        rule.onNodeWithTag("assist-composer-island").performTouchInput {
+            down(Offset(centerX, top + 8f))
+            repeat(5) {
+                advanceEventTime(16L)
+                moveBy(Offset(0f, stepPx))
+            }
+            up()
+        }
+        rule.waitForIdle()
+        assertEquals(1, openedPersona)
+        assertEquals(1, dismissed)
+
+        // Lockscreen state ignores upward open-Persona drag while keeping swipe-down dismiss.
+        rule.runOnIdle { uiState = uiState.copy(deviceLocked = true) }
+        rule.waitForIdle()
+        rule.onNodeWithTag("assist-locked-card").performTouchInput {
+            down(center)
+            repeat(5) {
+                advanceEventTime(16L)
+                moveBy(Offset(0f, -stepPx))
+            }
+            up()
+        }
+        rule.waitForIdle()
+        assertEquals("Locked overlay must not open full app via swipe-up", 1, openedPersona)
+        rule.onNodeWithTag("assist-locked-card").performTouchInput {
+            down(center)
+            repeat(5) {
+                advanceEventTime(16L)
+                moveBy(Offset(0f, stepPx))
+            }
+            up()
+        }
+        rule.waitForIdle()
+        assertEquals("Locked overlay still dismisses via swipe-down", 2, dismissed)
+    }
+
+    private class FakeDictationController : AssistDictationController {
+        override var listening by mutableStateOf(false)
+            private set
+        var stopCount = 0
+            private set
+
+        override fun toggle() {
+            if (listening) stop() else listening = true
+        }
+
+        override fun stop() {
+            stopCount++
+            listening = false
+        }
     }
 }

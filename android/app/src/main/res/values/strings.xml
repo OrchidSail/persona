@@ -118,7 +118,7 @@
     <string name="app_assist_open_in_persona">Open in Persona</string>
     <string name="app_assist_close">Close</string>
     <string name="app_assist_input_placeholder">Ask Persona…</string>
-    <string name="app_assist_input_placeholder_voice">Ask or speak…</string>
+    <string name="app_assist_input_placeholder_voice">Ask Persona · hold for voice</string>
     <string name="app_assist_attach_screen">Attach current screen</string>
     <string name="app_assist_attach_screen_short">Attach screen</string>
     <string name="app_assist_remove_screen">Remove attached screen</string>
@@ -138,7 +138,7 @@
     <string name="app_assist_send_failed">Couldn\'t send message</string>
     <string name="app_assist_dictate">Voice input</string>
     <string name="app_assist_dictate_stop">Stop voice input</string>
-    <string name="app_assist_dictate_listening">Listening…</string>
+    <string name="app_assist_dictate_listening">Listening… Tap to stop</string>
     <string name="app_assist_dictate_stopped">Voice input stopped</string>
     <string name="app_assist_delivery_sending">Sending…</string>
     <string name="app_assist_delivery_queued">Queued</string>
