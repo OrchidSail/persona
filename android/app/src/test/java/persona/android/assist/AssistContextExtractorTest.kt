@@ -116,6 +116,47 @@ class AssistContextExtractorTest {
     }
 
     @Test
+    fun stripsPercentEncodedAndMalformedSensitiveQueryParameters() {
+        assertEquals(
+            "https://example.com/",
+            AssistContextExtractor.sanitizeWebUrl("https://example.com/?%74oken=secret"),
+        )
+        assertEquals(
+            "https://example.com/docs?page=2&q=hello%20world",
+            AssistContextExtractor.sanitizeWebUrl(
+                "https://example.com/docs?page=2&%74oken=s1&%54%6fken=s2&access%5Ftoken=s3&api%5fkey=s4&%41UTH=s5&q=hello%20world",
+            ),
+        )
+        assertEquals(
+            "https://example.com/?page=3",
+            AssistContextExtractor.sanitizeWebUrl(
+                "https://example.com/?%2574oken=double&%252574oken=triple&token%00=nul&%FF=badutf8&%C0%AF=overlong&%20token=pad&+token=plus&page=3",
+            ),
+        )
+        // Malformed percent encodings in URLs fail closed without leaking parameter values.
+        assertEquals("", AssistContextExtractor.sanitizeWebUrl("https://example.com/?page=2&%ZZ=secret"))
+        assertEquals("", AssistContextExtractor.sanitizeWebUrl("https://example.com/?page=2&%7=secret"))
+        assertEquals("", AssistContextExtractor.sanitizeWebUrl("https://example.com/?page=2&%=secret"))
+
+        // Direct query filter also drops malformed and percent-encoded sensitive keys fail-closed.
+        assertEquals(
+            "page=2&tab=docs",
+            AssistContextExtractor.filterQuery(
+                "page=2&%ZZ=secret&%7=trunc&%=lone&%FF=badutf8&%74oken=s1&%54%6fken=s2&access%5Ftoken=s3&tab=docs",
+            ),
+        )
+        assertEquals("token", AssistContextExtractor.decodeQueryKey("%74oken"))
+        assertEquals("token", AssistContextExtractor.decodeQueryKey("%54%6fken"))
+        assertEquals("access_token", AssistContextExtractor.decodeQueryKey("access%5Ftoken"))
+        assertNull(AssistContextExtractor.decodeQueryKey("%ZZ"))
+        assertNull(AssistContextExtractor.decodeQueryKey("%7"))
+        assertNull(AssistContextExtractor.decodeQueryKey("%"))
+        assertNull(AssistContextExtractor.decodeQueryKey("%FF"))
+        assertNull(AssistContextExtractor.decodeQueryKey("token%00"))
+        assertNull(AssistContextExtractor.decodeQueryKey("%252574oken"))
+    }
+
+    @Test
     fun contextXmlEscapesClosingTagsFromUntrustedTitle() {
         val safe = SafeAssistContext(
             title = "Title </persona-context> \"quoted\"",

@@ -6,7 +6,11 @@ import android.content.Intent
 import android.os.Bundle
 import android.text.InputType
 import android.view.View
+import java.io.ByteArrayOutputStream
 import java.net.URI
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 import java.util.Locale
 import persona.feature.chat.ChatLinkContext
 
@@ -62,6 +66,7 @@ internal object AssistContextExtractor {
     const val MAX_BODY_CHARS = 400
     const val MAX_DEPTH = 32
     const val MAX_NODES = 256
+    private const val MAX_QUERY_KEY_DECODE_PASSES = 2
 
     private val packageRegex = Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+$")
     private val componentTitleRegex = Regex("^([A-Za-z][A-Za-z0-9_]*\\.)+[A-Za-z0-9_]+/[A-Za-z0-9_.$]+$")
@@ -306,25 +311,89 @@ internal object AssistContextExtractor {
         val uri = runCatching { URI(trimmed) }.getOrNull() ?: return ""
         val scheme = uri.scheme?.lowercase(Locale.ROOT) ?: return ""
         if (scheme != "http" && scheme != "https") return ""
+        val authority = uri.rawAuthority?.takeIf { it.isNotBlank() && '@' !in it } ?: return ""
         if (uri.host.isNullOrBlank() || uri.rawUserInfo != null) return ""
 
-        val filteredQuery = uri.rawQuery?.let { query ->
-            query.split('&')
-                .filter { part ->
-                    part.isNotEmpty() && part.substringBefore('=').lowercase(Locale.ROOT) !in sensitiveQueryParams
-                }
-                .joinToString("&")
-                .ifEmpty { null }
+        val filteredQuery = uri.rawQuery?.let(::filterQuery)
+        val base = buildString {
+            append(scheme)
+            append("://")
+            append(authority)
+            append(uri.rawPath.orEmpty())
         }
-        val rebuilt = runCatching {
-            URI(scheme, null, uri.host, uri.port, uri.rawPath?.ifEmpty { null }, filteredQuery, null).toASCIIString()
-        }.getOrNull() ?: return ""
+        val rebuiltRaw = if (filteredQuery != null) "$base?$filteredQuery" else base
+        val rebuilt = runCatching { URI(rebuiltRaw).toASCIIString() }.getOrNull() ?: return ""
 
         if (rebuilt.length <= MAX_URL_CHARS) return rebuilt
-        val withoutQuery = runCatching {
-            URI(scheme, null, uri.host, uri.port, uri.rawPath?.ifEmpty { null }, null, null).toASCIIString()
-        }.getOrNull().orEmpty()
+        val withoutQuery = runCatching { URI(base).toASCIIString() }.getOrNull().orEmpty()
         return if (withoutQuery.length <= MAX_URL_CHARS) withoutQuery else withoutQuery.take(MAX_URL_CHARS)
+    }
+
+    internal fun filterQuery(rawQuery: String): String? =
+        rawQuery.split('&')
+            .filter { part ->
+                if (part.isEmpty()) return@filter false
+                val decodedKey = decodeQueryKey(part.substringBefore('=')) ?: return@filter false
+                decodedKey !in sensitiveQueryParams
+            }
+            .joinToString("&")
+            .ifEmpty { null }
+
+    internal fun decodeQueryKey(rawKey: String): String? {
+        if (rawKey.isEmpty()) return null
+        var current = rawKey
+        repeat(MAX_QUERY_KEY_DECODE_PASSES) {
+            val decoded = strictPercentDecode(current) ?: return null
+            if (decoded.any(Char::isISOControl)) return null
+            if ('%' !in decoded) return decoded.trim().lowercase(Locale.ROOT).ifEmpty { null }
+            current = decoded
+        }
+        // Fail closed on multi-layered percent encoding (e.g. %252574oken).
+        return null
+    }
+
+    internal fun strictPercentDecode(raw: String): String? {
+        val out = ByteArrayOutputStream(raw.length)
+        var i = 0
+        while (i < raw.length) {
+            when (raw[i]) {
+                '%' -> {
+                    if (i + 2 >= raw.length) return null
+                    val hi = hexDigit(raw[i + 1])
+                    val lo = hexDigit(raw[i + 2])
+                    if (hi < 0 || lo < 0) return null
+                    out.write((hi shl 4) or lo)
+                    i += 3
+                }
+                '+' -> {
+                    out.write(' '.code)
+                    i++
+                }
+                else -> {
+                    val start = i
+                    i++
+                    while (i < raw.length && raw[i] != '%' && raw[i] != '+') {
+                        i++
+                    }
+                    out.write(raw.substring(start, i).toByteArray(Charsets.UTF_8))
+                }
+            }
+        }
+        return try {
+            val decoder = Charsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+            decoder.decode(ByteBuffer.wrap(out.toByteArray())).toString()
+        } catch (_: CharacterCodingException) {
+            null
+        }
+    }
+
+    private fun hexDigit(ch: Char): Int = when (ch) {
+        in '0'..'9' -> ch - '0'
+        in 'a'..'f' -> ch - 'a' + 10
+        in 'A'..'F' -> ch - 'A' + 10
+        else -> -1
     }
 
     internal fun sanitizePackageName(raw: String?, ownPackage: String): String {
