@@ -124,6 +124,8 @@
     <string name="app_assist_screen_preview">Current screen preview</string>
     <string name="app_assist_screen_unavailable">Current screen unavailable on this protected page</string>
     <string name="app_assist_screen_timeout">Couldn\'t capture the current screen in time</string>
+    <string name="app_assist_screen_disabled_by_settings">Screen capture is off in system digital assistant settings</string>
+    <string name="app_assist_screen_open_settings">Open settings</string>
     <string name="app_assist_screen_only_prompt">Please look at this screenshot.</string>
     <string name="app_assist_replying">Persona is replying…</string>
     <string name="app_assist_connecting">Connecting…</string>

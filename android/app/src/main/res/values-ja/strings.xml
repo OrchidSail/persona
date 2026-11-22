@@ -123,6 +123,8 @@
     <string name="app_assist_screen_preview">現在の画面プレビュー</string>
     <string name="app_assist_screen_unavailable">この保護されたページでは現在の画面を取得できません</string>
     <string name="app_assist_screen_timeout">現在の画面を時間内に取得できませんでした</string>
+    <string name="app_assist_screen_disabled_by_settings">システムのデジタルアシスタント設定で画面キャプチャがオフになっています</string>
+    <string name="app_assist_screen_open_settings">設定を開く</string>
     <string name="app_assist_screen_only_prompt">このスクリーンショットを見てください。</string>
     <string name="app_assist_replying">Persona が返信中…</string>
     <string name="app_assist_connecting">接続中…</string>

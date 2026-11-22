@@ -82,6 +82,21 @@ class AssistManifestTest {
         )
         assertEquals("true", root.getAttributeNS(androidNs, "supportsAssist"))
         assertEquals("true", root.getAttributeNS(androidNs, "supportsLaunchVoiceAssistFromKeyguard"))
+        assertEquals(
+            "Android 17 (API 37) requires usesAssistData=true so VoiceInteractionManagerService delivers assist data",
+            "true",
+            root.getAttributeNS(androidNs, "usesAssistData"),
+        )
+        assertEquals(
+            "Android 17 (API 37) requires usesAssistScreenshots=true so VoiceInteractionManagerService sets SHOW_WITH_SCREENSHOT",
+            "true",
+            root.getAttributeNS(androidNs, "usesAssistScreenshots"),
+        )
+        assertEquals(
+            "Android 17 (API 37) requires usesAssistStructureScreenContent=true for assist screen content",
+            "true",
+            root.getAttributeNS(androidNs, "usesAssistStructureScreenContent"),
+        )
         assertFalse(root.getAttributeNS(androidNs, "sessionService").startsWith("."))
     }
 

@@ -12,6 +12,13 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.widget.Toast
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -38,6 +45,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -59,6 +67,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -97,12 +106,14 @@ import persona.core.designsystem.JIcon
 import persona.core.designsystem.JIconButton
 import persona.core.designsystem.JNotice
 import persona.core.designsystem.JSpinner
+import persona.core.designsystem.JTextButton
 import persona.core.designsystem.LocalAppFeedback
 import persona.core.designsystem.LocalAppStyleStore
 import persona.core.designsystem.LocalPersonaDesign
 import persona.core.designsystem.LocalPersonaName
 import persona.core.designsystem.LocalPersonaPack
 import persona.core.designsystem.PersonaTheme
+import persona.core.designsystem.SharedMotion
 import persona.core.designsystem.Status
 import persona.core.designsystem.Tokens
 import persona.core.designsystem.icons.PersonaIcons
@@ -157,12 +168,16 @@ internal fun AssistOverlayEnvironment(
 }
 
 /**
- * Gemini / Muse style floating bottom sheet shown over the current app when Persona is invoked
+ * Muse / Gemini-inspired floating card shown over the foreground app when Persona is invoked
  * as Android's Default Digital Assistant (`ROLE_ASSISTANT`) or via `ACTION_ASSIST`.
  *
- * Uses a single bottom-inset avoidance layer (`WindowInsets.ime.union(WindowInsets.navigationBars)`)
- * paired with `SOFT_INPUT_ADJUST_NOTHING` on the overlay window so the sheet stays smoothly
- * anchored above the IME without jumping to the top of the screen.
+ * Visual & layout highlights:
+ * - True independent floating card with generous four-corner rounding, horizontal breathing margins,
+ *   and bottom lift above `WindowInsets.ime.union(WindowInsets.navigationBars)` (paired with
+ *   `SOFT_INPUT_ADJUST_NOTHING` on the overlay window so IME never double-shifts the card).
+ * - Layered vertical gradient depth scrim keeping the top of the underlying app crystal clear.
+ * - Restrained AI luminous rim border (`palette.ai` -> `palette.accent`) that softly breathes
+ *   while Persona is replying or streaming, strictly backed by `PersonaTheme` tokens & motion specs.
  */
 @Composable
 internal fun AssistOverlaySheet(
@@ -172,6 +187,7 @@ internal fun AssistOverlaySheet(
     onNotice: (String) -> Unit,
     onAttachScreen: () -> Unit,
     onRemoveScreen: () -> Unit,
+    onOpenAssistantSettings: () -> Unit = {},
     onToggleModelPicker: () -> Unit = {},
     onCloseModelPicker: () -> Unit = {},
     onRefreshModels: () -> Unit = {},
@@ -185,20 +201,102 @@ internal fun AssistOverlaySheet(
 ) {
     val palette = PersonaTheme.palette
     val shapes = PersonaTheme.shapes
+    val reduceMotion = PersonaTheme.reduceMotion
     val density = LocalDensity.current
     val dismissThresholdPx = with(density) { Tokens.MinTouch.android.toPx() }
+    val enterOffsetPx = with(density) { Tokens.Space.xl.toPx() }
+
+    var entered by remember(ui.invocationId) { mutableStateOf(reduceMotion) }
+    LaunchedEffect(ui.invocationId, reduceMotion) {
+        entered = true
+    }
+    val enterProgress by animateFloatAsState(
+        targetValue = if (entered) 1f else 0f,
+        animationSpec = if (reduceMotion) SharedMotion.instant() else SharedMotion.reveal(),
+        label = "assist-overlay-enter",
+    )
+
+    var dragging by remember { mutableStateOf(false) }
     var dragOffsetPx by remember { mutableFloatStateOf(0f) }
+    val animatedDragOffsetPx by animateFloatAsState(
+        targetValue = dragOffsetPx,
+        animationSpec = if (dragging || reduceMotion) SharedMotion.instant() else SharedMotion.springBack(),
+        label = "assist-overlay-drag",
+    )
+
+    val aiActive = !ui.deviceLocked && (ui.awaitingReply || ui.sending || ui.turns.any { it.streaming })
+    val glowAlpha = if (aiActive && !reduceMotion) {
+        val transition = rememberInfiniteTransition(label = "assist-ai-rim")
+        transition.animateFloat(
+            initialValue = 0.28f,
+            targetValue = 0.62f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = PersonaTheme.motion.breathe, easing = LinearEasing),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "assist-ai-rim-alpha",
+        ).value
+    } else if (aiActive) {
+        0.48f
+    } else {
+        if (palette.dark) 0.24f else 0.18f
+    }
+
     val scrimInteraction = remember { MutableInteractionSource() }
     val cardInteraction = remember { MutableInteractionSource() }
     val closeDescription = stringResource(R.string.app_assist_close)
     val dictation = rememberOverlayDictation(onHeard = onDictationHeard, onError = onNotice)
 
     // Single unified inset layer: max(IME, navigation bar) when IME is open, navigation bar when closed.
+    val imeBottomPx = WindowInsets.ime.getBottom(density)
+    val imeOpen = imeBottomPx > 0
     val bottomInsetDp = with(density) {
         WindowInsets.ime.union(WindowInsets.navigationBars).getBottom(density).toDp()
     }
     val topInsetDp = with(density) {
         WindowInsets.statusBars.getTop(density).toDp()
+    }
+    val floatingBottomLift = if (imeOpen) Tokens.Space.s else Tokens.Space.m
+
+    // Generous four-corner floating card radius (28.dp in Glass/Brief, panel radius in Board).
+    val floatingCardRadius = if (PersonaTheme.style == AppStyle.Board) shapes.panel else Tokens.Size.wellXS
+    val floatingCardShape = remember(floatingCardRadius) { RoundedCornerShape(floatingCardRadius) }
+
+    val scrimBrush = remember(palette.scrim, palette.dark) {
+        Brush.verticalGradient(
+            0.0f to palette.scrim.copy(alpha = 0f),
+            0.40f to palette.scrim.copy(alpha = 0.04f),
+            0.72f to palette.scrim.copy(alpha = if (palette.dark) 0.18f else 0.14f),
+            1.0f to palette.scrim.copy(alpha = if (palette.dark) 0.36f else 0.28f),
+        )
+    }
+    val cardFill = palette.surfaceOpaque.copy(alpha = if (palette.dark) 0.96f else 0.98f)
+    val surfaceSheen = remember(palette.strokeTop, palette.surfaceOpaque, palette.dark) {
+        Brush.verticalGradient(
+            0.0f to palette.strokeTop.copy(alpha = if (palette.dark) 0.14f else 0.34f),
+            0.28f to palette.surfaceOpaque.copy(alpha = 0f),
+        )
+    }
+    val rimBrush = remember(palette.ai, palette.accent, palette.strokeTop, palette.strokeBottom, glowAlpha, aiActive) {
+        if (aiActive) {
+            Brush.linearGradient(
+                colors = listOf(
+                    palette.ai.copy(alpha = glowAlpha),
+                    palette.accent.copy(alpha = glowAlpha * 0.85f),
+                    palette.strokeTop,
+                    palette.ai.copy(alpha = glowAlpha * 0.55f),
+                ),
+            )
+        } else {
+            Brush.linearGradient(
+                colors = listOf(
+                    palette.ai.copy(alpha = glowAlpha),
+                    palette.accent.copy(alpha = glowAlpha * 0.72f),
+                    palette.strokeTop,
+                    palette.strokeBottom,
+                ),
+            )
+        }
     }
 
     BoxWithConstraints(
@@ -206,15 +304,17 @@ internal fun AssistOverlaySheet(
             .fillMaxSize()
             .testTag("assist-overlay-root"),
     ) {
-        val availableHeight = (maxHeight - bottomInsetDp - topInsetDp).coerceAtLeast(Tokens.Size.box150)
-        val sheetContentMaxHeight = availableHeight * 0.82f
+        val availableHeight = (maxHeight - bottomInsetDp - topInsetDp - floatingBottomLift - Tokens.Space.m)
+            .coerceAtLeast(Tokens.Size.box150)
+        val sheetContentMaxHeight = availableHeight * 0.80f
         val pickerMaxHeight = availableHeight * 0.42f
 
-        // Dimmed backdrop over the underlying app; tapping outside the sheet dismisses cleanly.
+        // Layered translucent vertical depth scrim: clear at top, gently grounded behind the floating card.
         Box(
             Modifier
                 .fillMaxSize()
-                .background(palette.scrim)
+                .graphicsLayer { alpha = enterProgress }
+                .background(scrimBrush)
                 .clickable(
                     interactionSource = scrimInteraction,
                     indication = null,
@@ -233,21 +333,49 @@ internal fun AssistOverlaySheet(
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .graphicsLayer { translationY = dragOffsetPx },
+                .padding(
+                    start = Tokens.Space.m,
+                    end = Tokens.Space.m,
+                    bottom = bottomInsetDp + floatingBottomLift,
+                )
+                .graphicsLayer {
+                    val scale = 0.96f + 0.04f * enterProgress
+                    scaleX = scale
+                    scaleY = scale
+                    alpha = enterProgress
+                    translationY = ((1f - enterProgress) * enterOffsetPx) + animatedDragOffsetPx
+                },
             contentAlignment = Alignment.BottomCenter,
         ) {
-            Column(
+            Box(
                 Modifier
                     .fillMaxWidth()
                     .widthIn(max = Tokens.Size.readable)
-                    .shadow(Tokens.Space.s, shapes.sheetShape, clip = false)
-                    .clip(shapes.sheetShape)
-                    .background(palette.surfaceOpaque)
-                    .border(Tokens.Size.hairline, palette.strokeTop, shapes.sheetShape)
+                    .shadow(
+                        elevation = Tokens.Space.l,
+                        shape = floatingCardShape,
+                        ambientColor = palette.scrim,
+                        spotColor = if (aiActive) palette.ai else palette.scrim,
+                        clip = false,
+                    )
+                    .shadow(
+                        elevation = Tokens.Space.xs,
+                        shape = floatingCardShape,
+                        ambientColor = palette.scrim,
+                        spotColor = palette.scrim,
+                        clip = false,
+                    )
+                    .clip(floatingCardShape)
+                    .background(cardFill)
+                    .background(surfaceSheen)
+                    .border(
+                        width = if (aiActive) Tokens.Size.line else Tokens.Size.hairline,
+                        brush = rimBrush,
+                        shape = floatingCardShape,
+                    )
                     .clickable(interactionSource = cardInteraction, indication = null) {
                         if (ui.modelPickerOpen) onCloseModelPicker()
                     }
-                    .padding(bottom = bottomInsetDp)
                     .testTag("assist-overlay-card"),
             ) {
                 Column(
@@ -268,8 +396,10 @@ internal fun AssistOverlaySheet(
                         ui = ui,
                         closeDescription = closeDescription,
                         dismissThresholdPx = dismissThresholdPx,
+                        onDragStart = { dragging = true },
                         onDragOffset = { delta -> dragOffsetPx = (dragOffsetPx + delta).coerceAtLeast(0f) },
                         onDragRelease = {
+                            dragging = false
                             if (dragOffsetPx >= dismissThresholdPx) {
                                 dragOffsetPx = 0f
                                 dictation?.stop()
@@ -278,7 +408,10 @@ internal fun AssistOverlaySheet(
                                 dragOffsetPx = 0f
                             }
                         },
-                        onDragCancel = { dragOffsetPx = 0f },
+                        onDragCancel = {
+                            dragging = false
+                            dragOffsetPx = 0f
+                        },
                         onToggleModelPicker = onToggleModelPicker,
                         onOpenInPersona = {
                             dictation?.stop()
@@ -367,6 +500,7 @@ internal fun AssistOverlaySheet(
                             ui = ui,
                             onAttachScreen = onAttachScreen,
                             onRemoveScreen = onRemoveScreen,
+                            onOpenAssistantSettings = onOpenAssistantSettings,
                         )
 
                         // Unified rounded composer bar with optional safe dictation and Send action.
@@ -395,6 +529,7 @@ private fun AssistOverlayHeader(
     ui: AssistOverlayUiState,
     closeDescription: String,
     dismissThresholdPx: Float,
+    onDragStart: () -> Unit,
     onDragOffset: (Float) -> Unit,
     onDragRelease: () -> Unit,
     onDragCancel: () -> Unit,
@@ -411,12 +546,16 @@ private fun AssistOverlayHeader(
     } else {
         ui.modelChoice.compactLabel.ifBlank { defaultShortLabel }
     }
+    val badgeBrush = remember(palette.ai, palette.accentSoft) {
+        Brush.linearGradient(listOf(palette.ai.copy(alpha = 0.22f), palette.accentSoft))
+    }
 
     Column(
         Modifier
             .fillMaxWidth()
             .pointerInput(dismissThresholdPx) {
                 detectVerticalDragGestures(
+                    onDragStart = { onDragStart() },
                     onDragEnd = onDragRelease,
                     onDragCancel = onDragCancel,
                     onVerticalDrag = { _, dragAmount -> onDragOffset(dragAmount) },
@@ -424,25 +563,26 @@ private fun AssistOverlayHeader(
             },
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // Subtle centered drag pill.
+        // Restrained centered drag handle pill.
         Box(
             Modifier
-                .padding(top = Tokens.Space.xxs, bottom = Tokens.Space.s)
+                .padding(top = Tokens.Space.xxs, bottom = Tokens.Space.xs)
                 .size(width = Tokens.Size.slimBar, height = Tokens.Size.bar)
                 .clip(CircleShape)
-                .background(palette.surfaceStrong),
+                .background(palette.ink3.copy(alpha = 0.26f)),
         )
         Row(
             Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
         ) {
-            // Soft tinted brand icon badge.
+            // Luminous brand mark badge.
             Box(
                 Modifier
                     .size(Tokens.Size.wellXS)
                     .clip(CircleShape)
-                    .background(palette.accentSoft),
+                    .background(badgeBrush)
+                    .border(Tokens.Size.hairline, palette.ai.copy(alpha = 0.28f), CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
                 JIcon(
@@ -519,11 +659,10 @@ private fun AssistCompactModelPill(
     val type = PersonaTheme.type
     val description = stringResource(R.string.app_assist_model_picker_description, label)
     val fill = when {
-        open -> palette.accentSoft
-        isCustom -> palette.accentSoft
-        else -> palette.sunken
+        open || isCustom -> palette.accentSoft
+        else -> palette.surfaceStrong.copy(alpha = if (palette.dark) 0.55f else 0.72f)
     }
-    val stroke = if (open || isCustom) palette.accent else palette.line
+    val stroke = if (open || isCustom) palette.accent.copy(alpha = 0.55f) else palette.line
     val contentTint = if (open || isCustom) palette.accent else palette.ink2
 
     Row(
@@ -587,7 +726,7 @@ private fun AssistModelPickerPanel(
             .fillMaxWidth()
             .heightIn(max = maxHeight)
             .clip(shapes.cardShape)
-            .background(palette.sunken)
+            .background(palette.sunken.copy(alpha = if (palette.dark) 0.90f else 0.78f))
             .border(Tokens.Size.hairline, palette.line, shapes.cardShape)
             .padding(vertical = Tokens.Space.s)
             .testTag("assist-model-picker"),
@@ -958,6 +1097,7 @@ private fun AssistScreenAttachmentRow(
     ui: AssistOverlayUiState,
     onAttachScreen: () -> Unit,
     onRemoveScreen: () -> Unit,
+    onOpenAssistantSettings: () -> Unit,
 ) {
     val palette = PersonaTheme.palette
     val type = PersonaTheme.type
@@ -1011,7 +1151,7 @@ private fun AssistScreenAttachmentRow(
                 Modifier
                     .fillMaxWidth()
                     .clip(shapes.controlShape)
-                    .background(palette.sunken)
+                    .background(palette.sunken.copy(alpha = if (palette.dark) 0.88f else 0.72f))
                     .border(Tokens.Size.hairline, palette.line, shapes.controlShape)
                     .padding(Tokens.Space.s)
                     .testTag("assist-screen-attached-row"),
@@ -1098,6 +1238,40 @@ private fun AssistScreenAttachmentRow(
             }
         }
 
+        AssistCaptureStatus.DisabledBySettings -> {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(shapes.controlShape)
+                    .background(palette.sunken.copy(alpha = if (palette.dark) 0.85f else 0.72f))
+                    .border(Tokens.Size.hairline, palette.line, shapes.controlShape)
+                    .padding(start = Tokens.Space.m, end = Tokens.Space.xs, top = Tokens.Space.xs, bottom = Tokens.Space.xs)
+                    .testTag("assist-screen-disabled"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+            ) {
+                JIcon(
+                    icon = PersonaIcons.settings,
+                    contentDescription = null,
+                    size = Tokens.Size.markS,
+                    tint = palette.ink2,
+                )
+                Text(
+                    text = stringResource(R.string.app_assist_screen_disabled_by_settings),
+                    style = type.micro,
+                    color = palette.ink2,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                JTextButton(
+                    text = stringResource(R.string.app_assist_screen_open_settings),
+                    onClick = onOpenAssistantSettings,
+                    modifier = Modifier.testTag("assist-open-settings-button"),
+                )
+            }
+        }
+
         AssistCaptureStatus.NotSupported -> Unit
     }
 }
@@ -1125,10 +1299,10 @@ private fun AssistInputBar(
         Modifier
             .fillMaxWidth()
             .clip(shapes.panelShape)
-            .background(palette.sunken)
+            .background(palette.sunken.copy(alpha = if (palette.dark) 0.88f else 0.72f))
             .border(
                 width = if (focused) Tokens.Size.line else Tokens.Size.hairline,
-                color = if (focused) palette.accent else palette.line,
+                color = if (focused) palette.accent.copy(alpha = 0.78f) else palette.line,
                 shape = shapes.panelShape,
             )
             .padding(start = Tokens.Space.l, end = Tokens.Space.xs, top = Tokens.Space.xs, bottom = Tokens.Space.xs),

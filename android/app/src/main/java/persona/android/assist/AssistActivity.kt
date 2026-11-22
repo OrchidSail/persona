@@ -72,6 +72,11 @@ class AssistActivity : ComponentActivity() {
                     onNotice = controller::showNotice,
                     onAttachScreen = controller::attachCurrentScreen,
                     onRemoveScreen = controller::removeAttachedScreen,
+                    onOpenAssistantSettings = {
+                        openSystemAssistSettings(this@AssistActivity)
+                        controller.endSession()
+                        finish()
+                    },
                     onToggleModelPicker = controller::toggleModelPicker,
                     onCloseModelPicker = controller::closeModelPicker,
                     onRefreshModels = controller::refreshModelCatalog,

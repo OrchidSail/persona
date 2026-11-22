@@ -678,4 +678,98 @@ class AssistOverlayControllerTest {
         assertEquals(AssistHubStatus.Offline, mapConnectionStateToHubStatus(ConnectionState.WaitingForNetwork, hasBinding = true))
         assertEquals(AssistHubStatus.Offline, mapConnectionStateToHubStatus(ConnectionState.Revoked, hasBinding = true))
     }
+
+    @Test
+    fun screenshotDisabledBySettingsReportsImmediatelyWithoutWaitingForTimeout() = runTest {
+        val harness = Harness(this, timeoutMs = 4_000L)
+        val controller = harness.controller
+        controller.onHubUpdate(AssistHubSnapshot(status = AssistHubStatus.Ready, mainSession = mainKey))
+
+        controller.beginSession(
+            supportsScreenshot = true,
+            showFlags = 4,
+            deviceLocked = false,
+            screenshotDisabledBySettings = true,
+            expectScreenshotFromFlags = false,
+        )
+
+        // Immediately reports DisabledBySettings at t=0ms instead of spinning for 4s timeout.
+        assertEquals(AssistCaptureStatus.DisabledBySettings, controller.state.value.captureStatus)
+
+        // Pure text send remains completely unblocked.
+        controller.updateDraftText("Explain this concept")
+        assertTrue(controller.state.value.canSend)
+        controller.send()
+        runCurrent()
+        assertEquals(1, harness.sentTexts.size)
+        assertEquals("Explain this concept", harness.sentTexts.single().first)
+
+        controller.endSession()
+        runCurrent()
+    }
+
+    @Test
+    fun missingScreenshotFlagUsesShortGracePeriodAndStillUpgradesOnLateBitmap() = runTest {
+        val harness = Harness(this, timeoutMs = 4_000L)
+        val controller = harness.controller
+        controller.beginSession(
+            supportsScreenshot = true,
+            showFlags = 4,
+            deviceLocked = false,
+            screenshotDisabledBySettings = false,
+            expectScreenshotFromFlags = false,
+        )
+        assertEquals(AssistCaptureStatus.Waiting, controller.state.value.captureStatus)
+
+        // Finishes after short 1.2s grace period instead of waiting the full 4s timeout.
+        advanceTimeBy(AssistOverlayController.NO_FLAG_SCREENSHOT_GRACE_MILLIS + 100L)
+        runCurrent()
+        assertEquals(AssistCaptureStatus.TimedOut, controller.state.value.captureStatus)
+
+        // Late screenshot callback still upgrades cleanly.
+        val shot = sampleBitmap()
+        controller.onScreenshotReceived(shot)
+        runCurrent()
+        assertEquals(AssistCaptureStatus.Available, controller.state.value.captureStatus)
+
+        shot.recycle()
+        controller.endSession()
+        runCurrent()
+    }
+
+    @Test
+    fun settingsProbeDetectsDisabledScreenshotFromSystemFlagsAndSecureSetting() {
+        assertFalse(
+            AssistScreenshotSettingsProbe(
+                disabledShowContext = 0,
+                userDisabledShowContext = 0,
+                secureAssistScreenshotEnabled = 1,
+                secureAssistStructureEnabled = 1,
+            ).screenshotDisabledBySettings,
+        )
+        assertTrue(
+            AssistScreenshotSettingsProbe(
+                disabledShowContext = 0,
+                userDisabledShowContext = android.service.voice.VoiceInteractionSession.SHOW_WITH_SCREENSHOT,
+                secureAssistScreenshotEnabled = 1,
+                secureAssistStructureEnabled = 1,
+            ).screenshotDisabledBySettings,
+        )
+        assertTrue(
+            AssistScreenshotSettingsProbe(
+                disabledShowContext = android.service.voice.VoiceInteractionSession.SHOW_WITH_SCREENSHOT,
+                userDisabledShowContext = 0,
+                secureAssistScreenshotEnabled = 1,
+                secureAssistStructureEnabled = 1,
+            ).screenshotDisabledBySettings,
+        )
+        assertTrue(
+            AssistScreenshotSettingsProbe(
+                disabledShowContext = 0,
+                userDisabledShowContext = 0,
+                secureAssistScreenshotEnabled = 0,
+                secureAssistStructureEnabled = 1,
+            ).screenshotDisabledBySettings,
+        )
+    }
 }

@@ -123,6 +123,8 @@
     <string name="app_assist_screen_preview">当前屏幕截图预览</string>
     <string name="app_assist_screen_unavailable">当前页面受保护，无法获取屏幕截图</string>
     <string name="app_assist_screen_timeout">未能及时获取当前屏幕截图</string>
+    <string name="app_assist_screen_disabled_by_settings">系统数字助理截屏开关未开启</string>
+    <string name="app_assist_screen_open_settings">前往开启</string>
     <string name="app_assist_screen_only_prompt">请帮我看看这张截图。</string>
     <string name="app_assist_replying">Persona 正在回复…</string>
     <string name="app_assist_connecting">连接中…</string>

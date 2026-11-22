@@ -40,6 +40,9 @@ internal enum class AssistCaptureStatus {
     /** System did not deliver `onHandleScreenshot` before timeout; still upgrades if a late bitmap arrives. */
     TimedOut,
 
+    /** User disabled system Digital Assistant screenshots (e.g. `assist_screenshot_enabled = 0` or userDisabledShowContext). */
+    DisabledBySettings,
+
     /** Entry point does not provide screenshots, device is locked, or capture was released after send. */
     NotSupported,
 }
@@ -158,6 +161,7 @@ internal class AssistOverlayController(
     private val defaultModelStartError: () -> String = defaultSendError,
     private val initialModelChoice: DigitalAssistantModelChoice = DigitalAssistantModelChoice(),
     private val screenshotWaitTimeoutMillis: Long = SCREENSHOT_WAIT_TIMEOUT_MILLIS,
+    private val noFlagScreenshotGraceMillis: Long = NO_FLAG_SCREENSHOT_GRACE_MILLIS,
     private val nextId: () -> String = { UUID.randomUUID().toString() },
     private val log: (String) -> Unit = { message -> Log.i(ASSIST_LOG_TAG, message) },
 ) {
@@ -187,10 +191,23 @@ internal class AssistOverlayController(
     private var catalogJob: Job? = null
 
     /** Starts a fresh overlay session; idempotent within an active invocation (e.g. `onPrepareShow` -> `onShow`). */
-    fun beginSession(supportsScreenshot: Boolean, showFlags: Int = 0, deviceLocked: Boolean = false) {
+    fun beginSession(
+        supportsScreenshot: Boolean,
+        showFlags: Int = 0,
+        deviceLocked: Boolean = false,
+        screenshotDisabledBySettings: Boolean = false,
+        expectScreenshotFromFlags: Boolean = true,
+    ) {
         if (invocationOpen) {
             if (deviceLocked && !deviceLockedForInvocation) {
                 lockSession()
+            } else if (!deviceLockedForInvocation && screenshotDisabledBySettings &&
+                mutableState.value.captureStatus == AssistCaptureStatus.Waiting
+            ) {
+                screenshotWaitJob?.cancel()
+                screenshotWaitJob = null
+                log("screenshotDisabledBySettings status=DisabledBySettings")
+                mutableState.update { it.copy(captureStatus = AssistCaptureStatus.DisabledBySettings) }
             }
             return
         }
@@ -205,27 +222,41 @@ internal class AssistOverlayController(
         onActiveSessionChanged(null)
         baselineItemIds = emptySet()
         sentTurns.clear()
-        log("beginSession supportsScreenshot=$supportsScreenshot showFlags=$showFlags deviceLocked=$deviceLocked")
+        val initialCaptureStatus = when {
+            !allowCapture -> AssistCaptureStatus.NotSupported
+            screenshotDisabledBySettings -> AssistCaptureStatus.DisabledBySettings
+            else -> AssistCaptureStatus.Waiting
+        }
+        log(
+            "beginSession supportsScreenshot=$supportsScreenshot showFlags=$showFlags " +
+                "deviceLocked=$deviceLocked disabledBySettings=$screenshotDisabledBySettings " +
+                "expectFromFlags=$expectScreenshotFromFlags initialCapture=$initialCaptureStatus",
+        )
         if (!deviceLocked) {
             onWakeHub()
         }
         mutableState.value = AssistOverlayUiState(
             invocationId = invocationId,
             deviceLocked = deviceLocked,
-            captureStatus = if (allowCapture) AssistCaptureStatus.Waiting else AssistCaptureStatus.NotSupported,
+            captureStatus = initialCaptureStatus,
             hubStatus = hubSnapshot.status,
             mainSession = hubSnapshot.mainSession,
             modelChoice = persistedModelChoice,
             modelCatalog = cachedCatalog ?: DigitalAssistantModelCatalog(),
         )
-        if (allowCapture && screenshotWaitTimeoutMillis > 0L) {
+        val effectiveWaitMillis = if (expectScreenshotFromFlags) {
+            screenshotWaitTimeoutMillis
+        } else {
+            minOf(screenshotWaitTimeoutMillis, noFlagScreenshotGraceMillis)
+        }
+        if (initialCaptureStatus == AssistCaptureStatus.Waiting && effectiveWaitMillis > 0L) {
             val activeId = invocationId
             screenshotWaitJob = mainScope.launch {
-                delay(screenshotWaitTimeoutMillis)
+                delay(effectiveWaitMillis)
                 if (invocationOpen && invocationId == activeId &&
                     mutableState.value.captureStatus == AssistCaptureStatus.Waiting
                 ) {
-                    log("screenshotWaitTimeout status=TimedOut")
+                    log("screenshotWaitTimeout status=TimedOut waitMs=$effectiveWaitMillis expectFromFlags=$expectScreenshotFromFlags")
                     mutableState.update { it.copy(captureStatus = AssistCaptureStatus.TimedOut) }
                 }
             }
@@ -760,6 +791,7 @@ internal class AssistOverlayController(
 
     companion object {
         const val SCREENSHOT_WAIT_TIMEOUT_MILLIS = 4_000L
+        const val NO_FLAG_SCREENSHOT_GRACE_MILLIS = 1_200L
     }
 }
 

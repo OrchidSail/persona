@@ -8,7 +8,9 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.drawable.ColorDrawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.service.voice.VoiceInteractionSession
 import android.util.Log
 import android.view.View
@@ -38,17 +40,34 @@ import persona.feature.chat.AssistDraftTarget
 import persona.feature.chat.ChatLinkContext
 
 /**
- * Hosts Persona's Gemini/Muse-style floating quick overlay directly above the foreground app when
+ * Snapshot of Android's system digital assistant screen-context switches inspected at `onPrepareShow` / `onShow`.
+ * Allows immediate user guidance when screenshots are turned off in system settings instead of waiting for a timeout.
+ */
+internal data class AssistScreenshotSettingsProbe(
+    val disabledShowContext: Int,
+    val userDisabledShowContext: Int,
+    val secureAssistScreenshotEnabled: Int,
+    val secureAssistStructureEnabled: Int,
+) {
+    val screenshotDisabledBySettings: Boolean
+        get() = (userDisabledShowContext and VoiceInteractionSession.SHOW_WITH_SCREENSHOT) != 0 ||
+            (disabledShowContext and VoiceInteractionSession.SHOW_WITH_SCREENSHOT) != 0 ||
+            secureAssistScreenshotEnabled == 0
+}
+
+/**
+ * Hosts Persona's Muse/Gemini-style floating quick overlay directly above the foreground app when
  * triggered as Android's Default Digital Assistant (`ROLE_ASSISTANT`).
  *
  * - Keeps the session alive (`setUiEnabled(true)`) so async `onHandleScreenshot` and `onHandleAssist`
- *   callbacks reliably arrive.
+ *   callbacks reliably arrive (paired with Android 17's `usesAssistData`, `usesAssistScreenshots`,
+ *   and `usesAssistStructureScreenContent` declarations in `voice_interaction_service.xml`).
  * - Gates lockscreen invocations (`KeyguardManager.isKeyguardLocked || isDeviceLocked`) so screen
  *   content is never captured and nothing is sent to the Hub while the device is locked.
- * - Configures `SOFT_INPUT_ADJUST_NOTHING` in `onCreateContentView`, after `super.onShow`, and in
- *   `onWindowShown` so `VoiceInteractionWindow` never stacks `ADJUST_PAN` on top of Compose insets.
- * - Stages any received screenshot and filtered safe context strictly in memory; disk persistence
- *   and attachment occur only upon explicit user tap on "Attach current screen".
+ * - Immediately detects system-disabled screenshots via `userDisabledShowContext` / `Settings.Secure`
+ *   and offers a one-tap shortcut to system Digital Assistant settings.
+ * - Configures `SOFT_INPUT_ADJUST_NOTHING` in `onCreateContentView`, immediately after `super.onShow`,
+ *   and via `frame.post` so `VoiceInteractionWindow` never stacks `ADJUST_PAN` over Compose insets.
  */
 class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession(context) {
     private val uiContext: Context by lazy { AppLanguages.wrap(context) }
@@ -99,16 +118,17 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
                         onNotice = controller::showNotice,
                         onAttachScreen = controller::attachCurrentScreen,
                         onRemoveScreen = controller::removeAttachedScreen,
+                        onOpenAssistantSettings = ::openAssistantSettings,
                         onToggleModelPicker = controller::toggleModelPicker,
                         onCloseModelPicker = controller::closeModelPicker,
                         onRefreshModels = controller::refreshModelCatalog,
                         onSelectDefaultModel = controller::selectDefaultModel,
                         onSelectModel = controller::selectModel,
                         onRetryWithDefaultMain = controller::retryWithDefaultMain,
-                        onUnlock = controller::openInPersona,
                         onSend = controller::send,
                         onOpenInPersona = controller::openInPersona,
                         onDismiss = ::dismissOverlay,
+                        onUnlock = controller::openInPersona,
                     )
                 }
             }
@@ -129,11 +149,17 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
         super.onPrepareShow(args, showFlags)
         setUiEnabled(true)
         val locked = isDeviceLocked(context)
+        val probe = probeScreenshotSettings()
         val hasAssist = (showFlags and SHOW_WITH_ASSIST) != 0
         val hasShot = (showFlags and SHOW_WITH_SCREENSHOT) != 0
+        val hasScreenContent = hasAssistStructureScreenContentFlag(showFlags)
         Log.i(
             ASSIST_LOG_TAG,
             "onPrepareShow showFlags=$showFlags withAssist=$hasAssist withScreenshot=$hasShot " +
+                "withAssistScreenContent=$hasScreenContent disabledShowContext=${probe.disabledShowContext} " +
+                "userDisabledShowContext=${probe.userDisabledShowContext} " +
+                "secureAssistScreenshot=${probe.secureAssistScreenshotEnabled} " +
+                "secureAssistStructure=${probe.secureAssistStructureEnabled} " +
                 "hasArgs=${args != null} locked=$locked",
         )
         if (::bridge.isInitialized && ::controller.isInitialized) {
@@ -142,6 +168,8 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
                 supportsScreenshot = !locked,
                 showFlags = showFlags,
                 deviceLocked = locked,
+                screenshotDisabledBySettings = probe.screenshotDisabledBySettings,
+                expectScreenshotFromFlags = hasShot || showFlags == 0,
             )
         }
     }
@@ -151,11 +179,17 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
         // Re-apply AFTER super.onShow() to override VoiceInteractionWindow's default ADJUST_PAN.
         configureOverlayWindow(window?.window)
         val locked = isDeviceLocked(context)
+        val probe = probeScreenshotSettings()
         val hasAssist = (showFlags and SHOW_WITH_ASSIST) != 0
         val hasShot = (showFlags and SHOW_WITH_SCREENSHOT) != 0
+        val hasScreenContent = hasAssistStructureScreenContentFlag(showFlags)
         Log.i(
             ASSIST_LOG_TAG,
             "onShow showFlags=$showFlags withAssist=$hasAssist withScreenshot=$hasShot " +
+                "withAssistScreenContent=$hasScreenContent disabledShowContext=${probe.disabledShowContext} " +
+                "userDisabledShowContext=${probe.userDisabledShowContext} " +
+                "secureAssistScreenshot=${probe.secureAssistScreenshotEnabled} " +
+                "secureAssistStructure=${probe.secureAssistStructureEnabled} " +
                 "hasArgs=${args != null} locked=$locked",
         )
         rootFrame?.let { frame ->
@@ -169,6 +203,8 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
                 supportsScreenshot = !locked,
                 showFlags = showFlags,
                 deviceLocked = locked,
+                screenshotDisabledBySettings = probe.screenshotDisabledBySettings,
+                expectScreenshotFromFlags = hasShot || showFlags == 0,
             )
         }
     }
@@ -251,6 +287,23 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
         super.onDestroy()
     }
 
+    private fun probeScreenshotSettings(): AssistScreenshotSettingsProbe {
+        val disabled = runCatching { disabledShowContext }.getOrDefault(0)
+        val userDisabled = runCatching { userDisabledShowContext }.getOrDefault(0)
+        val secureShot = runCatching {
+            Settings.Secure.getInt(context.contentResolver, SECURE_ASSIST_SCREENSHOT_ENABLED, -1)
+        }.getOrDefault(-1)
+        val secureStructure = runCatching {
+            Settings.Secure.getInt(context.contentResolver, SECURE_ASSIST_STRUCTURE_ENABLED, -1)
+        }.getOrDefault(-1)
+        return AssistScreenshotSettingsProbe(
+            disabledShowContext = disabled,
+            userDisabledShowContext = userDisabled,
+            secureAssistScreenshotEnabled = secureShot,
+            secureAssistStructureEnabled = secureStructure,
+        )
+    }
+
     private fun dismissOverlay() {
         // Hide the IME while rootFrame / decorView is still attached and holds a valid windowToken.
         hideKeyboard()
@@ -298,6 +351,20 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
         }
     }
 
+    private fun openAssistantSettings() {
+        hideKeyboard()
+        openSystemAssistSettings(context) { intent ->
+            val launched = runCatching {
+                startAssistantActivity(intent)
+                true
+            }.getOrDefault(false)
+            if (!launched) {
+                context.startActivity(intent)
+            }
+        }
+        dismissOverlay()
+    }
+
     private fun openExternalUri(uri: String) {
         hideKeyboard()
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uri)).apply {
@@ -312,6 +379,29 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
         }
         dismissOverlay()
     }
+
+    companion object {
+        private const val SECURE_ASSIST_SCREENSHOT_ENABLED = "assist_screenshot_enabled"
+        private const val SECURE_ASSIST_STRUCTURE_ENABLED = "assist_structure_enabled"
+    }
+}
+
+internal fun hasAssistStructureScreenContentFlag(showFlags: Int): Boolean =
+    Build.VERSION.SDK_INT >= 37 &&
+        (showFlags and VoiceInteractionSession.SHOW_WITH_ASSIST_STRUCTURE_SCREEN_CONTENT) != 0
+
+internal fun openSystemAssistSettings(context: Context, launch: (Intent) -> Unit = { context.startActivity(it) }): Boolean {
+    val candidates = listOf(
+        Intent(Settings.ACTION_VOICE_INPUT_SETTINGS),
+        Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS),
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)),
+    )
+    for (intent in candidates) {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val opened = runCatching { launch(intent); true }.getOrDefault(false)
+        if (opened) return true
+    }
+    return false
 }
 
 internal fun isDeviceLocked(context: Context): Boolean = runCatching {
