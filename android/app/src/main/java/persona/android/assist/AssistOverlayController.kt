@@ -83,9 +83,7 @@ internal data class AssistOverlayUiState(
     val invocationId: String = "",
     val deviceLocked: Boolean = false,
     val captureStatus: AssistCaptureStatus = AssistCaptureStatus.Waiting,
-    val previewThumbnail: Bitmap? = null,
     val attachedScreenshot: ComposerAttachment? = null,
-    val attachedThumbnail: Bitmap? = null,
     val attachedContext: ChatLinkContext? = null,
     val hasStagedContext: Boolean = false,
     val attachingScreen: Boolean = false,
@@ -134,7 +132,6 @@ internal data class SentOverlayTurn(
 internal class AssistOverlayController(
     private val mainScope: CoroutineScope,
     private val prepareScreenshot: suspend (Bitmap) -> Bitmap?,
-    private val createThumbnail: suspend (Bitmap) -> Bitmap?,
     private val saveScreenshot: suspend (Bitmap, String) -> ComposerAttachment?,
     private val deleteScreenshot: suspend (ComposerAttachment) -> Unit,
     private val sendTextToMain: suspend (String, String) -> Unit,
@@ -174,7 +171,6 @@ internal class AssistOverlayController(
     private var deviceLockedForInvocation = false
     private var captureDiscardedForInvocation = false
     private var stagedBitmap: Bitmap? = null
-    private var stagedPreviewThumbnail: Bitmap? = null
     private var stagedContext: ChatLinkContext? = null
     private var stagedContextFocused = false
     private var handedOffAttachment: ComposerAttachment? = null
@@ -361,25 +357,11 @@ internal class AssistOverlayController(
             } catch (_: Exception) {
                 null
             }
-            val previewThumb = if (prepared != null) {
-                try {
-                    createThumbnail(prepared)
-                } catch (cancelled: CancellationException) {
-                    prepared.safeRecycle()
-                    throw cancelled
-                } catch (_: Exception) {
-                    null
-                }
-            } else {
-                null
-            }
             if (!invocationOpen || invocationId != activeId || captureDiscardedForInvocation || deviceLockedForInvocation) {
-                previewThumb?.safeRecycle()
                 prepared?.safeRecycle()
                 return@launch
             }
             if (prepared == null) {
-                previewThumb?.safeRecycle()
                 log("screenshotPrepareFailed status=Unavailable")
                 if (mutableState.value.captureStatus != AssistCaptureStatus.Attached) {
                     mutableState.update { it.copy(captureStatus = AssistCaptureStatus.Unavailable) }
@@ -387,9 +369,7 @@ internal class AssistOverlayController(
                 return@launch
             }
             val oldStaged = stagedBitmap
-            val oldPreviewThumb = stagedPreviewThumbnail
             stagedBitmap = prepared
-            stagedPreviewThumbnail = previewThumb
             log("screenshotStagedInMemory size=${prepared.width}x${prepared.height}")
             mutableState.update { current ->
                 current.copy(
@@ -398,13 +378,9 @@ internal class AssistOverlayController(
                     } else {
                         AssistCaptureStatus.Available
                     },
-                    previewThumbnail = previewThumb,
                 )
             }
             oldStaged?.safeRecycle()
-            if (oldPreviewThumb != null && oldPreviewThumb !== mutableState.value.attachedThumbnail) {
-                oldPreviewThumb.safeRecycle()
-            }
         }
     }
 
@@ -510,25 +486,11 @@ internal class AssistOverlayController(
             } catch (_: Exception) {
                 null
             }
-            val reusedThumb = stagedPreviewThumbnail?.takeUnless { it.isRecycled }
-            val thumb = if (saved != null) {
-                reusedThumb ?: try {
-                    createThumbnail(source)
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (_: Exception) {
-                    null
-                }
-            } else {
-                null
-            }
             if (!invocationOpen || invocationId != activeId || captureDiscardedForInvocation || deviceLockedForInvocation) {
-                if (thumb !== reusedThumb) thumb?.safeRecycle()
                 if (saved != null) runCatching { deleteScreenshot(saved) }
                 return@launch
             }
             if (saved == null) {
-                if (thumb !== reusedThumb) thumb?.safeRecycle()
                 log("attachCurrentScreenFailed")
                 mutableState.update {
                     it.copy(
@@ -538,16 +500,11 @@ internal class AssistOverlayController(
                 }
                 return@launch
             }
-            if (stagedPreviewThumbnail == null && thumb != null) {
-                stagedPreviewThumbnail = thumb
-            }
             log("attachCurrentScreenConfirmed bytes=${saved.size ?: 0L} withContext=${stagedContext != null}")
             mutableState.update {
                 it.copy(
                     captureStatus = AssistCaptureStatus.Attached,
-                    previewThumbnail = stagedPreviewThumbnail ?: thumb,
                     attachedScreenshot = saved,
-                    attachedThumbnail = thumb,
                     attachedContext = stagedContext,
                     attachingScreen = false,
                     errorMessage = null,
@@ -565,22 +522,15 @@ internal class AssistOverlayController(
         val previous = current.attachedScreenshot
         val canReattach = !deviceLockedForInvocation && !captureDiscardedForInvocation &&
             stagedBitmap?.let { !it.isRecycled } == true
-        val stalePreviewThumb = if (canReattach) null else stagedPreviewThumbnail
-        if (!canReattach) {
-            stagedPreviewThumbnail = null
-        }
         mutableState.update {
             it.copy(
                 captureStatus = if (canReattach) AssistCaptureStatus.Available else AssistCaptureStatus.NotSupported,
-                previewThumbnail = if (canReattach) stagedPreviewThumbnail?.takeUnless { thumb -> thumb.isRecycled } else null,
                 attachedScreenshot = null,
-                attachedThumbnail = null,
                 attachedContext = null,
                 attachingScreen = false,
                 errorMessage = null,
             )
         }
-        stalePreviewThumb?.safeRecycle()
         if (previous != null) {
             mainScope.launch { runCatching { deleteScreenshot(previous) } }
         }
@@ -736,23 +686,17 @@ internal class AssistOverlayController(
             }
         }
         val oldStaged = stagedBitmap
-        val oldThumb = stagedPreviewThumbnail
         stagedBitmap = null
-        stagedPreviewThumbnail = null
         stagedContext = null
         stagedContextFocused = false
-        mutableState.update { it.copy(previewThumbnail = null, attachedThumbnail = null) }
         oldStaged?.safeRecycle()
-        oldThumb?.safeRecycle()
         onLaunchFullApp(if (current.deviceLocked) null else targetSession)
         onDismiss()
     }
 
     /** Ends the current overlay session (on hide/dismiss/destroy) and releases all bitmaps & un-sent files. */
     fun endSession() {
-        if (!invocationOpen && stagedBitmap == null && stagedPreviewThumbnail == null &&
-            mutableState.value.attachedScreenshot == null
-        ) {
+        if (!invocationOpen && stagedBitmap == null && mutableState.value.attachedScreenshot == null) {
             return
         }
         invocationOpen = false
@@ -822,24 +766,19 @@ internal class AssistOverlayController(
         attachJob?.cancel()
         attachJob = null
         val oldStaged = stagedBitmap
-        val oldThumb = stagedPreviewThumbnail
         stagedBitmap = null
-        stagedPreviewThumbnail = null
         stagedContext = null
         stagedContextFocused = false
         mutableState.update {
             it.copy(
                 captureStatus = AssistCaptureStatus.NotSupported,
-                previewThumbnail = null,
                 attachedScreenshot = null,
-                attachedThumbnail = null,
                 attachedContext = null,
                 hasStagedContext = false,
                 attachingScreen = false,
             )
         }
         oldStaged?.safeRecycle()
-        oldThumb?.safeRecycle()
     }
 
     private fun cleanupJobsAndResources(
@@ -858,9 +797,7 @@ internal class AssistOverlayController(
         catalogJob = null
 
         val oldStaged = stagedBitmap
-        val oldThumb = stagedPreviewThumbnail
         stagedBitmap = null
-        stagedPreviewThumbnail = null
         stagedContext = null
         stagedContextFocused = false
 
@@ -868,7 +805,6 @@ internal class AssistOverlayController(
             mainScope.launch { runCatching { deleteScreenshot(attachedToDelete) } }
         }
         oldStaged?.safeRecycle()
-        oldThumb?.safeRecycle()
     }
 
     companion object {

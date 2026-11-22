@@ -100,9 +100,6 @@ class AssistOverlayControllerTest {
             prepareScreenshot = { src ->
                 Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888).also { preparedBitmaps += it }
             },
-            createThumbnail = { _ ->
-                Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888)
-            },
             saveScreenshot = { _, id ->
                 saveCount++
                 ComposerAttachment(
@@ -183,7 +180,6 @@ class AssistOverlayControllerTest {
         assertEquals(1, harness.saveCount)
         assertEquals(AssistCaptureStatus.Attached, controller.state.value.captureStatus)
         assertNotNull(controller.state.value.attachedScreenshot)
-        assertNotNull(controller.state.value.attachedThumbnail)
         assertEquals(sampleContext, controller.state.value.attachedContext)
 
         shot.recycle()
@@ -213,7 +209,6 @@ class AssistOverlayControllerTest {
         assertEquals(AssistCaptureStatus.Available, controller.state.value.captureStatus)
         assertNull(controller.state.value.attachedScreenshot)
         assertNull(controller.state.value.attachedContext)
-        assertNull(controller.state.value.attachedThumbnail)
 
         // User can re-attach before sending.
         controller.attachCurrentScreen()
@@ -836,7 +831,7 @@ class AssistOverlayControllerTest {
     }
 
     @Test
-    fun stagesInMemoryPreviewThumbnailWithoutWritingToDiskUntilConfirmed() = runTest {
+    fun privacyModeStagesScreenshotInMemoryAndCleansUpOnToggleAndEndSession() = runTest {
         val harness = Harness(this)
         val controller = harness.controller
         controller.beginSession(supportsScreenshot = true)
@@ -846,31 +841,26 @@ class AssistOverlayControllerTest {
         runCurrent()
 
         assertEquals(AssistCaptureStatus.Available, controller.state.value.captureStatus)
-        assertNotNull(controller.state.value.previewThumbnail)
         assertNull(controller.state.value.attachedScreenshot)
-        assertNull(controller.state.value.attachedThumbnail)
         assertEquals(0, harness.saveCount)
 
-        // Confirming attach persists to cacheDir/assist and keeps preview thumbnail intact.
+        // Confirming attach persists only to private cacheDir/assist without exposing preview bitmaps to UI state.
         controller.attachCurrentScreen()
         runCurrent()
         assertEquals(AssistCaptureStatus.Attached, controller.state.value.captureStatus)
         assertEquals(1, harness.saveCount)
-        assertNotNull(controller.state.value.attachedThumbnail)
-        assertNotNull(controller.state.value.previewThumbnail)
+        assertNotNull(controller.state.value.attachedScreenshot)
 
-        // Toggling off deletes the temp file and returns to Available with the live preview thumbnail preserved.
+        // Toggling off deletes the temp file immediately while allowing instant re-attach.
         controller.removeAttachedScreen()
         runCurrent()
         assertEquals(AssistCaptureStatus.Available, controller.state.value.captureStatus)
         assertEquals(1, harness.deletedAttachments.size)
         assertNull(controller.state.value.attachedScreenshot)
-        assertNull(controller.state.value.attachedThumbnail)
-        assertNotNull(controller.state.value.previewThumbnail)
 
         shot.recycle()
         controller.endSession()
         runCurrent()
-        assertNull(controller.state.value.previewThumbnail)
+        assertTrue(harness.preparedBitmaps.single().isRecycled)
     }
 }

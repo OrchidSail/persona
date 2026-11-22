@@ -123,7 +123,6 @@
     <string name="app_assist_remove_screen">Remove attached screen</string>
     <string name="app_assist_screen_preparing">Preparing current screen…</string>
     <string name="app_assist_screen_attached">Current screen attached</string>
-    <string name="app_assist_screen_preview">Current screen preview</string>
     <string name="app_assist_screen_unavailable">Protected page</string>
     <string name="app_assist_screen_timeout">Screen capture timed out</string>
     <string name="app_assist_screen_disabled_by_settings">Screen capture off</string>

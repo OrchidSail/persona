@@ -443,9 +443,6 @@ internal fun createOverlayController(
         prepareScreenshot = { bitmap ->
             withContext(Dispatchers.Default) { AssistScreenshotStore.prepareInMemory(bitmap) }
         },
-        createThumbnail = { bitmap ->
-            withContext(Dispatchers.Default) { AssistScreenshotStore.createPreviewThumbnail(bitmap) }
-        },
         saveScreenshot = { bitmap, id ->
             withContext(Dispatchers.IO) { AssistScreenshotStore.save(appContext, bitmap, id) }
         },

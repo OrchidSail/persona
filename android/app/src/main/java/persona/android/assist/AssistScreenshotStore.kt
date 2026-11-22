@@ -17,7 +17,6 @@ import persona.feature.chat.ComposerAttachment
 internal object AssistScreenshotStore {
     const val DIR_NAME = "assist"
     const val MAX_SIDE_PX = 1600
-    const val THUMB_SIDE_PX = 256
     const val JPEG_QUALITY = 88
     const val DEFAULT_MAX_AGE_MILLIS = 24L * 60 * 60 * 1000
     const val DEFAULT_MAX_FILES = 16
@@ -41,17 +40,6 @@ internal object AssistScreenshotStore {
             scaled
         } catch (_: Exception) {
             if (software != null && software !== bitmap && !software.isRecycled) software.recycle()
-            null
-        }
-    }
-
-    /** Creates an owned small software bitmap for thumbnail preview without mutating [source]. */
-    fun createPreviewThumbnail(source: Bitmap?, maxSidePx: Int = THUMB_SIDE_PX): Bitmap? {
-        if (source == null || source.isRecycled || source.width <= 0 || source.height <= 0) return null
-        return try {
-            val scaled = scaleDownIfNeeded(source, maxSidePx)
-            if (scaled === source) source.copy(Bitmap.Config.ARGB_8888, false) else scaled
-        } catch (_: Exception) {
             null
         }
     }

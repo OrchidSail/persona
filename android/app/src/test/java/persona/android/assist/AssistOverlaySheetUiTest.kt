@@ -1,8 +1,6 @@
 package persona.android.assist
 
 import android.app.Application
-import android.graphics.Bitmap
-import android.graphics.Color
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -11,6 +9,9 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.height
+import androidx.compose.ui.unit.width
+import kotlin.math.abs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -29,7 +30,7 @@ class AssistOverlaySheetUiTest {
     @get:Rule val host = RuleChain.outerRule(ComponentActivityHostRule()).around(rule)
 
     @Test
-    fun dualIslandLayoutSeparatesContextAndComposerWithAirGapAndNoCloseButton() {
+    fun dualIslandLayoutHasGenerousTouchTargetsSymmetricBrandAnchorAndNoCloseButton() {
         var openedSettings = 0
         rule.setContent {
             PersonaTheme(darkTheme = false, reduceMotion = true) {
@@ -55,23 +56,42 @@ class AssistOverlaySheetUiTest {
         val rootBounds = rule.onNodeWithTag("assist-overlay-root").getUnclippedBoundsInRoot()
         val contextBounds = rule.onNodeWithTag("assist-context-island").getUnclippedBoundsInRoot()
         val composerBounds = rule.onNodeWithTag("assist-composer-island").getUnclippedBoundsInRoot()
+        val brandBounds = rule.onNodeWithTag("assist-brand-orb").getUnclippedBoundsInRoot()
+        val sendBounds = rule.onNodeWithTag("assist-send-button").getUnclippedBoundsInRoot()
+        val modelPillBounds = rule.onNodeWithTag("assist-model-pill").getUnclippedBoundsInRoot()
+        val openPersonaBounds = rule.onNodeWithTag("assist-open-in-persona").getUnclippedBoundsInRoot()
+        val settingsButtonBounds = rule.onNodeWithTag("assist-open-settings-button").getUnclippedBoundsInRoot()
 
-        // Independent floating horizontal margins and bottom lift.
+        // Independent floating margins and bottom lift.
         assertTrue("Context island must keep left margin", contextBounds.left > rootBounds.left)
         assertTrue("Context island must keep right margin", contextBounds.right < rootBounds.right)
         assertTrue("Composer island must keep left margin", composerBounds.left > rootBounds.left)
         assertTrue("Composer island must keep right margin", composerBounds.right < rootBounds.right)
         assertTrue("Composer island must float above bottom edge", composerBounds.bottom < rootBounds.bottom)
 
-        // Real transparent 8dp spatial air gap between Upper Context Island and Primary Composer Island.
+        // Real 8dp spatial air gap between Upper Context Island and Primary Composer Island.
         val gap = composerBounds.top - contextBounds.bottom
         assertTrue("Expected >= 7dp spatial air gap between islands, got $gap", gap >= 7.dp)
 
-        // Redundant X close button is completely removed in Proposal C.
-        rule.onNodeWithTag("assist-close-button").assertDoesNotExist()
+        // Generous island sizing & comfortable touch targets (>= 54dp upper, >= 64dp lower, >= 44-48dp controls).
+        assertTrue("Upper context island should be >= 54dp tall, got ${contextBounds.height}", contextBounds.height >= 54.dp)
+        assertTrue("Primary composer island should be >= 64dp tall, got ${composerBounds.height}", composerBounds.height >= 64.dp)
+        assertTrue("Send button should be >= 48dp tall, got ${sendBounds.height}", sendBounds.height >= 48.dp)
+        assertTrue("Send button should be >= 48dp wide, got ${sendBounds.width}", sendBounds.width >= 48.dp)
+        assertTrue("Model pill should be >= 44dp tall, got ${modelPillBounds.height}", modelPillBounds.height >= 44.dp)
+        assertTrue("Open in Persona should be >= 44dp tall, got ${openPersonaBounds.height}", openPersonaBounds.height >= 44.dp)
+        assertTrue("Enable settings button should be >= 44dp tall, got ${settingsButtonBounds.height}", settingsButtonBounds.height >= 44.dp)
 
-        // Official Persona brand identity anchor is rendered inside the primary composer island.
-        rule.onNodeWithTag("assist-brand-orb").assertExists()
+        // Left Persona icon slot and right Send button slot must sit symmetrically inside the composer capsule.
+        val leftInset = (brandBounds.left - composerBounds.left).value
+        val rightInset = (composerBounds.right - sendBounds.right).value
+        assertTrue(
+            "Persona brand orb left inset ($leftInset dp) must match Send right inset ($rightInset dp)",
+            abs(leftInset - rightInset) <= 1.5f,
+        )
+
+        // Redundant X close button stays removed.
+        rule.onNodeWithTag("assist-close-button").assertDoesNotExist()
 
         // Immediate DisabledBySettings prompt and Enable action pill stay directly reachable.
         rule.onNodeWithTag("assist-screen-disabled").assertExists()
@@ -80,17 +100,13 @@ class AssistOverlaySheetUiTest {
     }
 
     @Test
-    fun upperContextIslandTogglesLiveScreenshotThumbnailBetweenAvailableAndAttached() {
-        val preview = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888).apply {
-            eraseColor(Color.CYAN)
-        }
+    fun privacyScreenToggleUsesPureIconStateAndNeverRendersScreenshotThumbnail() {
         var attachClicks = 0
         var removeClicks = 0
         var uiState by mutableStateOf(
             AssistOverlayUiState(
-                invocationId = "inv-screen-toggle",
+                invocationId = "inv-privacy-toggle",
                 captureStatus = AssistCaptureStatus.Available,
-                previewThumbnail = preview,
                 hubStatus = AssistHubStatus.Ready,
             ),
         )
@@ -111,28 +127,25 @@ class AssistOverlaySheetUiTest {
             }
         }
 
-        rule.onNodeWithTag("assist-attach-screen-chip").assertExists()
-        rule.onNodeWithTag("assist-screen-thumbnail", useUnmergedTree = true).assertExists()
+        val attachChipBounds = rule.onNodeWithTag("assist-attach-screen-chip").getUnclippedBoundsInRoot()
+        assertTrue("Attach screen toggle must be >= 44dp tall, got ${attachChipBounds.height}", attachChipBounds.height >= 44.dp)
+        rule.onNodeWithTag("assist-screen-thumbnail", useUnmergedTree = true).assertDoesNotExist()
         rule.onNodeWithTag("assist-screen-unattached-badge", useUnmergedTree = true).assertExists()
         rule.onNodeWithTag("assist-attach-screen-chip").performClick()
         assertEquals(1, attachClicks)
 
-        // Transition state cleanly inside the single composition to verify Attached check badge & removal toggle.
+        // Transition to Attached: check badge switches to filled state while still rendering zero screenshot preview.
         rule.runOnIdle {
-            uiState = uiState.copy(
-                captureStatus = AssistCaptureStatus.Attached,
-                attachedThumbnail = preview,
-            )
+            uiState = uiState.copy(captureStatus = AssistCaptureStatus.Attached)
         }
         rule.waitForIdle()
 
-        rule.onNodeWithTag("assist-screen-attached-row").assertExists()
-        rule.onNodeWithTag("assist-screen-thumbnail", useUnmergedTree = true).assertExists()
+        val attachedBounds = rule.onNodeWithTag("assist-screen-attached-row").getUnclippedBoundsInRoot()
+        assertTrue("Attached screen toggle must be >= 44dp tall, got ${attachedBounds.height}", attachedBounds.height >= 44.dp)
+        rule.onNodeWithTag("assist-screen-thumbnail", useUnmergedTree = true).assertDoesNotExist()
         rule.onNodeWithTag("assist-screen-attached-badge", useUnmergedTree = true).assertExists()
         rule.onNodeWithTag("assist-screen-attached-row").performClick()
         assertEquals(1, removeClicks)
-
-        preview.recycle()
     }
 
     @Test
@@ -178,6 +191,7 @@ class AssistOverlaySheetUiTest {
         assertTrue("Reply island must sit above context island with air gap", contextBounds.top - replyBounds.bottom >= 7.dp)
         assertTrue("Context island must sit above composer island with air gap", composerBounds.top - contextBounds.bottom >= 7.dp)
 
+        rule.onNodeWithTag("assist-screen-thumbnail", useUnmergedTree = true).assertDoesNotExist()
         rule.onNodeWithTag("assist-model-pill").assertExists()
         rule.onNodeWithTag("assist-open-in-persona").assertExists()
         rule.onNodeWithTag("assist-attach-screen-chip").assertExists()

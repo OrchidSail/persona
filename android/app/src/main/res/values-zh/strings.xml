@@ -122,7 +122,6 @@
     <string name="app_assist_remove_screen">取消附带当前屏幕</string>
     <string name="app_assist_screen_preparing">正在准备屏幕…</string>
     <string name="app_assist_screen_attached">已附带当前屏幕</string>
-    <string name="app_assist_screen_preview">当前屏幕截图预览</string>
     <string name="app_assist_screen_unavailable">受保护页面</string>
     <string name="app_assist_screen_timeout">未能及时截屏</string>
     <string name="app_assist_screen_disabled_by_settings">系统截屏未开启</string>
