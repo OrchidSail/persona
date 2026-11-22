@@ -774,12 +774,9 @@ func TestCloneRelayRequestPreservesCallerRequest(t *testing.T) {
 	req, _ := http.NewRequest("POST", "http://manager/api/v1/extensions/callee/-/ui/card", io.NopCloser(strings.NewReader(payload)))
 	req.ContentLength = -1
 
-	base, canRetry, err := cloneRelayRequest(req)
+	base, err := cloneRelayRequest(req)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !canRetry {
-		t.Fatal("canRetry = false, want true")
 	}
 	if req.GetBody != nil || req.ContentLength != -1 {
 		t.Fatalf("caller request mutated: GetBody=%v ContentLength=%d", req.GetBody != nil, req.ContentLength)
