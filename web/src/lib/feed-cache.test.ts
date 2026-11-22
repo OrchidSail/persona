@@ -322,6 +322,63 @@ describe("main conversation feed cache", () => {
     expect(cache.writeFeedCache(scope, page({ items: [item(1, "user", { text: `token=${token}` })] }))).toBe(false);
     expect(entries()).toHaveLength(0);
   });
+
+  it("evicts oversized, corrupt, and incompatible records on readFeedCache without leaving unreadable entries behind", () => {
+    const scope = cache.feedCacheScope();
+    expect(cache.writeFeedCache(scope, page())).toBe(true);
+    const key = entries()[0][0];
+
+    for (const raw of ["", "{", JSON.stringify({ ...page(), items: [{ id: "a", seq: "bad" }] }),
+      JSON.stringify(page({ items: [item(1, "user", { text: "x".repeat(cache.FEED_CACHE_MAX_BYTES + 128) })] }))]) {
+      stored.set(key, raw);
+      expect(cache.readFeedCache(scope)).toBeNull();
+      expect(entries()).toHaveLength(0);
+    }
+  });
+
+  it("still evicts stale or oversized entries re-introduced externally even when writeFeedCache hits the oversized memo", () => {
+    const scope = cache.feedCacheScope();
+    expect(cache.writeFeedCache(scope, page())).toBe(true);
+    const key = entries()[0][0];
+    const staleRaw = stored.get(key)!;
+
+    const heavy = [
+      item(1, "user", { text: "Analyze payload" }),
+      item(2, "assistant", { kind: "tool_use", tool_name: "Read", tool_input: { blob: "b".repeat(cache.FEED_CACHE_MAX_BYTES + 512) } }),
+    ];
+    expect(cache.writeFeedCache(scope, page({ items: heavy }))).toBe(false);
+    expect(entries()).toHaveLength(0);
+
+    const removeSpy = vi.spyOn(localStorage, "removeItem");
+    const stringifySpy = vi.spyOn(JSON, "stringify");
+    const pageStringifies = () => stringifySpy.mock.calls.filter(([, replacer]) => typeof replacer === "function");
+
+    // Another tab or external writer restores a stale valid entry after the oversized memo was recorded.
+    stored.set(key, staleRaw);
+    expect(cache.readFeedCache(scope)?.sessionID).toBe("main-demo");
+    removeSpy.mockClear();
+    stringifySpy.mockClear();
+    const extended = [...heavy, item(3, "assistant", { text: "step 3" })];
+    expect(cache.writeFeedCache(scope, page({ items: extended }))).toBe(false);
+    expect(entries()).toHaveLength(0);
+    expect(cache.readFeedCache(scope)).toBeNull();
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(pageStringifies()).toHaveLength(0);
+
+    // An external oversized/corrupt record is likewise evicted on the memoized shortcut, and once absent removeItem is skipped.
+    removeSpy.mockClear();
+    stored.set(key, JSON.stringify(page({ items: [item(1, "user", { text: "z".repeat(cache.FEED_CACHE_MAX_BYTES + 128) })] })));
+    const further = [...extended, item(4, "assistant", { text: "step 4" })];
+    expect(cache.writeFeedCache(scope, page({ items: further }))).toBe(false);
+    expect(entries()).toHaveLength(0);
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(pageStringifies()).toHaveLength(0);
+
+    removeSpy.mockClear();
+    expect(cache.writeFeedCache(scope, page({ items: [...further, item(5, "assistant", { text: "step 5" })] }))).toBe(false);
+    expect(removeSpy).not.toHaveBeenCalled();
+    expect(pageStringifies()).toHaveLength(0);
+  });
 });
 
 describe("memory pages of other chats", () => {

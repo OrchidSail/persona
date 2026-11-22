@@ -54,7 +54,6 @@ let generation = 0;
 let identity = "";
 let key: string | null = null;
 let oversized: OversizedMemo | null = null;
-let discardedScope: string | null = null;
 
 /** Capture before starting a read. Its in-memory generation also fences logout followed by the same login. */
 export function feedCacheScope(): string | null {
@@ -67,7 +66,6 @@ export function feedCacheScope(): string | null {
     if (identity !== now) {
       if (identity) clearFeedCache();
       oversized = null;
-      discardedScope = null;
       identity = now;
       key = feedCacheKey(hub, token, deviceID, epoch);
     }
@@ -81,7 +79,6 @@ export function feedCacheScope(): string | null {
 export function clearFeedCache(): void {
   generation++;
   oversized = null;
-  discardedScope = null;
   clearMemoryPages();
   try {
     for (let i = localStorage.length - 1; i >= 0; i--) {
@@ -100,13 +97,15 @@ export const scopedKey = (scope: string | null, name: string) => (scope && scope
 export function discardFeedCache(scope: string | null): void {
   if (!scope || scope !== feedCacheScope()) return;
   oversized = null;
-  discardedScope = scope;
   try { localStorage.removeItem(storageKey(scope)); } catch { /* Best effort. */ }
 }
 
 function discardStaleCache(scope: string): void {
-  if (discardedScope === scope) return;
-  discardFeedCache(scope);
+  const k = storageKey(scope);
+  try {
+    if (localStorage.getItem(k) === null) return;
+    localStorage.removeItem(k);
+  } catch { /* Best effort. */ }
 }
 
 function exceedsMaxBytes(raw: string): boolean {
@@ -191,13 +190,23 @@ function withoutImageBodies(this: Record<string, unknown>, name: string, value: 
 
 export function readFeedCache(scope: string | null = feedCacheScope()): FeedCache | null {
   if (!scope || scope !== feedCacheScope()) return null;
+  let raw: string | null;
   try {
-    const raw = localStorage.getItem(storageKey(scope));
-    if (!raw) return null;
-    discardedScope = null;
-    if (exceedsMaxBytes(raw)) return null;
+    raw = localStorage.getItem(storageKey(scope));
+  } catch {
+    return null;
+  }
+  if (raw === null) return null;
+  try {
+    if (!raw || exceedsMaxBytes(raw)) {
+      discardFeedCache(scope);
+      return null;
+    }
     const parsed: unknown = JSON.parse(raw);
-    if (!validFeed(parsed) || conversationDeleted(parsed.machineID, parsed.sessionID)) return null;
+    if (!validFeed(parsed) || conversationDeleted(parsed.machineID, parsed.sessionID)) {
+      discardFeedCache(scope);
+      return null;
+    }
     // A record with embedded image bytes was not written by this version. Never hydrate an unsanitized record.
     // Nor one an older version wrote with a refusal record's whole line in it (#2528): it is never shown again.
     if (JSON.stringify(parsed, withoutImageBodies) !== JSON.stringify(parsed) || containsCredential(raw) || parsed.items.some(hasPrivateRefusal)) {
@@ -206,6 +215,7 @@ export function readFeedCache(scope: string | null = feedCacheScope()): FeedCach
     }
     return parsed;
   } catch {
+    discardFeedCache(scope);
     return null;
   }
 }
@@ -255,7 +265,12 @@ export function writeFeedCache(scope: string | null, value: FeedCache): boolean 
   try {
     const { start, items: rawItems } = newestTurnsSlice(value.items);
     const hasMore = value.hasMore || start > 0;
-    if (rawItems.length > FEED_CACHE_MAX_ITEMS || matchesOversized(scope, value, hasMore, rawItems)) {
+    if (rawItems.length > FEED_CACHE_MAX_ITEMS) {
+      oversized = null;
+      discardStaleCache(scope);
+      return false;
+    }
+    if (matchesOversized(scope, value, hasMore, rawItems)) {
       discardStaleCache(scope);
       return false;
     }
@@ -280,7 +295,6 @@ export function writeFeedCache(scope: string | null, value: FeedCache): boolean 
       return false;
     }
     localStorage.setItem(storageKey(scope), raw);
-    discardedScope = null;
     return true;
   } catch {
     oversized = null;
