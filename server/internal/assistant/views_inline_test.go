@@ -3,6 +3,7 @@ package assistant
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -144,10 +145,11 @@ type memViewError struct {
 
 type memInlineViewStore struct {
 	*memStore
-	vmu       sync.Mutex
-	blocks    map[string]map[string]db.AssistantViewBlockRow
-	viewErrs  map[[3]string]*memViewError
-	passMarks map[[2]string]time.Time
+	vmu             sync.Mutex
+	blocks          map[string]map[string]db.AssistantViewBlockRow
+	viewErrs        map[[3]string]*memViewError
+	passMarks       map[[2]string]time.Time
+	failRegisterKey string
 }
 
 var (
@@ -167,6 +169,10 @@ func newMemInlineViewStore() *memInlineViewStore {
 func (m *memInlineViewStore) RegisterAssistantViewBlock(_ context.Context, row db.AssistantViewBlockRow) (bool, error) {
 	m.vmu.Lock()
 	defer m.vmu.Unlock()
+	if m.failRegisterKey != "" && row.Key == m.failRegisterKey {
+		m.failRegisterKey = ""
+		return false, errors.New("transient block store failure")
+	}
 	conv := m.blocks[row.Conversation]
 	if conv == nil {
 		conv = map[string]db.AssistantViewBlockRow{}
@@ -733,12 +739,13 @@ func TestInlineTurnRescanWithPostgresPreservesActionsAndErrors(t *testing.T) {
 	setTranscript(turnAUser, turnATemp)
 	s.registerInlineTurn(ctx, ref)
 
+	clientMsgID := "client-" + randomHex(8)
 	actionRow := db.AssistantViewActionRow{
 		Conversation: conversation,
 		Key:          "turnA#0/0",
 		Action:       "yes",
-		ClientMsgID:  "client-1",
-		MessageID:    "msg-1",
+		ClientMsgID:  clientMsgID,
+		MessageID:    "message-" + randomHex(8),
 		MachineID:    "server",
 		Text:         "Trusted choice",
 		At:           t0.Add(5 * time.Second),
@@ -766,7 +773,7 @@ func TestInlineTurnRescanWithPostgresPreservesActionsAndErrors(t *testing.T) {
 		t.Fatalf("assistant_view_block count=%d, want 2", got)
 	}
 	gotAction, err := database.AssistantViewAction(ctx, conversation, "turnA#0/0")
-	if err != nil || gotAction == nil || gotAction.Action != "yes" || gotAction.ClientMsgID != "client-1" {
+	if err != nil || gotAction == nil || gotAction.Action != "yes" || gotAction.ClientMsgID != clientMsgID {
 		t.Fatalf("submitted action lost or altered: %+v %v", gotAction, err)
 	}
 	pending, err := database.PeekAssistantViewErrors(ctx, conversation, "server", 5)
@@ -782,5 +789,181 @@ func TestInlineTurnRescanWithPostgresPreservesActionsAndErrors(t *testing.T) {
 	pending, err = database.PeekAssistantViewErrors(ctx, conversation, "server", 5)
 	if err != nil || len(pending) != 0 {
 		t.Fatalf("acked Turn B error resurfaced after rescan: %+v %v", pending, err)
+	}
+
+	// Turn D (newer valid card) lands while Turn B flushes to a new item id at its original earlier timestamp:
+	// newest-first traversal advances passed_at on Turn D first so the older flushed Turn B is marked redone.
+	turnBFlushed := proto.Item{ID: "turnB@flushed#1", Seq: 4, Role: "assistant", Kind: proto.KindText, TS: t0.Add(time.Minute), Text: invalidCard}
+	turnDUser := proto.Item{ID: "uD#0", Seq: 7, Role: "user", Kind: proto.KindText, TS: t0.Add(3*time.Minute - time.Second), Text: "Fixed"}
+	turnDValid := proto.Item{ID: "turnD#0", Seq: 8, Role: "assistant", Kind: proto.KindText, TS: t0.Add(3 * time.Minute), Text: validCard}
+	setTranscript(turnAUser, turnAFinal, turnBUser, turnBFlushed, turnCUser, turnCWake, turnDUser, turnDValid)
+
+	s.registerInlineTurn(ctx, ref)
+	keys, err = database.AssistantViewBlockKeys(ctx, conversation)
+	if err != nil || !slices.Equal(keys, []string{"turnA#0/0", "turnA@final#1/0", "turnD#0/0"}) {
+		t.Fatalf("keys after Turn D=%v err=%v", keys, err)
+	}
+	if got := strings.Count(f.eventTypes(), "assistant_view_block"); got != 3 {
+		t.Fatalf("assistant_view_block count after Turn D=%d, want 3", got)
+	}
+	pending, err = database.PeekAssistantViewErrors(ctx, conversation, "server", 5)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("older flushed invalid Turn B resurfaced after Turn D: %+v %v", pending, err)
+	}
+}
+
+func TestInlineViewsNewestFirstAndSkipsRescannedFullText(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeHub().withMachine()
+	st := newMemInlineViewStore()
+	s := newServiceOn(t, f, st)
+	conversation := "inline-newest-first-full-cache"
+	f.setSessions("server", proto.Session{SessionID: conversation, Assistant: true, Status: proto.StatusDone})
+	ref := SessionRef{MachineID: "server", SessionID: conversation}
+
+	card := "Conclusion\n```persona-view\n{\"fallback\":\"Finished\",\"sections\":[{\"items\":[{\"type\":\"button\",\"title\":\"OK\",\"action\":{\"id\":\"ok\",\"reply\":\"OK\"}}]}]}\n```\n"
+	t0 := time.Now().UTC().Add(-5 * time.Minute).Truncate(time.Second)
+
+	var mu sync.Mutex
+	var transcript []proto.Item
+	var fetched []string
+	fullItems := map[string]proto.Item{
+		"olderLong#0":       {ID: "olderLong#0", Seq: 2, Role: "assistant", Kind: proto.KindText, TS: t0, Text: card},
+		"essayLong#0":       {ID: "essayLong#0", Seq: 4, Role: "assistant", Kind: proto.KindText, TS: t0.Add(time.Minute), Text: "A long plain-text report without any card."},
+		"newerLong#0":       {ID: "newerLong#0", Seq: 6, Role: "assistant", Kind: proto.KindText, TS: t0.Add(2 * time.Minute), Text: card},
+		"olderLong@final#1": {ID: "olderLong@final#1", Seq: 2, Role: "assistant", Kind: proto.KindText, TS: t0, Text: card},
+		"retryLong#0":       {ID: "retryLong#0", Seq: 8, Role: "assistant", Kind: proto.KindText, TS: t0.Add(3 * time.Minute), Text: card},
+	}
+	failFetch := map[string]bool{"olderLong#0": true}
+	setTranscript := func(items ...proto.Item) {
+		mu.Lock()
+		transcript = slices.Clone(items)
+		mu.Unlock()
+	}
+	takeFetched := func() []string {
+		mu.Lock()
+		out := slices.Clone(fetched)
+		fetched = nil
+		mu.Unlock()
+		return out
+	}
+
+	f.answerNode(DeviceSessionItems, func(_ string, raw json.RawMessage) (any, error) {
+		var p struct {
+			Turns int `json:"turns"`
+		}
+		_ = json.Unmarshal(raw, &p)
+		mu.Lock()
+		items := runtimePageTurns(transcript, p.Turns)
+		mu.Unlock()
+		return map[string]any{"items": items}, nil
+	})
+	f.answerNode("session.item", func(_ string, raw json.RawMessage) (any, error) {
+		var p struct {
+			ItemID string `json:"item_id"`
+		}
+		_ = json.Unmarshal(raw, &p)
+		mu.Lock()
+		fetched = append(fetched, p.ItemID)
+		fail := failFetch[p.ItemID]
+		item, ok := fullItems[p.ItemID]
+		mu.Unlock()
+		if fail {
+			return nil, errors.New("slow node fetch failed")
+		}
+		if !ok {
+			return nil, errors.New("item not found")
+		}
+		return item, nil
+	})
+
+	// Scan 1: newest-first fetches newerLong#0 before olderLong#0. Even though olderLong#0 fails, newerLong#0
+	// is already registered and broadcast.
+	u1 := proto.Item{ID: "u1#0", Seq: 1, Role: "user", Kind: proto.KindText, TS: t0.Add(-time.Second), Text: "first"}
+	olderTrunc := proto.Item{ID: "olderLong#0", Seq: 2, Role: "assistant", Kind: proto.KindText, TS: t0, Text: "cut", FullSize: 100000}
+	u2 := proto.Item{ID: "u2#0", Seq: 5, Role: "user", Kind: proto.KindText, TS: t0.Add(2*time.Minute - time.Second), Text: "second"}
+	newerTrunc := proto.Item{ID: "newerLong#0", Seq: 6, Role: "assistant", Kind: proto.KindText, TS: t0.Add(2 * time.Minute), Text: "cut", FullSize: 100000}
+	setTranscript(u1, olderTrunc, u2, newerTrunc)
+
+	s.registerInlineTurn(ctx, ref)
+
+	if got := takeFetched(); !slices.Equal(got, []string{"newerLong#0", "olderLong#0"}) {
+		t.Fatalf("Scan 1 session.item order=%v, want [newerLong#0 olderLong#0]", got)
+	}
+	keys, err := st.AssistantViewBlockKeys(ctx, conversation)
+	if err != nil || !slices.Equal(keys, []string{"newerLong#0/0"}) {
+		t.Fatalf("Scan 1 keys=%v err=%v", keys, err)
+	}
+
+	// Scan 2: olderLong#0 recovers and a 0-card long essay is added in between.
+	// newerLong#0 is already cached and must NOT be re-fetched; essayLong#0 and olderLong#0 are fetched newest-first.
+	mu.Lock()
+	delete(failFetch, "olderLong#0")
+	mu.Unlock()
+	uEssay := proto.Item{ID: "uEssay#0", Seq: 3, Role: "user", Kind: proto.KindText, TS: t0.Add(59 * time.Second), Text: "report"}
+	essayTrunc := proto.Item{ID: "essayLong#0", Seq: 4, Role: "assistant", Kind: proto.KindText, TS: t0.Add(time.Minute), Text: "cut essay", FullSize: 100000}
+	setTranscript(u1, olderTrunc, uEssay, essayTrunc, u2, newerTrunc)
+
+	s.registerInlineTurn(ctx, ref)
+
+	if got := takeFetched(); !slices.Equal(got, []string{"essayLong#0", "olderLong#0"}) {
+		t.Fatalf("Scan 2 session.item calls=%v, want [essayLong#0 olderLong#0]", got)
+	}
+	keys, err = st.AssistantViewBlockKeys(ctx, conversation)
+	if err != nil || !slices.Equal(keys, []string{"newerLong#0/0", "olderLong#0/0"}) {
+		t.Fatalf("Scan 2 keys=%v err=%v", keys, err)
+	}
+
+	// Scan 3: rescanning all three already-scanned long replies triggers ZERO session.item round trips.
+	s.registerInlineTurnSettled(ctx, "server", conversation)
+	if got := takeFetched(); len(got) != 0 {
+		t.Fatalf("Scan 3 unexpectedly refetched already-scanned full items: %v", got)
+	}
+
+	// Scan 4: olderLong#0 flushes to a new final item id AND essayLong#0 grows (FullSize changes):
+	// both must be fetched while newerLong#0 stays skipped.
+	olderFinalTrunc := proto.Item{ID: "olderLong@final#1", Seq: 2, Role: "assistant", Kind: proto.KindText, TS: t0, Text: "cut", FullSize: 100000}
+	essayGrown := proto.Item{ID: "essayLong#0", Seq: 4, Role: "assistant", Kind: proto.KindText, TS: t0.Add(time.Minute), Text: "cut essay", FullSize: 120000}
+	setTranscript(u1, olderFinalTrunc, uEssay, essayGrown, u2, newerTrunc)
+
+	s.registerInlineTurn(ctx, ref)
+
+	if got := takeFetched(); !slices.Equal(got, []string{"essayLong#0", "olderLong@final#1"}) {
+		t.Fatalf("Scan 4 session.item calls=%v, want [essayLong#0 olderLong@final#1]", got)
+	}
+	keys, err = st.AssistantViewBlockKeys(ctx, conversation)
+	if err != nil || !slices.Equal(keys, []string{"newerLong#0/0", "olderLong#0/0", "olderLong@final#1/0"}) {
+		t.Fatalf("Scan 4 keys=%v err=%v", keys, err)
+	}
+
+	// Scan 5: a transient RegisterAssistantViewBlock error must NOT cache the FullSize > 0 item, so the next scan
+	// retries session.item and registers it cleanly.
+	st.vmu.Lock()
+	st.failRegisterKey = "retryLong#0/0"
+	st.vmu.Unlock()
+	uRetry := proto.Item{ID: "uRetry#0", Seq: 7, Role: "user", Kind: proto.KindText, TS: t0.Add(3*time.Minute - time.Second), Text: "retry"}
+	retryTrunc := proto.Item{ID: "retryLong#0", Seq: 8, Role: "assistant", Kind: proto.KindText, TS: t0.Add(3 * time.Minute), Text: "cut", FullSize: 100000}
+	setTranscript(u1, olderFinalTrunc, uEssay, essayGrown, u2, newerTrunc, uRetry, retryTrunc)
+
+	s.registerInlineTurn(ctx, ref)
+	if got := takeFetched(); !slices.Equal(got, []string{"retryLong#0"}) {
+		t.Fatalf("Scan 5 first attempt session.item calls=%v, want [retryLong#0]", got)
+	}
+	keys, err = st.AssistantViewBlockKeys(ctx, conversation)
+	if err != nil || slices.Contains(keys, "retryLong#0/0") {
+		t.Fatalf("Scan 5 first attempt should have failed transiently: keys=%v err=%v", keys, err)
+	}
+
+	s.registerInlineTurnSettled(ctx, "server", conversation)
+	if got := takeFetched(); !slices.Equal(got, []string{"retryLong#0"}) {
+		t.Fatalf("Scan 5 retry session.item calls=%v, want [retryLong#0]", got)
+	}
+	keys, err = st.AssistantViewBlockKeys(ctx, conversation)
+	if err != nil || !slices.Contains(keys, "retryLong#0/0") {
+		t.Fatalf("Scan 5 retry failed to register retryLong#0/0: keys=%v err=%v", keys, err)
+	}
+	s.registerInlineTurnSettled(ctx, "server", conversation)
+	if got := takeFetched(); len(got) != 0 {
+		t.Fatalf("after retry succeeded, rescan unexpectedly refetched: %v", got)
 	}
 }
