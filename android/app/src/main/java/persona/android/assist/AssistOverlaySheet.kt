@@ -22,6 +22,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -243,7 +244,7 @@ internal fun AssistOverlaySheet(
     }
 
     val scrimInteraction = remember { MutableInteractionSource() }
-    val cardInteraction = remember { MutableInteractionSource() }
+    val latestOnCloseModelPicker by rememberUpdatedState(onCloseModelPicker)
     val closeDescription = stringResource(R.string.app_assist_close)
     val dictation = rememberOverlayDictation(onHeard = onDictationHeard, onError = onNotice)
 
@@ -373,8 +374,12 @@ internal fun AssistOverlaySheet(
                         brush = rimBrush,
                         shape = floatingCardShape,
                     )
-                    .clickable(interactionSource = cardInteraction, indication = null) {
-                        if (ui.modelPickerOpen) onCloseModelPicker()
+                    .pointerInput(ui.modelPickerOpen) {
+                        detectTapGestures(
+                            onTap = {
+                                if (ui.modelPickerOpen) latestOnCloseModelPicker()
+                            },
+                        )
                     }
                     .testTag("assist-overlay-card"),
             ) {
