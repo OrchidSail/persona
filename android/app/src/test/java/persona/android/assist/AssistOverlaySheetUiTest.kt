@@ -7,6 +7,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.height
@@ -129,6 +130,8 @@ class AssistOverlaySheetUiTest {
 
         val attachChipBounds = rule.onNodeWithTag("assist-attach-screen-chip").getUnclippedBoundsInRoot()
         assertTrue("Attach screen toggle must be >= 44dp tall, got ${attachChipBounds.height}", attachChipBounds.height >= 44.dp)
+        // Uses concise non-truncating "Attach screen" label on 1080p screens.
+        rule.onNodeWithText("Attach screen").assertExists()
         rule.onNodeWithTag("assist-screen-thumbnail", useUnmergedTree = true).assertDoesNotExist()
         rule.onNodeWithTag("assist-screen-unattached-badge", useUnmergedTree = true).assertExists()
         rule.onNodeWithTag("assist-attach-screen-chip").performClick()
@@ -200,5 +203,49 @@ class AssistOverlaySheetUiTest {
         rule.onNodeWithTag("assist-brand-orb").assertExists()
         rule.onNodeWithTag("assist-input-field").assertExists()
         rule.onNodeWithTag("assist-send-button").assertExists()
+    }
+
+    @Test
+    fun singleLayerOfflineAndErrorNoticeCardsExposeDirectActionsWithAirGap() {
+        var openedPersona = 0
+        var retriedMain = 0
+        rule.setContent {
+            PersonaTheme(darkTheme = true, reduceMotion = true) {
+                AssistOverlaySheet(
+                    ui = AssistOverlayUiState(
+                        invocationId = "inv-notices",
+                        captureStatus = AssistCaptureStatus.Available,
+                        hubStatus = AssistHubStatus.Offline,
+                        errorMessage = "Selected model is unavailable right now",
+                        modelFallbackAvailable = true,
+                    ),
+                    onDraftChange = {},
+                    onDictationHeard = {},
+                    onNotice = {},
+                    onAttachScreen = {},
+                    onRemoveScreen = {},
+                    onRetryWithDefaultMain = { retriedMain++ },
+                    onSend = {},
+                    onOpenInPersona = { openedPersona++ },
+                    onDismiss = {},
+                )
+            }
+        }
+
+        val offlineBounds = rule.onNodeWithTag("assist-hub-offline").getUnclippedBoundsInRoot()
+        val errorBounds = rule.onNodeWithTag("assist-error-notice").getUnclippedBoundsInRoot()
+        val contextBounds = rule.onNodeWithTag("assist-context-island").getUnclippedBoundsInRoot()
+        val offlineActionBounds = rule.onNodeWithTag("assist-hub-offline-action").getUnclippedBoundsInRoot()
+        val errorActionBounds = rule.onNodeWithTag("assist-error-action").getUnclippedBoundsInRoot()
+
+        assertTrue("Offline notice must sit above error notice with air gap", errorBounds.top - offlineBounds.bottom >= 7.dp)
+        assertTrue("Error notice must sit above context island with air gap", contextBounds.top - errorBounds.bottom >= 7.dp)
+        assertTrue("Offline notice action must be >= 44dp tall", offlineActionBounds.height >= 44.dp)
+        assertTrue("Error fallback action must be >= 44dp tall", errorActionBounds.height >= 44.dp)
+
+        rule.onNodeWithTag("assist-hub-offline-action").performClick()
+        assertEquals(1, openedPersona)
+        rule.onNodeWithTag("assist-error-action").performClick()
+        assertEquals(1, retriedMain)
     }
 }

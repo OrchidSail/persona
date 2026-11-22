@@ -119,6 +119,7 @@
     <string name="app_assist_input_placeholder">直接提问…</string>
     <string name="app_assist_input_placeholder_voice">直接提问或语音…</string>
     <string name="app_assist_attach_screen">附带当前屏幕</string>
+    <string name="app_assist_attach_screen_short">附带屏幕</string>
     <string name="app_assist_remove_screen">取消附带当前屏幕</string>
     <string name="app_assist_screen_preparing">正在准备屏幕…</string>
     <string name="app_assist_screen_attached">已附带当前屏幕</string>

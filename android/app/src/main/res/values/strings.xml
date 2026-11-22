@@ -120,6 +120,7 @@
     <string name="app_assist_input_placeholder">Ask Persona…</string>
     <string name="app_assist_input_placeholder_voice">Ask or speak…</string>
     <string name="app_assist_attach_screen">Attach current screen</string>
+    <string name="app_assist_attach_screen_short">Attach screen</string>
     <string name="app_assist_remove_screen">Remove attached screen</string>
     <string name="app_assist_screen_preparing">Preparing current screen…</string>
     <string name="app_assist_screen_attached">Current screen attached</string>

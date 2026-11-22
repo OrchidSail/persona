@@ -70,6 +70,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -104,7 +105,6 @@ import persona.core.designsystem.JButtonSize
 import persona.core.designsystem.JDivider
 import persona.core.designsystem.JIcon
 import persona.core.designsystem.JIconButton
-import persona.core.designsystem.JNotice
 import persona.core.designsystem.JSpinner
 import persona.core.designsystem.LocalAppFeedback
 import persona.core.designsystem.LocalAppStyleStore
@@ -116,9 +116,9 @@ import persona.core.designsystem.PersonaFace
 import persona.core.designsystem.PersonaState
 import persona.core.designsystem.PersonaTheme
 import persona.core.designsystem.SharedMotion
-import persona.core.designsystem.Status
 import persona.core.designsystem.Tokens
 import persona.core.designsystem.icons.PersonaIcons
+import persona.core.designsystem.icons.PhIcon
 import persona.feature.chat.StreamingReplyMarkdown
 
 /** Wraps the Digital Assistant overlay in Persona's active theme, appearance, feedback, and safe link handler. */
@@ -294,13 +294,13 @@ internal fun AssistOverlaySheet(
         if (style == AppStyle.Board) shapes.panelShape else RoundedCornerShape(replyRadius)
     }
 
-    // Smooth full-viewport dimming scrim so the underlying app steps back without visual distraction.
+    // Deep bottom-weighted dimming scrim so islands float cleanly even over text-dense apps.
     val scrimBrush = remember(palette.scrim, palette.dark) {
         Brush.verticalGradient(
-            0.0f to palette.scrim.copy(alpha = if (palette.dark) 0.28f else 0.22f),
-            0.45f to palette.scrim.copy(alpha = if (palette.dark) 0.38f else 0.30f),
-            0.78f to palette.scrim.copy(alpha = if (palette.dark) 0.52f else 0.44f),
-            1.0f to palette.scrim.copy(alpha = if (palette.dark) 0.62f else 0.54f),
+            0.0f to palette.scrim.copy(alpha = if (palette.dark) 0.40f else 0.26f),
+            0.55f to palette.scrim.copy(alpha = if (palette.dark) 0.52f else 0.36f),
+            0.80f to palette.scrim.copy(alpha = if (palette.dark) 0.74f else 0.54f),
+            1.0f to palette.scrim.copy(alpha = if (palette.dark) 0.86f else 0.66f),
         )
     }
 
@@ -413,10 +413,10 @@ internal fun AssistOverlaySheet(
                         )
                     }
 
-                    // Floating Hub connectivity or send error notices (appear only when actionable).
+                    // Single-layer floating Hub connectivity or error notice cards (zero nested borders).
                     AssistFloatingNoticeIslands(
                         ui = ui,
-                        shape = contextIslandShape,
+                        shape = replyIslandShape,
                         onOpenInPersona = {
                             dictation?.stop()
                             onOpenInPersona()
@@ -485,9 +485,9 @@ internal fun AssistOverlaySheet(
 
 /**
  * Shared high-opacity floating island surface backed strictly by `PersonaTheme` tokens:
- * crisp solid `surfaceOpaque` backing to block background text bleed on Android windows without
- * native backdrop blur, subtle top specular sheen, crisp `1dp` bevel rim (or breathing AI luminous
- * rim while replying), layered elevation shadows, and semantics-safe tap interception.
+ * clean solid `surfaceOpaque` backing (no chalky top sheen haze on dark cards), restrained
+ * single-layer outline (uniform soft accent glow when focused, breathing AI rim while replying),
+ * layered elevation shadows, and semantics-safe tap interception.
  */
 private fun Modifier.floatingGlassIsland(
     shape: Shape,
@@ -499,19 +499,20 @@ private fun Modifier.floatingGlassIsland(
 ): Modifier = composed {
     val palette = PersonaTheme.palette
     val islandFill = palette.surfaceOpaque
-    val topSheen = remember(palette.strokeTop, palette.surfaceOpaque, palette.dark) {
-        Brush.verticalGradient(
-            0.0f to palette.strokeTop.copy(alpha = if (palette.dark) 0.10f else 0.42f),
-            0.30f to palette.surfaceOpaque.copy(alpha = 0f),
-        )
+    val idleBorderColor = remember(palette.line, palette.dark) {
+        if (palette.dark) {
+            palette.line.copy(alpha = minOf(palette.line.alpha, 0.14f).coerceAtLeast(palette.line.alpha * 0.45f))
+        } else {
+            palette.line.copy(alpha = minOf(palette.line.alpha, 0.16f).coerceAtLeast(palette.line.alpha * 0.65f))
+        }
     }
+    val borderWidth = if (aiActive || focused) Tokens.Size.line else Tokens.Size.hairline
     val rimBrush = remember(
         palette.ai,
         palette.accent,
-        palette.strokeTop,
-        palette.strokeBottom,
         palette.line,
         palette.dark,
+        idleBorderColor,
         aiActive,
         glowAlpha,
         focused,
@@ -521,20 +522,12 @@ private fun Modifier.floatingGlassIsland(
                 colors = listOf(
                     palette.ai.copy(alpha = glowAlpha),
                     palette.accent.copy(alpha = glowAlpha * 0.82f),
-                    palette.strokeTop.copy(alpha = if (palette.dark) 0.42f else 0.72f),
+                    idleBorderColor,
                     palette.ai.copy(alpha = glowAlpha * 0.44f),
                 ),
             )
-            focused -> Brush.verticalGradient(
-                0.0f to palette.accent.copy(alpha = if (palette.dark) 0.64f else 0.72f),
-                0.50f to palette.accent.copy(alpha = if (palette.dark) 0.28f else 0.34f),
-                1.0f to palette.line,
-            )
-            else -> Brush.verticalGradient(
-                0.0f to palette.strokeTop.copy(alpha = if (palette.dark) 0.40f else 0.90f),
-                0.50f to palette.line.copy(alpha = if (palette.dark) 0.60f else 0.85f),
-                1.0f to palette.line,
-            )
+            focused -> SolidColor(palette.accent.copy(alpha = if (palette.dark) 0.55f else 0.48f))
+            else -> SolidColor(idleBorderColor)
         }
     }
 
@@ -555,9 +548,8 @@ private fun Modifier.floatingGlassIsland(
         )
         .clip(shape)
         .background(islandFill)
-        .background(topSheen)
         .border(
-            width = Tokens.Size.line,
+            width = borderWidth,
             brush = rimBrush,
             shape = shape,
         )
@@ -633,10 +625,9 @@ private fun AssistUpperContextIsland(
             )
             Box(
                 Modifier
-                    .size(Tokens.MinTouch.ios) // 44dp comfortable circular touch target
+                    .size(Tokens.MinTouch.ios) // 44dp borderless soft tonal circular button
                     .clip(CircleShape)
                     .background(palette.sunken)
-                    .border(Tokens.Size.hairline, palette.line, CircleShape)
                     .clickable(
                         role = Role.Button,
                         onClickLabel = openInPersonaLabel,
@@ -674,16 +665,18 @@ private fun AssistScreenContextControl(
                 if (attached) R.string.app_assist_remove_screen else R.string.app_assist_attach_screen,
             )
 
-            // Privacy-first toggle capsule: pure icon + state text + check badge (never displays screen pixels).
+            // Privacy-first soft tonal capsule: borderless when unselected, subtle tinted rim when attached.
             Row(
                 Modifier
                     .heightIn(min = Tokens.MinTouch.ios) // 44dp comfortable touch target
                     .clip(CircleShape)
                     .background(if (attached) palette.aiSoft else palette.sunken)
-                    .border(
-                        width = Tokens.Size.line,
-                        color = if (attached) palette.ai.copy(alpha = 0.65f) else palette.line,
-                        shape = CircleShape,
+                    .then(
+                        if (attached) {
+                            Modifier.border(Tokens.Size.hairline, palette.ai.copy(alpha = 0.45f), CircleShape)
+                        } else {
+                            Modifier
+                        },
                     )
                     .clickable(
                         enabled = !ui.attachingScreen && !ui.sending,
@@ -712,7 +705,7 @@ private fun AssistScreenContextControl(
                 }
 
                 Text(
-                    text = stringResource(R.string.app_assist_attach_screen),
+                    text = stringResource(R.string.app_assist_attach_screen_short),
                     style = type.labelSmall.copy(
                         fontWeight = if (attached) FontWeight.SemiBold else FontWeight.Medium,
                     ),
@@ -778,10 +771,9 @@ private fun AssistScreenContextControl(
                 )
                 Box(
                     Modifier
-                        .heightIn(min = Tokens.MinTouch.ios) // 44dp comfortable touch target
+                        .heightIn(min = Tokens.MinTouch.ios) // 44dp borderless soft tonal action pill
                         .clip(CircleShape)
                         .background(palette.accentSoft)
-                        .border(Tokens.Size.line, palette.accent.copy(alpha = 0.55f), CircleShape)
                         .clickable(
                             role = Role.Button,
                             onClickLabel = openSettingsLabel,
@@ -897,16 +889,22 @@ private fun AssistCompactModelPill(
     val palette = PersonaTheme.palette
     val type = PersonaTheme.type
     val description = stringResource(R.string.app_assist_model_picker_description, label)
-    val fill = if (open || isCustom) palette.accentSoft else palette.sunken
-    val stroke = if (open || isCustom) palette.accent.copy(alpha = 0.60f) else palette.line
-    val contentTint = if (open || isCustom) palette.accent else palette.ink
+    val highlighted = open || isCustom
+    val fill = if (highlighted) palette.accentSoft else palette.sunken
+    val contentTint = if (highlighted) palette.accent else palette.ink
 
     Row(
         Modifier
             .heightIn(min = Tokens.MinTouch.ios) // 44dp comfortable touch target
             .clip(CircleShape)
             .background(fill)
-            .border(Tokens.Size.line, stroke, CircleShape)
+            .then(
+                if (highlighted) {
+                    Modifier.border(Tokens.Size.hairline, palette.accent.copy(alpha = 0.45f), CircleShape)
+                } else {
+                    Modifier
+                },
+            )
             .clickable(
                 enabled = enabled,
                 role = Role.Button,
@@ -1022,7 +1020,7 @@ private fun AssistPrimaryComposerIsland(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
     ) {
-        // Left: Official PersonaFace inside a 48dp concentric slot (44dp halo + 40dp face),
+        // Left: Official PersonaFace inside a 48dp concentric slot (44dp soft borderless halo + 40dp face),
         // mirroring the right 48dp / 44dp Send button slot for exact capsule symmetry.
         Box(
             Modifier
@@ -1036,12 +1034,7 @@ private fun AssistPrimaryComposerIsland(
                 Modifier
                     .fillMaxSize()
                     .clip(CircleShape)
-                    .background(orbBrush)
-                    .border(
-                        width = Tokens.Size.hairline,
-                        color = palette.strokeTop.copy(alpha = if (palette.dark) 0.30f else 0.60f),
-                        shape = CircleShape,
-                    ),
+                    .background(orbBrush),
                 contentAlignment = Alignment.Center,
             ) {
                 PersonaFace(
@@ -1260,63 +1253,148 @@ private fun AssistFloatingNoticeIslands(
     onOpenInPersona: () -> Unit,
     onRetryWithDefaultMain: () -> Unit,
 ) {
-    when (ui.hubStatus) {
-        AssistHubStatus.Unpaired -> Box(
-            Modifier
-                .fillMaxWidth()
-                .floatingGlassIsland(shape = shape)
-                .padding(Tokens.Space.s),
-        ) {
-            JNotice(
-                text = stringResource(R.string.app_assist_hub_unpaired_body),
-                title = stringResource(R.string.app_assist_hub_unpaired_title),
-                status = Status.Offline,
-                icon = PersonaIcons.offline,
-                actionLabel = stringResource(R.string.app_open_persona),
-                onAction = onOpenInPersona,
-                modifier = Modifier.testTag("assist-hub-unpaired"),
-            )
-        }
+    val palette = PersonaTheme.palette
 
-        AssistHubStatus.Offline -> Box(
-            Modifier
-                .fillMaxWidth()
-                .floatingGlassIsland(shape = shape)
-                .padding(Tokens.Space.s),
-        ) {
-            JNotice(
-                text = stringResource(R.string.app_assist_hub_offline_body),
-                title = stringResource(R.string.app_assist_hub_offline_title),
-                status = Status.Offline,
-                icon = PersonaIcons.offline,
-                actionLabel = stringResource(R.string.app_open_persona),
-                onAction = onOpenInPersona,
-                modifier = Modifier.testTag("assist-hub-offline"),
-            )
-        }
+    when (ui.hubStatus) {
+        AssistHubStatus.Unpaired -> AssistSingleLayerNoticeIsland(
+            shape = shape,
+            icon = PersonaIcons.offline,
+            iconTint = palette.offline.text,
+            iconBg = palette.sunken,
+            title = stringResource(R.string.app_assist_hub_unpaired_title),
+            body = stringResource(R.string.app_assist_hub_unpaired_body),
+            actionLabel = stringResource(R.string.app_open_persona),
+            onAction = onOpenInPersona,
+            tag = "assist-hub-unpaired",
+            actionTag = "assist-hub-unpaired-action",
+        )
+
+        AssistHubStatus.Offline -> AssistSingleLayerNoticeIsland(
+            shape = shape,
+            icon = PersonaIcons.offline,
+            iconTint = palette.offline.text,
+            iconBg = palette.sunken,
+            title = stringResource(R.string.app_assist_hub_offline_title),
+            body = stringResource(R.string.app_assist_hub_offline_body),
+            actionLabel = stringResource(R.string.app_open_persona),
+            onAction = onOpenInPersona,
+            tag = "assist-hub-offline",
+            actionTag = "assist-hub-offline-action",
+        )
 
         else -> Unit
     }
 
     ui.errorMessage?.let { error ->
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .floatingGlassIsland(shape = shape)
-                .padding(Tokens.Space.s),
+        AssistSingleLayerNoticeIsland(
+            shape = shape,
+            icon = PersonaIcons.error,
+            iconTint = palette.danger.text,
+            iconBg = palette.danger.tint,
+            title = null,
+            body = error,
+            actionLabel = if (ui.modelFallbackAvailable) {
+                stringResource(R.string.app_assist_model_fallback_main)
+            } else {
+                null
+            },
+            onAction = if (ui.modelFallbackAvailable) onRetryWithDefaultMain else null,
+            tag = "assist-error-notice",
+            actionTag = "assist-error-action",
+        )
+    }
+}
+
+/** Single-layer floating notice card (zero nested card borders) matching the dual-island elevation surface. */
+@Composable
+private fun AssistSingleLayerNoticeIsland(
+    shape: Shape,
+    icon: PhIcon,
+    iconTint: Color,
+    iconBg: Color,
+    title: String?,
+    body: String,
+    actionLabel: String?,
+    onAction: (() -> Unit)?,
+    tag: String,
+    actionTag: String,
+) {
+    val palette = PersonaTheme.palette
+    val type = PersonaTheme.type
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .floatingGlassIsland(shape = shape)
+            .testTag(tag)
+            .padding(Tokens.Space.l),
+        verticalArrangement = Arrangement.spacedBy(Tokens.Space.m),
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Tokens.Space.m),
         ) {
-            JNotice(
-                text = error,
-                status = Status.NeedsYou,
-                icon = PersonaIcons.error,
-                actionLabel = if (ui.modelFallbackAvailable) {
-                    stringResource(R.string.app_assist_model_fallback_main)
-                } else {
-                    null
-                },
-                onAction = if (ui.modelFallbackAvailable) onRetryWithDefaultMain else null,
-                modifier = Modifier.testTag("assist-error-notice"),
-            )
+            Box(
+                Modifier
+                    .size(Tokens.Size.slimBar) // 40dp soft borderless icon badge
+                    .clip(CircleShape)
+                    .background(iconBg),
+                contentAlignment = Alignment.Center,
+            ) {
+                JIcon(
+                    icon = icon,
+                    contentDescription = null,
+                    size = Tokens.Size.iconXS,
+                    tint = iconTint,
+                )
+            }
+            Column(
+                Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(Tokens.Space.xxs),
+            ) {
+                if (!title.isNullOrBlank()) {
+                    Text(
+                        text = title,
+                        style = type.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = palette.ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Text(
+                    text = body,
+                    style = type.caption,
+                    color = palette.ink2,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (!actionLabel.isNullOrBlank() && onAction != null) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = Tokens.MinTouch.ios) // 44dp borderless soft tonal action button
+                    .clip(CircleShape)
+                    .background(palette.accentSoft)
+                    .clickable(
+                        role = Role.Button,
+                        onClickLabel = actionLabel,
+                        onClick = onAction,
+                    )
+                    .testTag(actionTag)
+                    .padding(horizontal = Tokens.Space.l),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = actionLabel,
+                    style = type.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = palette.accent,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
