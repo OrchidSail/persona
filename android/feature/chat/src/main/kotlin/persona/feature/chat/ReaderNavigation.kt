@@ -47,7 +47,7 @@ internal fun DiffNavigation(diff: ToolDiff, list: LazyListState, expanded: Boole
 
 private enum class ReaderSlot { Top, Bottom, Content }
 
-/** Gives the scroll controls room outside the visible transcript and measures them with the current font scale. */
+/** Keeps the collapse chip above the clipped transcript and floats bottom navigation above [bottomInset] without resizing the list. */
 @Composable
 internal fun ChatReaderLayout(
     modifier: Modifier,
@@ -60,35 +60,37 @@ internal fun ChatReaderLayout(
     SubcomposeLayout(modifier) { constraints ->
         val loose = constraints.copy(minWidth = 0, minHeight = 0)
         val touchHeight = Tokens.MinTouch.android.roundToPx()
-        val footerInset = bottomInset.roundToPx()
-        val navigationRoom = constraints.maxHeight - footerInset - topInset.roundToPx() - touchHeight
-        val bottom = subcompose(ReaderSlot.Bottom, navigation).singleOrNull()
-            ?.takeIf { navigationRoom >= touchHeight + Tokens.Space.s.roundToPx() }
-            ?.measure(loose.copy(maxHeight = navigationRoom))
-        val readingHeight = constraints.maxHeight - (bottom?.let { it.height + footerInset } ?: 0)
-        val collapseRoom = readingHeight - touchHeight
+        val footerInset = bottomInset.roundToPx().coerceIn(0, constraints.maxHeight)
+        val readingHeight = constraints.maxHeight
+        val collapseRoom = (readingHeight - footerInset - touchHeight).coerceAtLeast(0)
         val top = subcompose(ReaderSlot.Top, collapse).singleOrNull()
             ?.takeIf { collapseRoom >= touchHeight }
             ?.measure(loose)
             ?.takeIf { it.height <= collapseRoom }
         val clippedTop = top?.height ?: 0
+        val navigationCeiling = maxOf(topInset.roundToPx(), clippedTop)
+        val navigationRoom = (readingHeight - footerInset - navigationCeiling - touchHeight).coerceAtLeast(0)
+        val bottom = subcompose(ReaderSlot.Bottom, navigation).singleOrNull()
+            ?.takeIf { navigationRoom >= touchHeight + Tokens.Space.s.roundToPx() }
+            ?.measure(loose.copy(maxHeight = navigationRoom))
 
-        // Keep the reverse list's logical top stable as the collapse chip appears and disappears. Resizing the
-        // list here could hide the very row that made the chip appear, causing it to oscillate at group boundaries.
+        // Keep the reverse list's height and bottom inset constant as floating controls appear and disappear:
+        // shrinking the list shifts messages upward and carves an empty band below them, and resizing for the
+        // collapse chip can hide the row that triggered it and oscillate at group boundaries.
         val transcript = subcompose(ReaderSlot.Content) {
             Layout(
-                content = { Box(Modifier.fillMaxSize()) { content(if (bottom == null) bottomInset else Tokens.Space.flush) } },
+                content = { Box(Modifier.fillMaxSize()) { content(bottomInset) } },
                 modifier = Modifier.clipToBounds(),
             ) { measurables, viewport ->
                 val listBody = measurables.single().measure(Constraints.fixed(viewport.maxWidth, readingHeight))
                 layout(viewport.maxWidth, viewport.maxHeight) { listBody.place(0, -clippedTop) }
             }
-        }.single().measure(Constraints.fixed(constraints.maxWidth, readingHeight - clippedTop))
+        }.single().measure(Constraints.fixed(constraints.maxWidth, (readingHeight - clippedTop).coerceAtLeast(0)))
 
         layout(constraints.maxWidth, constraints.maxHeight) {
             transcript.place(0, clippedTop)
             top?.placeRelative(0, 0)
-            bottom?.placeRelative(0, readingHeight)
+            bottom?.placeRelative(0, (readingHeight - footerInset - bottom.height).coerceAtLeast(navigationCeiling))
         }
     }
 }
