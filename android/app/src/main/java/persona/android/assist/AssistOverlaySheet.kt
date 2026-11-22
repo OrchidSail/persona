@@ -178,10 +178,10 @@ internal fun AssistOverlaySheet(
     onSelectDefaultModel: () -> Unit = {},
     onSelectModel: (DigitalAssistantModelChoice) -> Unit = {},
     onRetryWithDefaultMain: () -> Unit = {},
-    onUnlock: () -> Unit = onOpenInPersona,
     onSend: () -> Unit,
     onOpenInPersona: () -> Unit,
     onDismiss: () -> Unit,
+    onUnlock: () -> Unit = onOpenInPersona,
 ) {
     val palette = PersonaTheme.palette
     val shapes = PersonaTheme.shapes
