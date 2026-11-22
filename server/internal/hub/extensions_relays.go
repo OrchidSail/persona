@@ -1,7 +1,9 @@
 package hub
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -113,25 +115,88 @@ func (p *relayPool) settle() {
 	}
 }
 
-// RoundTrip sends req on one of p's streams, noting when the stream goes back to the pool idle (pingRelay).
-func (p *relayPool) RoundTrip(req *http.Request) (*http.Response, error) {
-	var rc *relayConn
-	var use uint64
-	trace := &httptrace.ClientTrace{
-		GotConn: func(info httptrace.GotConnInfo) {
-			if c, ok := info.Conn.(*relayConn); ok {
-				rc, use = c, c.uses.Add(1)
-			}
-		},
-		// Called after the stream is back in the pool, where the next request may already have taken it: the
-		// count says whether one did.
-		PutIdleConn: func(err error) {
-			if err == nil && rc != nil {
-				rc.idleAt.Store(use)
-			}
-		},
+const relayRetryBodyLimit = 1 << 20 // 1 MiB: UI actions and JSON payloads are small; larger bodies stream once
+
+// prepareRelayRetry buffers a small request body (up to relayRetryBodyLimit) so a non-idempotent request (POST)
+// whose reused idle stream failed before receiving any response byte can be sent once more on a fresh stream.
+func prepareRelayRetry(req *http.Request) (canRetry bool, err error) {
+	if req.Body == nil || req.Body == http.NoBody || req.GetBody != nil {
+		return true, nil
 	}
-	return p.tr.RoundTrip(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
+	if req.Header.Get("Upgrade") != "" || req.ContentLength > relayRetryBodyLimit {
+		return false, nil
+	}
+	orig := req.Body
+	b, err := io.ReadAll(io.LimitReader(orig, relayRetryBodyLimit+1))
+	if err != nil {
+		_ = orig.Close()
+		return false, err
+	}
+	if len(b) > relayRetryBodyLimit {
+		req.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(b), orig), orig}
+		return false, nil
+	}
+	_ = orig.Close()
+	req.Body = io.NopCloser(bytes.NewReader(b))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(b)), nil
+	}
+	return true, nil
+}
+
+// RoundTrip sends req on one of p's streams, noting when the stream goes back to the pool idle (pingRelay).
+// When a reused idle stream fails before any response byte arrives (closed by peer, NAT, or timeout between
+// pings), net/http does not retry non-idempotent requests (POST), so we retry on a fresh stream while the
+// request is still replayable and the pool has not retired.
+func (p *relayPool) RoundTrip(req *http.Request) (*http.Response, error) {
+	canRetry, err := prepareRelayRetry(req)
+	if err != nil {
+		return nil, err
+	}
+	for attempt := 0; ; attempt++ {
+		attemptReq := req
+		if attempt > 0 {
+			attemptReq = req.Clone(req.Context())
+			if req.GetBody != nil {
+				body, err := req.GetBody()
+				if err != nil {
+					return nil, err
+				}
+				attemptReq.Body = body
+			}
+		}
+		var rc *relayConn
+		var use uint64
+		var reused, gotFirstByte bool
+		trace := &httptrace.ClientTrace{
+			GotConn: func(info httptrace.GotConnInfo) {
+				reused = info.Reused
+				if c, ok := info.Conn.(*relayConn); ok {
+					rc, use = c, c.uses.Add(1)
+				}
+			},
+			GotFirstResponseByte: func() {
+				gotFirstByte = true
+			},
+			// Called after the stream is back in the pool, where the next request may already have taken it: the
+			// count says whether one did.
+			PutIdleConn: func(err error) {
+				if err == nil && rc != nil {
+					rc.idleAt.Store(use)
+				}
+			},
+		}
+		res, err := p.tr.RoundTrip(attemptReq.WithContext(httptrace.WithClientTrace(attemptReq.Context(), trace)))
+		if err == nil {
+			return res, nil
+		}
+		if !canRetry || !reused || gotFirstByte || attempt >= relayIdleMost || req.Context().Err() != nil || p.retired.Load() {
+			return nil, err
+		}
+	}
 }
 
 // pingTimes are relayPingEvery and relayPingTimeout, or what a test set.
