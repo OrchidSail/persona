@@ -16,11 +16,13 @@ import (
 // Minifying the remaining non-compat Antigravity lib sources (acp.js, file-links.js, models.js; #12781, #13123)
 // brings the generated total from 254,085 B back to 251,311 B under the unchanged 252,000 B ceiling.
 // Antigravity's empty-response retry and interrupted-turn notices (#13957) use the remaining room and add 850 B.
-// Runtime-SDK quote-aware shell-gate parsing (#14040) and Antigravity GENERIC timestamp header stripping (#13662)
-// bring the generated total to 253,543 B under a 253,700 B ceiling.
+// Runtime fixes merged on 2026-11-24 add 872 B (253,709 B): the runtime-sdk's shell gates reading quoted $(…) and
+// $'…' words (#14040, 574 B), opencode's JSONC comma-brace strings and provider:org/model split (#14091, 189 B), pi's
+// top-level oldText/newText (#14092, 11 B) and paseo's WebSocket RSV-bit and Close-payload checks (#14095, 98 B).
+// Antigravity GENERIC timestamp header stripping (#13662) adds 132 B (253,841 B).
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 253_700
+	const budget = 253_841
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {
