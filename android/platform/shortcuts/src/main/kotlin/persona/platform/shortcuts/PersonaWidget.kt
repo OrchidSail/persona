@@ -2,10 +2,13 @@ package persona.platform.shortcuts
 
 import persona.core.designsystem.resolve
 import android.content.Context
+import android.os.Build
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.text.font.FontWeight as ComposeWeight
 import androidx.glance.ColorFilter
 import androidx.glance.GlanceId
@@ -39,6 +42,10 @@ import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider as GlanceColor
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import persona.core.contracts.FleetItem
 import persona.core.contracts.FleetState
 import persona.core.designsystem.AppStyle
@@ -46,15 +53,18 @@ import persona.core.designsystem.AppStyleStore
 import persona.core.designsystem.PersonaPalette
 import persona.core.designsystem.StatusColors
 import persona.core.designsystem.SystemSurfaces
+import persona.core.designsystem.ThemeColor
+import persona.core.designsystem.ThemeColors
 import persona.core.designsystem.Tokens
 import persona.core.domain.fleet.FleetSummary
 import persona.core.domain.fleet.FleetText
 
 /**
- * The home-screen widget (iOS widgets, the Fleet activity's lock-screen view): how many agents need you, are working or
- * finished, and the first few of them. It reads [persona.platform.notify.FleetFeed], whose last state is on disk, so it
- * draws while the process was not running. Tapping an agent opens it, anywhere else opens Agents; nothing here answers.
- * Colours and type come from the design system: the user's interface style, light or dark with the system.
+ * The Agents home-screen widget (iOS Agents widget, the Fleet activity's lock-screen view): how many agents need you,
+ * are working or finished, and the first few of them. It reads [persona.platform.notify.FleetFeed], whose last state
+ * is on disk, so it draws while the process was not running. Tapping an agent opens it, anywhere else opens Agents;
+ * nothing here answers. Colours and type come from the design system: the user's interface style, light or dark with
+ * the system. Kept under its original class and receiver name so already-placed widgets upgrade seamlessly.
  */
 class PersonaWidget : GlanceAppWidget() {
     /**
@@ -69,11 +79,12 @@ class PersonaWidget : GlanceAppWidget() {
         val feed = dependencies.fleet()
         feed.settled()
         val sessions = dependencies.sessions()
-        val look = WidgetLook.of(AppStyleStore(context).style.value)
         // Read inside the composition: while Glance keeps this session, updateAll() only recomposes it.
         provideContent {
             val fleet by feed.state.collectAsState()
             val paired by feed.paired.collectAsState()
+            val revision by WidgetLook.revision.collectAsState()
+            val look = remember(revision) { WidgetLook.current(context) }
             Content(context, look, paired, fleet) { key -> sessions.assistant(key) }
         }
     }
@@ -85,7 +96,7 @@ class PersonaWidget : GlanceAppWidget() {
         val scale = context.resources.configuration.fontScale
         val rows = WidgetLayout.rows(height, scale)
         Column(
-            GlanceModifier.fillMaxSize().appWidgetBackground().cornerRadius(android.R.dimen.system_app_widget_background_radius)
+            GlanceModifier.fillMaxSize().appWidgetBackground().widgetCornerRadius()
                 .background(look.card).padding(Tokens.Space.m)
                 .clickable(actionStartActivity(SurfaceLinks.fleet(context, paired, fleet, assistant))),
         ) {
@@ -95,7 +106,7 @@ class PersonaWidget : GlanceAppWidget() {
                     Image(ImageProvider(persona.core.designsystem.R.drawable.ic_stat), contentDescription = null,
                         modifier = GlanceModifier.size(look.markSize), colorFilter = ColorFilter.tint(look.accent))
                     Spacer(GlanceModifier.width(Tokens.Space.xs))
-                    Text("Persona", style = look.caption, maxLines = 1)
+                    Text(context.getString(R.string.shortcuts_widget_label), style = look.caption, maxLines = 1)
                 }
                 Spacer(GlanceModifier.height(Tokens.Space.xs))
             }
@@ -152,6 +163,7 @@ class PersonaWidget : GlanceAppWidget() {
     companion object {
         /** Redraws every placed widget (cheap when none is placed). */
         suspend fun refresh(context: Context) {
+            WidgetLook.invalidate()
             val _ = runCatching { PersonaWidget().updateAll(context.applicationContext) }
         }
     }
@@ -160,6 +172,11 @@ class PersonaWidget : GlanceAppWidget() {
 class PersonaWidgetReceiver : GlanceAppWidgetReceiver() {
     override val glanceAppWidget: GlanceAppWidget = PersonaWidget()
 }
+
+/** System widget corner radius on Android 12+, falling back to the design system's panel radius on Android 11. */
+internal fun GlanceModifier.widgetCornerRadius(): GlanceModifier =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) cornerRadius(android.R.dimen.system_app_widget_background_radius)
+    else cornerRadius(Tokens.Radius.Standard.panel)
 
 /**
  * What fits in the widget's height, measured on the launcher at the system's default font size: the padding and spacers
@@ -173,8 +190,8 @@ internal object WidgetLayout {
         ((heightDp - summary(fontScale) - MORE * fontScale) / (ROW_PADDING + ROW * fontScale)).toInt().coerceIn(0, 3)
 
     /**
-     * Whether the "Persona" mark fits above the headline and the [captionLines] under it; a widget squeezed below that
-     * keeps those and drops the mark.
+     * Whether the widget header fits above the headline and the [captionLines] under it; a widget squeezed below that
+     * keeps those and drops the header.
      */
     fun mark(heightDp: Float, fontScale: Float = 1f, captionLines: Int = 1): Boolean =
         heightDp >= summary(fontScale) + (captionLines - 1) * CAPTION * fontScale
@@ -190,13 +207,19 @@ internal object WidgetLayout {
 }
 
 /** The design system's tokens for one style, as Glance's day / night colour pairs and text styles. */
-internal class WidgetLook private constructor(private val light: PersonaPalette, private val dark: PersonaPalette, style: AppStyle) {
-    private fun pair(pick: (PersonaPalette) -> Color) = ColorProvider(day = pick(light), night = pick(dark))
+internal class WidgetLook private constructor(
+    internal val lightPalette: PersonaPalette,
+    internal val darkPalette: PersonaPalette,
+    val style: AppStyle,
+) {
+    private fun pair(pick: (PersonaPalette) -> Color) = ColorProvider(day = pick(lightPalette), night = pick(darkPalette))
     private fun status(pick: (PersonaPalette) -> StatusColors) = pair { pick(it).dot }
     private val type = SystemSurfaces.type(style)
 
     val card = pair { it.surfaceOpaque }
     val accent = pair { it.accent }
+    /** Soft accent well flattened onto [card], so Glance renders identical tints across API levels and launchers. */
+    val badge = pair { it.accentSoft.compositeOver(it.surfaceOpaque) }
     private val ink = pair { it.ink }
     private val ink2 = pair { it.ink2 }
     private val needsYou = status { it.needsYou }
@@ -204,10 +227,15 @@ internal class WidgetLook private constructor(private val light: PersonaPalette,
     private val done = status { it.done }
 
     val headline = text(type.title, ink)
+    val sectionTitle = text(type.headline, ink)
     val itemTitle = text(type.callout.copy(fontWeight = ComposeWeight.Medium), ink)
     val caption = text(type.caption, ink2)
     val micro = text(type.micro, ink2)
     val markSize = Tokens.Space.Standard.l
+    val badgeSize = Tokens.Size.slimBar
+    val badgeMarkSize = Tokens.Size.icon
+    val compactBadgeSize = Tokens.Size.wellXS
+    val compactMarkSize = Tokens.Space.Standard.l
     val dotSize = Tokens.Space.Standard.s + Tokens.Space.Standard.xxs
     val smallDotSize = Tokens.Space.Standard.s
 
@@ -233,6 +261,21 @@ internal class WidgetLook private constructor(private val light: PersonaPalette,
     )
 
     companion object {
-        fun of(style: AppStyle) = WidgetLook(SystemSurfaces.palette(style, false), SystemSurfaces.palette(style, true), style)
+        private val changes = MutableStateFlow(0)
+        val revision: StateFlow<Int> = changes.asStateFlow()
+
+        /** Signals active Glance compositions to re-read [AppStyleStore] on refresh. */
+        fun invalidate() {
+            changes.update { it + 1 }
+        }
+
+        fun current(context: Context): WidgetLook = AppStyleStore(context).let { of(it.style.value, it.color.value) }
+
+        fun of(style: AppStyle, color: ThemeColor = ThemeColor.Style): WidgetLook {
+            val preset = color.preset
+            val light = SystemSurfaces.palette(style, false).let { base -> preset?.let { ThemeColors.palette(base, it) } ?: base }
+            val dark = SystemSurfaces.palette(style, true).let { base -> preset?.let { ThemeColors.palette(base, it) } ?: base }
+            return WidgetLook(light, dark, style)
+        }
     }
 }
