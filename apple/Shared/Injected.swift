@@ -31,8 +31,7 @@ nonisolated enum Supervision {
         guard !live, !visible(items, results: results, live: live, routineMainRelay: routineMainRelay) else { return false }
         for use in items where use.kind == .toolUse && tool(use.toolName) == "supervision_finish" {
             guard let result = use.toolUseID.flatMap({ results[$0] }), result.isError != true,
-                  let text = result.text, let receipt = try? JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)),
-                  case .string(let disposition)? = receipt["visibility"], disposition == "silent" else { continue }
+                  finishVisibility(result) == "silent" else { continue }
             return true
         }
         return false
@@ -56,13 +55,20 @@ nonisolated enum Supervision {
                 if case .string(let verdict)? = use.toolInput?["verdict"], verdict == "accepted" || verdict == "needs_user" { return true }
             } else if name != "supervision_finish" {
                 return true
-            } else if let text = result.text, let receipt = try? JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)),
-                      case .string(let disposition)? = receipt["visibility"] {
+            } else if let disposition = finishVisibility(result) {
                 if disposition == "user" { return true }
                 if disposition == "silent" { silent = true }
             }
         }
         return !live && !silent && !routineMainRelay && hasBackgroundReply(items)
+    }
+
+    private static func finishVisibility(_ result: Item) -> String? {
+        guard let text = result.text else { return nil }
+        let cleaned = HubNaming.stripToolResultTimestampHeaders(text)
+        guard let receipt = try? JSONDecoder().decode(JSONValue.self, from: Data(cleaned.utf8)),
+              case .string(let disposition)? = receipt["visibility"] else { return nil }
+        return disposition
     }
 
     /// A pending card in the main conversation's own attention list, not an Agent's general Needs-you state.
