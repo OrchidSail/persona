@@ -62,7 +62,13 @@ class AskPersonaWidget : GlanceAppWidget() {
         val size = LocalSize.current
         val scale = context.resources.configuration.fontScale
         val spec = AskWidgetLayout.resolve(size.width.value, size.height.value, scale, paired)
-        val padding = if (spec.tightPadding) Tokens.Space.s else Tokens.Space.m
+        val horizontalPadding = if (spec.padding == AskWidgetPadding.Normal) Tokens.Space.m else Tokens.Space.s
+        val verticalPadding = when (spec.padding) {
+            AskWidgetPadding.Normal -> Tokens.Space.m
+            AskWidgetPadding.Tight -> Tokens.Space.s
+            AskWidgetPadding.CompactVertical -> Tokens.Space.xs
+            AskWidgetPadding.FlushVertical -> Tokens.Space.flush
+        }
         val title = context.getString(if (paired) R.string.shortcuts_ask_label else R.string.shortcuts_not_paired_short)
         val subtitle = context.getString(if (paired) R.string.shortcuts_ask_widget_subtitle else R.string.shortcuts_widget_scan)
         val titleStyle = when (spec.titleScale) {
@@ -73,12 +79,12 @@ class AskPersonaWidget : GlanceAppWidget() {
         val container = GlanceModifier.fillMaxSize().appWidgetBackground()
             .widgetCornerRadius()
             .background(look.card)
-            .padding(padding)
+            .padding(horizontal = horizontalPadding, vertical = verticalPadding)
             .clickable(actionStartActivity(SurfaceLinks.askWidget(context, paired)))
         when (spec.mode) {
             AskWidgetMode.Row -> Row(container, verticalAlignment = Alignment.CenterVertically) {
                 Mark(look, spec.badge)
-                Spacer(GlanceModifier.width(if (spec.tightPadding) Tokens.Space.s else Tokens.Space.m))
+                Spacer(GlanceModifier.width(if (spec.padding == AskWidgetPadding.Normal) Tokens.Space.m else Tokens.Space.s))
                 Column(GlanceModifier.defaultWeight()) {
                     Text(title, style = titleStyle, maxLines = spec.titleMaxLines)
                     if (spec.showSubtitle) {
@@ -147,34 +153,47 @@ internal enum class AskWidgetBadge { MarkOnly, Compact, Standard }
 
 internal enum class AskWidgetTitleScale { Compact, Section, Hero }
 
+internal enum class AskWidgetPadding { Normal, Tight, CompactVertical, FlushVertical }
+
 internal data class AskWidgetSpec(
     val mode: AskWidgetMode,
     val badge: AskWidgetBadge,
     val titleScale: AskWidgetTitleScale,
-    val tightPadding: Boolean,
+    val padding: AskWidgetPadding,
     val showSubtitle: Boolean,
     val titleMaxLines: Int,
     val subtitleMaxLines: Int,
-)
+) {
+    /** True whenever outer padding was reduced below the standard 12dp inset. */
+    val tightPadding: Boolean get() = padding != AskWidgetPadding.Normal
+}
 
 /**
  * Pure layout sizing for [AskPersonaWidget] across common launcher cells (2 × 1, 2 × 2, 4 × 1, 4 × 2) and system font
  * scales: 1-row sizes lay out horizontally, 2-row and taller sizes stack the mark above bottom-anchored copy, and
- * larger text drops the subtitle or badge ring before anything clips.
+ * larger text reduces padding, steps down title scale, drops the subtitle, or limits the title to one line before
+ * anything clips.
  */
 internal object AskWidgetLayout {
     fun resolve(widthDp: Float, heightDp: Float, fontScale: Float = 1f, paired: Boolean = true): AskWidgetSpec {
         val scale = fontScale.coerceAtLeast(MIN_FONT_SCALE)
-        val tightPadding = heightDp < TIGHT_HEIGHT
-        val pad = if (tightPadding) TIGHT_PADDING else NORMAL_PADDING
-        val innerW = (widthDp - pad).coerceAtLeast(0f)
-        val innerH = (heightDp - pad).coerceAtLeast(0f)
+        val minTitleH = COMPACT_LINE * scale
+        val padding = when {
+            heightDp >= TIGHT_HEIGHT && heightDp - NORMAL_PADDING >= minTitleH -> AskWidgetPadding.Normal
+            heightDp - TIGHT_PADDING >= minTitleH -> AskWidgetPadding.Tight
+            heightDp - COMPACT_VERTICAL_PADDING >= minTitleH -> AskWidgetPadding.CompactVertical
+            else -> AskWidgetPadding.FlushVertical
+        }
+        val hPad = horizontalPaddingDp(padding)
+        val vPad = verticalPaddingDp(padding)
+        val innerW = (widthDp - hPad).coerceAtLeast(0f)
+        val innerH = (heightDp - vPad).coerceAtLeast(0f)
         val wide = widthDp >= WIDE_MIN_WIDTH
         val stacked = heightDp >= STACKED_MIN_HEIGHT && innerH >= MARK_SIZE + STACKED_GAP + SECTION_LINE * scale
         if (stacked) {
             val titleScale = when {
-                wide && scale <= HERO_MAX_FONT_SCALE -> AskWidgetTitleScale.Hero
-                innerW >= NARROW_SECTION_MIN_W -> AskWidgetTitleScale.Section
+                wide && scale <= HERO_MAX_FONT_SCALE && innerH >= MARK_SIZE + STACKED_GAP + HERO_LINE * scale -> AskWidgetTitleScale.Hero
+                innerW >= NARROW_SECTION_MIN_W && innerH >= MARK_SIZE + STACKED_GAP + SECTION_LINE * scale -> AskWidgetTitleScale.Section
                 else -> AskWidgetTitleScale.Compact
             }
             val titleH = titleHeight(titleScale, scale)
@@ -183,24 +202,25 @@ internal object AskWidgetLayout {
                 innerH >= COMPACT_BADGE + STACKED_GAP + titleH -> AskWidgetBadge.Compact
                 else -> AskWidgetBadge.MarkOnly
             }
-            val textRoom = innerH - badgeHeight(badge) - STACKED_GAP
+            val textRoom = (innerH - badgeHeight(badge) - STACKED_GAP).coerceAtLeast(0f)
             val captionH = CAPTION_LINE * scale
             val subtitleLines = when {
                 !paired && textRoom >= titleH + STACKED_TEXT_GAP + captionH * 2f -> 2
                 textRoom >= titleH + STACKED_TEXT_GAP + captionH -> 1
                 else -> 0
             }
+            val titleMaxLines = if (subtitleLines == 0 && !wide && textRoom >= titleH * 2f) 2 else 1
             return AskWidgetSpec(
                 mode = AskWidgetMode.Stacked,
                 badge = badge,
                 titleScale = titleScale,
-                tightPadding = tightPadding,
+                padding = padding,
                 showSubtitle = subtitleLines > 0,
-                titleMaxLines = if (subtitleLines > 0 || wide) 1 else 2,
+                titleMaxLines = titleMaxLines,
                 subtitleMaxLines = subtitleLines.coerceAtLeast(1),
             )
         }
-        val titleScale = if (wide) AskWidgetTitleScale.Section else AskWidgetTitleScale.Compact
+        val titleScale = if (wide && innerH >= SECTION_LINE * scale) AskWidgetTitleScale.Section else AskWidgetTitleScale.Compact
         val titleH = titleHeight(titleScale, scale)
         val badge = when {
             wide && innerH >= STANDARD_BADGE -> AskWidgetBadge.Standard
@@ -215,31 +235,64 @@ internal object AskWidgetLayout {
             !paired && innerH >= titleH + ROW_TEXT_GAP + captionH * 2f -> 2
             else -> 1
         }
+        val titleMaxLines = if (subtitleLines == 0 && !wide && innerH >= titleH * 2f) 2 else 1
         return AskWidgetSpec(
             mode = AskWidgetMode.Row,
             badge = badge,
             titleScale = titleScale,
-            tightPadding = tightPadding,
+            padding = padding,
             showSubtitle = subtitleLines > 0,
-            titleMaxLines = if (subtitleLines > 0 || wide) 1 else 2,
+            titleMaxLines = titleMaxLines,
             subtitleMaxLines = subtitleLines.coerceAtLeast(1),
         )
     }
 
-    private fun titleHeight(scale: AskWidgetTitleScale, fontScale: Float): Float = when (scale) {
+    internal fun horizontalPaddingDp(padding: AskWidgetPadding): Float = when (padding) {
+        AskWidgetPadding.Normal -> NORMAL_PADDING
+        AskWidgetPadding.Tight, AskWidgetPadding.CompactVertical, AskWidgetPadding.FlushVertical -> TIGHT_PADDING
+    }
+
+    internal fun verticalPaddingDp(padding: AskWidgetPadding): Float = when (padding) {
+        AskWidgetPadding.Normal -> NORMAL_PADDING
+        AskWidgetPadding.Tight -> TIGHT_PADDING
+        AskWidgetPadding.CompactVertical -> COMPACT_VERTICAL_PADDING
+        AskWidgetPadding.FlushVertical -> 0f
+    }
+
+    internal fun titleHeight(scale: AskWidgetTitleScale, fontScale: Float): Float = when (scale) {
         AskWidgetTitleScale.Hero -> HERO_LINE * fontScale
         AskWidgetTitleScale.Section -> SECTION_LINE * fontScale
         AskWidgetTitleScale.Compact -> COMPACT_LINE * fontScale
     }
 
-    private fun badgeHeight(badge: AskWidgetBadge): Float = when (badge) {
+    internal fun captionHeight(fontScale: Float): Float = CAPTION_LINE * fontScale
+
+    internal fun badgeHeight(badge: AskWidgetBadge): Float = when (badge) {
         AskWidgetBadge.Standard -> STANDARD_BADGE
         AskWidgetBadge.Compact -> COMPACT_BADGE
         AskWidgetBadge.MarkOnly -> MARK_SIZE
     }
 
+    internal fun requiredHeightDp(spec: AskWidgetSpec, fontScale: Float): Float {
+        val scale = fontScale.coerceAtLeast(MIN_FONT_SCALE)
+        val titleH = titleHeight(spec.titleScale, scale) * spec.titleMaxLines
+        val subtitleH = if (spec.showSubtitle) captionHeight(scale) * spec.subtitleMaxLines else 0f
+        val vPad = verticalPaddingDp(spec.padding)
+        return when (spec.mode) {
+            AskWidgetMode.Row -> {
+                val textH = titleH + if (spec.showSubtitle) ROW_TEXT_GAP + subtitleH else 0f
+                vPad + maxOf(badgeHeight(spec.badge), textH)
+            }
+            AskWidgetMode.Stacked -> {
+                val textH = titleH + if (spec.showSubtitle) STACKED_TEXT_GAP + subtitleH else 0f
+                vPad + badgeHeight(spec.badge) + STACKED_GAP + textH
+            }
+        }
+    }
+
     private const val MIN_FONT_SCALE = 0.5f
     private const val TIGHT_HEIGHT = 64f
+    private const val COMPACT_VERTICAL_PADDING = 8f
     private const val TIGHT_PADDING = 16f
     private const val NORMAL_PADDING = 24f
     private const val WIDE_MIN_WIDTH = 220f
