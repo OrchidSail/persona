@@ -81,6 +81,8 @@ const (
 	// (#6282, docs/protocol/protocol.md "Assistant chat search"). The hub lists the assistant_search feature only while
 	// the default manager names it; the apps keep filtering titles and last messages without it.
 	CapabilityAssistantSearch = "assistant_search"
+	// CapabilityTaskInput: the manager validates and saves structured scheduled prompts.
+	CapabilityTaskInput = "task_input"
 	// CapabilityAssistantSegments promises persistent logical routing and explicit switches.
 	CapabilityAssistantSegments = "assistant_segments"
 	// CapabilityDirectionSessions: the manager files sessions under a direction and reads one direction
@@ -103,6 +105,13 @@ const (
 	// rows). The hub lists the todo_view feature only while every manager whose to-dos it merges names it; until then
 	// clients keep their own rules, and draw a row without `view` as before.
 	CapabilityTodoView = "todo_view"
+	// CapabilityTodoRevision: the manager answers GET /api/v1/todos/revision with a cheap validator for the full list's
+	// to-do writes and stable view classes (#13804). The hub lists todo_revision only while every manager whose to-dos it
+	// merges names it; older and mixed fleets keep reading the complete list after a push.
+	CapabilityTodoRevision = "todo_revision"
+	// TodoRevisionHeader carries the manager's or merged hub's lightweight to-do validator on GET /api/v1/todos and
+	// GET /api/v1/todos/revision. It is separate from the full body's ETag.
+	TodoRevisionHeader = "X-Persona-Todos-Revision"
 	// CapabilityTodoPlaces: the manager answers GET /api/v1/todos/places, the To-dos sidebar's places with the list's
 	// counts (#10226, TodoPlaces). The hub lists the todo_places feature only while every manager whose to-dos it
 	// merges names it.
@@ -204,6 +213,8 @@ const (
 	// sent. The hub keeps an owner's message with an id (MethodKeepUndelivered); the manager sends it again once the
 	// conversation is idle, resolving the role again, so it starts on the new role and the old one never gets it.
 	CodeConversationBusy = "busy"
+	// CodeTaskDirectoryMissing distinguishes a missing directory from permission and validation failures.
+	CodeTaskDirectoryMissing = "task_directory_missing"
 	// CodeSupervisionRuntime means the runtime cannot receive separate supervision instructions. Nothing was sent.
 	CodeSupervisionRuntime = "assistant_supervision_runtime"
 	// CodeSupervisionAccount means the engine supports the channel but this account has not enabled it.
@@ -284,6 +295,8 @@ var Routes = []string{
 	"POST /api/v1/assistant/conversations/{id}/stop",
 	"GET /api/v1/assistant/reporters",
 	"GET /api/v1/assistant/leaders",
+	"POST /api/v1/assistant/directions",
+	"POST /api/v1/assistant/directions/{id}/progress",
 	"GET /api/v1/assistant/dispatch-policy",
 	"PUT /api/v1/assistant/dispatch-policy",
 	"GET /api/v1/assistant/dispatch-guard",
@@ -313,6 +326,7 @@ var Routes = []string{
 	"GET /api/v1/assistant/tasks",
 	"GET /api/v1/assistant/tasks/cron",
 	"POST /api/v1/assistant/tasks",
+	"POST /api/v1/assistant/tasks/input-context",
 	"PUT /api/v1/assistant/tasks/{id}",
 	"DELETE /api/v1/assistant/tasks/{id}",
 	"POST /api/v1/assistant/tasks/{id}/run",
