@@ -2039,7 +2039,8 @@ private fun defaultMainTimeoutScheduler(): (Long, () -> Unit) -> () -> Unit = { 
     val handler = Handler(Looper.getMainLooper())
     val runnable = Runnable { onTimeout() }
     val _ = handler.postDelayed(runnable, delayMs)
-    { handler.removeCallbacks(runnable) }
+    val cancel: () -> Unit = { handler.removeCallbacks(runnable) }
+    cancel
 }
 
 /** Controls voice dictation inside the Digital Assistant overlay without requiring Activity result APIs. */
