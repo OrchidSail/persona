@@ -268,7 +268,7 @@ export async function brotliCopies(dir: string, files: string[]): Promise<{ file
 // 475,635 B, zh-Hans 476,595 B to 476,620 B). The budget moves by the same 25 B.
 // #6563: the minutes' summary card adds 85 B to each language (ja 478,898 B on fd8c988b6 to 478,983 B; en 475,201 B to
 // 475,286 B, zh-Hans 476,188 B to 476,273 B): the Knowledge page's first stylesheet (the card's tints and grid,
-// views/knowledge/minutes-overview.css) named in the app's preload map, and Button passing aria-controls and aria-label
+// modules/recording/minutes-overview.css) named in the app's preload map, and Button passing aria-controls and aria-label
 // (a topic's Show N more names its topic). The budget moves by the same 85 B, keeping that 31 B room.
 // #6662: the paged Agents list under the complete list's title row, grouping bar and quick filters (By to-do / By
 // status sections, the to-do names, the quick filters' hub keys, the quiet Load more line, the ⋯'s sorts ordering its
@@ -426,7 +426,7 @@ export async function brotliCopies(dir: string, files: string[]): Promise<{ file
 // sections), all in the first screen's static closure; the canvas itself is a chunk of its own (ViewBody10.tsx).
 // Main had 1,583 B of room; the budget stays.
 // #11040: main had 29 B of ja room. The voice call's UI (its bar, the thread's captions, the ended row and the dialog on
-// why a call cannot start: views/chat/voice/VoiceCall.tsx, loaded with the call's code) and 97 of the 101 voice strings
+// why a call cannot start: modules/voice/chat/VoiceCall.tsx, loaded with the call's code) and 97 of the 101 voice strings
 // left the first screen, and startup entries only lazy chunks read (chat-navrail but target_failed, the
 // chat-interactions fields and input toggle, assistant-history.sidebar, agentspage.new_agent) went to the rest of the
 // catalog: ja 482,497 B to 477,736 B (en 479,378 B to 474,739 B, zh-Hans 480,224 B to 475,592 B), measured in one
