@@ -1709,10 +1709,15 @@ operation then read as accepted and the bubble waited for the transcript and wen
   conversation for anything else: a supervision message, another conversation's message, a scheduled follow-up,
   a notice, or an owner message sent from an app or web client (`assistant.send_params` and `session.assistant_sent`,
   or kept undelivered retries). It starts no turn of its own, costs no hop and no place in the relay rate, and is
-  dropped (publishing the refreshed queue state immediately) only once the message carrying it went in. Before a send
-  with a `once_id` or `client_msg_id`, its quiet-message context (including an empty one) is saved and reused on
-  retries, including after restart. A retry clears only that original context; later arrivals wait for a new send ID.
-  These reservations expire after seven days, beyond the node's ten-minute send-ID memory. Nothing is guessed from
+  dropped (publishing the refreshed queue state immediately) only once the message carrying it went in. Before a manager
+  send with a `once_id`, its quiet-message context (including an empty one) is saved in `relayState.LaterSends` for
+  seven days and reused on retries, including after restart. For an owner send (`client_msg_id`), a reservation is saved
+  only when quiet messages are actually waiting to be carried (empty queues do zero relay writes), is deleted in the
+  same save once delivery is confirmed (or when a kept undelivered message is deleted), and expires after 24 hours
+  (`ownerLaterKeep`, matching `undeliveredGiveUp`) if never settled; an owner Retry of an earlier in-doubt kept send
+  only reuses an existing reservation without picking up later arrivals. If the relay state cannot be read on an owner
+  send, the send degrades and delivers the owner's own message without quiet context (leaving `Later` untouched), while
+  saving a carry reservation for waiting quiet messages stays fail-closed. Nothing is guessed from
   the words: only the explicit argument decides. A `quote` (the owner's request) always wakes, so the two together are
   refused. While kept, the message shows above the composer (`queuedRelays`) and disappears once consumed.
 - **Between conversations.** `conversation_send` to a conversation that cannot take the message now no longer fails:

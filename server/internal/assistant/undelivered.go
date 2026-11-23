@@ -744,7 +744,7 @@ func (s *Service) deliverKept(ctx context.Context, k keptMessage) (doubt bool, e
 	}
 	params["session_id"] = k.Session
 	params["client_msg_id"] = k.ID
-	laterDone, err := s.withOwnerRelayLater(sctx, k.Machine, k.Session, k.ID, params)
+	laterDone, err := s.withOwnerRelayLater(sctx, k.Machine, k.Session, k.ID, params, k.TriedAt.IsZero())
 	if err != nil {
 		return false, err // nothing was sent
 	}
@@ -893,6 +893,7 @@ func (s *Service) undeliveredRoutes() {
 			apierr.Write(w, http.StatusNotFound, errors.New("no such message"))
 			return
 		}
+		s.forgetOwnerRelayLater(context.WithoutCancel(r.Context()), sid, mid)
 		s.publish(context.WithoutCancel(r.Context()))
 		apierr.WriteJSON(w, map[string]any{"ok": true})
 	})

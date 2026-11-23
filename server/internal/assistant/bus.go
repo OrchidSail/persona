@@ -619,7 +619,7 @@ func (b *BusHub) request(ctx context.Context, method string, params json.RawMess
 			s.notesOwnerRefused(ctx, carry) // an approval is not a model turn or a conversation message
 			return map[string]any{"params": params}, nil
 		}
-		laterDone, err := s.withOwnerRelayLater(ctx, p.MachineID, p.SessionID, msg, params)
+		laterDone, err := s.withOwnerRelayLater(ctx, p.MachineID, p.SessionID, msg, params, true)
 		if err != nil {
 			s.notesOwnerRefused(ctx, carry)
 			s.appSendRefused(p.MachineID, p.SessionID, err)
