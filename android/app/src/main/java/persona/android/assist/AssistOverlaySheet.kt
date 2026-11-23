@@ -187,10 +187,10 @@ internal fun AssistOverlayEnvironment(
  *
  * Adapts natively to Persona's three official styles (`AppStyle.Glass`, `AppStyle.Brief`,
  * `AppStyle.Board`), active `ThemeColor`, and `LayoutDensity`:
- * - Single clean opaque composer card (`~125dp` tall) integrating a subtle top drag handle,
- *   `PersonaFace` + borderless multi-line input (long-press toggles voice dictation when
- *   supported) on the top row, and privacy-first screen toggle, restrained model switcher,
- *   `Open in Persona ↗`, and high-contrast Send button on the bottom row.
+ * - Single clean opaque composer card (`~125dp` tall) integrating a subtle top drag handle
+ *   (also an accessible `Open in Persona` action), `PersonaFace` + borderless multi-line input
+ *   (long-press toggles voice dictation when supported) on the top row, and a minimalist 3-control
+ *   bottom row: privacy-first screen toggle, restrained model switcher, and high-contrast Send button.
  * - Independent single-layer floating cards (streaming reply transcript, model picker, Hub/error
  *   notices) grow cleanly `8dp` above the unified composer card only when needed — zero nested boxes.
  * - Bidirectional vertical drag: swipe down to dismiss, swipe up to expand directly into full-screen
@@ -751,9 +751,22 @@ private fun AssistUnifiedComposerCard(
             ),
         verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
     ) {
-        // Restrained top drag handle hinting bidirectional drag (pull up for full Persona, down to dismiss).
+        // Restrained top drag handle hinting bidirectional drag (pull up for full Persona, down to dismiss),
+        // and exposing an accessible tap target for screen-reader users without extra button chrome.
+        val dragHandleInteraction = remember { MutableInteractionSource() }
         Box(
-            Modifier.fillMaxWidth(),
+            Modifier
+                .fillMaxWidth()
+                .clickable(
+                    enabled = !ui.deviceLocked,
+                    interactionSource = dragHandleInteraction,
+                    indication = null,
+                    role = Role.Button,
+                    onClickLabel = openInPersonaLabel,
+                    onClick = onOpenInPersona,
+                )
+                .semantics { contentDescription = openInPersonaLabel }
+                .testTag("assist-drag-handle"),
             contentAlignment = Alignment.Center,
         ) {
             Box(
@@ -766,8 +779,7 @@ private fun AssistUnifiedComposerCard(
                         } else {
                             palette.ink3.copy(alpha = 0.22f)
                         },
-                    )
-                    .testTag("assist-drag-handle"),
+                    ),
             )
         }
 
@@ -978,8 +990,8 @@ private fun AssistUnifiedComposerCard(
                 }
             }
 
-            // Bottom integrated action row: fixed 44dp Open & Send buttons are measured first so they
-            // never clip on narrow screens while screen toggle and model switcher share remaining width.
+            // Bottom integrated action row: minimalist 3-control bar (privacy screen toggle,
+            // model switcher, and fixed 44dp Send button measured first so it never clips).
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -1012,28 +1024,6 @@ private fun AssistUnifiedComposerCard(
                     onClick = onToggleModelPicker,
                     modifier = Modifier.weight(1f, fill = false),
                 )
-
-                Box(
-                    Modifier
-                        .size(Tokens.MinTouch.ios) // 44dp borderless tonal icon button
-                        .clip(buttonShape)
-                        .background(tonalFill)
-                        .clickable(
-                            role = Role.Button,
-                            onClickLabel = openInPersonaLabel,
-                            onClick = onOpenInPersona,
-                        )
-                        .semantics { contentDescription = openInPersonaLabel }
-                        .testTag("assist-open-in-persona"),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    JIcon(
-                        icon = PersonaIcons.open,
-                        contentDescription = null,
-                        size = Tokens.Size.iconS,
-                        tint = palette.ink2,
-                    )
-                }
 
                 val sendLabel = stringResource(R.string.app_send)
                 Box(

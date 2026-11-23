@@ -88,7 +88,6 @@ class AssistOverlaySheetUiTest {
             val brandBounds = rule.onNodeWithTag("assist-brand-orb").getUnclippedBoundsInRoot()
             val screenBounds = rule.onNodeWithTag("assist-attach-screen-chip").getUnclippedBoundsInRoot()
             val modelBounds = rule.onNodeWithTag("assist-model-pill").getUnclippedBoundsInRoot()
-            val openBounds = rule.onNodeWithTag("assist-open-in-persona").getUnclippedBoundsInRoot()
             val sendBounds = rule.onNodeWithTag("assist-send-button").getUnclippedBoundsInRoot()
 
             assertTrue("$tag: card must keep left margin", cardBounds.left > rootBounds.left)
@@ -98,16 +97,16 @@ class AssistOverlaySheetUiTest {
             assertTrue("$tag: PersonaFace anchor must sit inside card", brandBounds.left >= cardBounds.left && brandBounds.top >= cardBounds.top)
             assertTrue("$tag: attach screen chip must be >= 44dp tall, got ${screenBounds.height}", screenBounds.height >= 44.dp)
             assertTrue("$tag: model pill must be >= 44dp tall, got ${modelBounds.height}", modelBounds.height >= 44.dp)
-            assertTrue("$tag: open Persona must be >= 44dp tall, got ${openBounds.height}", openBounds.height >= 44.dp)
             assertTrue("$tag: send button must be >= 44dp tall, got ${sendBounds.height}", sendBounds.height >= 44.dp)
             assertTrue("$tag: send button must be >= 44dp wide, got ${sendBounds.width}", sendBounds.width >= 44.dp)
 
             // Concise non-truncating screen label, top drag handle, zero screenshot thumbnail,
-            // zero X close clutter, and zero standalone bottom-bar microphone button.
+            // zero X close clutter, zero bottom-bar open-in-Persona icon, and zero bottom-bar mic button.
             rule.onNodeWithText("Attach screen").assertExists()
             rule.onNodeWithTag("assist-drag-handle").assertExists()
             rule.onNodeWithTag("assist-screen-thumbnail", useUnmergedTree = true).assertDoesNotExist()
             rule.onNodeWithTag("assist-close-button").assertDoesNotExist()
+            rule.onNodeWithTag("assist-open-in-persona", useUnmergedTree = true).assertDoesNotExist()
             rule.onNodeWithTag("assist-dictate-button", useUnmergedTree = true).assertDoesNotExist()
             rule.onNodeWithTag("assist-input-field").assertExists()
         }
@@ -199,15 +198,15 @@ class AssistOverlaySheetUiTest {
 
         val screenBounds = rule.onNodeWithTag("assist-attach-screen-chip").getUnclippedBoundsInRoot()
         val modelBounds = rule.onNodeWithTag("assist-model-pill").getUnclippedBoundsInRoot()
-        val openBounds = rule.onNodeWithTag("assist-open-in-persona").getUnclippedBoundsInRoot()
         val sendBounds = rule.onNodeWithTag("assist-send-button").getUnclippedBoundsInRoot()
 
         rule.onNodeWithText("Attach screen").assertExists()
+        rule.onNodeWithTag("assist-open-in-persona", useUnmergedTree = true).assertDoesNotExist()
         assertTrue("360dp attach chip >= 44dp tall", screenBounds.height >= 44.dp)
         assertTrue("360dp model pill >= 44dp tall", modelBounds.height >= 44.dp)
-        assertTrue("360dp open button >= 44dp tall", openBounds.height >= 44.dp)
         assertTrue("360dp send button >= 44dp tall", sendBounds.height >= 44.dp)
         assertTrue("Controls must not overlap horizontally", screenBounds.right <= modelBounds.left)
+        assertTrue("Model pill must stay left of send button", modelBounds.right <= sendBounds.left)
     }
 
     @Test
@@ -241,14 +240,12 @@ class AssistOverlaySheetUiTest {
         val cardBounds = rule.onNodeWithTag("assist-composer-island").getUnclippedBoundsInRoot()
         val screenBounds = rule.onNodeWithTag("assist-screen-attached-row").getUnclippedBoundsInRoot()
         val modelBounds = rule.onNodeWithTag("assist-model-pill").getUnclippedBoundsInRoot()
-        val openBounds = rule.onNodeWithTag("assist-open-in-persona").getUnclippedBoundsInRoot()
         val sendBounds = rule.onNodeWithTag("assist-send-button").getUnclippedBoundsInRoot()
 
+        rule.onNodeWithTag("assist-open-in-persona", useUnmergedTree = true).assertDoesNotExist()
         assertTrue("320dp send button must stay >= 44dp wide, got ${sendBounds.width}", sendBounds.width >= 44.dp)
-        assertTrue("320dp open button must stay >= 44dp wide, got ${openBounds.width}", openBounds.width >= 44.dp)
         assertTrue("320dp send button must stay inside card right edge", sendBounds.right <= cardBounds.right)
-        assertTrue("320dp open button must stay left of send button", openBounds.right <= sendBounds.left)
-        assertTrue("320dp model pill must stay left of open button", modelBounds.right <= openBounds.left)
+        assertTrue("320dp model pill must stay left of send button", modelBounds.right <= sendBounds.left)
         assertTrue("320dp screen chip must stay left of model pill", screenBounds.right <= modelBounds.left)
     }
 
@@ -513,6 +510,16 @@ class AssistOverlaySheetUiTest {
         assertEquals(1, openedPersona)
         assertEquals(0, dismissed)
 
+        // Accessible click on top drag handle also opens full Persona (and stops dictation) without a bottom icon.
+        rule.onNodeWithTag("assist-open-in-persona", useUnmergedTree = true).assertDoesNotExist()
+        rule.runOnIdle { fakeDictation.toggle() }
+        rule.waitForIdle()
+        assertTrue(fakeDictation.listening)
+        rule.onNodeWithTag("assist-drag-handle").performClick()
+        rule.waitForIdle()
+        assertFalse("Top drag handle accessibility action should stop active dictation", fakeDictation.listening)
+        assertEquals(2, openedPersona)
+
         // Downward drag past 48dp threshold dismisses cleanly.
         rule.onNodeWithTag("assist-composer-island").performTouchInput {
             down(Offset(centerX, top + 8f))
@@ -523,11 +530,18 @@ class AssistOverlaySheetUiTest {
             up()
         }
         rule.waitForIdle()
-        assertEquals(1, openedPersona)
+        assertEquals(2, openedPersona)
         assertEquals(1, dismissed)
 
-        // Lockscreen state ignores upward open-Persona drag while keeping swipe-down dismiss.
-        rule.runOnIdle { uiState = uiState.copy(deviceLocked = true) }
+        // Unpaired guidance card retains its explicit "Open Persona" action button.
+        rule.runOnIdle { uiState = uiState.copy(hubStatus = AssistHubStatus.Unpaired) }
+        rule.waitForIdle()
+        rule.onNodeWithTag("assist-hub-unpaired-action").performClick()
+        rule.waitForIdle()
+        assertEquals("Unpaired guidance action should still open Persona", 3, openedPersona)
+
+        // Lockscreen state ignores upward open-Persona drag while keeping its Unlock button & swipe-down dismiss.
+        rule.runOnIdle { uiState = uiState.copy(deviceLocked = true, hubStatus = AssistHubStatus.Ready) }
         rule.waitForIdle()
         rule.onNodeWithTag("assist-locked-card").performTouchInput {
             down(center)
@@ -538,7 +552,10 @@ class AssistOverlaySheetUiTest {
             up()
         }
         rule.waitForIdle()
-        assertEquals("Locked overlay must not open full app via swipe-up", 1, openedPersona)
+        assertEquals("Locked overlay must not open full app via swipe-up", 3, openedPersona)
+        rule.onNodeWithTag("assist-unlock-button").performClick()
+        rule.waitForIdle()
+        assertEquals("Locked overlay Unlock CTA should still invoke onUnlock/onOpenInPersona", 4, openedPersona)
         rule.onNodeWithTag("assist-locked-card").performTouchInput {
             down(center)
             repeat(5) {
