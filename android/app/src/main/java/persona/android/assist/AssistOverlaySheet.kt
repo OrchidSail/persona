@@ -990,8 +990,9 @@ private fun AssistUnifiedComposerCard(
                 }
             }
 
-            // Bottom integrated action row: minimalist 3-control bar (privacy screen toggle,
-            // model switcher, and fixed 44dp Send button measured first so it never clips).
+            // Bottom integrated action row: minimalist 3-control bar where left screen toggle and
+            // right-aligned model switcher fill remaining space so the fixed 44dp Send button stays
+            // strictly flush to the card's right inner edge across all locales and screen widths.
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -1000,7 +1001,7 @@ private fun AssistUnifiedComposerCard(
                 horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
             ) {
                 Box(
-                    Modifier.weight(1.25f),
+                    Modifier.weight(1.1f),
                     contentAlignment = Alignment.CenterStart,
                 ) {
                     AssistScreenContextControl(
@@ -1014,16 +1015,20 @@ private fun AssistUnifiedComposerCard(
                     )
                 }
 
-                AssistModelSwitcherButton(
-                    label = modelPillLabel,
-                    open = ui.modelPickerOpen,
-                    enabled = !ui.sending,
-                    isCustom = !ui.modelChoice.isDefault,
-                    style = style,
-                    chipShape = chipShape,
-                    onClick = onToggleModelPicker,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
+                Box(
+                    Modifier.weight(1f),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    AssistModelSwitcherButton(
+                        label = modelPillLabel,
+                        open = ui.modelPickerOpen,
+                        enabled = !ui.sending,
+                        isCustom = !ui.modelChoice.isDefault,
+                        style = style,
+                        chipShape = chipShape,
+                        onClick = onToggleModelPicker,
+                    )
+                }
 
                 val sendLabel = stringResource(R.string.app_send)
                 Box(

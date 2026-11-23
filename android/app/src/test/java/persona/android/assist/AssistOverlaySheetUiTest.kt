@@ -21,6 +21,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.height
 import androidx.compose.ui.unit.width
+import kotlin.math.abs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -35,6 +36,7 @@ import persona.core.contracts.ModelPick
 import persona.core.contracts.api.DigitalAssistantModelChoice
 import persona.core.designsystem.AppStyle
 import persona.core.designsystem.PersonaTheme
+import persona.core.designsystem.Tokens
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [35], qualifiers = "en-w411dp-h915dp-xhdpi")
@@ -99,6 +101,19 @@ class AssistOverlaySheetUiTest {
             assertTrue("$tag: model pill must be >= 44dp tall, got ${modelBounds.height}", modelBounds.height >= 44.dp)
             assertTrue("$tag: send button must be >= 44dp tall, got ${sendBounds.height}", sendBounds.height >= 44.dp)
             assertTrue("$tag: send button must be >= 44dp wide, got ${sendBounds.width}", sendBounds.width >= 44.dp)
+            val expectedSendRightPx = with(rule.density) { (cardBounds.right - Tokens.Space.m).toPx() }
+            val actualSendRightPx = with(rule.density) { sendBounds.right.toPx() }
+            assertTrue(
+                "$tag: send button right edge must sit flush to card inner padding (<= 2px), diff=${abs(expectedSendRightPx - actualSendRightPx)}px",
+                abs(expectedSendRightPx - actualSendRightPx) <= 2f,
+            )
+            val modelToSendGapPx = with(rule.density) { (sendBounds.left - modelBounds.right).toPx() }
+            val expectedGapPx = with(rule.density) { Tokens.Space.xs.toPx() }
+            assertTrue(
+                "$tag: model pill must hug send button without trailing dead space, gap=${modelToSendGapPx}px",
+                abs(modelToSendGapPx - expectedGapPx) <= 2f,
+            )
+            assertTrue("$tag: screen chip must stay left of model pill", screenBounds.right <= modelBounds.left)
 
             // Concise non-truncating screen label, top drag handle, zero screenshot thumbnail,
             // zero X close clutter, zero bottom-bar open-in-Persona icon, and zero bottom-bar mic button.
@@ -196,6 +211,7 @@ class AssistOverlaySheetUiTest {
             }
         }
 
+        val cardBounds = rule.onNodeWithTag("assist-composer-island").getUnclippedBoundsInRoot()
         val screenBounds = rule.onNodeWithTag("assist-attach-screen-chip").getUnclippedBoundsInRoot()
         val modelBounds = rule.onNodeWithTag("assist-model-pill").getUnclippedBoundsInRoot()
         val sendBounds = rule.onNodeWithTag("assist-send-button").getUnclippedBoundsInRoot()
@@ -205,6 +221,12 @@ class AssistOverlaySheetUiTest {
         assertTrue("360dp attach chip >= 44dp tall", screenBounds.height >= 44.dp)
         assertTrue("360dp model pill >= 44dp tall", modelBounds.height >= 44.dp)
         assertTrue("360dp send button >= 44dp tall", sendBounds.height >= 44.dp)
+        val expectedSendRightPx = with(rule.density) { (cardBounds.right - Tokens.Space.m).toPx() }
+        val actualSendRightPx = with(rule.density) { sendBounds.right.toPx() }
+        assertTrue(
+            "360dp send button must stay flush to card inner right edge (<= 2px), diff=${abs(expectedSendRightPx - actualSendRightPx)}px",
+            abs(expectedSendRightPx - actualSendRightPx) <= 2f,
+        )
         assertTrue("Controls must not overlap horizontally", screenBounds.right <= modelBounds.left)
         assertTrue("Model pill must stay left of send button", modelBounds.right <= sendBounds.left)
     }
@@ -245,8 +267,62 @@ class AssistOverlaySheetUiTest {
         rule.onNodeWithTag("assist-open-in-persona", useUnmergedTree = true).assertDoesNotExist()
         assertTrue("320dp send button must stay >= 44dp wide, got ${sendBounds.width}", sendBounds.width >= 44.dp)
         assertTrue("320dp send button must stay inside card right edge", sendBounds.right <= cardBounds.right)
+        val expectedSendRightPx = with(rule.density) { (cardBounds.right - Tokens.Space.m).toPx() }
+        val actualSendRightPx = with(rule.density) { sendBounds.right.toPx() }
+        assertTrue(
+            "320dp send button right edge must stay flush to card inner padding (<= 2px), diff=${abs(expectedSendRightPx - actualSendRightPx)}px",
+            abs(expectedSendRightPx - actualSendRightPx) <= 2f,
+        )
         assertTrue("320dp model pill must stay left of send button", modelBounds.right <= sendBounds.left)
         assertTrue("320dp screen chip must stay left of model pill", screenBounds.right <= modelBounds.left)
+    }
+
+    @Test
+    @Config(application = Application::class, sdk = [35], qualifiers = "zh-w411dp-h915dp-xhdpi")
+    fun shortChineseModelLabelKeepsSendButtonFlushToCardRightEdge() {
+        rule.setContent {
+            PersonaTheme(darkTheme = true, reduceMotion = true, style = AppStyle.Glass) {
+                AssistOverlaySheet(
+                    ui = AssistOverlayUiState(
+                        invocationId = "inv-zh-right-flush",
+                        captureStatus = AssistCaptureStatus.Available,
+                        hubStatus = AssistHubStatus.Ready,
+                    ),
+                    onDraftChange = {},
+                    onDictationHeard = {},
+                    onNotice = {},
+                    onAttachScreen = {},
+                    onRemoveScreen = {},
+                    onSend = {},
+                    onOpenInPersona = {},
+                    onDismiss = {},
+                )
+            }
+        }
+
+        val cardBounds = rule.onNodeWithTag("assist-composer-island").getUnclippedBoundsInRoot()
+        val screenBounds = rule.onNodeWithTag("assist-attach-screen-chip").getUnclippedBoundsInRoot()
+        val modelBounds = rule.onNodeWithTag("assist-model-pill").getUnclippedBoundsInRoot()
+        val sendBounds = rule.onNodeWithTag("assist-send-button").getUnclippedBoundsInRoot()
+
+        rule.onNodeWithText("附带屏幕").assertExists()
+        rule.onNodeWithText("主对话").assertExists()
+        rule.onNodeWithTag("assist-open-in-persona", useUnmergedTree = true).assertDoesNotExist()
+
+        val expectedSendRightPx = with(rule.density) { (cardBounds.right - Tokens.Space.m).toPx() }
+        val actualSendRightPx = with(rule.density) { sendBounds.right.toPx() }
+        assertTrue(
+            "Chinese short model label must keep send button flush to card inner right edge (<= 2px), diff=${abs(expectedSendRightPx - actualSendRightPx)}px",
+            abs(expectedSendRightPx - actualSendRightPx) <= 2f,
+        )
+        val modelToSendGapPx = with(rule.density) { (sendBounds.left - modelBounds.right).toPx() }
+        val expectedGapPx = with(rule.density) { Tokens.Space.xs.toPx() }
+        assertTrue(
+            "Model pill must stay anchored next to send button with no trailing whitespace, gap=${modelToSendGapPx}px",
+            abs(modelToSendGapPx - expectedGapPx) <= 2f,
+        )
+        assertTrue("Screen chip must not overlap model pill", screenBounds.right <= modelBounds.left)
+        assertTrue("Model pill must not overlap send button", modelBounds.right <= sendBounds.left)
     }
 
     @Test
