@@ -1,39 +1,7 @@
-// Popover-only pure helpers for subscription usage cards, pace, and the reset timeline (#13173, #13870).
+// Popover-only pure helpers for subscription usage cards and the reset timeline (#13173, #13870, #13964).
 // Kept in a separate module so UsagePopover's lazy chunk owns them instead of the cold first screen.
 import { t as tr } from "../i18n";
-import { windowKey, windowMinutes, type UsageAccount, type UsageWindow } from "./usage-windows";
-
-/** The pace is not judged in the first part of a window: a few minutes in, any use is "ahead". */
-export const PACE_QUIET_FRACTION = 0.05;
-/** How far (percentage points) the actual use may be from the expected before it is over / under. */
-export const PACE_TOLERANCE = 5;
-
-export type PaceState = "over" | "under" | "on";
-export interface Pace {
-  /** Where use would be if it were spread evenly over the window, 0-100. */
-  expected: number;
-  state: PaceState;
-}
-
-/** How use compares with an even spread: expected% = elapsed / length; over when use is more than 5 points above it,
- *  under when more than 5 below. null with no reset time or length, and in the first 5% of the window. */
-export function pace(w: UsageWindow, now = Date.now()): Pace | null {
-  const total = windowMinutes(w) * 60_000;
-  const resets = w.resets_at ? Date.parse(w.resets_at) : NaN;
-  if (!(total > 0) || !Number.isFinite(resets)) return null;
-  const elapsed = total - (resets - now);
-  if (elapsed < 0 || elapsed > total) return null;
-  if (elapsed / total < PACE_QUIET_FRACTION) return null;
-  const expected = (elapsed / total) * 100;
-  const diff = w.used_percent - expected;
-  return { expected, state: diff > PACE_TOLERANCE ? "over" : diff < -PACE_TOLERANCE ? "under" : "on" };
-}
-
-/** The pace of one of an account's windows, as the popover shows it. An out-of-date reading says nothing about how
- *  fast it is being used now, so a stale account has none (#12411): its numbers and reset stay, faded and dated. */
-export function accountPace(a: Pick<UsageAccount, "stale">, w: UsageWindow, now = Date.now()): Pace | null {
-  return a.stale ? null : pace(w, now);
-}
+import { canonicalUsageProvider, windowKey, windowMinutes, type UsageAccount, type UsageWindow } from "./usage-windows";
 
 /** The plan to write beside the name, unless the name already says it ("Codex Pro" and plan "pro"). */
 export function planNote(a: UsageAccount): string {
@@ -82,16 +50,22 @@ export interface ProviderGroup {
 /** The accounts grouped by provider (account type), groups in the order the hub first listed them. */
 export function groupByProvider(accounts: UsageAccount[]): ProviderGroup[] {
   const by = new Map<string, UsageAccount[]>();
-  for (const a of accounts) by.set(a.provider, [...(by.get(a.provider) ?? []), a]);
+  for (const a of accounts) {
+    const provider = canonicalUsageProvider(a.provider);
+    by.set(provider, [...(by.get(provider) ?? []), a]);
+  }
   return [...by].map(([provider, list]) => {
     const newest = list.reduce((m, a) => Math.max(m, Date.parse(a.sampled_at) || -Infinity), -Infinity);
     return { provider, accounts: sortForCard(list), sampledAt: Number.isFinite(newest) ? new Date(newest).toISOString() : "" };
   });
 }
 
-const PROVIDER_TITLES: Record<string, string> = { xai: "xAI", deepseek: "DeepSeek", kimi: "Kimi", agy: "Antigravity" };
+const PROVIDER_TITLES: Record<string, string> = { xai: "xAI", deepseek: "DeepSeek", kimi: "Kimi" };
 /** A provider's name for a card title: its own spelling when known, else the id with a capital. */
-export const providerTitle = (p: string) => PROVIDER_TITLES[p] ?? p.charAt(0).toUpperCase() + p.slice(1);
+export function providerTitle(provider: string): string {
+  const id = canonicalUsageProvider(provider);
+  return PROVIDER_TITLES[id] ?? id.charAt(0).toUpperCase() + id.slice(1);
+}
 
 const HOUR_MS = 3600_000;
 /** The shared axis: now, then these hours from now. The first 24 hours take 45% of the width, 1 to 7 days the other 55%. */

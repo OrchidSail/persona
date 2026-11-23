@@ -1,6 +1,6 @@
 // Subscription rate-limit windows (#2432, docs/server/usage-windows.md): GET /api/v1/usage/windows lists the accounts the
-// machines' agents are signed in to with how much of each window (5h, 7d …) is used. Pure helpers here (pace,
-// countdown, sample age, what the sidebar shows); the bars and the popover are views/UsageBars.tsx.
+// machines' agents are signed in to with how much of each window (5h, 7d …) is used. Pure helpers here cover
+// countdowns, sample age and what the sidebar in views/UsageBars.tsx shows.
 import { useSyncExternalStore } from "react";
 import { formatDate, formatRelative, t as tr } from "../i18n";
 import { api, ApiError } from "./api";
@@ -139,12 +139,21 @@ export function sourceNames(a: UsageAccount): string[] {
 
 export const windowKey = (w: UsageWindow) => `${w.label}:${w.window_minutes}:${w.model ?? ""}`;
 
-/** The accounts the sidebar draws bars for: the two with the fullest window, stale ones last. A balance account has
- *  no bar (it is shown as an amount instead), so it never takes one of these places. */
+/** The usage provider ID shared by older node samples, gateways and visibility settings. */
+export function canonicalUsageProvider(provider: string): string {
+  const id = provider.trim().toLowerCase();
+  return id === "agy" ? "antigravity" : id;
+}
+
+/** The sidebar takes the two fullest windows, with stale accounts last. Rank whole percentages as shown on the bar
+ *  so changes below the displayed precision keep the same order. Balance accounts have their own rows. */
 export function topAccounts(accounts: UsageAccount[], n = 2): UsageAccount[] {
   return accounts
     .filter((a) => !isBalanceAccount(a))
-    .sort((a, b) => Number(!!a.stale) - Number(!!b.stale) || fullest(b) - fullest(a))
+    .sort((a, b) => Number(!!a.stale) - Number(!!b.stale)
+      || Math.round(fullest(b)) - Math.round(fullest(a))
+      || canonicalUsageProvider(a.provider).localeCompare(canonicalUsageProvider(b.provider))
+      || a.id.localeCompare(b.id))
     .slice(0, n);
 }
 
@@ -379,7 +388,7 @@ function pollUsage() {
     const mine = ++seq;
     const current = () => !dead && mine === seq;
     api<{ accounts?: UsageAccount[]; hidden_providers?: string[] }>("/usage/windows")
-      .then((r) => current() && publishUsage(r.accounts ?? emptyAccounts, true, r.hidden_providers?.length ? r.hidden_providers.map((p) => p.toLowerCase()) : noProviders))
+      .then((r) => current() && publishUsage(r.accounts ?? emptyAccounts, true, r.hidden_providers?.map(canonicalUsageProvider) ?? noProviders))
       .catch((e: unknown) => {
         if (!current()) return;
         const missing = e instanceof ApiError && e.status === 404;
@@ -416,7 +425,7 @@ export function useUsageWindows(): UsageAccount[] {
   return useSyncExternalStore(subscribeUsage, () => usageAccounts, () => emptyAccounts);
 }
 
-/** The providers the owner hid from the usage bars (lowercase), so nothing else in the strip lists them either (#13179). */
+/** The canonical providers the owner hid from the usage bars, so the strip leaves them out everywhere (#13179). */
 export function useHiddenUsageProviders(): readonly string[] {
   return useSyncExternalStore(subscribeUsage, () => usageHidden, () => noProviders);
 }
