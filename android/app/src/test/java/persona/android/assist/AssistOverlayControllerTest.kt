@@ -246,7 +246,7 @@ class AssistOverlayControllerTest {
         assertEquals(0, harness.saveCount)
         assertTrue(harness.preparedBitmaps.single().isRecycled)
         assertTrue(harness.sentWithScreen.isEmpty())
-        assertTrue(harness.createdSidePicks.isEmpty())
+        assertTrue(harness.preparedModels.isEmpty())
         assertEquals(1, harness.sentTexts.size)
         assertEquals("What is the weather?", harness.sentTexts.single().first)
         assertEquals(AssistCaptureStatus.NotSupported, controller.state.value.captureStatus)
