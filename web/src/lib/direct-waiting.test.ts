@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { decisionLaterKey, type NeedsYouItem } from "./assistant-entries";
 import { directUserInteraction, directUserWaiting, directWaitingCount } from "./direct-waiting";
 import type { FeedItem } from "./feed";
+import { hubNeedsYou } from "./todo-triage";
 import type { Todo, TodoStatus } from "./todos";
 import type { Interaction, Session } from "./types";
 
@@ -125,15 +126,26 @@ describe("main conversation direct-user waiting", () => {
     ]);
     expect(directWaitingCount(legacy, [card("own-perm-esc", "permission", escalated), card("own-perm-held", "permission", { delegating: true })])).toBe(4);
 
-    // With hub view in needs_you / agent_asks: both escalated and direct non-delegating screen/permission cards stay
-    // attached to the row so the tray renders their interactive cards, while delegating cards are always stripped.
+    // With hub view in needs_you / agent_asks:
+    // - Non-quiet tasks counted by hubNeedsYou stay counted (keeping tray, To-dos badge and hub on one number),
+    //   attaching non-delegating screen/permission/plan cards while always stripping delegating cards.
+    // - Quiet tasks (hubNeedsYou === false) only surface explicitly escalated cards (hasEscalationContext), so
+    //   unescalated terminal dialogs/permissions/plans stay with the supervisor and do not inflate main-chat count (D19).
+    const heldOnlyTask = task("t-hub-only-held", "needs_you", [screenHeld], { view: agentView("needs_you") });
+    const quietPlainScreenTask = task("t-quiet-scr", "needs_you", [screenCommand], { quiet: true, view: agentView("needs_you") });
+    expect(hubNeedsYou(heldOnlyTask.todo, () => false)).toBe(true);
+    expect(hubNeedsYou(quietPlainScreenTask.todo, () => false)).toBe(false);
+
     const withView = directUserWaiting([
       task("t-hub-scr", "needs_you", [screenHeld, screenCommand], { view: agentView("needs_you") }),
       task("t-hub-perm", "needs_you", [permHeld, permDirect], { view: agentView("needs_you") }),
-      task("t-hub-only-held", "needs_you", [screenHeld], { view: agentView("needs_you") }),
+      heldOnlyTask,
       task("t-hub-working", "needs_you", [screenHeld], { view: agentView("working") }),
       task("t-hub-lag", "needs_you", [screenEscalated], { view: agentView("working") }),
-      task("t-quiet-scr", "needs_you", [screenCommand], { quiet: true, view: agentView("needs_you") }),
+      quietPlainScreenTask,
+      task("t-quiet-scr-esc", "needs_you", [screenEscalated], { quiet: true, view: agentView("needs_you") }),
+      task("t-quiet-perm-esc", "needs_you", [permEscalated], { quiet: true, view: agentView("needs_you") }),
+      task("t-quiet-plan-esc", "needs_you", [planEscalated], { quiet: true, view: agentView("needs_you") }),
       task("t-quiet-held", "needs_you", [screenHeld], { quiet: true, view: agentView("needs_you") }),
       task("t-quiet-working-plain", "needs_you", [permDirect], { quiet: true, view: agentView("working") }),
       // An owner-decision task does not get hijacked by an unrelated unescalated permission unless view.asks names it.
@@ -145,10 +157,16 @@ describe("main conversation direct-user waiting", () => {
     expect(withView.map((i) => [i.key, i.kind === "task" ? i.asks.map((a) => a.id) : []])).toEqual([
       ["task:t-hub-scr", ["scr_cmd"]],
       ["task:t-hub-perm", ["ix_perm_hub"]],
+      ["task:t-hub-only-held", []],
       ["task:t-hub-lag", ["scr_1"]],
-      ["task:t-quiet-scr", ["scr_cmd"]],
+      ["task:t-quiet-scr-esc", ["scr_1"]],
+      ["task:t-quiet-perm-esc", ["ix_perm_esc"]],
+      ["task:t-quiet-plan-esc", ["ix_plan_esc"]],
       ["task:t-decision", []],
       ["task:t-decision-linked", ["ix_perm_hub"]],
     ]);
+    // Verify exact counts for the two D19 / one-number invariants on their own:
+    expect(directWaitingCount(directUserWaiting([quietPlainScreenTask]), [])).toBe(0);
+    expect(directWaitingCount(directUserWaiting([heldOnlyTask]), [])).toBe(1);
   });
 });

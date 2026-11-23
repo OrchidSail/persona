@@ -1227,9 +1227,18 @@ describe("Assistant Needs you / In progress trays", () => {
     expect(host.querySelector('[data-needs-row="task:tray-task"]')).toBeNull();
     act(() => entry("needs").click());
 
+    // Plain unescalated screen card on a quiet task (even with view needs_you / agent_asks): stays out of main chat
+    // Needs you per D19 until explicitly escalated via ask_escalate.
+    todo = { ...todo, quiet: true, view: { phase: "needs_you", section: "needs_you", reason: "agent_asks", rank: 0, asks: [{ id: "run:demo/worker", kind: "question", home: "run", interaction: screenID }] } };
+    moreInteractions = [{ ...baseScreen, delegating: false }];
+    await act(async () => {
+      await refresh();
+      await refreshTodos();
+    });
+    expect(entry("needs").textContent).toBe(label.needs);
+
     // Escalated via ask_escalate (`!delegating`, `delegate` set, hub view `needs_you` / `agent_asks`):
     // visible, counted, renders CommandScreenCard, and Allow resolves the exact screen card.
-    todo = { ...todo, quiet: true, view: { phase: "needs_you", section: "needs_you", reason: "agent_asks", rank: 0, asks: [{ id: "run:demo/worker", kind: "question", home: "run", interaction: screenID }] } };
     moreInteractions = [{ ...baseScreen, delegating: false, delegate: { reason: "Deleting build output needs owner approval", recommend: "Allow" } }];
     await act(async () => {
       await refresh();

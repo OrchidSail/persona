@@ -58,17 +58,13 @@ export function directUserWaiting(items: NeedsYouItem[], deferred: Record<string
     const hub = item.kind === "task" ? hubNeedsYou(item.todo, () => false) : undefined;
     if (item.kind === "task" && hub !== undefined) {
       if (hub) {
-        const asks = item.asks.filter((ix) => hubTaskInteraction(item.todo, ix));
-        if (asks.length || !item.asks.length || item.todo.view?.reason !== "agent_asks" || ownerDecision(item, deferred)) {
-          out.push({ ...item, asks });
-        }
+        out.push({ ...item, asks: item.asks.filter((ix) => hubTaskInteraction(item.todo, ix)) });
         continue;
       }
       // A quiet main-chat task is left out of the global To-dos badge (`hubNeedsYou` returns false), and a cached
-      // `todo.view` may briefly lag a live `ask_escalate` push: still surface cards explicitly escalated to the owner
-      // (and non-delegating agent asks on a quiet task whose hub view itself is in `needs_you`).
-      const quietNeeds = Boolean(item.todo.quiet && item.todo.view?.section === "needs_you");
-      const asks = item.asks.filter((ix) => !ix.delegating && (hasEscalationContext(ix) || (quietNeeds && hubTaskInteraction(item.todo, ix))));
+      // `todo.view` may briefly lag a live `ask_escalate` push: still surface cards explicitly escalated to the owner.
+      // Unescalated Agent permissions, plans and terminal dialogs on quiet tasks stay with the supervisor (D19).
+      const asks = item.asks.filter((ix) => !ix.delegating && hasEscalationContext(ix));
       if (asks.length) out.push({ ...item, asks });
       continue;
     }
