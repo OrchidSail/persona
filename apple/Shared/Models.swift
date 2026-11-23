@@ -2249,10 +2249,7 @@ extension Session {
         if state == .needsYou, let r = attentionReason, !r.isEmpty { return r } // a stale reason (offline, seen) stays out
         if state != .working, let r = failureReason, !r.isEmpty { return Session.failureText(r) }
         if let r = replyLine(muted: muted) { return r }
-        // The native Mac app is frozen (docs/apple/mac.md): its rows keep the line they had.
-        #if !os(macOS)
         if let c = closeoutPreview() { return c }
-        #endif
         if let w = workLine() { return w }
         return lastText.flatMap { $0.isEmpty ? nil : Fmt.plain($0) }
     }
@@ -2758,9 +2755,11 @@ nonisolated struct Item: Codable, Identifiable, Hashable, Sendable {
     var usage: [TokenUsage]? = nil
     /// Raw record identity for a text item with a positional ID, stable before clipping. Older nodes omit it.
     var sourceFingerprint: String? = nil
+    /// The model that wrote this assistant item, including tool work after the last words. Older hubs omit it.
+    var model: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, seq, ts, role, kind, text, image, queued, from, wake, fold, task, compact, injected, source, outcome, usage
+        case id, seq, ts, role, kind, text, image, queued, from, wake, fold, task, compact, injected, source, outcome, usage, model
         case modelRefusal = "model_refusal", narration, codexHeartbeatQuiet = "codex_heartbeat_quiet"
         case sourceFingerprint = "source_fingerprint"
         case toolUseID = "tool_use_id", toolName = "tool_name", toolInput = "tool_input", isError = "is_error", fullSize = "full_size",
