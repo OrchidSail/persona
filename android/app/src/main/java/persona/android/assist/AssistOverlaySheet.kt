@@ -1998,14 +1998,38 @@ internal interface AssistDictationController {
     fun stop()
 }
 
+/** Minimal engine contract around [SpeechRecognizer] so dictation fallback logic is unit-testable. */
+internal interface OverlaySpeechEngine {
+    fun setRecognitionListener(listener: RecognitionListener)
+    fun startListening(intent: Intent)
+    fun stopListening()
+    fun destroy()
+}
+
+private class PlatformOverlaySpeechEngine(
+    private val delegate: SpeechRecognizer,
+) : OverlaySpeechEngine {
+    override fun setRecognitionListener(listener: RecognitionListener) = delegate.setRecognitionListener(listener)
+    override fun startListening(intent: Intent) = delegate.startListening(intent)
+    override fun stopListening() = delegate.stopListening()
+    override fun destroy() = delegate.destroy()
+}
+
 /**
  * Overlay-safe voice dictation helper that never requires `LocalActivityResultRegistryOwner`
  * (which is unavailable inside a `VoiceInteractionSession`). Activates only when `RECORD_AUDIO`
  * is already granted and platform speech recognition is available; hides automatically otherwise.
+ *
+ * When started with the on-device recognizer on API 31+, seamlessly falls back once per handle
+ * session to the system default recognizer (`SpeechRecognizer.createSpeechRecognizer`) if the
+ * on-device engine does not support or have the requested locale (`ERROR_LANGUAGE_NOT_SUPPORTED` /
+ * `ERROR_LANGUAGE_UNAVAILABLE`) or fails to initialize/start while a system recognizer is available.
  */
-private class OverlayDictationHandle(
-    private val context: Context,
-    private val onDevice: Boolean,
+internal class OverlayDictationHandle(
+    private val preferOnDevice: Boolean,
+    private val hasSystemRecognizer: () -> Boolean,
+    private val createOnDeviceEngine: () -> OverlaySpeechEngine?,
+    private val createSystemEngine: () -> OverlaySpeechEngine?,
     private val intent: Intent,
     private val onHeard: () -> (String) -> Unit,
     private val onError: () -> (String) -> Unit,
@@ -2014,22 +2038,53 @@ private class OverlayDictationHandle(
     override var listening by mutableStateOf(false)
         private set
 
-    private var recognizer: SpeechRecognizer? = null
+    private var recognizer: OverlaySpeechEngine? = null
+    private var activeAttemptToken: Int = 0
+    private var fallenBackToSystem: Boolean = false
 
     override fun toggle() {
-        if (listening) stop() else start()
+        if (listening) stop() else start(useOnDevice = preferOnDevice && !fallenBackToSystem)
     }
 
-    private fun start() {
-        stop()
+    private fun start(useOnDevice: Boolean) {
+        releaseRecognizer()
         val speech = runCatching {
-            if (onDevice && Build.VERSION.SDK_INT >= 31) SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-            else SpeechRecognizer.createSpeechRecognizer(context)
-        }.getOrNull() ?: return
+            if (useOnDevice) createOnDeviceEngine() else createSystemEngine()
+        }.getOrNull()
+        if (speech == null) {
+            if (canFallbackToSystem(useOnDevice)) {
+                fallenBackToSystem = true
+                start(useOnDevice = false)
+            } else {
+                listening = false
+                onError().invoke(stoppedMessage)
+            }
+            return
+        }
+        val token = ++activeAttemptToken
         recognizer = speech
         listening = true
-        speech.setRecognitionListener(object : RecognitionListener {
+        val started = runCatching {
+            speech.setRecognitionListener(createListener(token = token, usingOnDevice = useOnDevice))
+            speech.startListening(intent)
+            true
+        }.getOrDefault(false)
+        if (!started) {
+            if (activeAttemptToken != token) return
+            if (canFallbackToSystem(useOnDevice)) {
+                fallenBackToSystem = true
+                start(useOnDevice = false)
+            } else {
+                stop()
+                onError().invoke(stoppedMessage)
+            }
+        }
+    }
+
+    private fun createListener(token: Int, usingOnDevice: Boolean): RecognitionListener =
+        object : RecognitionListener {
             override fun onResults(results: Bundle?) {
+                if (activeAttemptToken != token) return
                 val words = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     ?.firstOrNull()?.trim().orEmpty()
                 stop()
@@ -2037,6 +2092,12 @@ private class OverlayDictationHandle(
             }
 
             override fun onError(error: Int) {
+                if (activeAttemptToken != token) return
+                if (canFallbackToSystem(usingOnDevice) && isOnDeviceFallbackError(error)) {
+                    fallenBackToSystem = true
+                    start(useOnDevice = false)
+                    return
+                }
                 stop()
                 if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
                     onError().invoke(stoppedMessage)
@@ -2050,21 +2111,58 @@ private class OverlayDictationHandle(
             override fun onEndOfSpeech() = Unit
             override fun onPartialResults(partialResults: Bundle?) = Unit
             override fun onEvent(eventType: Int, params: Bundle?) = Unit
-        })
-        runCatching { speech.startListening(intent) }.onFailure {
-            stop()
-            onError().invoke(stoppedMessage)
         }
-    }
 
-    override fun stop() {
-        listening = false
+    private fun canFallbackToSystem(usingOnDevice: Boolean): Boolean =
+        usingOnDevice && !fallenBackToSystem && runCatching { hasSystemRecognizer() }.getOrDefault(false)
+
+    private fun isOnDeviceFallbackError(error: Int): Boolean =
+        Build.VERSION.SDK_INT >= 31 && (
+            error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED ||
+                error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE
+            )
+
+    private fun releaseRecognizer() {
+        activeAttemptToken++
         val current = recognizer
         recognizer = null
         if (current != null) {
             val _ = runCatching { current.stopListening() }
             val _ = runCatching { current.destroy() }
         }
+    }
+
+    override fun stop() {
+        listening = false
+        releaseRecognizer()
+    }
+
+    companion object {
+        internal fun forContext(
+            context: Context,
+            preferOnDevice: Boolean,
+            intent: Intent,
+            onHeard: () -> (String) -> Unit,
+            onError: () -> (String) -> Unit,
+            stoppedMessage: String,
+        ): OverlayDictationHandle = OverlayDictationHandle(
+            preferOnDevice = preferOnDevice,
+            hasSystemRecognizer = { SpeechRecognizer.isRecognitionAvailable(context) },
+            createOnDeviceEngine = {
+                if (Build.VERSION.SDK_INT >= 31) {
+                    PlatformOverlaySpeechEngine(SpeechRecognizer.createOnDeviceSpeechRecognizer(context))
+                } else {
+                    null
+                }
+            },
+            createSystemEngine = {
+                PlatformOverlaySpeechEngine(SpeechRecognizer.createSpeechRecognizer(context))
+            },
+            intent = intent,
+            onHeard = onHeard,
+            onError = onError,
+            stoppedMessage = stoppedMessage,
+        )
     }
 }
 
@@ -2108,9 +2206,9 @@ private fun rememberOverlayDictation(
         }
     }
     val handle = remember(context, onDevice, intent, stoppedMessage) {
-        OverlayDictationHandle(
+        OverlayDictationHandle.forContext(
             context = context,
-            onDevice = onDevice,
+            preferOnDevice = onDevice,
             intent = intent,
             onHeard = { latestHeard },
             onError = { latestError },
