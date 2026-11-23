@@ -11,12 +11,15 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.SoftwareKeyboardController
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.height
@@ -403,7 +406,7 @@ class AssistOverlaySheetUiTest {
     }
 
     @Test
-    fun longPressInputTogglesVoiceDictationWithoutBottomMicButtonAndFallsBackGracefully() {
+    fun longPressInputHoldToSpeakStreamsLivePartialPreviewAndFinishesGracefullyOnRelease() {
         val haptics = mutableListOf<HapticFeedbackType>()
         var keyboardShows = 0
         var keyboardHides = 0
@@ -436,7 +439,9 @@ class AssistOverlaySheetUiTest {
                         ui = uiState,
                         onDraftChange = { uiState = uiState.copy(draftText = it) },
                         onDictationHeard = { words ->
-                            uiState = uiState.copy(draftText = words)
+                            uiState = uiState.copy(
+                                draftText = persona.feature.chat.withDictation(uiState.draftText, words),
+                            )
                         },
                         onNotice = {},
                         onAttachScreen = {},
@@ -456,33 +461,68 @@ class AssistOverlaySheetUiTest {
         rule.onNodeWithText("Ask Persona · hold for voice").assertExists()
         assertEquals(0, keyboardShows)
 
-        // Long-pressing input hides soft keyboard, fires LongPress haptic, and enters listening mode.
-        rule.onNodeWithTag("assist-input-field").performTouchInput { longClick() }
+        // Seed an existing draft to prove live partial preview combines cleanly without dropping it.
+        rule.runOnIdle { uiState = uiState.copy(draftText = "Check") }
         rule.waitForIdle()
-        assertTrue("Long-press should start voice dictation", fakeDictation.listening)
+
+        // Press and hold past long-press timeout without releasing yet -> starts voice dictation.
+        rule.onNodeWithTag("assist-input-field").performTouchInput { down(center) }
+        rule.mainClock.advanceTimeBy(600L)
+        rule.waitForIdle()
+        assertTrue("Holding input should start voice dictation", fakeDictation.listening)
+        assertEquals(1, fakeDictation.startCount)
+        assertEquals(0, fakeDictation.finishCount)
+        assertEquals(0, fakeDictation.cancelCount)
         assertTrue("Long-press should fire LongPress haptic", haptics.contains(HapticFeedbackType.LongPress))
         assertTrue("Starting dictation should hide soft keyboard", keyboardHides >= 1)
         rule.onNodeWithTag("assist-dictate-listening").assertExists()
-        rule.onNodeWithText("Listening… Tap to stop").assertExists()
+        rule.onNodeWithText("Listening… Release to finish").assertExists()
 
-        // Tapping the listening bar stops dictation cleanly without auto-popping the keyboard.
-        rule.onNodeWithTag("assist-dictate-listening").performClick()
+        // Live partial results render immediately inside the listening bar combined with existing draft.
+        rule.runOnIdle { fakeDictation.emitPartial("today's weather") }
         rule.waitForIdle()
-        assertFalse("Tap on listening bar should stop dictation", fakeDictation.listening)
+        rule.onNodeWithTag("assist-dictate-partial", useUnmergedTree = true).assertExists()
+        rule.onNodeWithText("Check today's weather").assertExists()
+
+        // Releasing the finger calls graceful finish() (never hard cancel()), keeping preview until onResults commits.
+        rule.onRoot().performTouchInput { up() }
+        rule.waitForIdle()
+        assertEquals("Releasing hold must trigger graceful finish()", 1, fakeDictation.finishCount)
+        assertEquals("Releasing hold must never hard-cancel dictation", 0, fakeDictation.cancelCount)
+        assertTrue("Listening preview remains visible while awaiting final onResults", fakeDictation.listening)
+
+        // Once final results commit, handle exits listening cleanly without popping the keyboard.
+        rule.runOnIdle {
+            fakeDictation.completeResult()
+            uiState = uiState.copy(
+                draftText = persona.feature.chat.withDictation(uiState.draftText, "today's weather"),
+            )
+        }
+        rule.waitForIdle()
+        assertFalse(fakeDictation.listening)
         rule.onNodeWithTag("assist-input-field").assertExists()
+        assertEquals("Check today's weather", uiState.draftText)
         assertEquals(0, keyboardShows)
 
-        // Re-entering via long-press and stopping via a second long-press also works cleanly.
-        rule.onNodeWithTag("assist-input-field").performTouchInput { longClick() }
+        // Accessibility onLongClick starts dictation without a held pointer; tapping listening bar finishes gracefully.
+        rule.onNodeWithTag("assist-input-field").performSemanticsAction(SemanticsActions.OnLongClick)
         rule.waitForIdle()
+        assertEquals(2, fakeDictation.startCount)
         assertTrue(fakeDictation.listening)
-        rule.onNodeWithTag("assist-dictate-listening").performTouchInput { longClick() }
+        rule.onNodeWithTag("assist-dictate-listening").performClick()
         rule.waitForIdle()
-        assertFalse("Second long-press should stop dictation", fakeDictation.listening)
+        assertEquals("Tap on listening bar should invoke graceful finish()", 2, fakeDictation.finishCount)
+        assertEquals(0, fakeDictation.cancelCount)
+        rule.runOnIdle { fakeDictation.completeResult() }
+        rule.waitForIdle()
+        assertFalse(fakeDictation.listening)
         rule.onNodeWithTag("assist-input-field").assertExists()
 
         // When speech recognition is unavailable, placeholder gracefully falls back without mic UI.
-        rule.runOnIdle { dictationControl = null }
+        rule.runOnIdle {
+            uiState = uiState.copy(draftText = "")
+            dictationControl = null
+        }
         rule.waitForIdle()
         rule.onNodeWithText("Ask Persona…").assertExists()
         rule.onNodeWithTag("assist-dictate-button", useUnmergedTree = true).assertDoesNotExist()
@@ -565,8 +605,8 @@ class AssistOverlaySheetUiTest {
             1f,
         )
 
-        // Upward drag past 56dp threshold triggers detent haptic, stops dictation, and opens Persona.
-        rule.runOnIdle { fakeDictation.toggle() }
+        // Upward drag past 56dp threshold triggers detent haptic, cancels dictation, and opens Persona.
+        rule.runOnIdle { fakeDictation.start() }
         rule.waitForIdle()
         assertTrue(fakeDictation.listening)
         rule.onNodeWithTag("assist-composer-island").performTouchInput {
@@ -582,18 +622,21 @@ class AssistOverlaySheetUiTest {
             "Crossing swipe-up threshold should trigger light haptic feedback",
             haptics.contains(HapticFeedbackType.TextHandleMove),
         )
-        assertFalse("Swipe-up into Persona should stop active dictation", fakeDictation.listening)
+        assertFalse("Swipe-up into Persona should cancel active dictation", fakeDictation.listening)
+        assertEquals("Swipe-up should hard-cancel dictation rather than waiting for finish", 1, fakeDictation.cancelCount)
+        assertEquals(0, fakeDictation.finishCount)
         assertEquals(1, openedPersona)
         assertEquals(0, dismissed)
 
-        // Accessible click on top drag handle also opens full Persona (and stops dictation) without a bottom icon.
+        // Accessible click on top drag handle also opens full Persona (and cancels dictation) without a bottom icon.
         rule.onNodeWithTag("assist-open-in-persona", useUnmergedTree = true).assertDoesNotExist()
-        rule.runOnIdle { fakeDictation.toggle() }
+        rule.runOnIdle { fakeDictation.start() }
         rule.waitForIdle()
         assertTrue(fakeDictation.listening)
         rule.onNodeWithTag("assist-drag-handle").performClick()
         rule.waitForIdle()
-        assertFalse("Top drag handle accessibility action should stop active dictation", fakeDictation.listening)
+        assertFalse("Top drag handle accessibility action should cancel active dictation", fakeDictation.listening)
+        assertEquals(2, fakeDictation.cancelCount)
         assertEquals(2, openedPersona)
 
         // Downward drag past 48dp threshold dismisses cleanly.
@@ -647,15 +690,38 @@ class AssistOverlaySheetUiTest {
     private class FakeDictationController : AssistDictationController {
         override var listening by mutableStateOf(false)
             private set
-        var stopCount = 0
+        override var partialText by mutableStateOf("")
+            private set
+        var startCount = 0
+            private set
+        var finishCount = 0
+            private set
+        var cancelCount = 0
             private set
 
-        override fun toggle() {
-            if (listening) stop() else listening = true
+        override fun start() {
+            startCount++
+            partialText = ""
+            listening = true
         }
 
-        override fun stop() {
-            stopCount++
+        override fun finish() {
+            if (!listening) return
+            finishCount++
+        }
+
+        override fun cancel() {
+            cancelCount++
+            partialText = ""
+            listening = false
+        }
+
+        fun emitPartial(text: String) {
+            partialText = text
+        }
+
+        fun completeResult() {
+            partialText = ""
             listening = false
         }
     }

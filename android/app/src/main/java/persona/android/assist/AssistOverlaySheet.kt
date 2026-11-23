@@ -7,6 +7,8 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -243,6 +245,7 @@ internal fun AssistOverlaySheet(
 
     val dictation = dictationOverride ?: rememberOverlayDictation(onHeard = onDictationHeard, onError = onNotice)
     val dictating = dictation?.listening == true
+    val dictationPartialText = dictation?.partialText.orEmpty()
     val latestDictation by rememberUpdatedState(dictation)
     var composerFocused by remember(ui.invocationId) { mutableStateOf(false) }
 
@@ -348,12 +351,12 @@ internal fun AssistOverlaySheet(
                 expandHapticFired = false
                 when {
                     finalDrag >= dismissThresholdPx -> {
-                        latestDictation?.stop()
+                        latestDictation?.cancel()
                         latestKeyboardController?.hide()
                         latestOnDismiss()
                     }
                     !latestDeviceLocked && finalDrag <= -expandThresholdPx -> {
-                        latestDictation?.stop()
+                        latestDictation?.cancel()
                         latestKeyboardController?.hide()
                         latestOnOpenInPersona()
                     }
@@ -405,7 +408,7 @@ internal fun AssistOverlaySheet(
                     role = Role.Button,
                     onClickLabel = closeDescription,
                     onClick = {
-                        dictation?.stop()
+                        dictation?.cancel()
                         keyboardController?.hide()
                         onDismiss()
                     },
@@ -445,7 +448,7 @@ internal fun AssistOverlaySheet(
                         shape = cardShape,
                         swipeModifier = verticalDragModifier,
                         onUnlock = {
-                            dictation?.stop()
+                            dictation?.cancel()
                             keyboardController?.hide()
                             onUnlock()
                         },
@@ -476,7 +479,7 @@ internal fun AssistOverlaySheet(
                         cardShape = cardShape,
                         buttonShape = buttonShape,
                         onOpenInPersona = {
-                            dictation?.stop()
+                            dictation?.cancel()
                             keyboardController?.hide()
                             onOpenInPersona()
                         },
@@ -506,6 +509,7 @@ internal fun AssistOverlaySheet(
                         buttonShape = buttonShape,
                         personaState = personaState,
                         dictating = dictating,
+                        dictationPartialText = dictationPartialText,
                         focused = composerFocused || dictating,
                         aiActive = aiActive,
                         glowAlpha = glowAlpha,
@@ -519,7 +523,7 @@ internal fun AssistOverlaySheet(
                         onToggleModelPicker = onToggleModelPicker,
                         onCloseModelPicker = { latestOnCloseModelPicker() },
                         onOpenInPersona = {
-                            dictation?.stop()
+                            dictation?.cancel()
                             keyboardController?.hide()
                             onOpenInPersona()
                         },
@@ -527,16 +531,16 @@ internal fun AssistOverlaySheet(
                             {
                                 keyboardController?.hide()
                                 focusManager.clearFocus(force = true)
-                                if (!control.listening) control.toggle()
+                                control.start()
                             }
                         },
-                        onStopDictation = dictation?.let { control ->
+                        onFinishDictation = dictation?.let { control ->
                             {
-                                control.stop()
+                                control.finish()
                             }
                         },
                         onSend = {
-                            dictation?.stop()
+                            dictation?.cancel()
                             onSend()
                         },
                     )
@@ -672,6 +676,7 @@ private fun AssistUnifiedComposerCard(
     buttonShape: Shape,
     personaState: PersonaState,
     dictating: Boolean,
+    dictationPartialText: String,
     focused: Boolean,
     aiActive: Boolean,
     glowAlpha: Float,
@@ -686,7 +691,7 @@ private fun AssistUnifiedComposerCard(
     onCloseModelPicker: () -> Unit,
     onOpenInPersona: () -> Unit,
     onStartVoiceInput: (() -> Unit)?,
-    onStopDictation: (() -> Unit)?,
+    onFinishDictation: (() -> Unit)?,
     onSend: () -> Unit,
 ) {
     val palette = PersonaTheme.palette
@@ -696,7 +701,7 @@ private fun AssistUnifiedComposerCard(
     val personaName = LocalPersonaName.current
     val tonalFill = assistTonalFill(style)
     val inputEnabled = !ui.sending && ui.hubStatus != AssistHubStatus.Unpaired
-    val voiceAvailable = onStartVoiceInput != null && onStopDictation != null
+    val voiceAvailable = onStartVoiceInput != null && onFinishDictation != null
     val defaultShortLabel = stringResource(R.string.app_assist_model_default_short)
     val openInPersonaLabel = stringResource(R.string.app_assist_open_in_persona)
     val dictateLabel = stringResource(R.string.app_assist_dictate)
@@ -717,7 +722,7 @@ private fun AssistUnifiedComposerCard(
     val latestDictating by rememberUpdatedState(dictating)
     val latestHaptic by rememberUpdatedState(haptic)
     val latestOnStartVoiceInput by rememberUpdatedState(onStartVoiceInput)
-    val latestOnStopDictation by rememberUpdatedState(onStopDictation)
+    val latestOnFinishDictation by rememberUpdatedState(onFinishDictation)
 
     val glassOrbBrush = remember(palette.ai, palette.accent, palette.surface, palette.dark) {
         Brush.radialGradient(
@@ -858,25 +863,20 @@ private fun AssistUnifiedComposerCard(
                                             if (endedEarly == null && !movedOrMultiTouch) {
                                                 latestHaptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                                 if (startedDictating) {
-                                                    latestOnStopDictation?.invoke()
+                                                    latestOnFinishDictation?.invoke()
                                                 } else {
                                                     latestOnStartVoiceInput?.invoke()
                                                 }
-                                                // Swallow the rest of this gesture so lifting the finger never
-                                                // triggers selection menus or accidentally stops listening.
+                                                // Swallow pointer events while held so BasicTextField never opens a
+                                                // selection menu; releasing all pointers finishes hold-to-speak gracefully.
                                                 while (true) {
                                                     val event = awaitPointerEvent(PointerEventPass.Initial)
                                                     event.changes.forEach { it.consume() }
                                                     if (!event.changes.any { it.pressed }) break
                                                 }
-                                            }
-                                        }
-                                    }
-                                    .semantics {
-                                        if (inputEnabled && !dictating) {
-                                            onLongClick(label = dictateLabel) {
-                                                latestOnStartVoiceInput?.invoke()
-                                                true
+                                                if (!startedDictating) {
+                                                    latestOnFinishDictation?.invoke()
+                                                }
                                             }
                                         }
                                     }
@@ -887,7 +887,14 @@ private fun AssistUnifiedComposerCard(
                         .padding(horizontal = Tokens.Space.xs, vertical = Tokens.Space.xs),
                     contentAlignment = Alignment.CenterStart,
                 ) {
-                    if (dictating && onStopDictation != null) {
+                    if (dictating && onFinishDictation != null) {
+                        val livePreview = remember(ui.draftText, dictationPartialText) {
+                            if (dictationPartialText.isNotBlank()) {
+                                persona.feature.chat.withDictation(ui.draftText, dictationPartialText)
+                            } else {
+                                ui.draftText
+                            }
+                        }
                         val pulseAlpha = if (!reduceMotion) {
                             val transition = rememberInfiniteTransition(label = "assist-dictate-pulse")
                             transition.animateFloat(
@@ -915,7 +922,7 @@ private fun AssistUnifiedComposerCard(
                                 .clickable(
                                     role = Role.Button,
                                     onClickLabel = stopDictateLabel,
-                                    onClick = onStopDictation,
+                                    onClick = onFinishDictation,
                                 )
                                 .semantics {
                                     contentDescription = stopDictateLabel
@@ -946,18 +953,23 @@ private fun AssistUnifiedComposerCard(
                             ) {
                                 Text(
                                     text = stringResource(R.string.app_assist_dictate_listening),
-                                    style = type.body.copy(fontWeight = FontWeight.Medium),
+                                    style = if (livePreview.isNotBlank()) {
+                                        type.caption.copy(fontWeight = FontWeight.Medium)
+                                    } else {
+                                        type.body.copy(fontWeight = FontWeight.Medium)
+                                    },
                                     color = palette.accent,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
-                                if (ui.draftText.isNotBlank()) {
+                                if (livePreview.isNotBlank()) {
                                     Text(
-                                        text = ui.draftText,
-                                        style = type.caption,
-                                        color = palette.ink2,
-                                        maxLines = 1,
+                                        text = livePreview,
+                                        style = if (dictationPartialText.isNotBlank()) type.body else type.caption,
+                                        color = if (dictationPartialText.isNotBlank()) palette.ink else palette.ink2,
+                                        maxLines = 2,
                                         overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.testTag("assist-dictate-partial"),
                                     )
                                 }
                             }
@@ -984,6 +996,18 @@ private fun AssistUnifiedComposerCard(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .onFocusChanged { onFocusChange(it.isFocused) }
+                                .then(
+                                    if (voiceAvailable && inputEnabled && !dictating) {
+                                        Modifier.semantics {
+                                            onLongClick(label = dictateLabel) {
+                                                latestOnStartVoiceInput?.invoke()
+                                                true
+                                            }
+                                        }
+                                    } else {
+                                        Modifier
+                                    },
+                                )
                                 .testTag("assist-input-field"),
                         )
                     }
@@ -1991,14 +2015,43 @@ private fun AssistStreamingTranscript(
     }
 }
 
+internal const val OVERLAY_DICTATION_FINISH_TIMEOUT_MS = 2_500L
+private const val EXTRA_UNSTABLE_TEXT = "android.speech.extra.UNSTABLE_TEXT"
+
+private fun extractResultsWords(results: Bundle?): String =
+    results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+        ?.firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+
+private fun extractPartialWords(partialResults: Bundle?): String {
+    if (partialResults == null) return ""
+    val stable = extractResultsWords(partialResults)
+    val unstable = partialResults.getStringArrayList(EXTRA_UNSTABLE_TEXT)
+        ?.firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+    return when {
+        unstable.isEmpty() -> stable
+        stable.isEmpty() -> unstable
+        stable.endsWith(unstable) -> stable
+        else -> persona.feature.chat.withDictation(stable, unstable)
+    }
+}
+
+private fun defaultMainTimeoutScheduler(): (Long, () -> Unit) -> () -> Unit = { delayMs, onTimeout ->
+    val handler = Handler(Looper.getMainLooper())
+    val runnable = Runnable { onTimeout() }
+    val _ = handler.postDelayed(runnable, delayMs)
+    { handler.removeCallbacks(runnable) }
+}
+
 /** Controls voice dictation inside the Digital Assistant overlay without requiring Activity result APIs. */
 internal interface AssistDictationController {
     val listening: Boolean
-    fun toggle()
-    fun stop()
+    val partialText: String get() = ""
+    fun start()
+    fun finish()
+    fun cancel()
 }
 
-/** Minimal engine contract around [SpeechRecognizer] so dictation fallback logic is unit-testable. */
+/** Minimal engine contract around [SpeechRecognizer] so dictation fallback and lifecycle logic are unit-testable. */
 internal interface OverlaySpeechEngine {
     fun setRecognitionListener(listener: RecognitionListener)
     fun startListening(intent: Intent)
@@ -2020,6 +2073,11 @@ private class PlatformOverlaySpeechEngine(
  * (which is unavailable inside a `VoiceInteractionSession`). Activates only when `RECORD_AUDIO`
  * is already granted and platform speech recognition is available; hides automatically otherwise.
  *
+ * Separates graceful [finish] (stops mic capture and waits up to [finishTimeoutMs] for final
+ * `onResults`, falling back to latest non-empty [partialText] if the engine times out or emits
+ * `ERROR_NO_MATCH` / `ERROR_SPEECH_TIMEOUT`) from immediate [cancel] (tears down and destroys
+ * immediately, dropping any late callbacks).
+ *
  * When started with the on-device recognizer on API 31+, seamlessly falls back once per handle
  * session to the system default recognizer (`SpeechRecognizer.createSpeechRecognizer`) if the
  * on-device engine does not support or have the requested locale (`ERROR_LANGUAGE_NOT_SUPPORTED` /
@@ -2034,36 +2092,80 @@ internal class OverlayDictationHandle(
     private val onHeard: () -> (String) -> Unit,
     private val onError: () -> (String) -> Unit,
     private val stoppedMessage: String,
+    private val finishTimeoutMs: Long = OVERLAY_DICTATION_FINISH_TIMEOUT_MS,
+    private val scheduleTimeout: (Long, () -> Unit) -> () -> Unit = defaultMainTimeoutScheduler(),
 ) : AssistDictationController {
-    override var listening by mutableStateOf(false)
+    private enum class State { Idle, Listening, Finishing }
+
+    private var state by mutableStateOf(State.Idle)
+
+    override val listening: Boolean
+        get() = state != State.Idle
+
+    override var partialText by mutableStateOf("")
         private set
 
     private var recognizer: OverlaySpeechEngine? = null
     private var activeAttemptToken: Int = 0
     private var fallenBackToSystem: Boolean = false
+    private var pendingFinishTimeout: (() -> Unit)? = null
 
-    override fun toggle() {
-        if (listening) stop() else start(useOnDevice = preferOnDevice && !fallenBackToSystem)
+    override fun start() {
+        if (state == State.Listening) return
+        if (state == State.Finishing) {
+            completeFromFinishing(deliverPartial = true)
+        }
+        startEngine(useOnDevice = preferOnDevice && !fallenBackToSystem)
     }
 
-    private fun start(useOnDevice: Boolean) {
-        releaseRecognizer()
+    override fun finish() {
+        if (state != State.Listening) return
+        val current = recognizer
+        if (current == null) {
+            completeFromFinishing(deliverPartial = true)
+            return
+        }
+        val token = activeAttemptToken
+        state = State.Finishing
+        cancelPendingTimeout()
+        pendingFinishTimeout = scheduleTimeout(finishTimeoutMs) {
+            if (activeAttemptToken == token && state == State.Finishing) {
+                completeFromFinishing(deliverPartial = true)
+            }
+        }
+        val stopped = runCatching {
+            current.stopListening()
+            true
+        }.getOrDefault(false)
+        if (!stopped && activeAttemptToken == token && state == State.Finishing) {
+            completeFromFinishing(deliverPartial = true)
+        }
+    }
+
+    override fun cancel() {
+        teardown(stopBeforeDestroy = true)
+    }
+
+    private fun startEngine(useOnDevice: Boolean) {
+        teardown(stopBeforeDestroy = true)
         val speech = runCatching {
             if (useOnDevice) createOnDeviceEngine() else createSystemEngine()
         }.getOrNull()
         if (speech == null) {
             if (canFallbackToSystem(useOnDevice)) {
                 fallenBackToSystem = true
-                start(useOnDevice = false)
+                startEngine(useOnDevice = false)
             } else {
-                listening = false
+                state = State.Idle
+                partialText = ""
                 onError().invoke(stoppedMessage)
             }
             return
         }
         val token = ++activeAttemptToken
         recognizer = speech
-        listening = true
+        partialText = ""
+        state = State.Listening
         val started = runCatching {
             speech.setRecognitionListener(createListener(token = token, usingOnDevice = useOnDevice))
             speech.startListening(intent)
@@ -2073,9 +2175,9 @@ internal class OverlayDictationHandle(
             if (activeAttemptToken != token) return
             if (canFallbackToSystem(useOnDevice)) {
                 fallenBackToSystem = true
-                start(useOnDevice = false)
+                startEngine(useOnDevice = false)
             } else {
-                stop()
+                teardown(stopBeforeDestroy = true)
                 onError().invoke(stoppedMessage)
             }
         }
@@ -2083,11 +2185,18 @@ internal class OverlayDictationHandle(
 
     private fun createListener(token: Int, usingOnDevice: Boolean): RecognitionListener =
         object : RecognitionListener {
+            override fun onPartialResults(partialResults: Bundle?) {
+                if (activeAttemptToken != token) return
+                val words = extractPartialWords(partialResults)
+                if (words.isNotEmpty()) {
+                    partialText = words
+                }
+            }
+
             override fun onResults(results: Bundle?) {
                 if (activeAttemptToken != token) return
-                val words = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    ?.firstOrNull()?.trim().orEmpty()
-                stop()
+                val words = extractResultsWords(results).ifEmpty { partialText.trim() }
+                teardown(stopBeforeDestroy = false)
                 if (words.isNotEmpty()) onHeard().invoke(words)
             }
 
@@ -2095,10 +2204,22 @@ internal class OverlayDictationHandle(
                 if (activeAttemptToken != token) return
                 if (canFallbackToSystem(usingOnDevice) && isOnDeviceFallbackError(error)) {
                     fallenBackToSystem = true
-                    start(useOnDevice = false)
+                    if (state == State.Listening) {
+                        startEngine(useOnDevice = false)
+                    } else {
+                        completeFromFinishing(deliverPartial = true)
+                    }
                     return
                 }
-                stop()
+                val rescuePartial = state == State.Finishing ||
+                    error == SpeechRecognizer.ERROR_NO_MATCH ||
+                    error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+                val fallbackWords = if (rescuePartial) partialText.trim() else ""
+                teardown(stopBeforeDestroy = false)
+                if (fallbackWords.isNotEmpty()) {
+                    onHeard().invoke(fallbackWords)
+                    return
+                }
                 if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
                     onError().invoke(stoppedMessage)
                 }
@@ -2109,7 +2230,6 @@ internal class OverlayDictationHandle(
             override fun onRmsChanged(rmsdB: Float) = Unit
             override fun onBufferReceived(buffer: ByteArray?) = Unit
             override fun onEndOfSpeech() = Unit
-            override fun onPartialResults(partialResults: Bundle?) = Unit
             override fun onEvent(eventType: Int, params: Bundle?) = Unit
         }
 
@@ -2122,19 +2242,31 @@ internal class OverlayDictationHandle(
                 error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE
             )
 
-    private fun releaseRecognizer() {
+    private fun completeFromFinishing(deliverPartial: Boolean) {
+        val words = if (deliverPartial) partialText.trim() else ""
+        teardown(stopBeforeDestroy = false)
+        if (words.isNotEmpty()) onHeard().invoke(words)
+    }
+
+    private fun cancelPendingTimeout() {
+        val cancelTimer = pendingFinishTimeout
+        pendingFinishTimeout = null
+        cancelTimer?.invoke()
+    }
+
+    private fun teardown(stopBeforeDestroy: Boolean) {
         activeAttemptToken++
+        cancelPendingTimeout()
+        state = State.Idle
+        partialText = ""
         val current = recognizer
         recognizer = null
         if (current != null) {
-            val _ = runCatching { current.stopListening() }
+            if (stopBeforeDestroy) {
+                val _ = runCatching { current.stopListening() }
+            }
             val _ = runCatching { current.destroy() }
         }
-    }
-
-    override fun stop() {
-        listening = false
-        releaseRecognizer()
     }
 
     companion object {
@@ -2218,12 +2350,12 @@ private fun rememberOverlayDictation(
 
     DisposableEffect(lifecycle, handle) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) handle.stop()
+            if (event == Lifecycle.Event.ON_STOP) handle.cancel()
         }
         lifecycle.addObserver(observer)
         onDispose {
             lifecycle.removeObserver(observer)
-            handle.stop()
+            handle.cancel()
         }
     }
     return handle

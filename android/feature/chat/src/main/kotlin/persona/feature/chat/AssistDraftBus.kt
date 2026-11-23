@@ -2,6 +2,10 @@ package persona.feature.chat
 
 import android.content.Context
 import android.os.SystemClock
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -259,4 +263,36 @@ suspend fun applyAssistDraft(
         onPhotoLimit()
     }
     return result
+}
+
+/** Keeps [ChatPage] below the ART compile limit (#13747) while applying pending digital-assistant drafts. */
+@Composable
+internal fun BindPendingAssistDraft(
+    key: SessionKey,
+    context: Context,
+    composer: ChatComposerState,
+    readOnly: Boolean,
+    canSend: Boolean,
+    existingContextIds: () -> Set<String>,
+    onContext: (ChatLinkContext) -> Unit,
+    onPhotoLimit: () -> Unit,
+) {
+    val pendingAssist by AssistDraftBus.pending.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingAssist, composer.draftLoaded, readOnly, canSend, key) {
+        val draft = pendingAssist ?: return@LaunchedEffect
+        if (draft.target != AssistDraftTarget.Session(key) || !draft.hasUnappliedContent) return@LaunchedEffect
+        if (!composer.draftLoaded || readOnly || !canSend) return@LaunchedEffect
+        val result = applyAssistDraft(
+            context = context,
+            composer = composer,
+            draft = draft,
+            bus = AssistDraftBus,
+            existingContextIds = existingContextIds(),
+            onContext = onContext,
+            onPhotoLimit = onPhotoLimit,
+        )
+        if (result.screenshotAdded || result.contextAdded) {
+            composer.focusRequest++
+        }
+    }
 }

@@ -137,7 +137,7 @@
     <string name="app_assist_send_failed">送信できませんでした</string>
     <string name="app_assist_dictate">音声入力</string>
     <string name="app_assist_dictate_stop">音声入力を停止</string>
-    <string name="app_assist_dictate_listening">聞き取り中… タップで停止</string>
+    <string name="app_assist_dictate_listening">聞き取り中… 離して完了</string>
     <string name="app_assist_dictate_stopped">音声入力が停止しました</string>
     <string name="app_assist_delivery_sending">送信中…</string>
     <string name="app_assist_delivery_queued">送信待ち</string>
