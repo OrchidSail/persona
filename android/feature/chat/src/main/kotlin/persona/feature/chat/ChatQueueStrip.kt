@@ -17,6 +17,9 @@ import persona.core.designsystem.rememberCopy
 import persona.core.designsystem.QueueStrip
 import persona.core.designsystem.icons.PersonaIcons
 import persona.core.designsystem.operationFeedback
+import persona.core.designsystem.resolve
+import persona.core.domain.MessageContext
+import persona.core.domain.contextSummary
 import persona.core.domain.sort.canSend
 import persona.core.domain.sort.ownQueued
 import persona.core.domain.sort.steersQueue
@@ -106,6 +109,7 @@ internal fun ChatQueueStrip(
     onNotice: (String) -> Unit,
     refresh: suspend () -> Unit,
     initiallyExpanded: Boolean = false,
+    onRestoreContexts: (List<ChatLinkContext>) -> Unit = {},
 ) {
     val queued = session?.queued.orEmpty()
     if (session == null || queued.isEmpty()) return
@@ -145,10 +149,11 @@ internal fun ChatQueueStrip(
             if (delete) { onNotice(resources.getString(R.string.chat_queue_deleted)); return@operate }
             val taken = pulled.queue.getOrNull(index)
             if (taken == null) { onNotice(resources.getString(R.string.chat_queue_not_found)); return@operate }
-            composer.restoreQueued(taken)
             // A Persona conversation's photos come beside the queue as base64 (the words carry no paths for them): they
             // go back into the draft as photos, and what could not is said (iOS `restoreQueued`).
             val photos = pulled.imagesOf(index)
+            val restoredContexts = composer.restoreQueued(taken, photosBeside = photos.size)
+            if (restoredContexts.isNotEmpty()) onRestoreContexts(restoredContexts)
             val restored = if (photos.isEmpty()) null else withContext(Dispatchers.IO) { restoredPhotos(context, photos) }
             restored?.let { composer.restorePhotos(it.attachments) }
             onNotice(if (restored != null && restored.lost > 0) resources.getQuantityString(R.plurals.chat_queue_photos_lost, restored.lost, restored.lost)
@@ -169,15 +174,19 @@ internal fun ChatQueueStrip(
         ?: stringResource(R.string.chat_queue_send_now_message)
     val photoMark = stringResource(R.string.chat_composer_photo_placeholder)
     val videoMark = stringResource(R.string.chat_composer_video_placeholder)
+    val contextLabel: (List<MessageContext>) -> String = { contextSummary(it).resolve(resources) }
     // Glass says how many photos a Persona message carries under its words (iOS's "N images", from what this phone sent), not as a mark among them.
     val photoCounts = if (persona != null && PersonaTheme.style == AppStyle.Glass) queued.take(own).mapIndexed { _, text -> composerPhotoCount(text) }
         else emptyList()
     // The owner's own rows and the ones other conversations sent in are separate: since #6394 the latter collapse to
     // one summary line inside QueueStrip instead of spreading over the composer.
-    val ownItems = queued.take(own).mapIndexed { index, text ->
-        composerMessagePreview(text, if (photoCounts.getOrElse(index) { 0 } > 0) "" else photoMark, videoMark)
+    val ownEntries = queued.take(own).mapIndexed { index, text ->
+        val preview = composerMessagePreview(text, if (photoCounts.getOrElse(index) { 0 } > 0) "" else photoMark, videoMark, contextLabel)
+        preview to composerContextNote(text, preview, contextLabel)
     }
-    val relayedItems = queued.drop(own).map { text -> composerMessagePreview(text, photoMark, videoMark) }
+    val ownItems = ownEntries.map { it.first }
+    val ownNotes = ownEntries.map { it.second }
+    val relayedItems = queued.drop(own).map { text -> composerMessagePreview(text, photoMark, videoMark, contextLabel) }
     val relayedSummary = relayedItems.takeIf { it.isNotEmpty() }?.let {
         resources.getQuantityString(R.plurals.chat_queue_relayed_summary, it.size, it.size)
     }
@@ -189,6 +198,7 @@ internal fun ChatQueueStrip(
             onItem = { index -> queued.getOrNull(index)?.let { picked = index to it } }, busy = busy, enabled = enabled,
             sendNow = sendNowLabel.takeIf { steers && own > 0 },
             sendNowDescription = sendNowDescription.takeIf { steers && own > 0 }, onSendNow = { sendNow() },
+            notes = ownNotes,
             initiallyExpanded = initiallyExpanded, photos = photoCounts,
             relayedItems = relayedItems, relayedSummary = relayedSummary,
             onRelayedItem = { index -> queued.getOrNull(index)?.let { picked = index to it } })
@@ -212,7 +222,7 @@ internal fun ChatQueueStrip(
                 QueueAction.Edit -> edit(index, delete = false)
                 QueueAction.MoveUp -> move(index, -1)
                 QueueAction.MoveDown -> move(index, 1)
-                QueueAction.Copy -> copy(text, null)
+                QueueAction.Copy -> copy(composerMessageCopyText(text, photoMark, videoMark, contextLabel), null)
                 QueueAction.Delete -> edit(index, delete = true)
             }
         }

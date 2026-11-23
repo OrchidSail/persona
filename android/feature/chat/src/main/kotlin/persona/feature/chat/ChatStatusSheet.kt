@@ -123,7 +123,7 @@ internal fun ChatStatusSheet(
             if (queued.isNotEmpty()) item { JSectionHeader(stringResource(R.string.chat_status_queued), count = queued.size) }
             itemsIndexed(queued) { index, message ->
                 JGroupItem(GroupPosition.of(index, queued.size)) {
-                    JRow(message, leadingIcon = PhIcons.Clock, subtitle = stringResource(R.string.chat_status_waiting))
+                    JRow(composerMessagePreview(message), leadingIcon = PhIcons.Clock, subtitle = stringResource(R.string.chat_status_waiting))
                 }
             }
             session?.loop?.let { loop -> item {
