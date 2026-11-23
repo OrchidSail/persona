@@ -313,8 +313,8 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
         hideKeyboard()
         if (::controller.isInitialized) controller.endSession()
         if (::bridge.isInitialized) bridge.stop()
-        runCatching { hide() }
-        runCatching { finish() }
+        val _ = runCatching { hide() }
+        val _ = runCatching { finish() }
     }
 
     private fun hideKeyboard() {
@@ -324,7 +324,7 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
             ?: window?.window?.peekDecorView()
         targetView?.clearFocus()
         val token = targetView?.windowToken ?: return
-        runCatching {
+        val _ = runCatching {
             context.getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(token, 0)
         }
     }
@@ -351,7 +351,7 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
             true
         }.getOrDefault(false)
         if (!launched) {
-            runCatching { context.startActivity(intent) }
+            val _ = runCatching { context.startActivity(intent) }
         }
     }
 
@@ -379,7 +379,7 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
             true
         }.getOrDefault(false)
         if (!launched) {
-            runCatching { context.startActivity(intent) }
+            val _ = runCatching { context.startActivity(intent) }
         }
         dismissOverlay()
     }

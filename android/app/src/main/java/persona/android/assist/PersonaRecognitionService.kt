@@ -10,12 +10,12 @@ import android.speech.SpeechRecognizer
  */
 class PersonaRecognitionService : RecognitionService() {
     override fun onStartListening(recognizerIntent: Intent?, listener: Callback?) {
-        runCatching { listener?.error(SpeechRecognizer.ERROR_CLIENT) }
+        val _ = runCatching { listener?.error(SpeechRecognizer.ERROR_CLIENT) }
     }
 
     override fun onCancel(listener: Callback?) = Unit
 
     override fun onStopListening(listener: Callback?) {
-        runCatching { listener?.error(SpeechRecognizer.ERROR_CLIENT) }
+        val _ = runCatching { listener?.error(SpeechRecognizer.ERROR_CLIENT) }
     }
 }

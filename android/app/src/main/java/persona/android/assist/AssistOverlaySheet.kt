@@ -2062,8 +2062,8 @@ private class OverlayDictationHandle(
         val current = recognizer
         recognizer = null
         if (current != null) {
-            runCatching { current.stopListening() }
-            runCatching { current.destroy() }
+            val _ = runCatching { current.stopListening() }
+            val _ = runCatching { current.destroy() }
         }
     }
 }

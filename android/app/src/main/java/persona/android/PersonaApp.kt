@@ -100,7 +100,7 @@ class PersonaApp : Application() {
         restorePairing()
         errorReporting.start(scope, hub)
         scope.launch(Dispatchers.IO) {
-            runCatching { persona.android.assist.AssistScreenshotStore.pruneExpired(this@PersonaApp) }
+            val _ = runCatching { persona.android.assist.AssistScreenshotStore.pruneExpired(this@PersonaApp) }
         }
         scope.launch {
             connection.state.map { it == persona.core.contracts.api.ConnectionState.Online }.distinctUntilChanged()

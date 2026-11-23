@@ -487,7 +487,7 @@ internal class AssistOverlayController(
                 null
             }
             if (!invocationOpen || invocationId != activeId || captureDiscardedForInvocation || deviceLockedForInvocation) {
-                if (saved != null) runCatching { deleteScreenshot(saved) }
+                if (saved != null) { val _ = runCatching { deleteScreenshot(saved) } }
                 return@launch
             }
             if (saved == null) {
@@ -532,7 +532,7 @@ internal class AssistOverlayController(
             )
         }
         if (previous != null) {
-            mainScope.launch { runCatching { deleteScreenshot(previous) } }
+            mainScope.launch { val _ = runCatching { deleteScreenshot(previous) } }
         }
     }
 
@@ -619,7 +619,7 @@ internal class AssistOverlayController(
                 }
 
                 if (!invocationOpen || invocationId != activeId) {
-                    if (screenshot != null) runCatching { deleteScreenshot(screenshot) }
+                    if (screenshot != null) { val _ = runCatching { deleteScreenshot(screenshot) } }
                     return@launch
                 }
                 sentTurns += SentOverlayTurn(
@@ -628,7 +628,7 @@ internal class AssistOverlayController(
                     hasScreenAttachment = screenshot != null,
                 )
                 if (screenshot != null) {
-                    runCatching { deleteScreenshot(screenshot) }
+                    val _ = runCatching { deleteScreenshot(screenshot) }
                 }
                 // Release staged capture immediately after any successful turn (text-only or with screen).
                 releaseStagedCaptureOnly()
@@ -802,7 +802,7 @@ internal class AssistOverlayController(
         stagedContextFocused = false
 
         if (deleteAttached && attachedToDelete != null && attachedToDelete !== handedOffAttachment) {
-            mainScope.launch { runCatching { deleteScreenshot(attachedToDelete) } }
+            mainScope.launch { val _ = runCatching { deleteScreenshot(attachedToDelete) } }
         }
         oldStaged?.safeRecycle()
     }
@@ -932,5 +932,5 @@ internal fun stripOverlayWireTags(raw: String): StrippedWireMessage {
 }
 
 private fun Bitmap.safeRecycle() {
-    if (!isRecycled) runCatching { recycle() }
+    if (!isRecycled) { val _ = runCatching { recycle() } }
 }

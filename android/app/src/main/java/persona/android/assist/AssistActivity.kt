@@ -43,7 +43,7 @@ class AssistActivity : ComponentActivity() {
             scope = lifecycleScope,
             bridge = bridge,
             launchFullApp = { targetSession ->
-                runCatching { startActivity(assistMainIntent(this, targetSession)) }
+                val _ = runCatching { startActivity(assistMainIntent(this, targetSession)) }
             },
             dismiss = { finish() },
         )
@@ -104,7 +104,7 @@ class AssistActivity : ComponentActivity() {
     private fun requestUnlock() {
         val km = getSystemService(KeyguardManager::class.java)
         if (km != null && (km.isKeyguardLocked || km.isDeviceLocked)) {
-            runCatching {
+            val _ = runCatching {
                 km.requestDismissKeyguard(
                     this,
                     object : KeyguardManager.KeyguardDismissCallback() {
@@ -124,7 +124,7 @@ class AssistActivity : ComponentActivity() {
         val target = Intent(Intent.ACTION_VIEW, Uri.parse(uri)).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        runCatching { startActivity(target) }
+        val _ = runCatching { startActivity(target) }
         controller.endSession()
         finish()
     }

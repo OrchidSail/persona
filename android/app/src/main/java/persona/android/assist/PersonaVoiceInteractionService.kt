@@ -12,7 +12,7 @@ import android.service.voice.VoiceInteractionService
  */
 class PersonaVoiceInteractionService : VoiceInteractionService() {
     override fun onLaunchVoiceAssistFromKeyguard() {
-        runCatching {
+        val _ = runCatching {
             showSession(Bundle(), 0)
         }
     }

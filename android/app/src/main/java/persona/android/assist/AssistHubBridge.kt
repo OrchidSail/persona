@@ -69,7 +69,7 @@ internal class AssistHubBridge(
     private var modelChoiceJob: Job? = null
 
     fun wakeHub() {
-        runCatching { entryPoint?.assistConnections()?.wake() }
+        val _ = runCatching { entryPoint?.assistConnections()?.wake() }
     }
 
     /** Switches live transcript observation to a dedicated overlay [session] (or null to follow main chat). */
