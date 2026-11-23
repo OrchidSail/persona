@@ -29,13 +29,13 @@ export function weeklyResetMs(a: Pick<UsageAccount, "windows">): number {
   return Number.isFinite(at) ? at : Infinity;
 }
 
-/** A card's accounts: the soonest 7d reset first; accounts without one last, then by name. */
+/** A card's accounts: the soonest 7d reset first; accounts without one last, then by name (case-insensitive) and id. */
 export function sortForCard(accounts: UsageAccount[]): UsageAccount[] {
   return [...accounts].sort((a, b) => {
     const x = weeklyResetMs(a);
     const y = weeklyResetMs(b);
     if (x !== y) return x < y ? -1 : 1;
-    return a.name.localeCompare(b.name);
+    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
   });
 }
 
