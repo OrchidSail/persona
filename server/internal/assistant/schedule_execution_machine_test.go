@@ -18,6 +18,7 @@ func TestRecurringTaskKeepsItsConversationDuringLauncherDiscoveryFailure(t *test
 	setModel(t, s, "task.job", ModelBinding{Provider: "launcher.codex", Model: "task-model"})
 
 	catalog := func(baseURL string) {
+		s.invalidateLauncherListCache("server")
 		f.answerNode(DeviceLaunchersList, func(string, json.RawMessage) (any, error) {
 			return map[string]any{"launchers": []proto.Launcher{{Name: "codex", Agent: "codex", Source: "zshrc", BaseURL: baseURL}}}, nil
 		})
@@ -55,6 +56,7 @@ func TestRecurringTaskKeepsItsConversationDuringLauncherDiscoveryFailure(t *test
 	if first.Execution.Fingerprint == "" || first.Execution.BindingFingerprint == "" {
 		t.Fatalf("missing observed execution: %+v", first.Execution)
 	}
+	s.invalidateLauncherListCache("server")
 	f.answerNode(DeviceLaunchersList, func(string, json.RawMessage) (any, error) {
 		return nil, errors.New("synthetic catalog unavailable")
 	})
@@ -69,10 +71,12 @@ func TestRecurringTaskKeepsItsConversationDuringLauncherDiscoveryFailure(t *test
 	legacy.BindingFingerprint = "" // the previous release stored only the combined digest
 	stored.RunExecution = &legacy
 	setTasks(s, stored)
+	s.invalidateLauncherListCache("server")
 	f.answerNode(DeviceLaunchersList, func(string, json.RawMessage) (any, error) {
 		return nil, context.DeadlineExceeded
 	})
 	assertResumed(run(3), first)
+	s.invalidateLauncherListCache("server")
 	f.answerNode(DeviceLaunchersList, func(string, json.RawMessage) (any, error) {
 		return map[string]any{"launchers": []proto.Launcher{{Name: "codex", Agent: "codex", Source: "builtin"}}}, nil
 	})
