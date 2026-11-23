@@ -58,6 +58,7 @@ func (s *Service) Tools(ctx context.Context) []proto.Tool {
 	if s.urgentOn(ctx) {
 		tools = append(tools, toolsNamed([]string{"urgent_call"})...)
 	}
+	tools = append(tools, s.moduleTools()...)
 	return localizedMCPTools(append(tools, s.knowledgeFolderTools(ctx)...), s.toolLanguage(ctx))
 }
 
@@ -193,10 +194,19 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 		res, err := s.toolTaskReview(ctx, self, args) // supervise_review.go
 		if err == nil {
 			var a struct {
-				Verdict string `json:"verdict"`
+				TodoID    string `json:"todo_id"`
+				Verdict   string `json:"verdict"`
+				UserCheck bool   `json:"user_check"`
 			}
-			if json.Unmarshal(args, &a) == nil && (a.Verdict == reviewAccepted || a.Verdict == reviewNeedsUser) {
-				s.promoteSupervision(self)
+			if json.Unmarshal(args, &a) == nil {
+				if a.Verdict == reviewAccepted && s.quietInternalAcceptedReview(ctx, a.TodoID, a.UserCheck) {
+					message := res + ` This internal accepted conclusion stays in Background activity. Finish this supervision wake-up with supervision_finish visibility="silent".`
+					body, marshalErr := json.Marshal(map[string]any{"background": true, "message": message})
+					return string(body), marshalErr
+				}
+				if a.Verdict == reviewAccepted || a.Verdict == reviewNeedsUser {
+					s.promoteSupervision(self)
+				}
 			}
 		}
 		return res, err
@@ -662,7 +672,7 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 		if assistantWorkspace(am, a.Cwd) {
 			return "", i18n.Err("rpc-errors.agent_assistant_workspace")
 		}
-		own := startPick{launcher: strings.TrimSpace(a.Launcher), effort: strings.TrimSpace(a.Effort), speed: strings.TrimSpace(a.Speed), permission: a.PermissionMode} // before the tier
+		own := startPick{launcher: strings.TrimSpace(a.Launcher), model: a.Model, effort: strings.TrimSpace(a.Effort), speed: strings.TrimSpace(a.Speed), permission: a.PermissionMode} // before the tier
 		// The tier is resolved first (an unknown one asks and starts nothing), then Model Settings' Agents laid over it as
 		// the start lays it: what runs is said on the card (a hand-off from a space that confirms what leaves it asks) and in the answer.
 		tier := strings.TrimSpace(a.Tier)
@@ -976,6 +986,9 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 		warning := agentStartTaskWarning(closedDuringStart, linkErr)
 		return finish(fmt.Sprintf("Started on %s in %s: session %s, a task of this conversation (its card is in the conversation; "+
 			"%s).%s", am.Name, a.Cwd, res.Session.SessionID, told, note) + warning), nil
+	}
+	if out, err, ok := s.runModuleTool(ctx, machine, self, name, args); ok {
+		return out, err
 	}
 	return "", fmt.Errorf("unknown tool %s", name)
 }

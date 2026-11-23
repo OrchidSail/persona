@@ -370,16 +370,17 @@ internal fun rememberChatPageLines(key: SessionKey, renderStyle: ChatRenderStyle
     val modelChanges = PersonaTheme.style == AppStyle.Glass
     val childPlaces = remember(key) { persona.core.domain.lines.ChildSessionPlaces() }
     val places = remember(children) { childPlaces.places(children) }
+    val earliest = remember(snapshot.hasOlder, snapshot.items) { loadedEarliest(snapshot.items, snapshot.hasOlder) }
     val baseLines = remember(assistantPresentation, search.selected, jumpItem, feed, tasks, taskPlans, taskTodos,
-        taskCardProjection, renderStyle, inlineRecords, nestedSubagents, viewedStrips, modelChanges, places, snapshot.hasOlder, openWork) {
+        taskCardProjection, renderStyle, inlineRecords, nestedSubagents, viewedStrips, modelChanges, places, snapshot.hasOlder, earliest, openWork) {
         searchVisibleLines(assistantPresentation.foreground, search.selected?.itemId ?: jumpItem)
             .let {
                 when {
                     tasks == null -> it
                     renderStyle.compactToolSummary -> persona.core.domain.tasks.AssistantTaskCards.lines(it, feed, taskPlans,
-                        taskTodos, taskCardProjection[key.sessionId].orEmpty(), inline = inlineRecords)
+                        taskTodos, taskCardProjection[key.sessionId].orEmpty(), inline = inlineRecords, earliest = earliest)
                     else -> persona.core.domain.tasks.AssistantLines.lines(it,
-                        persona.core.domain.tasks.SentToAgents.shown(feed))
+                        persona.core.domain.tasks.SentToAgents.shown(feed), earliest = earliest)
                 }
             }.let { persona.core.domain.lines.Subagents.withNested(it, nestedSubagents) }
             .let { persona.core.domain.lines.ChildSessionCards.lines(it, places, !snapshot.hasOlder, openWork) }
@@ -388,17 +389,11 @@ internal fun rememberChatPageLines(key: SessionKey, renderStyle: ChatRenderStyle
             .let { if (modelChanges) persona.core.domain.lines.ModelChanges.mark(it) else it }
             .let { if (renderStyle == ChatRenderStyle.Agent) persona.core.domain.lines.EngineChanges.mark(it) else it }
     }
-    val modeEarliest = remember(renderStyle, modeChanges.isNotEmpty(), snapshot.hasOlder, snapshot.items) {
-        if (renderStyle == ChatRenderStyle.Assistant || modeChanges.isEmpty() || !snapshot.hasOlder) null
-        else snapshot.items.firstNotNullOfOrNull { item ->
-            persona.core.contracts.parseTime(item.ts)
-        } ?: java.time.Instant.MAX
-    }
-    val applicableModeChanges = remember(renderStyle, modeChanges, modeEarliest, modeChangesUntil) {
+    val applicableModeChanges = remember(renderStyle, modeChanges, earliest, modeChangesUntil) {
         if (renderStyle == ChatRenderStyle.Assistant || modeChanges.isEmpty()) emptyList()
         else modeChanges.filter { change ->
             val at = persona.core.contracts.parseTime(change.at) ?: return@filter false
-            (modeEarliest == null || !at.isBefore(modeEarliest)) &&
+            (earliest == null || !at.isBefore(earliest)) &&
                 (modeChangesUntil == null || !at.isAfter(modeChangesUntil))
         }
     }
@@ -408,6 +403,16 @@ internal fun rememberChatPageLines(key: SessionKey, renderStyle: ChatRenderStyle
     }
     return ChatPageLines(jumpItemState, assistantPresentation, subagentCards, lines)
 }
+
+/**
+ * When the oldest loaded transcript item happened while older pages remain unloaded (web `loadedFrom`,
+ * `ModeChanges` `earliest`): holds back older feed items, task cards and mode changes until those pages load.
+ * Returns [java.time.Instant.MAX] when [hasOlder] is true but no loaded item carries a timestamp yet, so older
+ * history never floods an empty or untimed partial page.
+ */
+internal fun loadedEarliest(items: List<Item>, hasOlder: Boolean): java.time.Instant? =
+    if (!hasOlder) null
+    else items.firstNotNullOfOrNull { item -> persona.core.contracts.parseTime(item.ts) } ?: java.time.Instant.MAX
 
 /** What [rememberChatPageLines] hands back to ChatPage: plain values, and the state objects ChatPage reads and writes. */
 internal class ChatPageLines(
