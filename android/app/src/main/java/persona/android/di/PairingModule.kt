@@ -42,7 +42,7 @@ object PairingModule {
         hubUpdates: HubUpdates, managers: HubManagers, sent: HubSent, translation: TranslationSettings, triage: AgentTriage, knowledgeSelection: KnowledgeSelection, capsule: persona.android.capsule.CapsuleRuntime,
         digitalAssistantModel: persona.android.assist.AssistModelRuntime,
         attempts: PairingAttempts, application: Application, readiness: AssistantReadinessSource, feishuBot: FeishuBotSettings,
-        standing: StandingAuthorizationsSource,
+        standing: StandingAuthorizationsSource, extensionTrust: ExtensionTrustSource,
     ) = SettingsServices(pairing, connection, sessions, updates, diagnostics, binding = devices.binding,
         // Explicit: the runtime cannot be a ConnectionEndpoints itself (its HubConnection.state has another type).
         disconnect = { pairing.unpair() }, endpoints = runtime.endpoints, machines = machines, models = models, extensions = extensions, providers = providers,
@@ -50,7 +50,7 @@ object PairingModule {
         hubs = runtime.hubGroups, tunnels = runtime.hubTunnels, addHub = platform.adding, connectors = connectors,
         translation = translation, triage = triage, knowledgeSelection = knowledgeSelection, capsule = capsule,
         digitalAssistantModel = digitalAssistantModel, pairingAttempts = attempts, readiness = readiness,
-        standing = standing, developing = (application as PersonaApp).developingPersona,
+        standing = standing, extensionTrust = extensionTrust, developing = (application as PersonaApp).developingPersona,
         appUpdateStore = persona.feature.settings.AppUpdateStore(application, updates, devices.binding),
         desktops = (application as PersonaApp).desktops, clearCacheFiles = { files -> persona.core.data.CacheClearing.delete(files) })
 }
