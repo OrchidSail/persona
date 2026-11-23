@@ -11,6 +11,11 @@ import android.widget.TextView
 import androidx.glance.appwidget.SizeMode
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -20,10 +25,17 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import persona.core.contracts.JsonCodec
+import persona.core.contracts.api.PersonaInfo
+import persona.core.contracts.api.PersonaManifest
 import persona.core.designsystem.AppStyle
 import persona.core.designsystem.AppStyleStore
+import persona.core.designsystem.PersonaDesign
 import persona.core.designsystem.SystemSurfaces
+import persona.core.designsystem.ThemeAccent
 import persona.core.designsystem.ThemeColor
+import persona.core.designsystem.ThemeColors
+import java.io.File
 import kotlin.math.roundToInt
 
 /** Layout sizing, theme tokens, manifest registration and i18n coverage for [AskPersonaWidget] and [PersonaWidget]. */
@@ -269,6 +281,149 @@ class AskPersonaWidgetTest {
             store.setColor(ThemeColor.Default)
         }
     }
+
+    @Test fun widgetLookAppliesPersonaPackageColorsAcrossStylesAndFallsBackWhenAbsent() {
+        val colors = PersonaManifest.Colors(
+            light = mapOf("accent" to "#94600A"),
+            dark = mapOf("accent" to "#B47A0C"),
+        )
+        val expectedAccent = ThemeColors.accent(ThemeColor.Persona, colors)!!
+        for (style in AppStyle.entries) {
+            val baseLight = SystemSurfaces.palette(style, false)
+            val baseDark = SystemSurfaces.palette(style, true)
+            val look = WidgetLook.of(style, ThemeColor.Persona, colors)
+            assertEquals(ThemeColors.palette(baseLight, expectedAccent), look.lightPalette)
+            assertEquals(ThemeColors.palette(baseDark, expectedAccent), look.darkPalette)
+            assertNotEquals(baseLight.accent, look.lightPalette.accent)
+            assertNotEquals(baseDark.accent, look.darkPalette.accent)
+
+            val missing = WidgetLook.of(style, ThemeColor.Persona, null)
+            assertEquals(baseLight, missing.lightPalette)
+            assertEquals(baseDark, missing.darkPalette)
+
+            val empty = WidgetLook.of(style, ThemeColor.Persona, PersonaManifest.Colors())
+            assertEquals(baseLight, empty.lightPalette)
+            assertEquals(baseDark, empty.darkPalette)
+        }
+    }
+
+    @Test fun widgetLookCurrentReadsInstalledPersonaPackageColorsFromDisk() {
+        val colors = PersonaManifest.Colors(
+            light = mapOf("accent" to "#94600A"),
+            dark = mapOf("accent" to "#B47A0C"),
+        )
+        val pack = personaPack("aurora", "0123456789abcdef", colors)
+        val root = File(context.filesDir, "personas")
+        val store = AppStyleStore(context)
+        try {
+            root.deleteRecursively()
+            root.mkdirs()
+            File(root, "index.json").writeText(JsonCodec.encodeToString(listOf(pack)))
+            store.setStyle(AppStyle.Board)
+            store.setColor(ThemeColor.Persona)
+            store.setPersonaId(pack.id)
+
+            // Listed in index.json but not yet downloaded: falls back to the style's base palette.
+            val beforeDownload = WidgetLook.current(context)
+            assertEquals(SystemSurfaces.palette(AppStyle.Board, false).accent, beforeDownload.lightPalette.accent)
+            assertEquals(SystemSurfaces.palette(AppStyle.Board, true).accent, beforeDownload.darkPalette.accent)
+
+            // Once the package directory is on disk, ThemeColor.Persona applies its light/dark accents.
+            val packDir = File(File(root, pack.id), pack.rev)
+            assertTrue(packDir.mkdirs())
+            val expected = WidgetLook.of(AppStyle.Board, ThemeColor.Persona, colors)
+            val afterDownload = WidgetLook.current(context)
+            assertEquals(expected.lightPalette, afterDownload.lightPalette)
+            assertEquals(expected.darkPalette, afterDownload.darkPalette)
+            assertNotEquals(SystemSurfaces.palette(AppStyle.Board, false).accent, afterDownload.lightPalette.accent)
+            assertNotEquals(SystemSurfaces.palette(AppStyle.Board, true).accent, afterDownload.darkPalette.accent)
+
+            // Switching back to a built-in face restores the style's base palette.
+            store.setFace(PersonaDesign.Default)
+            val builtIn = WidgetLook.current(context)
+            assertEquals(SystemSurfaces.palette(AppStyle.Board, false).accent, builtIn.lightPalette.accent)
+            assertEquals(SystemSurfaces.palette(AppStyle.Board, true).accent, builtIn.darkPalette.accent)
+        } finally {
+            root.deleteRecursively()
+            store.setFace(PersonaDesign.Default)
+            store.setStyle(AppStyle.Default)
+            store.setColor(ThemeColor.Default)
+        }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun widgetAppearanceChangesTriggersOnPersonaPackageAndColorUpdates() = runTest {
+        val colorsA = PersonaManifest.Colors(light = mapOf("accent" to "#94600A"), dark = mapOf("accent" to "#B47A0C"))
+        val colorsB = PersonaManifest.Colors(light = mapOf("accent" to "#1F6F5B"), dark = mapOf("accent" to "#4AC2A3"))
+        val colorsC = PersonaManifest.Colors(light = mapOf("accent" to "#7B2CBF"), dark = mapOf("accent" to "#C77DFF"))
+        val aurora = personaPack("aurora", "0123456789abcdef", colorsA)
+        val sage = personaPack("sage", "1122334455667788", colorsB)
+        val sageUpdated = personaPack("sage", "8877665544332211", colorsC)
+        val sageSameColors = personaPack("sage", "fedcba9876543210", colorsC)
+        val plain = personaPack("plain", "abcdef0123456789", colors = null)
+
+        val style = MutableStateFlow(AppStyle.Glass)
+        val color = MutableStateFlow(ThemeColor.Style)
+        val persona = MutableStateFlow<PersonaInfo?>(null)
+        val emitted = mutableListOf<Pair<AppStyle, ThemeAccent?>>()
+        val job = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            PersonaWidget.appearanceChanges(style, color, persona).collect { emitted += it }
+        }
+        try {
+            // Initial snapshot is skipped; package switches under ThemeColor.Style do not trigger redraws.
+            assertTrue(emitted.isEmpty())
+            persona.value = aurora
+            assertTrue(emitted.isEmpty())
+
+            // Switching to ThemeColor.Persona resolves the selected package's colours.
+            color.value = ThemeColor.Persona
+            assertEquals(listOf(AppStyle.Glass to ThemeColors.accent(ThemeColor.Persona, colorsA)), emitted)
+
+            // Switching to another persona package with different colours triggers a refresh.
+            persona.value = sage
+            assertEquals(2, emitted.size)
+            assertEquals(AppStyle.Glass to ThemeColors.accent(ThemeColor.Persona, colorsB), emitted.last())
+
+            // Updating the selected package's colours triggers a refresh; a new rev with identical colours does not.
+            persona.value = sageUpdated
+            assertEquals(3, emitted.size)
+            assertEquals(AppStyle.Glass to ThemeColors.accent(ThemeColor.Persona, colorsC), emitted.last())
+            persona.value = sageSameColors
+            assertEquals(3, emitted.size)
+
+            // Reverting to a built-in (null) triggers a refresh back to null accent; a colourless pack does not re-emit.
+            persona.value = null
+            assertEquals(4, emitted.size)
+            assertEquals(AppStyle.Glass to null, emitted.last())
+            persona.value = plain
+            assertEquals(4, emitted.size)
+
+            // Style and preset colour changes emit; subsequent package changes under a fixed preset do not.
+            style.value = AppStyle.Brief
+            assertEquals(5, emitted.size)
+            assertEquals(AppStyle.Brief to null, emitted.last())
+            color.value = ThemeColor.Coral
+            assertEquals(6, emitted.size)
+            assertEquals(AppStyle.Brief to ThemeColor.Coral.preset, emitted.last())
+            persona.value = aurora
+            assertEquals(6, emitted.size)
+        } finally {
+            job.cancel()
+        }
+    }
+
+    private fun personaPack(id: String, rev: String, colors: PersonaManifest.Colors?) = PersonaInfo(
+        id = id,
+        rev = rev,
+        manifest = PersonaManifest(
+            format = PersonaManifest.FORMAT,
+            id = id,
+            name = id.replaceFirstChar { it.uppercase() },
+            avatar = PersonaManifest.Avatar(mapOf("64" to "avatar/64.png")),
+            dot = PersonaManifest.Dot(144, mapOf("idle" to PersonaManifest.DotState("dot/idle.png"))),
+            colors = colors,
+        ),
+    )
 
     @Config(sdk = [35], qualifiers = "en")
     @Test fun englishWidgetResourcesDistinguishAgentsAndAskPersona() {

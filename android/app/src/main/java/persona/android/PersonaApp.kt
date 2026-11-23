@@ -19,7 +19,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.filter
@@ -112,10 +111,11 @@ class PersonaApp : Application() {
         }
         // Light/dark for what Compose does not draw (WebView pages, system dialogs) too: the app's own night mode.
         scope.launch { appearance.scheme.collect { applyNightMode(it) } }
-        // Placed widgets follow AppStyleStore; redraw them when the user switches style or theme color in Settings.
+        // Placed widgets follow AppStyleStore and the active persona package; redraw them when style, theme color, or
+        // the package's colours change.
         scope.launch {
-            kotlinx.coroutines.flow.combine(appearance.style, appearance.color) { style, color -> style to color }
-                .distinctUntilChanged().drop(1)
+            persona.platform.shortcuts.PersonaWidget
+                .appearanceChanges(appearance.style, appearance.color, personas.current)
                 .collect {
                     persona.platform.shortcuts.PersonaWidget.refresh(this@PersonaApp)
                     persona.platform.shortcuts.AskPersonaWidget.refresh(this@PersonaApp)

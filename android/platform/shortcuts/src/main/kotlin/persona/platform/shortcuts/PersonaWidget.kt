@@ -42,17 +42,25 @@ import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider as GlanceColor
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.update
 import persona.core.contracts.FleetItem
 import persona.core.contracts.FleetState
+import persona.core.contracts.api.PersonaInfo
+import persona.core.contracts.api.PersonaManifest
 import persona.core.designsystem.AppStyle
 import persona.core.designsystem.AppStyleStore
 import persona.core.designsystem.PersonaPalette
+import persona.core.designsystem.PersonaStore
 import persona.core.designsystem.StatusColors
 import persona.core.designsystem.SystemSurfaces
+import persona.core.designsystem.ThemeAccent
 import persona.core.designsystem.ThemeColor
 import persona.core.designsystem.ThemeColors
 import persona.core.designsystem.Tokens
@@ -166,6 +174,19 @@ class PersonaWidget : GlanceAppWidget() {
             WidgetLook.invalidate()
             val _ = runCatching { PersonaWidget().updateAll(context.applicationContext) }
         }
+
+        /**
+         * Emits whenever widget appearance changes: interface style, theme color, or (when [ThemeColor.Persona] is
+         * selected) the active persona package's colours. Skips the initial snapshot so process start does not redraw.
+         */
+        fun appearanceChanges(
+            style: Flow<AppStyle>,
+            color: Flow<ThemeColor>,
+            persona: Flow<PersonaInfo?>,
+        ): Flow<Pair<AppStyle, ThemeAccent?>> =
+            combine(style, color, persona) { nextStyle, nextColor, pack ->
+                nextStyle to ThemeColors.accent(nextColor, pack?.manifest?.colors)
+            }.distinctUntilChanged().drop(1)
     }
 }
 
@@ -269,12 +290,21 @@ internal class WidgetLook private constructor(
             changes.update { it + 1 }
         }
 
-        fun current(context: Context): WidgetLook = AppStyleStore(context).let { of(it.style.value, it.color.value) }
+        fun current(context: Context): WidgetLook = AppStyleStore(context).let { store ->
+            val personaColors = if (store.color.value == ThemeColor.Persona) {
+                PersonaStore.currentColors(context, store.personaId.value)
+            } else null
+            of(store.style.value, store.color.value, personaColors)
+        }
 
-        fun of(style: AppStyle, color: ThemeColor = ThemeColor.Style): WidgetLook {
-            val preset = color.preset
-            val light = SystemSurfaces.palette(style, false).let { base -> preset?.let { ThemeColors.palette(base, it) } ?: base }
-            val dark = SystemSurfaces.palette(style, true).let { base -> preset?.let { ThemeColors.palette(base, it) } ?: base }
+        fun of(
+            style: AppStyle,
+            color: ThemeColor = ThemeColor.Style,
+            personaColors: PersonaManifest.Colors? = null,
+        ): WidgetLook {
+            val accent = ThemeColors.accent(color, personaColors)
+            val light = SystemSurfaces.palette(style, false).let { base -> accent?.let { ThemeColors.palette(base, it) } ?: base }
+            val dark = SystemSurfaces.palette(style, true).let { base -> accent?.let { ThemeColors.palette(base, it) } ?: base }
             return WidgetLook(light, dark, style)
         }
     }
