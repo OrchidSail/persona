@@ -42,7 +42,6 @@ func invalidateLauncherCache() {
 	launcherCache.Lock()
 	launcherCache.at = time.Time{}
 	launcherCache.invalidated++
-	launcherCache.generation++
 	launcherCache.Unlock()
 	lastPathScan.Lock()
 	lastPathScan.got = nil
@@ -125,17 +124,24 @@ func (n *Node) launchers(ctx context.Context, refresh ...bool) ([]proto.Launcher
 	}
 
 	type discovery struct {
-		list       []proto.Launcher
-		generation uint64
+		list        []proto.Launcher
+		generation  uint64
+		invalidated uint64
+		published   bool
 	}
 	read := func() (any, error) {
 		// A scan may have completed between the initial cache read and entry into the group.
 		launcherCache.Lock()
-		current := discovery{list: launcherCache.list, generation: launcherCache.generation}
-		fresh := time.Since(launcherCache.at) < time.Minute
 		inv := launcherCache.invalidated
+		current := discovery{
+			list:        launcherCache.list,
+			generation:  launcherCache.generation,
+			invalidated: inv,
+			published:   true,
+		}
+		fresh := time.Since(launcherCache.at) < time.Minute
 		launcherCache.Unlock()
-		if current.list != nil && (current.generation != observed || (!forced && fresh)) {
+		if current.list != nil && fresh && (current.generation != observed || !forced) {
 			return current, nil
 		}
 		if err := ctx.Err(); err != nil {
@@ -144,7 +150,7 @@ func (n *Node) launchers(ctx context.Context, refresh ...bool) ([]proto.Launcher
 		// Only a scan that has started outlives its caller. It can still populate the cache for a later ask.
 		scanCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
 		defer cancel()
-		out, err := scanLaunchers(scanCtx)
+		out, err := scanLaunchersFunc(scanCtx)
 		if err != nil {
 			return nil, err
 		}
@@ -156,9 +162,19 @@ func (n *Node) launchers(ctx context.Context, refresh ...bool) ([]proto.Launcher
 			launcherCache.codexAliases = aliases
 			launcherCache.scripts = scripts
 			launcherCache.generation++
-			current = discovery{list: list, generation: launcherCache.generation}
+			current = discovery{
+				list:        list,
+				generation:  launcherCache.generation,
+				invalidated: inv,
+				published:   true,
+			}
 		} else {
-			current = discovery{list: list, generation: launcherCache.generation + 1}
+			current = discovery{
+				list:        list,
+				generation:  launcherCache.generation,
+				invalidated: inv,
+				published:   false,
+			}
 		}
 		launcherCache.Unlock()
 		return current, nil
@@ -188,12 +204,21 @@ func (n *Node) launchers(ctx context.Context, refresh ...bool) ([]proto.Launcher
 			return lastLaunchers(err)
 		}
 		got := shared.Val.(discovery)
+		launcherCache.Lock()
+		curInv := launcherCache.invalidated
+		launcherCache.Unlock()
+		// An invalidation that raced with the shared scan makes pre-invalidation output stale; re-scan.
+		if !got.published || got.invalidated != curInv {
+			continue
+		}
 		// An ordinary cache hit shared through the group cannot satisfy a forced request for newer data.
 		if !forced || got.generation != observed {
 			return got.list, nil
 		}
 	}
 }
+
+var scanLaunchersFunc = scanLaunchers
 
 func scanLaunchers(ctx context.Context) ([]byte, error) {
 	began := time.Now()

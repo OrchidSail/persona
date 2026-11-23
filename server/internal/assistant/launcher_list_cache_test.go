@@ -748,3 +748,136 @@ func TestLauncherListCacheDoesNotCacheFailuresOrTimeouts(t *testing.T) {
 		}
 	})
 }
+
+type concurrentLauncherHub struct {
+	*fakeHub
+	onLaunchersList func(context.Context, DeviceCall) (json.RawMessage, error)
+}
+
+func (h *concurrentLauncherHub) DeviceCall(ctx context.Context, p DeviceCall) (json.RawMessage, error) {
+	if p.Method == DeviceLaunchersList && h.onLaunchersList != nil {
+		return h.onLaunchersList(ctx, p)
+	}
+	return h.fakeHub.DeviceCall(ctx, p)
+}
+
+func TestLauncherListCacheOutOfOrderRefreshDoesNotOverwriteNewerEntry(t *testing.T) {
+	t.Run("older concurrent refresh does not overwrite newer refresh backfill", func(t *testing.T) {
+		f := newFakeHub().withMachine()
+		r1Started := make(chan struct{})
+		releaseR1 := make(chan struct{})
+		var calls atomic.Int32
+		h := &concurrentLauncherHub{
+			fakeHub: f,
+			onLaunchersList: func(_ context.Context, _ DeviceCall) (json.RawMessage, error) {
+				n := calls.Add(1)
+				if n == 1 {
+					close(r1Started)
+					<-releaseR1
+					return json.Marshal(map[string]any{"launchers": []proto.Launcher{{Name: "stale-r1", Source: "zshrc"}}})
+				}
+				return json.Marshal(map[string]any{"launchers": []proto.Launcher{{Name: "fresh-r2", Source: "zshrc"}}})
+			},
+		}
+		s := newTestService(t, f)
+		s.hub = h
+
+		ctx := context.Background()
+		type res struct {
+			list []proto.Launcher
+			err  error
+		}
+		r1Done := make(chan res, 1)
+		go func() {
+			list, err := s.machineLaunchers(withLauncherRefresh(ctx), "server")
+			r1Done <- res{list: list, err: err}
+		}()
+
+		select {
+		case <-r1Started:
+		case <-time.After(5 * time.Second):
+			close(releaseR1)
+			t.Fatal("first refresh did not start")
+		}
+
+		// Second refresh starts after R1 and completes before R1 finishes.
+		r2List, err := s.machineLaunchers(withLauncherRefresh(ctx), "server")
+		if err != nil || !slices.ContainsFunc(r2List, func(l proto.Launcher) bool { return l.Name == "fresh-r2" }) {
+			close(releaseR1)
+			t.Fatalf("second refresh = %v, %v; want fresh-r2", r2List, err)
+		}
+
+		// Release the older refresh; it must return its own answer without overwriting fresh-r2 in cache.
+		close(releaseR1)
+		r1 := <-r1Done
+		if r1.err != nil || !slices.ContainsFunc(r1.list, func(l proto.Launcher) bool { return l.Name == "stale-r1" }) {
+			t.Fatalf("first refresh = %v, %v; want stale-r1", r1.list, r1.err)
+		}
+
+		cached, err := s.machineLaunchers(ctx, "server")
+		if err != nil || !slices.ContainsFunc(cached, func(l proto.Launcher) bool { return l.Name == "fresh-r2" }) ||
+			slices.ContainsFunc(cached, func(l proto.Launcher) bool { return l.Name == "stale-r1" }) {
+			t.Fatalf("cached entry after out-of-order refresh = %v, %v; want fresh-r2", cached, err)
+		}
+		if got := calls.Load(); got != 2 {
+			t.Fatalf("total RPCs = %d, want 2 (third read must hit cache)", got)
+		}
+	})
+
+	t.Run("bypassRead finishing during in-flight explicit refresh does not outrank explicit refresh", func(t *testing.T) {
+		f := newFakeHub().withMachine()
+		refreshStarted := make(chan struct{})
+		releaseRefresh := make(chan struct{})
+		var calls atomic.Int32
+		h := &concurrentLauncherHub{
+			fakeHub: f,
+			onLaunchersList: func(_ context.Context, p DeviceCall) (json.RawMessage, error) {
+				calls.Add(1)
+				var a map[string]any
+				_ = json.Unmarshal(p.Params, &a)
+				if a["refresh"] == true {
+					close(refreshStarted)
+					<-releaseRefresh
+					return json.Marshal(map[string]any{"launchers": []proto.Launcher{{Name: "fresh-refresh", Source: "zshrc"}}})
+				}
+				return json.Marshal(map[string]any{"launchers": []proto.Launcher{{Name: "stale-bypass", Source: "zshrc"}}})
+			},
+		}
+		s := newTestService(t, f)
+		s.hub = h
+
+		ctx := context.Background()
+		refreshDone := make(chan error, 1)
+		go func() {
+			_, err := s.machineLaunchers(withLauncherRefresh(ctx), "server")
+			refreshDone <- err
+		}()
+
+		select {
+		case <-refreshStarted:
+		case <-time.After(5 * time.Second):
+			close(releaseRefresh)
+			t.Fatal("explicit refresh did not start")
+		}
+
+		// Concurrent bypassRead (e.g. zshrcLaunchers snapshot refresh) returns fast from node cache.
+		if _, err := s.listLaunchersWith(ctx, Device{ID: "server", Online: true}, launcherListReadOpts{bypassRead: true}); err != nil {
+			close(releaseRefresh)
+			t.Fatalf("bypassRead err = %v", err)
+		}
+
+		close(releaseRefresh)
+		if err := <-refreshDone; err != nil {
+			t.Fatalf("explicit refresh err = %v", err)
+		}
+
+		cached, err := s.machineLaunchers(ctx, "server")
+		if err != nil || !slices.ContainsFunc(cached, func(l proto.Launcher) bool { return l.Name == "fresh-refresh" }) ||
+			slices.ContainsFunc(cached, func(l proto.Launcher) bool { return l.Name == "stale-bypass" }) {
+			t.Fatalf("cached entry = %v, %v; want fresh-refresh", cached, err)
+		}
+		if got := calls.Load(); got != 2 {
+			t.Fatalf("total RPCs = %d, want 2 (third read must hit cache)", got)
+		}
+	})
+}

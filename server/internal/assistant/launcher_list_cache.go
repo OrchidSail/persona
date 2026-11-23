@@ -41,6 +41,9 @@ type launcherListCache struct {
 	mu         sync.Mutex
 	entries    map[launcherListCacheKey]launcherListEntry
 	entryVer   map[launcherListCacheKey]uint64
+	nextSeq    map[launcherListCacheKey]uint64
+	storedSeq  map[launcherListCacheKey]uint64
+	refreshing map[launcherListCacheKey]int
 	gen        map[string]uint64
 	allGen     uint64
 	flights    map[launcherListCacheKey]*launcherListFlight
@@ -79,8 +82,19 @@ func (c *launcherListCache) getLocked(key launcherListCacheKey, connAt time.Time
 	return entry.raw, true
 }
 
-func (c *launcherListCache) storeLocked(key launcherListCacheKey, raw json.RawMessage, connAt time.Time) {
+func (c *launcherListCache) allocSeqLocked(key launcherListCacheKey) uint64 {
+	if c.nextSeq == nil {
+		c.nextSeq = map[launcherListCacheKey]uint64{}
+	}
+	c.nextSeq[key]++
+	return c.nextSeq[key]
+}
+
+func (c *launcherListCache) storeLocked(key launcherListCacheKey, raw json.RawMessage, connAt time.Time, seq uint64) {
 	if launcherListCacheTTL <= 0 || !json.Valid(raw) {
+		return
+	}
+	if seq <= c.storedSeq[key] {
 		return
 	}
 	if c.entries == nil {
@@ -89,12 +103,16 @@ func (c *launcherListCache) storeLocked(key launcherListCacheKey, raw json.RawMe
 	if c.entryVer == nil {
 		c.entryVer = map[launcherListCacheKey]uint64{}
 	}
+	if c.storedSeq == nil {
+		c.storedSeq = map[launcherListCacheKey]uint64{}
+	}
 	c.entries[key] = launcherListEntry{
 		raw:         raw,
 		at:          c.nowTime(),
 		connectedAt: connAt,
 	}
 	c.entryVer[key]++
+	c.storedSeq[key] = seq
 	delete(c.flights, key)
 }
 
@@ -208,15 +226,34 @@ func (s *Service) cachedLauncherList(ctx context.Context, machine string, opts l
 	if opts.refresh || opts.bypassRead {
 		c.mu.Lock()
 		gen, allGen := c.gen[cacheMachine], c.allGen
+		seq := c.allocSeqLocked(key)
+		if opts.refresh {
+			if c.refreshing == nil {
+				c.refreshing = map[launcherListCacheKey]int{}
+			}
+			c.refreshing[key]++
+		}
 		c.mu.Unlock()
+		if opts.refresh {
+			defer func() {
+				c.mu.Lock()
+				c.refreshing[key]--
+				if c.refreshing[key] <= 0 {
+					delete(c.refreshing, key)
+				}
+				c.mu.Unlock()
+			}()
+		}
 		raw, err := s.fetchLauncherListRaw(ctx, machine, opts.host, opts.refresh)
 		if err != nil {
 			return err
 		}
 		if json.Valid(raw) {
 			c.mu.Lock()
-			if c.gen[cacheMachine] == gen && c.allGen == allGen && s.deviceConnectedAt(cacheMachine).Equal(connAt) {
-				c.storeLocked(key, raw, connAt)
+			if c.gen[cacheMachine] == gen && c.allGen == allGen &&
+				s.deviceConnectedAt(cacheMachine).Equal(connAt) &&
+				(opts.refresh || c.refreshing[key] == 0) {
+				c.storeLocked(key, raw, connAt, seq)
 			}
 			c.mu.Unlock()
 		}
@@ -272,6 +309,7 @@ func (s *Service) cachedLauncherList(ctx context.Context, machine string, opts l
 		}
 		fetchCtx, cancel := context.WithTimeout(detachedBase, timeout)
 		f.cancel = cancel
+		seq := c.allocSeqLocked(key)
 		c.mu.Unlock()
 		defer cancel()
 
@@ -282,8 +320,9 @@ func (s *Service) cachedLauncherList(ctx context.Context, machine string, opts l
 		}
 		if err == nil && json.Valid(raw) && !f.abandoned &&
 			c.gen[cacheMachine] == f.gen && c.allGen == f.allGen && c.entryVer[key] == f.ver &&
+			c.refreshing[key] == 0 &&
 			s.deviceConnectedAt(cacheMachine).Equal(f.connAt) {
-			c.storeLocked(key, raw, f.connAt)
+			c.storeLocked(key, raw, f.connAt, seq)
 		}
 		c.mu.Unlock()
 		return raw, err
