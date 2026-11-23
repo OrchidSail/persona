@@ -449,12 +449,9 @@ internal fun createOverlayController(
         deleteScreenshot = { attachment ->
             withContext(Dispatchers.IO) { AssistScreenshotStore.deleteSaved(appContext, attachment) }
         },
+        prepareMainModel = bridge::prepareMainModel,
         sendTextToMain = bridge::sendTextToMain,
         sendWithScreenToMain = bridge::sendWithScreenToMain,
-        createSideConversation = bridge::createSideConversation,
-        sendTextToSession = bridge::sendTextToSession,
-        sendWithScreenToSession = bridge::sendWithScreenToSession,
-        onActiveSessionChanged = bridge::setObservedSession,
         loadModelCatalog = bridge::loadModelCatalog,
         onPersistDefaultModel = bridge::selectDefaultModel,
         onPersistModelChoice = bridge::selectModel,

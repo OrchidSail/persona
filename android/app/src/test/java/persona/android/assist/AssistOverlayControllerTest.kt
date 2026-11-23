@@ -33,7 +33,6 @@ import persona.feature.chat.ComposerAttachment
 @Config(sdk = [35])
 class AssistOverlayControllerTest {
     private val mainKey = SessionKey("machine-1", "main-1")
-    private val sideKey = SessionKey("machine-1", "quick-side-1")
     private val fastPick = ModelPick(launcher = "gemini", model = "gemini-2.5-flash")
     private val fastChoice = DigitalAssistantModelChoice(
         pick = fastPick,
@@ -56,23 +55,26 @@ class AssistOverlayControllerTest {
         val targetSession: SessionKey?,
     )
 
+    private data class PreparedModelCall(
+        val pick: ModelPick?,
+        val clearIfDefault: Boolean,
+    )
+
     private class Harness(
         scope: TestScope,
         timeoutMs: Long = 4_000L,
         initialModelChoice: DigitalAssistantModelChoice = DigitalAssistantModelChoice(),
-        private val sideConversationKey: SessionKey = SessionKey("machine-1", "quick-side-1"),
+        private val resolvedMainSession: SessionKey? = SessionKey("machine-1", "main-1"),
     ) {
         val preparedBitmaps = mutableListOf<Bitmap>()
         var saveCount = 0
         val deletedAttachments = mutableListOf<ComposerAttachment>()
+        val preparedModels = mutableListOf<PreparedModelCall>()
         val sentTexts = mutableListOf<Pair<String, String>>()
+        val sentTargets = mutableListOf<SessionKey?>()
         val sentWithScreen = mutableListOf<Triple<String, ComposerAttachment, ChatLinkContext?>>()
-        val createdSidePicks = mutableListOf<ModelPick>()
-        val sentSessionTexts = mutableListOf<Triple<SessionKey, String, String>>()
-        val sentSessionScreens = mutableListOf<Triple<SessionKey, String, ComposerAttachment>>()
-        val observedSessions = mutableListOf<SessionKey?>()
         val persistedChoices = mutableListOf<DigitalAssistantModelChoice>()
-        var sideCreateFailure: Exception? = null
+        var modelSwitchFailure: Exception? = null
         var catalogLoads = 0
         var catalogResponse = DigitalAssistantModelCatalog(
             groups = listOf(
@@ -111,20 +113,21 @@ class AssistOverlayControllerTest {
                 )
             },
             deleteScreenshot = { deletedAttachments += it },
-            sendTextToMain = { prompt, clientId -> sentTexts += prompt to clientId },
-            sendWithScreenToMain = { prompt, shot, ctx, _ -> sentWithScreen += Triple(prompt, shot, ctx) },
-            createSideConversation = { pick ->
-                createdSidePicks += pick
-                sideCreateFailure?.let { throw it }
-                sideConversationKey
+            prepareMainModel = { pick, clearIfDefault ->
+                preparedModels += PreparedModelCall(pick, clearIfDefault)
+                if (pick != null) {
+                    modelSwitchFailure?.let { throw it }
+                }
+                resolvedMainSession
             },
-            sendTextToSession = { session, prompt, clientId ->
-                sentSessionTexts += Triple(session, prompt, clientId)
+            sendTextToMain = { target, prompt, clientId ->
+                sentTargets += target
+                sentTexts += prompt to clientId
             },
-            sendWithScreenToSession = { session, prompt, shot, _, _ ->
-                sentSessionScreens += Triple(session, prompt, shot)
+            sendWithScreenToMain = { target, prompt, shot, ctx, _ ->
+                sentTargets += target
+                sentWithScreen += Triple(prompt, shot, ctx)
             },
-            onActiveSessionChanged = { observedSessions += it },
             loadModelCatalog = {
                 catalogLoads++
                 catalogResponse
@@ -374,57 +377,43 @@ class AssistOverlayControllerTest {
     }
 
     @Test
-    fun dedicatedOverlayModelCreatesNonMainSessionReusesItOnFollowUpsAndOpensExactSession() = runTest {
-        val harness = Harness(this, initialModelChoice = fastChoice, sideConversationKey = sideKey)
+    fun selectedOverlayModelSwitchesMainConversationInPlaceKeepsTurnsInMainAndClearsOnDefault() = runTest {
+        val harness = Harness(this, initialModelChoice = fastChoice, resolvedMainSession = mainKey)
         val controller = harness.controller
         val mainHistoryItem = Item(id = "main-old", role = "assistant", kind = "text", text = "Main history")
         controller.onHubUpdate(
             AssistHubSnapshot(
                 status = AssistHubStatus.Ready,
                 mainSession = mainKey,
-                observedSession = mainKey,
                 chatSnapshot = ChatSnapshot(items = listOf(mainHistoryItem), loading = false),
             ),
         )
         controller.beginSession(supportsScreenshot = false)
 
-        // First send creates a lightweight side conversation with the chosen ModelPick (never main).
+        // First send switches main conversation in place to fastPick and sends directly to mainKey.
         controller.updateDraftText("Quick translate hello")
         controller.send()
         runCurrent()
 
-        assertEquals(listOf(fastPick), harness.createdSidePicks)
-        assertTrue(harness.sentTexts.isEmpty())
-        assertEquals(1, harness.sentSessionTexts.size)
-        assertEquals(sideKey, harness.sentSessionTexts[0].first)
-        assertEquals("Quick translate hello", harness.sentSessionTexts[0].second)
-        assertEquals(sideKey, controller.state.value.activeSession)
-        assertEquals(sideKey, harness.observedSessions.last())
+        assertEquals(listOf(PreparedModelCall(fastPick, clearIfDefault = false)), harness.preparedModels)
+        assertEquals(listOf<SessionKey?>(mainKey), harness.sentTargets)
+        assertEquals(1, harness.sentTexts.size)
+        assertEquals("Quick translate hello", harness.sentTexts[0].first)
+        assertEquals(mainKey, controller.state.value.mainSession)
 
-        // While bridge is still switching from main -> side, main chat history must not leak into overlay turns.
+        // Streaming reply arrives directly on the main conversation; prior main history stays hidden.
+        val firstClientId = harness.sentTexts[0].second
         controller.onHubUpdate(
             AssistHubSnapshot(
                 status = AssistHubStatus.Ready,
                 mainSession = mainKey,
-                observedSession = mainKey,
-                chatSnapshot = ChatSnapshot(items = listOf(mainHistoryItem), loading = false),
-            ),
-        )
-        assertEquals(1, controller.state.value.turns.size)
-        assertTrue(controller.state.value.turns.single().fromUser)
-
-        // Streaming reply arrives on the dedicated side conversation.
-        val firstClientId = harness.sentSessionTexts[0].third
-        controller.onHubUpdate(
-            AssistHubSnapshot(
-                status = AssistHubStatus.Ready,
-                mainSession = mainKey,
-                observedSession = sideKey,
+                mainModelPick = fastPick,
                 mainWorking = false,
                 chatSnapshot = ChatSnapshot(
                     items = listOf(
-                        Item(id = "su-1", role = "user", kind = "text", text = "Quick translate hello", clientMsgId = firstClientId),
-                        Item(id = "sa-1", role = "assistant", kind = "text", text = "你好"),
+                        mainHistoryItem,
+                        Item(id = "mu-1", role = "user", kind = "text", text = "Quick translate hello", clientMsgId = firstClientId),
+                        Item(id = "ma-1", role = "assistant", kind = "text", text = "你好"),
                     ),
                     loading = false,
                 ),
@@ -433,28 +422,85 @@ class AssistOverlayControllerTest {
         assertEquals(2, controller.state.value.turns.size)
         assertEquals("你好", controller.state.value.turns[1].text)
 
-        // Follow-up in the same overlay session reuses sideKey instead of creating a second conversation.
+        // Switching back to Default (Main chat) clears main's model_pick on next send and stays in mainKey.
+        controller.selectDefaultModel()
         controller.updateDraftText("And in Japanese?")
         controller.send()
         runCurrent()
-        assertEquals(1, harness.createdSidePicks.size)
-        assertEquals(2, harness.sentSessionTexts.size)
-        assertEquals(sideKey, harness.sentSessionTexts[1].first)
 
-        // "Open in Persona" opens the exact side session and claims any unsent draft for it.
+        assertEquals(
+            listOf(
+                PreparedModelCall(fastPick, clearIfDefault = false),
+                PreparedModelCall(null, clearIfDefault = true),
+            ),
+            harness.preparedModels,
+        )
+        assertEquals(listOf<SessionKey?>(mainKey, mainKey), harness.sentTargets)
+        assertEquals(2, harness.sentTexts.size)
+
+        // "Open in Persona" opens mainKey seamlessly carrying any unsent draft.
         controller.updateDraftText("Draft for full app")
         controller.openInPersona()
-        assertEquals(listOf<SessionKey?>(sideKey), harness.launchedTargets)
-        assertEquals(sideKey, harness.publishedDrafts.single().targetSession)
+        assertEquals(listOf<SessionKey?>(mainKey), harness.launchedTargets)
+        assertEquals(mainKey, harness.publishedDrafts.single().targetSession)
 
         controller.endSession()
         runCurrent()
     }
 
     @Test
-    fun dedicatedModelFailureOffersOneTapFallbackToMainWithoutLosingDraftOrScreen() = runTest {
-        val harness = Harness(this, initialModelChoice = fastChoice)
-        harness.sideCreateFailure = IllegalStateException("Launcher gemini is offline")
+    fun firstTimePairingWithCustomModelCreatesMainConversationAndOpensIt() = runTest {
+        val newlyCreatedMain = SessionKey("machine-1", "main-created-1")
+        val harness = Harness(this, initialModelChoice = fastChoice, resolvedMainSession = newlyCreatedMain)
+        val controller = harness.controller
+        controller.onHubUpdate(AssistHubSnapshot(status = AssistHubStatus.Ready, mainSession = null))
+        controller.beginSession(supportsScreenshot = false)
+
+        controller.updateDraftText("Hello first main turn")
+        controller.send()
+        runCurrent()
+
+        assertEquals(listOf(PreparedModelCall(fastPick, clearIfDefault = false)), harness.preparedModels)
+        assertEquals(listOf<SessionKey?>(newlyCreatedMain), harness.sentTargets)
+        assertEquals(newlyCreatedMain, controller.state.value.mainSession)
+
+        controller.openInPersona()
+        assertEquals(listOf<SessionKey?>(newlyCreatedMain), harness.launchedTargets)
+
+        controller.endSession()
+        runCurrent()
+    }
+
+    @Test
+    fun defaultModelSkipsExtraRpcWhenMainHasNoPickAndClearsWhenMainHasPick() = runTest {
+        val harness = Harness(this, resolvedMainSession = mainKey)
+        val controller = harness.controller
+        controller.onHubUpdate(AssistHubSnapshot(status = AssistHubStatus.Ready, mainSession = mainKey, mainModelPick = null))
+        controller.beginSession(supportsScreenshot = false)
+
+        // Main already on default -> zero extra prepareMainModel RPC.
+        controller.updateDraftText("Plain default question")
+        controller.send()
+        runCurrent()
+        assertTrue(harness.preparedModels.isEmpty())
+        assertEquals(listOf<SessionKey?>(mainKey), harness.sentTargets)
+
+        // If main currently has a custom pick on the Hub, Default clears it before sending.
+        controller.onHubUpdate(AssistHubSnapshot(status = AssistHubStatus.Ready, mainSession = mainKey, mainModelPick = fastPick))
+        controller.updateDraftText("Back to default")
+        controller.send()
+        runCurrent()
+        assertEquals(listOf(PreparedModelCall(null, clearIfDefault = true)), harness.preparedModels)
+        assertEquals(listOf<SessionKey?>(mainKey, mainKey), harness.sentTargets)
+
+        controller.endSession()
+        runCurrent()
+    }
+
+    @Test
+    fun switchingMainModelFailureOffersOneTapFallbackToMainDefaultWithoutLosingDraftOrScreen() = runTest {
+        val harness = Harness(this, initialModelChoice = fastChoice, resolvedMainSession = mainKey)
+        harness.modelSwitchFailure = IllegalStateException("Launcher gemini is offline")
         val controller = harness.controller
         controller.onHubUpdate(AssistHubSnapshot(status = AssistHubStatus.Ready, mainSession = mainKey))
         controller.beginSession(supportsScreenshot = true)
@@ -476,12 +522,19 @@ class AssistOverlayControllerTest {
         assertEquals(confirmed, controller.state.value.attachedScreenshot)
         assertTrue(harness.deletedAttachments.isEmpty())
 
-        // One-tap fallback retries cleanly against Main chat without mutating main chat's model.
+        // One-tap fallback clears/skips custom model and retries cleanly on Main default.
         controller.retryWithDefaultMain()
         runCurrent()
 
         assertFalse(controller.state.value.modelFallbackAvailable)
         assertNull(controller.state.value.errorMessage)
+        assertEquals(
+            listOf(
+                PreparedModelCall(fastPick, clearIfDefault = false),
+                PreparedModelCall(null, clearIfDefault = true),
+            ),
+            harness.preparedModels,
+        )
         assertEquals(1, harness.sentWithScreen.size)
         assertEquals("Explain this error", harness.sentWithScreen.single().first)
         assertEquals(confirmed, harness.sentWithScreen.single().second)

@@ -39,13 +39,13 @@
     <string name="settings_search_digital_assistant_aliases">デフォルト デジタルアシスタント アシスタント 音声アシスタント サイドボタン スクリーンショット クイックウィンドウ モデル</string>
     <string name="settings_digital_assistant_system_header">システムアシスタント</string>
     <string name="settings_digital_assistant_model_header">クイックウィンドウのモデル</string>
-    <string name="settings_digital_assistant_model_caption">現在：%1$s。専用モデルを選ぶと軽量チャットで素早く応答し、メインチャットのモデル設定は変更されません。</string>
+    <string name="settings_digital_assistant_model_caption">現在：%1$s。モデルを指定すると、メインチャットのモデルを切り替えて送信し、会話履歴はそのままメインチャットに残ります。</string>
     <string name="settings_digital_assistant_model_summary">クイックウィンドウ：%1$s</string>
     <string name="settings_digital_assistant_model_default">デフォルト（メインチャット）</string>
-    <string name="settings_digital_assistant_model_default_detail">クイックウィンドウの質問をメインチャットへ送信します</string>
+    <string name="settings_digital_assistant_model_default_detail">メインチャットのデフォルトモデルで送信します</string>
     <string name="settings_digital_assistant_model_selected">選択中</string>
     <string name="settings_digital_assistant_model_refresh">更新</string>
     <string name="settings_digital_assistant_model_loading">Hub からモデルを読み込み中…</string>
-    <string name="settings_digital_assistant_model_offline">専用モデルを選ぶには Hub に接続してください。</string>
+    <string name="settings_digital_assistant_model_offline">モデルを切り替えるには Hub に接続してください。</string>
     <string name="settings_digital_assistant_model_empty">この Hub で選択できる追加モデルはありません。</string>
 </resources>

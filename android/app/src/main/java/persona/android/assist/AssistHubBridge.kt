@@ -31,6 +31,7 @@ import persona.core.contracts.api.DigitalAssistantModelCatalog
 import persona.core.contracts.api.DigitalAssistantModelChoice
 import persona.core.contracts.api.OutboxMessage
 import persona.core.domain.ComposerMessage
+import persona.core.hub.HubFailure
 import persona.feature.chat.ChatAppBindings
 import persona.feature.chat.ChatLinkContext
 import persona.feature.chat.ChatWiringSource
@@ -47,9 +48,9 @@ internal interface AssistOverlayEntryPoint {
 }
 
 /**
- * Connects [AssistOverlayController] to the app's existing Hub connection, main or dedicated
- * lightweight overlay conversation repository, attachment uploader, model catalog, and live
- * streaming transcript without opening any extra socket.
+ * Connects [AssistOverlayController] to the app's existing Hub connection, main conversation
+ * repository, in-place main-conversation model switcher, attachment uploader, model catalog, and
+ * live streaming transcript without opening any extra socket or creating side conversations.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 internal class AssistHubBridge(
@@ -64,17 +65,11 @@ internal class AssistHubBridge(
         EntryPointAccessors.fromApplication(appContext, AssistOverlayEntryPoint::class.java)
     }.getOrNull()
 
-    private val activeSessionOverride = MutableStateFlow<SessionKey?>(null)
     private var observeJob: Job? = null
     private var modelChoiceJob: Job? = null
 
     fun wakeHub() {
         val _ = runCatching { entryPoint?.assistConnections()?.wake() }
-    }
-
-    /** Switches live transcript observation to a dedicated overlay [session] (or null to follow main chat). */
-    fun setObservedSession(session: SessionKey?) {
-        activeSessionOverride.value = session
     }
 
     fun currentModelChoice(): DigitalAssistantModelChoice =
@@ -135,10 +130,7 @@ internal class AssistHubBridge(
                 val activeBinding = tuple.binding?.takeIf { it.scope.path == session.identity }
                 val connStateFlow = (activeBinding?.connection ?: session.connection).state
                 val mainSessionFlow = session.assistant.assistant.map { it.mainSession }.distinctUntilChanged()
-                val observedSessionFlow = combine(mainSessionFlow, activeSessionOverride) { mainKey, overrideKey ->
-                    overrideKey ?: mainKey
-                }.distinctUntilChanged()
-                val chatFlow = observedSessionFlow.flatMapLatest { key ->
+                val chatFlow = mainSessionFlow.flatMapLatest { key ->
                     if (key == null) flowOf<Pair<SessionKey?, ChatSnapshot?>>(null to null)
                     else session.chats.observe(key).map { key to it }
                 }
@@ -154,28 +146,17 @@ internal class AssistHubBridge(
                     connStateFlow,
                     session.assistant.assistant,
                     session.sessions.sessions,
-                    observedSessionFlow,
                     chatFlow,
                     outboxFlow,
-                ) { values ->
-                    val connState = values[0] as ConnectionState
-                    val assistant = values[1] as persona.core.contracts.api.AssistantSnapshot
-                    @Suppress("UNCHECKED_CAST")
-                    val sessions = values[2] as List<persona.core.contracts.Session>
-                    val targetKey = values[3] as SessionKey?
-                    @Suppress("UNCHECKED_CAST")
-                    val observedChat = values[4] as Pair<SessionKey?, ChatSnapshot?>
-                    @Suppress("UNCHECKED_CAST")
-                    val outbox = values[5] as List<OutboxMessage>
-
+                ) { connState, assistant, sessions, observedChat, outbox ->
                     val mainKey = assistant.mainSession
-                    val activeRow = targetKey?.let { key ->
+                    val activeRow = mainKey?.let { key ->
                         sessions.firstOrNull { it.key == key }
                             ?: assistant.conversations.firstOrNull { it.key == key }
                     }
                     val working = activeRow?.foldedState == AgentState.Working ||
                         activeRow?.status == "working"
-                    val chat = observedChat.second?.takeIf { observedChat.first == targetKey }
+                    val chat = observedChat.second?.takeIf { observedChat.first == mainKey }
                     val hubStatus = mapConnectionStateToHubStatus(
                         connectionState = connState,
                         hasBinding = activeBinding != null || session.demo != null,
@@ -183,7 +164,7 @@ internal class AssistHubBridge(
                     AssistHubSnapshot(
                         status = hubStatus,
                         mainSession = mainKey,
-                        observedSession = targetKey,
+                        mainModelPick = activeRow?.modelPick,
                         mainWorking = working,
                         chatSnapshot = chat,
                         outbox = outbox,
@@ -200,53 +181,54 @@ internal class AssistHubBridge(
         observeJob = null
         modelChoiceJob?.cancel()
         modelChoiceJob = null
-        activeSessionOverride.value = null
     }
 
-    /** Creates a lightweight non-main conversation (`main = false`) using [pick], never touching main chat. */
-    suspend fun createSideConversation(pick: ModelPick): SessionKey {
-        val (session, _) = requireReadySession()
-        return session.assistant.startSideConversation(pick)
-    }
-
-    suspend fun sendTextToSession(targetKey: SessionKey, prompt: String, clientMessageId: String) {
-        val (session, _) = requireReadySession()
-        val wireText = formatAssistWireMessage(
-            prompt = prompt,
-            remoteImagePath = null,
-            contextCard = null,
-            photosOnlyPrompt = "",
-        )
-        session.sender.send(targetKey, wireText, clientMessageId)
-    }
-
-    suspend fun sendWithScreenToSession(
-        targetKey: SessionKey,
-        prompt: String,
-        screenshot: ComposerAttachment,
-        contextCard: ChatLinkContext?,
-        clientMessageId: String,
-    ) {
+    /**
+     * Switches the Hub's main conversation in place to [pick] (`PUT /api/v1/assistant/conversations/{id}/model`),
+     * or clears its custom pick (`DELETE .../model`) when [pick] is null.
+     *
+     * When the paired Hub has no main conversation yet (first-time pairing), creates the main
+     * conversation (`main = true`) directly with [pick] when [pick] != null — never creating a
+     * non-main side conversation.
+     */
+    suspend fun prepareMainModel(pick: ModelPick?, clearIfDefault: Boolean): SessionKey? {
         val (session, binding) = requireReadySession()
-        val activeBinding = binding ?: error(context.getString(R.string.app_assist_hub_offline_title))
-        val remotePath = uploadAttachment(
-            context = appContext,
-            service = activeBinding.composer,
-            session = targetKey,
-            attachment = screenshot,
-        )
-        val wireText = formatAssistWireMessage(
-            prompt = prompt,
-            remoteImagePath = remotePath,
-            contextCard = contextCard,
-            photosOnlyPrompt = context.getString(R.string.app_assist_screen_only_prompt),
-        )
-        session.sender.send(targetKey, wireText, clientMessageId)
+        val mainKey = resolveExistingMainSession(session)
+        if (pick != null) {
+            if (mainKey != null) {
+                val activeBinding = binding ?: error(context.getString(R.string.app_assist_hub_offline_title))
+                val currentPick = currentMainModelPick(session, mainKey)
+                if (currentPick != pick) {
+                    val _ = activeBinding.assistantManagement.setModelPick(mainKey, pick)
+                }
+                return mainKey
+            }
+            return session.assistant.startConversation(pick)
+        }
+        if (mainKey != null) {
+            val currentPick = currentMainModelPick(session, mainKey)
+            if (clearIfDefault || currentPick != null) {
+                val management = binding?.assistantManagement
+                if (management != null) {
+                    try {
+                        management.clearModelPick(mainKey)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: HubFailure) {
+                        // Older hubs without `assistant_model_pick` answer 404 / 405; keep sending to main.
+                        if (failure.status != 404 && failure.status != 405) throw failure
+                    } catch (_: UnsupportedOperationException) {
+                        // Demo or legacy transport without model_pick support.
+                    }
+                }
+            }
+        }
+        return mainKey
     }
 
-    suspend fun sendTextToMain(prompt: String, clientMessageId: String) {
+    suspend fun sendTextToMain(targetMain: SessionKey?, prompt: String, clientMessageId: String) {
         val (session, binding) = requireReadySession()
-        val mainKey = session.assistant.assistant.value.mainSession
+        val mainKey = targetMain ?: session.assistant.assistant.value.mainSession
         val wireText = formatAssistWireMessage(
             prompt = prompt,
             remoteImagePath = null,
@@ -263,6 +245,7 @@ internal class AssistHubBridge(
     }
 
     suspend fun sendWithScreenToMain(
+        targetMain: SessionKey?,
         prompt: String,
         screenshot: ComposerAttachment,
         contextCard: ChatLinkContext?,
@@ -270,7 +253,8 @@ internal class AssistHubBridge(
     ) {
         val (session, binding) = requireReadySession()
         val activeBinding = binding ?: error(context.getString(R.string.app_assist_hub_offline_title))
-        val targetKey = session.assistant.assistant.value.mainSession
+        val targetKey = targetMain
+            ?: resolveExistingMainSession(session)
             ?: activeBinding.mainUploadTarget?.invoke()
             ?: run {
                 try {
@@ -296,6 +280,16 @@ internal class AssistHubBridge(
         )
         session.sender.send(targetKey, wireText, clientMessageId)
     }
+
+    private suspend fun resolveExistingMainSession(session: ShellSession): SessionKey? {
+        session.assistant.assistant.value.mainSession?.let { return it }
+        val _ = runCatching { session.assistant.refresh() }
+        return session.assistant.assistant.value.mainSession
+    }
+
+    private fun currentMainModelPick(session: ShellSession, mainKey: SessionKey): ModelPick? =
+        session.sessions.sessions.value.firstOrNull { it.key == mainKey }?.modelPick
+            ?: session.assistant.assistant.value.conversations.firstOrNull { it.key == mainKey }?.modelPick
 
     private fun requireReadySession(): Pair<ShellSession, ChatAppBindings?> {
         val services = entryPoint?.assistAppServices()

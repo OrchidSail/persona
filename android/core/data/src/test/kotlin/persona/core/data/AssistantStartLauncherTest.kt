@@ -70,36 +70,14 @@ class AssistantStartLauncherTest {
         assertEquals(listOf(true to "cc_x", false to "cc_y", false to null), transport.created)
     }
 
-    @Test fun startSideConversationAlwaysPassesMainFalseEvenWithoutExistingMain() = runTest {
+    @Test fun startConversationWithModelPickCreatesMainWhenNoneExists() = runTest {
         val transport = Transport(main = "")
         val connection = object : InboxAssistantConnection { override val current = MutableStateFlow<InboxAssistantTransport?>(transport) }
         val repository = RealAssistantRepository(connection, Sessions(), backgroundScope)
 
-        val created = repository.startSideConversation(persona.core.contracts.ModelPick("gemini", "gemini-2.5-flash"))
+        val created = repository.startConversation(persona.core.contracts.ModelPick("gemini", "gemini-2.5-flash"))
         assertEquals(SessionKey("mac", "c1"), created)
-        assertEquals(listOf(false to "gemini:gemini-2.5-flash"), transport.created)
-        assertEquals(null, repository.assistant.value.mainSession)
-    }
-
-    @Test fun defaultStartSideConversationFailsClosedWithoutCallingStartConversation() = runTest {
-        var mainStarterCalled = false
-        val minimal = object : persona.core.contracts.api.AssistantConversations {
-            override val assistant = MutableStateFlow(persona.core.contracts.api.AssistantSnapshot(null, emptyList()))
-            override val pinned = MutableStateFlow<Set<SessionKey>>(emptySet())
-            override suspend fun refresh() = Unit
-            override suspend fun startConversation(): SessionKey {
-                mainStarterCalled = true
-                return SessionKey("mac", "main")
-            }
-            override suspend fun startConversation(launcher: String): SessionKey {
-                mainStarterCalled = true
-                return SessionKey("mac", "main")
-            }
-        }
-        val result = runCatching {
-            minimal.startSideConversation(persona.core.contracts.ModelPick("gemini", "gemini-2.5-flash"))
-        }
-        assertEquals(true, result.exceptionOrNull() is UnsupportedOperationException)
-        assertEquals(false, mainStarterCalled)
+        assertEquals(listOf(true to "gemini:gemini-2.5-flash"), transport.created)
+        assertEquals(SessionKey("mac", "c1"), repository.assistant.value.mainSession)
     }
 }

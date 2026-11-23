@@ -44,7 +44,7 @@ import persona.core.designsystem.rowPadding
  * Settings › Default digital assistant:
  * 1. System `ROLE_ASSISTANT` status and shortcut to Android's system digital assistant picker.
  * 2. Hub-scoped model preference for the floating quick-ask overlay, synced live with the overlay's
- *    compact header model pill without ever modifying the main conversation's model binding.
+ *    model switcher and applied in place to the main conversation when sending from the quick window.
  */
 @Composable
 internal fun DigitalAssistantSettingsPage(

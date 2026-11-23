@@ -147,7 +147,7 @@
     <string name="app_assist_unlock_action">去解锁</string>
     <string name="app_assist_model_default_short">主对话</string>
     <string name="app_assist_model_default_title">默认（主对话）</string>
-    <string name="app_assist_model_default_subtitle">直接发送到主对话</string>
+    <string name="app_assist_model_default_subtitle">使用主对话默认模型</string>
     <string name="app_assist_model_picker_title">快捷浮窗模型</string>
     <string name="app_assist_model_picker_description">切换快捷浮窗模型：%1$s</string>
     <string name="app_assist_model_loading">正在加载模型…</string>

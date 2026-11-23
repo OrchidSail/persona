@@ -39,13 +39,13 @@
     <string name="settings_search_digital_assistant_aliases">default digital assistant voice assist side button screenshot ROLE_ASSISTANT quick window model</string>
     <string name="settings_digital_assistant_system_header">System assistant</string>
     <string name="settings_digital_assistant_model_header">Quick window model</string>
-    <string name="settings_digital_assistant_model_caption">Current: %1$s. Choosing a dedicated model starts a lightweight quick chat without changing your main conversation model.</string>
+    <string name="settings_digital_assistant_model_caption">Current: %1$s. Choosing a model switches your main conversation to that model before sending from the quick window.</string>
     <string name="settings_digital_assistant_model_summary">Quick window model: %1$s</string>
     <string name="settings_digital_assistant_model_default">Default (Main chat)</string>
-    <string name="settings_digital_assistant_model_default_detail">Send quick overlay questions to your main conversation</string>
+    <string name="settings_digital_assistant_model_default_detail">Use your main conversation\'s default model in the quick window</string>
     <string name="settings_digital_assistant_model_selected">Selected</string>
     <string name="settings_digital_assistant_model_refresh">Refresh</string>
     <string name="settings_digital_assistant_model_loading">Loading models from Hub…</string>
-    <string name="settings_digital_assistant_model_offline">Connect to your Hub to choose a dedicated quick-window model.</string>
+    <string name="settings_digital_assistant_model_offline">Connect to your Hub to choose a model for the quick window.</string>
     <string name="settings_digital_assistant_model_empty">No additional models available on this Hub.</string>
 </resources>

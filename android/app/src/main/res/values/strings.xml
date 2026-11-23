@@ -148,7 +148,7 @@
     <string name="app_assist_unlock_action">Unlock</string>
     <string name="app_assist_model_default_short">Main chat</string>
     <string name="app_assist_model_default_title">Default (Main chat)</string>
-    <string name="app_assist_model_default_subtitle">Send directly to your main conversation</string>
+    <string name="app_assist_model_default_subtitle">Use your main conversation\'s default model</string>
     <string name="app_assist_model_picker_title">Quick window model</string>
     <string name="app_assist_model_picker_description">Switch quick window model: %1$s</string>
     <string name="app_assist_model_loading">Loading models…</string>

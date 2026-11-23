@@ -147,7 +147,7 @@
     <string name="app_assist_unlock_action">ロック解除</string>
     <string name="app_assist_model_default_short">メイン</string>
     <string name="app_assist_model_default_title">デフォルト（メインチャット）</string>
-    <string name="app_assist_model_default_subtitle">メインチャットへ直接送信</string>
+    <string name="app_assist_model_default_subtitle">メインチャットのデフォルトモデルを使用</string>
     <string name="app_assist_model_picker_title">クイックウィンドウのモデル</string>
     <string name="app_assist_model_picker_description">クイックウィンドウのモデルを切替：%1$s</string>
     <string name="app_assist_model_loading">モデルを読み込み中…</string>
