@@ -268,11 +268,11 @@ User decision: the hub is only a communication center, and computers belong to t
 
 ## UI (web)
 
-- **Bottom of the sidebar**: one thin bar each for the two fullest accounts (name, percentage of the fullest window), warning color at ≥ 80%; out-of-date ones fade; the hover tooltip shows the source. **With no data the whole block is not drawn**, and the sidebar looks as before. Users can optionally pin one or more live accounts from the popover to stay visible in the collapsed strip (browser-local `localStorage`, display-only, with one-click **Reset to automatic** and automatic fallback when all pinned accounts are unavailable; #12418).
+- **Bottom of the sidebar**: one thin bar each for the two fullest accounts (name, percentage of the fullest window), warning color at ≥ 80%; out-of-date ones fade; the hover tooltip shows the source. **With no data the whole block is not drawn**, and the sidebar looks as before. Users can optionally pin one or more live accounts or individual usage windows (such as a specific per-model `7d` window) from the popover to stay visible in the collapsed strip in pinned order (browser-local `localStorage` under `persona.usage.pinnedAccounts`, display-only, with session-stable in-memory fallback when storage is unavailable, one-click **Reset to automatic**, and automatic fallback when all pinned items are unavailable; #12418, #13870).
 - **Opened**: one row per window per account: window length (5h / 7d), percent used, a bar, the reset countdown, a pace hint; the sample time ("12 seconds ago") sits right of the account title.
   The line under the account title gives the plan and sources ("MacBook · Relay"); per-model windows show the model name next to the length; when the gateway cannot read, a one-line explanation (see "Account-pool gateways"). Esc or clicking elsewhere closes it.
 - **Reset countdown**: under 1 hour reads `Resets in 45m`; within today, the time `Resets at 13:05`; longer, `Resets in 2d 3h`, or `Resets in 5d` when no hours are left over (never `5d 0h`). Each language writes its own units: Chinese and Japanese spell out minutes, hours and days as words rather than the letters m / h / d.
-- **Pace** (`pace` in `lib/usage-windows.ts`): the window length is read from the label (`5h`, `7d`, falling back to `window_minutes`); expected progress = elapsed time / window length.
+- **Pace** (`pace` in `lib/usage-popover.ts`): the window length is read from the label (`5h`, `7d`, falling back to `window_minutes`); expected progress = elapsed time / window length.
   More than 5 percentage points above expected is "Ahead of pace", more than 5 below is "Behind pace", nothing in between; a tick on the bar marks the expected position.
   No judgment and no tick in the first 5% of a window (in the first few minutes, using even a little counts as "ahead").
   No judgment and no tick for an out-of-date account either (`accountPace`; iOS `UsageWindows.pace(_:stale:now:)`, Android `pace(w, now, stale)`, #12411): an old reading says nothing about how fast the window is used now, so its numbers and reset stay, faded and dated, without a verdict.
@@ -281,7 +281,7 @@ User decision: the hub is only a communication center, and computers belong to t
 
 ## Provider cards and the reset timeline (#13173)
 
-One rule on every client; web first (`web/src/lib/usage-windows.ts`: `groupByProvider`, `sortForCard`, `sortedWindows`, `timeline`; view `web/src/views/UsagePopover.tsx`). It is computed on the client from data already loaded: no new request, and the hub's answer is unchanged.
+One rule on every client; web first (`web/src/lib/usage-popover.ts`: `groupByProvider`, `sortForCard`, `sortedWindows`, `providerTimeline`; view `web/src/views/UsagePopover.tsx`). It is computed on the client from data already loaded: no new request, and the hub's answer is unchanged.
 
 - **Cards**: the accounts are grouped by provider (account type) in the order the hub listed them. A card has the provider's name, its account count and the newest sample age. **Every account is listed** (no "two fullest" folding in the details view; the collapsed sidebar strip is unchanged).
 - **Order inside a card**: by the plan's 7d window reset, soonest first; accounts without a 7d window or reset time last, then by name.

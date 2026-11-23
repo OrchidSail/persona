@@ -4,7 +4,7 @@
 import { useSidebarUsageShown } from "../lib/sidebar-usage";
 import { type ComponentType, useEffect, useRef, useState } from "react";
 import { t as tr } from "../i18n";
-import { fullest, isWarn, liveAccounts, selectSidebarUsageAccounts, sourceNames, usePinnedUsageAccounts, useUsageWindows, type UnconnectedProvider, type UsageAccount } from "../lib/usage-windows";
+import { fullest, isWarn, liveAccounts, selectSidebarUsageItems, sidebarWindowTitle, sourceNames, usePinnedUsageAccounts, useUsageWindows, type UnconnectedProvider, type UsageAccount } from "../lib/usage-windows";
 import { cx } from "../ui/atoms";
 import { lazyOverlay } from "./LazyOverlay";
 
@@ -46,7 +46,7 @@ export function UsageBars({ accounts, unconnected = EMPTY_UNCONNECTED, now = Dat
   const ref = useRef<HTMLDivElement>(null);
   const pinnedIds = usePinnedUsageAccounts();
   const live = liveAccounts(accounts, now);
-  const { bars: top, balances } = selectSidebarUsageAccounts(live, pinnedIds);
+  const { items } = selectSidebarUsageItems(live, pinnedIds);
 
   useEffect(() => {
     if (!open) return;
@@ -62,7 +62,8 @@ export function UsageBars({ accounts, unconnected = EMPTY_UNCONNECTED, now = Dat
     };
   }, [open]);
 
-  if (!top.length && !balances.length && !unconnected.length) return null;
+  if (!items.length && !unconnected.length) return null;
+  const barCount = items.reduce((n, item) => n + (item.kind === "balance" ? 0 : 1), 0);
   return (
     <div ref={ref} className="relative shrink-0 px-2.5 pb-2.5 pt-1" data-usage-bars>
       {open && <UsagePopover accounts={live} unconnected={unconnected} onClose={() => setOpen(false)} />}
@@ -74,24 +75,27 @@ export function UsageBars({ accounts, unconnected = EMPTY_UNCONNECTED, now = Dat
         title={tr("usage.title")}
         className="touch-hit flex w-full flex-col gap-1.5 rounded-control px-2.5 py-2 text-left shadow-hairline transition-colors hover:bg-hover"
       >
-        {top.map((a) => {
-          const used = fullest(a);
+        {items.map((item) => {
+          if (item.kind === "balance") return <BalanceRow key={item.key} a={item.account} />;
+          const a = item.account;
+          const w = item.kind === "window" ? item.window : undefined;
+          const used = w ? w.used_percent : fullest(a);
+          const name = w ? sidebarWindowTitle(a, w) : a.name;
+          const fullName = w ? `${name} ${w.label}` : a.name;
           const from = sourceNames(a);
-          const title = [from.length ? tr("usage.sources_title", { sources: from.join(" · ") }) : "", a.stale ? tr("usage.stale_title") : ""].filter(Boolean).join(" · ");
+          const title = [w ? fullName : "", from.length ? tr("usage.sources_title", { sources: from.join(" · ") }) : "", a.stale ? tr("usage.stale_title") : ""].filter(Boolean).join(" · ");
           return (
-            <span key={a.id} className={cx("flex flex-col gap-1", a.stale && "opacity-60")} title={title || undefined}>
+            <span key={item.key} data-usage-window={w ? item.key : undefined} className={cx("flex flex-col gap-1", a.stale && "opacity-60")} title={title || undefined}>
               <span className="flex items-baseline gap-2">
-                <span className={ROW_NAME}>{a.name}</span>
+                <span className={ROW_NAME}>{name}</span>
+                {w && <span className="shrink-0 whitespace-nowrap text-submeta text-ink-3">{w.label}</span>}
                 <span className={cx(ROW_VALUE, isWarn(used) ? "text-orange" : "text-ink-2")}>{shown(used)}</span>
               </span>
-              <Meter used={used} label={tr("usage.used_label", { name: a.name, percent: shown(used) })} />
+              <Meter used={used} label={tr("usage.used_label", { name: fullName, percent: shown(used) })} />
             </span>
           );
         })}
-        {balances.map((a) => (
-          <BalanceRow key={a.id} a={a} />
-        ))}
-        {unconnected.slice(0, Math.max(1, 4 - top.length)).map((p) => (
+        {unconnected.slice(0, Math.max(0, 4 - barCount)).map((p) => (
           <span key={`_${p.id}`} data-usage-unconnected={p.id} className="flex items-baseline gap-2 text-xs text-ink-3">
             <span className="min-w-0 flex-1 truncate">{p.title}</span>
             <span className="shrink-0">{tr("usage.not_connected")}</span>

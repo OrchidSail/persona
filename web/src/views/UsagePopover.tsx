@@ -6,7 +6,8 @@ import { sendDraft } from "../lib/drafts";
 import { navigate } from "../lib/router";
 import { getState } from "../lib/store";
 import { balanceEmpty, balanceText } from "../lib/usage-balance";
-import { accountPace, groupByProvider, isBalanceAccount, isWarn, planNote, providerTimeline, providerTitle, remainingText, resetLabel, resetPinnedUsageAccounts, sampleAge, sortedWindows, sourceNames, TIMELINE_TICKS_HOURS, timelinePosition, togglePinnedUsageAccount, usePinnedUsageAccounts, windowKey, type PaceState, type UnconnectedProvider, type UsageAccount, type UsageWindow } from "../lib/usage-windows";
+import { accountPace, groupByProvider, planNote, providerTimeline, providerTitle, remainingText, sortedWindows, TIMELINE_TICKS_HOURS, timelinePosition, type PaceState } from "../lib/usage-popover";
+import { isBalanceAccount, isWarn, resetLabel, resetPinnedUsageAccounts, sampleAge, selectSidebarUsageItems, sourceNames, togglePinnedUsageAccount, usageWindowPinId, usePinnedUsageAccounts, windowKey, type UnconnectedProvider, type UsageAccount, type UsageWindow } from "../lib/usage-windows";
 import { cx, EASE } from "../ui/atoms";
 import { Icon } from "../ui/icons";
 import { Meter } from "./UsageBars";
@@ -75,7 +76,8 @@ export function UsagePopover({
 }) {
   const pinnedIds = usePinnedUsageAccounts();
   const pinnedSet = new Set(pinnedIds);
-  const livePinnedCount = accounts.reduce((n, a) => n + (pinnedSet.has(a.id) ? 1 : 0), 0);
+  const { items: selectedPins, custom: hasLivePins } = selectSidebarUsageItems(accounts, pinnedIds);
+  const livePinnedCount = hasLivePins ? selectedPins.length : 0;
   const [tick, setTick] = useState(() => Date.now());
   useEffect(() => {
     if (fixed !== undefined) return;
@@ -92,7 +94,7 @@ export function UsagePopover({
   return (
     <div role="dialog" aria-label={tr("usage.title")} className="absolute bottom-full left-2.5 right-2.5 z-20 mb-1.5 max-h-[60vh] overflow-y-auto rounded-card bg-surface p-3 shadow-overlay" style={{ animation: `pop-in 160ms ${EASE} both`, transformOrigin: "bottom left" }}>
       <div className="flex flex-col gap-3">
-        {pinnedIds.length > 0 && accounts.length > 0 && (
+        {pinnedIds.length > 0 && (accounts.length > 0 || unconnected.length > 0) && (
           <div data-usage-pinned-bar className="flex items-center justify-between gap-2 border-b border-line pb-2 text-submeta">
             <span className="min-w-0 truncate text-ink-3">
               {livePinnedCount > 0 ? tr("usage.pinned_summary", { count: livePinnedCount }) : tr("usage.pinned_fallback")}
@@ -116,7 +118,7 @@ export function UsagePopover({
             </header>
             {g.accounts.map((a, i) => (
               <div key={a.id} className={cx("flex flex-col", i > 0 && "border-t border-line pt-2.5")}>
-                <AccountSection a={a} now={now} pinned={pinnedSet.has(a.id)} />
+                <AccountSection a={a} now={now} pinnedSet={pinnedSet} />
               </div>
             ))}
             <ProviderTimeline accounts={g.accounts} now={now} />
@@ -143,9 +145,44 @@ export function UsagePopover({
   );
 }
 
-function AccountSection({ a, now, pinned }: { a: UsageAccount; now: number; pinned: boolean }) {
+function PinToggle({
+  pinned,
+  label,
+  onClick,
+  pinAttr,
+  windowAttr,
+  iconSize = 12,
+}: {
+  pinned: boolean;
+  label: string;
+  onClick: () => void;
+  pinAttr?: string;
+  windowAttr?: string;
+  iconSize?: number;
+}) {
+  return (
+    <button
+      type="button"
+      data-usage-pin={pinAttr}
+      data-usage-pin-window={windowAttr}
+      aria-pressed={pinned}
+      aria-label={label}
+      title={pinned ? tr("usage.unpin_title") : tr("usage.pin_title")}
+      onClick={onClick}
+      className={cx(
+        "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-control transition-colors",
+        pinned ? "bg-hover-2 text-accent-ink" : "text-ink-3 hover:bg-hover hover:text-ink",
+      )}
+    >
+      <Icon name="pin" size={iconSize} />
+    </button>
+  );
+}
+
+function AccountSection({ a, now, pinnedSet }: { a: UsageAccount; now: number; pinnedSet: ReadonlySet<string> }) {
   const from = sourceNames(a);
   const plan = planNote(a);
+  const pinned = pinnedSet.has(a.id);
   // A balance's failure is about the provider's balance route, not a usage gateway's stored windows (#11825).
   const problem = isBalanceAccount(a) ? balanceProblemText(a) : problemText(a);
   return (
@@ -154,20 +191,12 @@ function AccountSection({ a, now, pinned }: { a: UsageAccount; now: number; pinn
         <div className="flex items-center gap-1.5">
           <h3 className="min-w-0 flex-1 truncate text-label font-medium text-ink">{a.name}</h3>
           <span className="shrink-0 whitespace-nowrap text-submeta text-ink-3">{a.stale ? tr("usage.stale_age", { age: sampleAge(a.sampled_at, now) }) : sampleAge(a.sampled_at, now)}</span>
-          <button
-            type="button"
-            data-usage-pin={a.id}
-            aria-pressed={pinned}
-            aria-label={pinned ? tr("usage.unpin_account", { name: a.name }) : tr("usage.pin_account", { name: a.name })}
-            title={pinned ? tr("usage.unpin_title") : tr("usage.pin_title")}
+          <PinToggle
+            pinned={pinned}
+            pinAttr={a.id}
+            label={pinned ? tr("usage.unpin_account", { name: a.name }) : tr("usage.pin_account", { name: a.name })}
             onClick={() => togglePinnedUsageAccount(a.id)}
-            className={cx(
-              "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-control transition-colors",
-              pinned ? "bg-hover-2 text-accent-ink" : "text-ink-3 hover:bg-hover hover:text-ink",
-            )}
-          >
-            <Icon name="pin" size={12} />
-          </button>
+          />
         </div>
         {(from.length > 0 || plan) && (
           <div data-usage-source className="flex min-w-0 items-baseline gap-1.5 text-submeta text-ink-3">
@@ -185,9 +214,10 @@ function AccountSection({ a, now, pinned }: { a: UsageAccount; now: number; pinn
         </div>
       )}
       {!a.balance && isBalanceAccount(a) && <div data-usage-balance-unavailable className="text-xs text-orange">{tr("usage.balance_unavailable")}</div>}
-      {sortedWindows(a).map((w) => (
-        <WindowRow key={windowKey(w)} name={a.name} w={w} stale={Boolean(a.stale)} now={now} />
-      ))}
+      {sortedWindows(a).map((w) => {
+        const pinId = usageWindowPinId(a.id, w);
+        return <WindowRow key={windowKey(w)} name={a.name} w={w} stale={Boolean(a.stale)} now={now} pinId={pinId} pinned={pinnedSet.has(pinId)} />;
+      })}
     </section>
   );
 }
@@ -249,8 +279,11 @@ export function ProviderTimeline({ accounts, now }: { accounts: UsageAccount[]; 
   );
 }
 
-function WindowRow({ name, w, stale, now }: { name: string; w: UsageWindow; stale: boolean; now: number }) {
+function WindowRow({ name, w, stale, now, pinId, pinned }: { name: string; w: UsageWindow; stale: boolean; now: number; pinId: string; pinned: boolean }) {
   const p = accountPace({ stale }, w, now);
+  const pinLabel = w.model
+    ? (pinned ? tr("usage.unpin_window_model", { name, window: w.label, model: w.model }) : tr("usage.pin_window_model", { name, window: w.label, model: w.model }))
+    : (pinned ? tr("usage.unpin_window", { name, window: w.label }) : tr("usage.pin_window", { name, window: w.label }));
   return (
     <div className="flex flex-col gap-1">
       {w.model && (
@@ -258,11 +291,12 @@ function WindowRow({ name, w, stale, now }: { name: string; w: UsageWindow; stal
           {w.model}
         </span>
       )}
-      <div className="flex items-baseline gap-2 text-submeta">
+      <div className="flex items-center gap-1.5 text-submeta">
         <span className="w-7 shrink-0 text-ink-2">{w.label}</span>
         <span className={cx("shrink-0 tabular-nums", isWarn(w.used_percent) ? "text-orange" : "text-ink")}>{shown(w.used_percent)}</span>
         {p && p.state !== "on" && <span className={cx("shrink-0 whitespace-nowrap", PACE_TEXT[p.state])}>{paceLabel(p.state)}</span>}
         <span className="min-w-0 flex-1 truncate text-right text-ink-3">{resetLabel(w.resets_at, now)}</span>
+        <PinToggle pinned={pinned} windowAttr={pinId} label={pinLabel} onClick={() => togglePinnedUsageAccount(pinId)} iconSize={11} />
       </div>
       <Meter used={w.used_percent} expected={p?.expected} protect={w.protect_percent} label={w.model ? tr("usage.window_model_label", { name, window: w.label, model: w.model, percent: shown(w.used_percent) }) : tr("usage.window_used_label", { name, window: w.label, percent: shown(w.used_percent) })} tall />
     </div>
