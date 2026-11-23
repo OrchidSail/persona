@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.filter
@@ -111,6 +112,14 @@ class PersonaApp : Application() {
         }
         // Light/dark for what Compose does not draw (WebView pages, system dialogs) too: the app's own night mode.
         scope.launch { appearance.scheme.collect { applyNightMode(it) } }
+        // Keep the Persona main-chat widget in sync when the user changes interface style, theme color, or light/dark.
+        scope.launch {
+            kotlinx.coroutines.flow.combine(appearance.style, appearance.color, appearance.scheme) { style, color, scheme ->
+                Triple(style, color, scheme)
+            }.distinctUntilChanged().drop(1).collect {
+                persona.platform.shortcuts.MainChatWidget.refresh(this@PersonaApp)
+            }
+        }
         // A tiered look moved to another tier: the new tier is downloaded whole before the face changes. The two events
         // are taken off the event flow first, so the download holds up no other live event (#4038).
         scope.launch {

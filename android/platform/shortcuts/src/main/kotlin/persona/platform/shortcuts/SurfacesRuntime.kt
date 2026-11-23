@@ -7,6 +7,7 @@ import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import persona.core.contracts.SessionKey
+import persona.core.contracts.api.AssistantRepository
 import persona.core.contracts.api.InteractionCenter
 import persona.core.contracts.GroupKeys
 import persona.core.contracts.api.PairingService
@@ -35,6 +36,8 @@ class SurfacesRuntime @Inject constructor(
     @ApplicationContext private val context: Context,
     private val fleet: FleetFeed,
     private val sessions: SessionsRepository,
+    private val assistant: AssistantRepository,
+    private val interactions: InteractionCenter,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var started = false
@@ -50,6 +53,34 @@ class SurfacesRuntime @Inject constructor(
                 .collect {
                     PersonaWidget.refresh(context)
                     PersonaTileService.refresh(context)
+                }
+        }
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            fleet.settled()
+            combine(fleet.paired, assistant.assistant, sessions.sessions, interactions.pending) { paired, snapshot, list, pending ->
+                MainChatWidgetState.build(
+                    paired = paired,
+                    assistant = snapshot,
+                    sessions = list,
+                    interactions = pending,
+                    resources = context.resources,
+                )
+            }
+                .distinctUntilChanged()
+                .debounce(REDRAW_DEBOUNCE_MILLIS)
+                .collect { widgetSnapshot ->
+                    if (!widgetSnapshot.paired) {
+                        MainChatWidgetStore.clear(context)
+                        MainChatWidget.refresh(context)
+                    } else {
+                        // Preserve a populated persisted snapshot while paired repositories warm up after cold start.
+                        val keepPersisted = !widgetSnapshot.hasPopulatedState() &&
+                            MainChatWidgetStore.read(context)?.hasPopulatedState() == true
+                        if (!keepPersisted) {
+                            MainChatWidgetStore.save(context, widgetSnapshot)
+                        }
+                        MainChatWidget.refresh(context)
+                    }
                 }
         }
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -76,6 +107,7 @@ class SurfacesRuntime @Inject constructor(
 internal interface SurfacesDependencies {
     fun fleet(): FleetFeed
     fun sessions(): SessionsRepository
+    fun assistant(): AssistantRepository
     fun interactions(): InteractionCenter
     fun pairing(): PairingService
 

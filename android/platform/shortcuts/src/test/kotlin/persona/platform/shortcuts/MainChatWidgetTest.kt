@@ -1,0 +1,845 @@
+package persona.platform.shortcuts
+
+import android.appwidget.AppWidgetManager
+import android.content.ComponentName
+import android.content.Context
+import android.content.res.Configuration
+import android.util.TypedValue
+import android.view.View
+import android.widget.TextView
+import androidx.glance.color.DayNightColorProvider
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
+import persona.core.contracts.Direction
+import persona.core.contracts.DirectionAgent
+import persona.core.contracts.DirectionTask
+import persona.core.contracts.DirectionTaskState
+import persona.core.contracts.DirectionTree
+import persona.core.contracts.Interaction
+import persona.core.contracts.Question
+import persona.core.contracts.Session
+import persona.core.contracts.SessionCompaction
+import persona.core.contracts.SessionKey
+import persona.core.contracts.api.AssistantRepository
+import persona.core.contracts.api.AssistantSnapshot
+import persona.core.contracts.api.ConnectionState
+import persona.core.contracts.api.HubConnection
+import persona.core.contracts.api.InteractionCenter
+import persona.core.contracts.api.PairingRequest
+import persona.core.contracts.api.PairingService
+import persona.core.contracts.api.SessionsRepository
+import persona.core.contracts.Machine
+import persona.core.contracts.Resolution
+import persona.core.contracts.ServerEvent
+import persona.core.contracts.FleetState
+import persona.platform.notify.FleetFeed
+import persona.platform.notify.FleetSource
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonObject
+import org.robolectric.util.ReflectionHelpers
+import persona.core.designsystem.AppStyle
+import persona.core.designsystem.ColorSchemeChoice
+import persona.core.designsystem.PersonaState
+import persona.core.designsystem.SystemSurfaces
+import persona.core.designsystem.ThemeColor
+import persona.core.navigation.AppTab
+import persona.core.navigation.AskPersonaLink
+import persona.core.navigation.NewTodoLink
+import persona.core.navigation.NotificationRoute
+import java.time.Instant
+import java.time.ZoneOffset
+import java.util.Locale
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [35])
+class MainChatWidgetTest {
+    private val context: Context get() = ApplicationProvider.getApplicationContext()
+    private val mainKey = SessionKey("hub", "main-chat")
+
+    @After
+    fun tearDown() {
+        MainChatWidgetStore.clear(context)
+    }
+
+    private fun localizedContext(tag: String): Context {
+        val locale = Locale.forLanguageTag(tag)
+        val config = Configuration(context.resources.configuration).apply { setLocale(locale) }
+        return context.createConfigurationContext(config)
+    }
+
+    @Test
+    fun unpairedStateIsCleanAndRoutesToApp() {
+        val snapshot = MainChatWidgetState.build(
+            paired = false,
+            assistant = AssistantSnapshot(mainSession = mainKey),
+            sessions = listOf(Session("hub", "main-chat", assistant = true, status = "working", lastText = "Secret")),
+            interactions = listOf(Interaction("ix1", "hub", "main-chat", kind = "question", questions = listOf(Question("Secret?")))),
+            resources = context.resources,
+        )
+        assertFalse(snapshot.paired)
+        assertEquals(MainChatPhase.Unpaired, snapshot.phase)
+        assertEquals(PersonaState.Idle, snapshot.phase.personaState)
+        assertEquals("", snapshot.summary)
+        assertEquals(0, snapshot.pendingCount)
+        assertNull(snapshot.pending)
+        assertTrue(snapshot.todos.isEmpty())
+
+        val plan = MainChatWidgetLayout.compute(
+            widthDp = 290f,
+            heightDp = 150f,
+            fontScale = 1f,
+            paired = false,
+            hasPending = false,
+            hasStatusBadge = false,
+            availableTodos = 0,
+        )
+        assertFalse(plan.showHeaderStatus)
+        assertFalse(plan.showHeaderTime)
+        assertFalse(plan.showActionBar)
+        assertFalse(plan.showPendingBanner)
+        assertTrue(plan.summaryMaxLines in 1..2)
+        assertNull(SurfaceLinks.app(context).data)
+    }
+
+    @Test
+    fun idleStateShowsSanitizedSummaryOrEmptyWithoutFabricatedData() {
+        val emptySnapshot = MainChatWidgetState.build(
+            paired = true,
+            assistant = AssistantSnapshot(mainSession = mainKey),
+            sessions = listOf(Session("hub", "main-chat", assistant = true, status = "idle", state = "idle")),
+            interactions = emptyList(),
+            resources = context.resources,
+        )
+        assertTrue(emptySnapshot.paired)
+        assertEquals(MainChatPhase.Idle, emptySnapshot.phase)
+        assertEquals(PersonaState.Idle, emptySnapshot.phase.personaState)
+        assertEquals("", emptySnapshot.summary)
+        assertEquals(0, emptySnapshot.pendingCount)
+        assertNull(emptySnapshot.pending)
+
+        val repliedSnapshot = MainChatWidgetState.build(
+            paired = true,
+            assistant = AssistantSnapshot(mainSession = mainKey),
+            sessions = listOf(
+                Session(
+                    machineId = "hub",
+                    sessionId = "main-chat",
+                    assistant = true,
+                    status = "idle",
+                    state = "idle",
+                    lastText = "**Trip plan** is ready for Friday morning.",
+                    updatedAt = "2026-11-23T09:15:00Z",
+                ),
+            ),
+            interactions = emptyList(),
+            resources = context.resources,
+        )
+        assertEquals(MainChatPhase.Idle, repliedSnapshot.phase)
+        assertEquals("Trip plan is ready for Friday morning.", repliedSnapshot.summary)
+        assertEquals("2026-11-23T09:15:00Z", repliedSnapshot.updatedAt)
+
+        val enContext = localizedContext("en")
+        val sameDay = MainChatText.formatHeaderTime(
+            updatedAt = "2026-11-23T09:15:00Z",
+            context = enContext,
+            now = Instant.parse("2026-11-23T12:00:00Z"),
+            zone = ZoneOffset.UTC,
+        )
+        assertNotNull(sameDay)
+        assertTrue(sameDay!!, sameDay.contains("9:15") || sameDay.contains("09:15"))
+
+        val earlierDay = MainChatText.formatHeaderTime(
+            updatedAt = "2026-11-21T09:15:00Z",
+            context = enContext,
+            now = Instant.parse("2026-11-23T12:00:00Z"),
+            zone = ZoneOffset.UTC,
+        )
+        assertNotNull(earlierDay)
+        assertTrue(earlierDay!!, earlierDay.contains("Nov") && earlierDay.contains("21"))
+    }
+
+    @Test
+    fun workingStartingAndCompactingMapToThinkingExpression() {
+        val working = MainChatWidgetState.build(
+            paired = true,
+            assistant = AssistantSnapshot(mainSession = mainKey),
+            sessions = listOf(Session("hub", "main-chat", assistant = true, status = "working", state = "working")),
+            interactions = emptyList(),
+            resources = context.resources,
+        )
+        assertEquals(MainChatPhase.Working, working.phase)
+        assertEquals(PersonaState.Thinking, working.phase.personaState)
+
+        val starting = MainChatWidgetState.build(
+            paired = true,
+            assistant = AssistantSnapshot(mainSession = mainKey),
+            sessions = listOf(Session("hub", "main-chat", assistant = true, status = "idle", state = "idle", starting = true)),
+            interactions = emptyList(),
+            resources = context.resources,
+        )
+        assertEquals(MainChatPhase.Working, starting.phase)
+
+        val compacting = MainChatWidgetState.build(
+            paired = true,
+            assistant = AssistantSnapshot(mainSession = mainKey),
+            sessions = listOf(
+                Session(
+                    machineId = "hub",
+                    sessionId = "main-chat",
+                    assistant = true,
+                    status = "idle",
+                    state = "idle",
+                    compaction = SessionCompaction(state = "running"),
+                ),
+            ),
+            interactions = emptyList(),
+            resources = context.resources,
+        )
+        assertEquals(MainChatPhase.Working, compacting.phase)
+    }
+
+    @Test
+    fun pendingInteractionsPrioritizeMainChatAndSupervisedTasksAndRouteDirectly() {
+        val enRes = localizedContext("en").resources
+        val taskAgentKey = SessionKey("mac", "task-agent-1")
+        val unrelatedAgentKey = SessionKey("mac", "manual-agent")
+        val leaderAgentKey = SessionKey("mac", "leader-agent")
+
+        val tree = DirectionTree(
+            directions = listOf(
+                Direction(
+                    id = "leader-1",
+                    name = "Release",
+                    secretary = false,
+                    tasks = listOf(
+                        DirectionTask(
+                            id = "t-leader",
+                            title = "Cut release branch",
+                            state = DirectionTaskState.Working,
+                            agents = listOf(DirectionAgent("mac", "leader-agent")),
+                        ),
+                    ),
+                ),
+                Direction(
+                    id = mainKey.sessionId,
+                    secretary = true,
+                    tasks = listOf(
+                        DirectionTask(
+                            id = "t-main-1",
+                            title = "Book Kyoto train tickets",
+                            state = DirectionTaskState.NeedsYou,
+                            agents = listOf(DirectionAgent("mac", "task-agent-1")),
+                        ),
+                        DirectionTask(
+                            id = "t-main-2",
+                            title = "Prepare travel checklist",
+                            state = DirectionTaskState.Planned,
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val mainQuestion = Interaction(
+            id = "ix-main-q",
+            machineId = mainKey.machineId,
+            sessionId = mainKey.sessionId,
+            kind = "question",
+            createdAt = "2026-11-23T10:00:00Z",
+            questions = listOf(Question("Should I confirm the Friday evening flight?")),
+        )
+        val supervisedPlan = Interaction(
+            id = "ix-task-plan",
+            machineId = taskAgentKey.machineId,
+            sessionId = taskAgentKey.sessionId,
+            kind = "plan",
+            createdAt = "2026-11-23T10:05:00Z",
+            summary = "Reserve hotel and train passes",
+        )
+        val delegatingQuestion = Interaction(
+            id = "ix-delegating",
+            machineId = mainKey.machineId,
+            sessionId = mainKey.sessionId,
+            kind = "question",
+            createdAt = "2026-11-23T10:10:00Z",
+            delegating = true,
+            questions = listOf(Question("Internal delegated check")),
+        )
+        val unrelatedPermission = Interaction(
+            id = "ix-unrelated",
+            machineId = unrelatedAgentKey.machineId,
+            sessionId = unrelatedAgentKey.sessionId,
+            kind = "permission",
+            createdAt = "2026-11-23T10:12:00Z",
+            summary = "Run cargo test",
+        )
+        val leaderPermission = Interaction(
+            id = "ix-leader",
+            machineId = leaderAgentKey.machineId,
+            sessionId = leaderAgentKey.sessionId,
+            kind = "permission",
+            createdAt = "2026-11-23T10:12:00Z",
+            summary = "Publish tag",
+        )
+
+        val sessions = listOf(
+            Session(mainKey.machineId, mainKey.sessionId, assistant = true, status = "blocked", state = "needs_you", lastText = "Waiting on your choice."),
+            Session(taskAgentKey.machineId, taskAgentKey.sessionId, assistant = false, startedByPersona = true, status = "blocked", state = "needs_you"),
+            Session(unrelatedAgentKey.machineId, unrelatedAgentKey.sessionId, assistant = false, startedByPersona = false, status = "blocked", state = "needs_you"),
+            Session(leaderAgentKey.machineId, leaderAgentKey.sessionId, assistant = false, startedByPersona = true, status = "blocked", state = "needs_you"),
+        )
+        val assistantSnapshot = AssistantSnapshot(mainSession = mainKey, conversations = listOf(sessions.first()), directionTree = tree)
+
+        val snapshot = MainChatWidgetState.build(
+            paired = true,
+            assistant = assistantSnapshot,
+            sessions = sessions,
+            interactions = listOf(supervisedPlan, delegatingQuestion, unrelatedPermission, leaderPermission, mainQuestion),
+            resources = enRes,
+        )
+
+        assertEquals(MainChatPhase.NeedsYou, snapshot.phase)
+        assertEquals(PersonaState.NeedsYou, snapshot.phase.personaState)
+        assertEquals(2, snapshot.pendingCount)
+        val leadPending = requireNotNull(snapshot.pending)
+        assertEquals("ix-main-q", leadPending.id)
+        assertEquals("Should I confirm the Friday evening flight?", leadPending.title)
+        assertEquals(true, leadPending.assistant)
+
+        // Direct click routes through SurfaceLinks.request to the exact conversation & interaction card.
+        val pendingIntent = SurfaceLinks.request(context, leadPending.toInteraction()) { leadPending.assistant }
+        val parsed = NotificationRoute.parse(pendingIntent.data!!)
+        assertEquals(AppTab.Persona, parsed?.tab)
+        assertEquals(mainKey.machineId, parsed?.chat?.machineId)
+        assertEquals(mainKey.sessionId, parsed?.chat?.sessionId)
+        assertEquals("ix-main-q", parsed?.request)
+
+        // When only the supervised task interaction remains, it is surfaced and routed to Agents tab.
+        val taskOnlySnapshot = MainChatWidgetState.build(
+            paired = true,
+            assistant = assistantSnapshot,
+            sessions = sessions,
+            interactions = listOf(supervisedPlan, unrelatedPermission, leaderPermission),
+            resources = enRes,
+        )
+        assertEquals(MainChatPhase.NeedsYou, taskOnlySnapshot.phase)
+        assertEquals(1, taskOnlySnapshot.pendingCount)
+        val taskPending = requireNotNull(taskOnlySnapshot.pending)
+        assertEquals("ix-task-plan", taskPending.id)
+        assertEquals(false, taskPending.assistant)
+        val taskIntent = SurfaceLinks.request(context, taskPending.toInteraction()) { taskPending.assistant }
+        val taskParsed = NotificationRoute.parse(taskIntent.data!!)
+        assertEquals(AppTab.Agents, taskParsed?.tab)
+        assertEquals(taskAgentKey.sessionId, taskParsed?.chat?.sessionId)
+        assertEquals("ix-task-plan", taskParsed?.request)
+
+        // Urgent open to-dos are ordered by urgency and capped at 2.
+        assertEquals(2, snapshot.todos.size)
+        assertEquals("Book Kyoto train tickets", snapshot.todos[0].title)
+        assertEquals(DirectionTaskState.NeedsYou, snapshot.todos[0].taskState)
+    }
+
+    @Test
+    fun textSanitizerStripsContextTagsMarkdownPathsAndInternalIds() {
+        val raw = """
+            <persona-context kind="context" title="Memory" url="">Secret internal context block</persona-context>
+            <jarvis-context kind="edit" title="Legacy">Old context text</jarvis-context>
+            <system-reminder>Do not leak system prompt</system-reminder>
+            <persona-file path="/Users/alice/secret.txt" />
+            ## **Weekend summary**
+            - Booked [Kyoto Ryokan](https://example.com/hotel) for `Friday`
+            - Checked /Users/alice/projects/persona/MainChatWidget.kt and ~/private/notes.md
+            - Ref sess_9f8e7d6c5b4a and 550e8400-e29b-41d4-a716-446655440000 via claude-opus-4-6
+            [Image #1]
+            <attached_images>/tmp/photo.png</attached_images>
+        """.trimIndent()
+
+        val cleaned = MainChatText.sanitize(raw)
+        assertFalse(cleaned, cleaned.contains("persona-context"))
+        assertFalse(cleaned, cleaned.contains("jarvis-context"))
+        assertFalse(cleaned, cleaned.contains("Secret internal"))
+        assertFalse(cleaned, cleaned.contains("Old context"))
+        assertFalse(cleaned, cleaned.contains("system-reminder"))
+        assertFalse(cleaned, cleaned.contains("/Users/alice"))
+        assertFalse(cleaned, cleaned.contains("~/private"))
+        assertFalse(cleaned, cleaned.contains("sess_9f8e7d6c5b4a"))
+        assertFalse(cleaned, cleaned.contains("550e8400-e29b-41d4-a716-446655440000"))
+        assertFalse(cleaned, cleaned.contains("claude-opus-4-6"))
+        assertFalse(cleaned, cleaned.contains("**"))
+        assertFalse(cleaned, cleaned.contains("##"))
+        assertFalse(cleaned, cleaned.contains("[Image #1]"))
+        assertTrue(cleaned, cleaned.contains("Weekend summary"))
+        assertTrue(cleaned, cleaned.contains("Booked Kyoto Ryokan for Friday"))
+
+        // Unclosed context tag must also never leak raw XML.
+        val unclosed = "Ready to go <persona-context kind=\"context\">unclosed raw payload"
+        assertEquals("Ready to go", MainChatText.sanitize(unclosed))
+
+        // Emoji clipping never splits a surrogate pair.
+        val longEmoji = "a".repeat(19) + "🎉🎊✨ done"
+        val clipped = MainChatText.sanitize(longEmoji, maxChars = 20)
+        assertFalse(clipped, clipped.dropLast(1).last().isHighSurrogate())
+
+        // Pending title falls back to localized section 5.6 copy if raw input is purely an internal ID/path.
+        val enRes = localizedContext("en").resources
+        val scrubOnly = Interaction(
+            id = "ix-raw",
+            machineId = "mac",
+            sessionId = "s1",
+            kind = "plan",
+            summary = "/Users/dev/project/file.kt sess_12345678",
+        )
+        assertEquals("Plan awaiting approval", MainChatText.pendingTitle(scrubOnly, enRes))
+    }
+
+    @Test
+    fun adaptiveLayoutNeverExceedsHeightBudgetAcrossSizesAnd2xFontScale() {
+        val sizes = listOf(
+            110f to 100f, // Minimum resize 2x2
+            140f to 140f, // Standard 2x2
+            170f to 150f, // Wide 2x2
+            250f to 140f, // Compact 4x2
+            290f to 150f, // Default 4x2
+            320f to 170f, // Tall 4x2
+            280f to 240f, // Standard 4x3
+            320f to 270f, // Spacious 4x3
+        )
+        val scales = listOf(1.0f, 1.35f, 1.5f, 2.0f)
+
+        for ((w, h) in sizes) {
+            for (scale in scales) {
+                for (paired in listOf(false, true)) {
+                    for (hasPending in listOf(false, true)) {
+                        for (todos in listOf(0, 2)) {
+                            val plan = MainChatWidgetLayout.compute(
+                                widthDp = w,
+                                heightDp = h,
+                                fontScale = scale,
+                                paired = paired,
+                                hasPending = paired && hasPending,
+                                hasStatusBadge = paired,
+                                availableTodos = if (paired) todos else 0,
+                            )
+                            assertTrue(
+                                "Overflow for ${w}x$h @ ${scale}x (paired=$paired pending=$hasPending todos=$todos): " +
+                                    "estimated=${plan.estimatedHeightDp} > height=$h ($plan)",
+                                plan.estimatedHeightDp <= h + 0.01f,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun adaptiveLayoutExpectationsFor2x2And4x2And4x3() {
+        // 2x2 omits bottom quick action bar & header time, shows concise summary.
+        val small = MainChatWidgetLayout.compute(140f, 140f, fontScale = 1f, paired = true, hasPending = false, hasStatusBadge = true, availableTodos = 2)
+        assertFalse(small.showActionBar)
+        assertFalse(small.showHeaderTime)
+        assertEquals(0, small.todoRows)
+        assertEquals(2, small.summaryMaxLines)
+
+        // 2x2 at 2.0x font scale still fits cleanly without clipping.
+        val small2x = MainChatWidgetLayout.compute(110f, 100f, fontScale = 2.0f, paired = true, hasPending = true, hasStatusBadge = true, availableTodos = 2)
+        assertFalse(small2x.showActionBar)
+        assertTrue(small2x.showPendingBanner)
+        assertTrue(small2x.estimatedHeightDp <= 100f)
+
+        // 4x2 default shows 2 summary lines, quick action bar, and header timestamp.
+        val medium = MainChatWidgetLayout.compute(290f, 150f, fontScale = 1f, paired = true, hasPending = false, hasStatusBadge = true, availableTodos = 2)
+        assertTrue(medium.showActionBar)
+        assertFalse(medium.expandedActionBar)
+        assertTrue(medium.showHeaderTime)
+        assertEquals(2, medium.summaryMaxLines)
+        assertEquals(0, medium.todoRows)
+
+        // 4x2 at 2.0x drops action bar automatically to keep header + content unclipped.
+        val medium2x = MainChatWidgetLayout.compute(290f, 150f, fontScale = 2.0f, paired = true, hasPending = false, hasStatusBadge = true, availableTodos = 2)
+        assertFalse(medium2x.showActionBar)
+        assertTrue(medium2x.summaryMaxLines >= 1)
+        assertTrue(medium2x.estimatedHeightDp <= 150f)
+
+        // 4x3 without todos gives summary 3 full lines + quick action bar.
+        val largeNoTodos = MainChatWidgetLayout.compute(290f, 250f, fontScale = 1f, paired = true, hasPending = false, hasStatusBadge = false, availableTodos = 0)
+        assertTrue(largeNoTodos.showActionBar)
+        assertEquals(3, largeNoTodos.summaryMaxLines)
+        assertEquals(0, largeNoTodos.todoRows)
+
+        // 4x3 with urgent open todos includes up to 2 todo rows alongside summary + quick action bar.
+        val largeWithTodos = MainChatWidgetLayout.compute(290f, 250f, fontScale = 1f, paired = true, hasPending = false, hasStatusBadge = false, availableTodos = 2)
+        assertTrue(largeWithTodos.showActionBar)
+        assertTrue(largeWithTodos.summaryMaxLines >= 2)
+        assertEquals(2, largeWithTodos.todoRows)
+
+        // 4x3 at 2.0x expands action bar height and trims todos to prevent clipping.
+        val large2x = MainChatWidgetLayout.compute(290f, 250f, fontScale = 2.0f, paired = true, hasPending = true, hasStatusBadge = true, availableTodos = 2)
+        assertTrue(large2x.showPendingBanner)
+        assertTrue(large2x.expandedActionBar)
+        assertEquals(0, large2x.todoRows)
+        assertFalse(large2x.showHeaderStatus)
+        assertTrue(large2x.estimatedHeightDp <= 250f)
+    }
+
+    @Test
+    fun doubleFontScaleFitsRealTextViewsAcrossAllStyles() {
+        val scaledConfig = Configuration(context.resources.configuration).apply { fontScale = 2.0f }
+        val scaledContext = context.createConfigurationContext(scaledConfig)
+        val density = scaledContext.resources.displayMetrics.density.coerceAtLeast(1f)
+
+        fun measureTextDp(sp: Float, maxLines: Int, text: String, maxWidthDp: Float): Float {
+            val view = TextView(scaledContext).apply {
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
+                this.maxLines = maxLines
+                this.text = text
+            }
+            val widthPx = (maxWidthDp * density).toInt().coerceAtLeast(1)
+            view.measure(
+                View.MeasureSpec.makeMeasureSpec(widthPx, View.MeasureSpec.AT_MOST),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+            )
+            return view.measuredHeight / density
+        }
+
+        val sampleSizes = listOf(110f to 100f, 140f to 140f, 290f to 150f, 290f to 250f)
+        for (style in AppStyle.entries) {
+            val type = SystemSurfaces.type(style)
+            for ((w, h) in sampleSizes) {
+                for (paired in listOf(false, true)) {
+                    for (hasPending in listOf(false, true)) {
+                        val plan = MainChatWidgetLayout.compute(
+                            widthDp = w,
+                            heightDp = h,
+                            fontScale = 2.0f,
+                            paired = paired,
+                            hasPending = paired && hasPending,
+                            hasStatusBadge = paired,
+                            availableTodos = if (paired) 2 else 0,
+                        )
+                        val pad = when {
+                            plan.tightPadding -> 4f
+                            plan.compactPadding -> 8f
+                            else -> 12f
+                        }
+                        val sectionGap = when {
+                            plan.tightPadding -> 2f
+                            plan.compactPadding -> 4f
+                            else -> 6f
+                        }
+                        val innerWidth = (w - pad * 2f).coerceAtLeast(1f)
+                        val faceDp = if (plan.compactHeader) 24f else 28f
+                        val titleSp = if (plan.compactHeader) type.caption.fontSize.value else type.callout.fontSize.value
+                        val headerTextDp = measureTextDp(titleSp, 1, "Persona", innerWidth)
+                        var totalDp = pad * 2f + maxOf(faceDp, headerTextDp)
+
+                        if (!paired) {
+                            if (plan.showUnpairedHeadline) {
+                                totalDp += sectionGap
+                                totalDp += measureTextDp(titleSp, 1, "Not paired", innerWidth)
+                                if (plan.summaryMaxLines > 0) {
+                                    totalDp += 2f
+                                    totalDp += measureTextDp(
+                                        type.caption.fontSize.value,
+                                        plan.summaryMaxLines,
+                                        "Open Persona to connect your hub right away on this device",
+                                        innerWidth,
+                                    )
+                                }
+                            }
+                        } else {
+                            if (plan.showPendingBanner) {
+                                val vPad = if (plan.compactPendingBanner) 4f else 12f
+                                val pendingDp = measureTextDp(type.caption.fontSize.value, 1, "Plan awaiting approval", innerWidth)
+                                totalDp += sectionGap + vPad + pendingDp
+                            }
+                            if (plan.summaryMaxLines > 0) {
+                                totalDp += sectionGap
+                                totalDp += measureTextDp(
+                                    type.caption.fontSize.value,
+                                    plan.summaryMaxLines,
+                                    "Your trip itinerary is ready for Friday morning with confirmed flights, hotel check-in details, and rail passes.",
+                                    innerWidth,
+                                )
+                            }
+                            if (plan.todoRows > 0) {
+                                totalDp += 6f
+                                repeat(plan.todoRows) {
+                                    totalDp += 4f + measureTextDp(type.micro.fontSize.value, 1, "Book Kyoto train tickets", innerWidth)
+                                }
+                            }
+                            if (plan.showActionBar) {
+                                val barMin = if (plan.expandedActionBar) 48f else 40f
+                                val askDp = measureTextDp(type.caption.fontSize.value, 1, "Ask Persona…", innerWidth) + 16f
+                                totalDp += 8f + maxOf(barMin, askDp)
+                            }
+                        }
+
+                        assertTrue(
+                            "Real TextView overflow for $style ${w}x$h @ 2.0x (paired=$paired pending=$hasPending): " +
+                                "measured=$totalDp > height=$h ($plan)",
+                            totalDp <= h + 0.5f,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun widgetLookFollowsAllStylesThemeColorsAndColorScheme() {
+        for (style in AppStyle.entries) {
+            for (color in listOf(ThemeColor.Style) + ThemeColor.presets) {
+                val look = MainChatWidgetLook.of(style, color, ColorSchemeChoice.System)
+                val expectedLight = SystemSurfaces.palette(style, dark = false, color = color)
+                val expectedDark = SystemSurfaces.palette(style, dark = true, color = color)
+                assertEquals(expectedLight.surfaceOpaque, look.light.surfaceOpaque)
+                assertEquals(expectedDark.surfaceOpaque, look.dark.surfaceOpaque)
+                assertEquals(expectedLight.accent, look.light.accent)
+                assertEquals(expectedDark.accent, look.dark.accent)
+                val cardProvider = look.card as DayNightColorProvider
+                assertEquals(expectedLight.surfaceOpaque, cardProvider.day)
+                assertEquals(expectedDark.surfaceOpaque, cardProvider.night)
+            }
+        }
+
+        val pinnedDark = MainChatWidgetLook.of(AppStyle.Glass, ThemeColor.Coral, ColorSchemeChoice.Dark)
+        assertTrue(pinnedDark.isDark(context))
+        val darkCard = pinnedDark.card as DayNightColorProvider
+        assertEquals(darkCard.day, darkCard.night)
+        assertEquals(pinnedDark.dark.surfaceOpaque, darkCard.day)
+
+        val pinnedLight = MainChatWidgetLook.of(AppStyle.Brief, ThemeColor.Blue, ColorSchemeChoice.Light)
+        assertFalse(pinnedLight.isDark(context))
+        val lightCard = pinnedLight.card as DayNightColorProvider
+        assertEquals(lightCard.day, lightCard.night)
+        assertEquals(pinnedLight.light.surfaceOpaque, lightCard.day)
+    }
+
+    @Test
+    fun snapshotStoreRoundTripsAndClearsOnUnpair() {
+        val original = MainChatWidgetSnapshot(
+            paired = true,
+            phase = MainChatPhase.NeedsYou,
+            mainSession = mainKey,
+            summary = "Flight itinerary is ready for confirmation.",
+            updatedAt = "2026-11-23T11:30:00Z",
+            pendingCount = 3,
+            pending = MainChatPendingItem(
+                id = "ix-1",
+                machineId = "hub",
+                sessionId = "main-chat",
+                assistant = true,
+                kind = "question",
+                title = "Confirm Friday 18:00 departure?",
+            ),
+            todos = listOf(
+                MainChatTodoItem("t1", "Book hotel", DirectionTaskState.NeedsYou.wire),
+                MainChatTodoItem("t2", "Pack charger", DirectionTaskState.Planned.wire),
+            ),
+        )
+        MainChatWidgetStore.save(context, original)
+        val restored = MainChatWidgetStore.read(context)
+        assertEquals(original, restored)
+
+        MainChatWidgetStore.clear(context)
+        assertNull(MainChatWidgetStore.read(context))
+    }
+
+    @Test
+    fun surfacesRuntimeSavesSnapshotWhenPairedAndClearsOnUnpair() = runBlocking {
+        val pairedFlow = MutableStateFlow(true)
+        val pairing = object : PairingService {
+            override val isPaired = pairedFlow
+            override suspend fun pair(request: PairingRequest) = Unit
+            override suspend fun unpair() { pairedFlow.value = false }
+        }
+        val connection = object : HubConnection {
+            override val state = MutableStateFlow(ConnectionState.WaitingForNetwork)
+            override val events = MutableSharedFlow<ServerEvent>()
+            override fun reconnect() = Unit
+            override fun send(message: JsonObject) = true
+        }
+        val feed = FleetFeed(context, connection, pairing, object : FleetSource {
+            override fun pairing(): String? = if (pairedFlow.value) "hub/main-chat-test" else null
+            override suspend fun fetch() = FleetState()
+        })
+        val sessionsFlow = MutableStateFlow(
+            listOf(
+                Session(
+                    machineId = mainKey.machineId,
+                    sessionId = mainKey.sessionId,
+                    assistant = true,
+                    status = "idle",
+                    state = "idle",
+                    lastText = "Dinner reservation is confirmed for 7 PM.",
+                ),
+            ),
+        )
+        val sessions = object : SessionsRepository {
+            override val machines = MutableStateFlow<List<Machine>>(emptyList())
+            override val sessions = sessionsFlow
+            override suspend fun refresh() = Unit
+        }
+        val assistant = object : AssistantRepository {
+            override val assistant = MutableStateFlow(AssistantSnapshot(mainSession = mainKey, conversations = sessionsFlow.value))
+            override suspend fun refresh() = Unit
+        }
+        val interactions = object : InteractionCenter {
+            override val pending = MutableStateFlow<List<Interaction>>(emptyList())
+            override suspend fun refresh() = Unit
+            override suspend fun resolve(id: String, resolution: Resolution) = Unit
+        }
+
+        val runtime = SurfacesRuntime(context, feed, sessions, assistant, interactions)
+        try {
+            runtime.start()
+            withTimeout(5_000) {
+                while (MainChatWidgetStore.read(context)?.summary != "Dinner reservation is confirmed for 7 PM.") {
+                    delay(25)
+                }
+            }
+            val saved = MainChatWidgetStore.read(context)
+            assertNotNull(saved)
+            assertTrue(saved!!.paired)
+            assertEquals(MainChatPhase.Idle, saved.phase)
+
+            // Unpairing immediately clears persisted main-chat snapshot.
+            pairedFlow.value = false
+            withTimeout(5_000) {
+                while (MainChatWidgetStore.read(context) != null) {
+                    delay(25)
+                }
+            }
+            assertNull(MainChatWidgetStore.read(context))
+        } finally {
+            ReflectionHelpers.getField<CoroutineScope>(runtime, "scope").cancel()
+            ReflectionHelpers.getField<CoroutineScope>(feed, "scope").cancel()
+            context.getSharedPreferences("fleet", Context.MODE_PRIVATE).edit().clear().apply()
+        }
+    }
+
+    @Test
+    fun surfacesRuntimePreservesPopulatedPersistedSnapshotDuringColdStart() = runBlocking {
+        val persisted = MainChatWidgetSnapshot(
+            paired = true,
+            phase = MainChatPhase.Idle,
+            mainSession = mainKey,
+            summary = "Cached summary from before process restart.",
+        )
+        MainChatWidgetStore.save(context, persisted)
+
+        val pairedFlow = MutableStateFlow(true)
+        val pairing = object : PairingService {
+            override val isPaired = pairedFlow
+            override suspend fun pair(request: PairingRequest) = Unit
+            override suspend fun unpair() { pairedFlow.value = false }
+        }
+        val connection = object : HubConnection {
+            override val state = MutableStateFlow(ConnectionState.WaitingForNetwork)
+            override val events = MutableSharedFlow<ServerEvent>()
+            override fun reconnect() = Unit
+            override fun send(message: JsonObject) = true
+        }
+        val feed = FleetFeed(context, connection, pairing, object : FleetSource {
+            override fun pairing(): String? = if (pairedFlow.value) "hub/cold-start" else null
+            override suspend fun fetch() = FleetState()
+        })
+        val sessions = object : SessionsRepository {
+            override val machines = MutableStateFlow<List<Machine>>(emptyList())
+            override val sessions = MutableStateFlow<List<Session>>(emptyList())
+            override suspend fun refresh() = Unit
+        }
+        val assistant = object : AssistantRepository {
+            override val assistant = MutableStateFlow(AssistantSnapshot())
+            override suspend fun refresh() = Unit
+        }
+        val interactions = object : InteractionCenter {
+            override val pending = MutableStateFlow<List<Interaction>>(emptyList())
+            override suspend fun refresh() = Unit
+            override suspend fun resolve(id: String, resolution: Resolution) = Unit
+        }
+
+        val runtime = SurfacesRuntime(context, feed, sessions, assistant, interactions)
+        try {
+            runtime.start()
+            // Wait past the 300ms debounce window while repositories remain unpopulated.
+            delay(450)
+            assertEquals(persisted, MainChatWidgetStore.read(context))
+        } finally {
+            ReflectionHelpers.getField<CoroutineScope>(runtime, "scope").cancel()
+            ReflectionHelpers.getField<CoroutineScope>(feed, "scope").cancel()
+            context.getSharedPreferences("fleet", Context.MODE_PRIVATE).edit().clear().apply()
+        }
+    }
+
+    @Test
+    fun manifestRegistersMainChatWidgetAlongsideExistingPersonaWidget() {
+        val pm = context.packageManager
+        val mainReceiver = pm.getReceiverInfo(ComponentName(context, MainChatWidgetReceiver::class.java), 0)
+        assertNotNull(mainReceiver)
+        assertTrue(mainReceiver.exported)
+
+        val existingReceiver = pm.getReceiverInfo(ComponentName(context, PersonaWidgetReceiver::class.java), 0)
+        assertNotNull(existingReceiver)
+        assertTrue(existingReceiver.exported)
+
+        // Verify quick-action routes remain canonical.
+        assertEquals(AskPersonaLink, SurfaceLinks.ask(context).dataString)
+        assertEquals(NewTodoLink, SurfaceLinks.newTodo(context).dataString)
+
+        val manager = AppWidgetManager.getInstance(context)
+        assertNotNull(manager)
+    }
+
+    @Test
+    fun allThreeLocalesProvideCompleteMainChatWidgetStrings() {
+        val en = localizedContext("en")
+        val zh = localizedContext("zh-Hans")
+        val ja = localizedContext("ja")
+
+        assertEquals("Persona", en.getString(R.string.shortcuts_main_chat_header_title))
+        assertEquals("Persona Chat", en.getString(R.string.shortcuts_main_chat_widget_label))
+        assertEquals("Persona 主对话", zh.getString(R.string.shortcuts_main_chat_widget_label))
+        assertEquals("Persona チャット", ja.getString(R.string.shortcuts_main_chat_widget_label))
+
+        assertEquals("Needs you · 2", en.getString(R.string.shortcuts_main_chat_status_needs_you, 2))
+        assertEquals("等你处理 · 2", zh.getString(R.string.shortcuts_main_chat_status_needs_you, 2))
+        assertEquals("要対応 · 2", ja.getString(R.string.shortcuts_main_chat_status_needs_you, 2))
+
+        assertEquals("Thinking", en.getString(R.string.shortcuts_main_chat_status_thinking))
+        assertEquals("思考中", zh.getString(R.string.shortcuts_main_chat_status_thinking))
+        assertEquals("考え中", ja.getString(R.string.shortcuts_main_chat_status_thinking))
+
+        assertEquals("Ask Persona…", en.getString(R.string.shortcuts_main_chat_ask_hint))
+        assertEquals("问 Persona…", zh.getString(R.string.shortcuts_main_chat_ask_hint))
+        assertEquals("Personaに質問…", ja.getString(R.string.shortcuts_main_chat_ask_hint))
+
+        assertEquals("+2", en.getString(R.string.shortcuts_main_chat_pending_more, 2))
+        assertNotEquals(
+            en.getString(R.string.shortcuts_main_chat_idle_greeting),
+            zh.getString(R.string.shortcuts_main_chat_idle_greeting),
+        )
+        assertNotEquals(
+            zh.getString(R.string.shortcuts_main_chat_idle_greeting),
+            ja.getString(R.string.shortcuts_main_chat_idle_greeting),
+        )
+    }
+}
