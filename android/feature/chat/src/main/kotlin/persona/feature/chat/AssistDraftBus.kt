@@ -189,8 +189,8 @@ fun prefillAssistDraft(
     composer: ChatComposerState,
     draft: PendingAssistDraft,
     existingContextIds: Set<String> = emptySet(),
-    onContext: (ChatLinkContext) -> Unit = {},
     limits: ImageLimits = ImageLimits.Standard,
+    onContext: (ChatLinkContext) -> Unit = {},
 ): AssistDraftApplyResult {
     var screenshotAdded = false
     var screenshotRejected = false
@@ -245,11 +245,17 @@ suspend fun applyAssistDraft(
     draft: PendingAssistDraft,
     bus: AssistDraftQueue = AssistDraftBus,
     existingContextIds: Set<String> = emptySet(),
-    onContext: (ChatLinkContext) -> Unit = {},
     limits: ImageLimits = ImageLimits.Standard,
+    onContext: (ChatLinkContext) -> Unit = {},
     onPhotoLimit: () -> Unit = {},
 ): AssistDraftApplyResult {
-    val result = prefillAssistDraft(composer, draft, existingContextIds, onContext, limits)
+    val result = prefillAssistDraft(
+        composer = composer,
+        draft = draft,
+        existingContextIds = existingContextIds,
+        limits = limits,
+        onContext = onContext,
+    )
     if (draft.screenshot != null && !draft.screenshotApplied) {
         bus.markScreenshotApplied(draft.id)
     }
@@ -276,10 +282,10 @@ internal fun BindPendingAssistDraft(
     composer: ChatComposerState,
     readOnly: Boolean,
     canSend: Boolean,
+    limits: ImageLimits = ImageLimits.Standard,
     existingContextIds: () -> Set<String>,
     onContext: (ChatLinkContext) -> Unit,
     onPhotoLimit: () -> Unit,
-    limits: ImageLimits = ImageLimits.Standard,
 ) {
     val pendingAssist by AssistDraftBus.pending.collectAsStateWithLifecycle()
     LaunchedEffect(pendingAssist, composer.draftLoaded, readOnly, canSend, key, limits) {
