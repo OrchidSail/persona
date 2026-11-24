@@ -520,7 +520,11 @@ fun ComposerFrame(
                 Modifier.shadow(HomeTokens.composerShadow, shape, clip = false, ambientColor = shadow, spotColor = shadow)
                     .clip(shape).background(fill).border(HomeTokens.composerStroke, stroke, shape)
             } else Modifier.floatingSurface(shape)
-            val fieldHeight = if (home || useShellSurface) Tokens.MinTouch.android else Tokens.MinTouch.ios
+            val fieldHeight = when {
+                useShellSurface || home -> Tokens.MinTouch.android
+                expanded -> JChipTokens.height
+                else -> Tokens.MinTouch.ios
+            }
             val accessoryPadding = if (home || useShellSurface) Tokens.Space.flush else Tokens.Space.xs
             val outerPadding = if (useShellSurface) {
                 Modifier.padding(horizontal = Tokens.Space.m, vertical = Tokens.Space.s)
@@ -535,12 +539,14 @@ fun ComposerFrame(
             val fieldTop = when {
                 useShellSurface && expanded -> Tokens.Space.s
                 useShellSurface -> Tokens.Space.xs
+                !home && expanded -> Tokens.Space.sm
                 else -> Tokens.Space.s
             }
             val fieldBottom = when {
                 useShellSurface && expanded -> Tokens.Space.flush
                 useShellSurface -> Tokens.Space.xs
-                expanded -> Tokens.Space.xs
+                !home && expanded -> Tokens.Space.flush
+                home && expanded -> Tokens.Space.xs
                 else -> Tokens.Space.s
             }
             Column(modifier.fillMaxWidth().then(outerPadding)
@@ -581,9 +587,11 @@ fun ComposerFrame(
                     trailing?.let { Row { it() } }
                 }
             }
-            if (expanded && leading != null) Row(verticalAlignment = Alignment.CenterVertically) {
-                leading?.invoke(this)
-                Spacer(Modifier.weight(1f))
+            if (expanded && leading != null) CompositionLocalProvider(LocalCompactIconHeight provides JButtonSize.Small.height) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    leading(this)
+                    Spacer(Modifier.weight(1f))
+                }
             }
         }
         // The board's grey under a rule, the field a white ticket on it: no white plate across the bottom.
@@ -608,15 +616,21 @@ fun ComposerFrame(
                 )
                 trailing?.let { Spacer(Modifier.width(Tokens.Space.s)); it() }
             }
-            if (expanded && leading != null) Row(verticalAlignment = Alignment.CenterVertically) {
-                leading?.invoke(this)
-                Spacer(Modifier.weight(1f))
+            if (expanded && leading != null) CompositionLocalProvider(LocalCompactIconHeight provides JButtonSize.Small.height) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    leading(this)
+                    Spacer(Modifier.weight(1f))
+                }
             }
         }
     }
 }
 
-/** Wraps [ComposerFrame]'s optional accessory slot so an empty lambda adds zero vertical padding above the input row. */
+/**
+ * Wraps [ComposerFrame]'s optional accessory slot so an empty lambda adds zero vertical padding above the input row
+ * and clickable accessory chips do not leak Material 3's 48dp layout box into the stack (Compose still expands their
+ * touch targets to 48dp).
+ */
 @Composable
 private fun ComposerAccessorySlot(
     horizontal: Dp = Tokens.Space.flush,
@@ -624,22 +638,24 @@ private fun ComposerAccessorySlot(
     bottom: Dp = Tokens.Space.flush,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    Layout(
-        content = { Column(content = content) },
-    ) { measurables, constraints ->
-        val hPx = horizontal.roundToPx()
-        val topPx = top.roundToPx()
-        val bottomPx = bottom.roundToPx()
-        val inner = constraints.offset(horizontal = -(hPx * 2), vertical = -(topPx + bottomPx))
-        val placeable = measurables.single().measure(inner.copy(minWidth = 0, minHeight = 0))
-        if (placeable.height == 0) {
-            layout(0, 0) {}
-        } else {
-            layout(
-                (placeable.width + hPx * 2).coerceIn(constraints.minWidth, constraints.maxWidth),
-                (placeable.height + topPx + bottomPx).coerceIn(constraints.minHeight, constraints.maxHeight),
-            ) {
-                placeable.placeRelative(hPx, topPx)
+    CompactTouchLayout {
+        Layout(
+            content = { Column(content = content) },
+        ) { measurables, constraints ->
+            val hPx = horizontal.roundToPx()
+            val topPx = top.roundToPx()
+            val bottomPx = bottom.roundToPx()
+            val inner = constraints.offset(horizontal = -(hPx * 2), vertical = -(topPx + bottomPx))
+            val placeable = measurables.single().measure(inner.copy(minWidth = 0, minHeight = 0))
+            if (placeable.height == 0) {
+                layout(0, 0) {}
+            } else {
+                layout(
+                    (placeable.width + hPx * 2).coerceIn(constraints.minWidth, constraints.maxWidth),
+                    (placeable.height + topPx + bottomPx).coerceIn(constraints.minHeight, constraints.maxHeight),
+                ) {
+                    placeable.placeRelative(hPx, topPx)
+                }
             }
         }
     }

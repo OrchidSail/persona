@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -319,12 +320,14 @@ internal fun AssistantTrays(host: AssistantTaskHost, state: AssistantTrayState,
     // the tray closes once its last thing is handled; tapped while empty it still opens "All caught up"
     LaunchedEffect(needsCount) { if (needsCount == 0 && state.expanded == AssistantTray.NeedsYou) state.expanded = null }
     BackHandler(state.expanded != null) { state.expanded = null }
-    // The entry pills already sit inside a 48dp touch box, so only an expanded tray card adds top breathing room.
+    // Entry pills keep 48dp touch targets through Compose clickable without inflating layout height, so keep compact
+    // token margins around the bar.
     Column(
         Modifier.padding(
             start = Tokens.Space.m,
             end = Tokens.Space.m,
-            top = if (state.expanded != null) Tokens.Space.xs else Tokens.Space.flush,
+            top = if (state.expanded != null) Tokens.Space.xs else Tokens.Space.xxs,
+            bottom = Tokens.Space.xxs,
         ),
         verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
     ) {
@@ -568,11 +571,13 @@ internal fun TaskRouteChip(host: AssistantTaskHost, modifier: Modifier = Modifie
     val routes by host.tasks.routes.collectAsStateWithLifecycle()
     val todos by host.tasks.todos.collectAsStateWithLifecycle()
     val task = routedTask(routes, todos, host.conversation) ?: return
-    // At the tray bar's inset, so the chip lines up with its chips above it.
-    Row(modifier.fillMaxWidth().padding(horizontal = Tokens.Space.m)) {
-        JChip(stringResource(R.string.chat_tasks_route_chip, task.title), Modifier.testTag("assistant-route-chip"),
-            icon = PhIcons.PaperPlaneTilt, accent = true, onRemove = { host.tasks.setRoute(host.conversation, null) },
-            removeLabel = stringResource(R.string.chat_tasks_route_clear))
+    // At the tray bar's inset, so the chip lines up with its chips above it without leaking 48dp box padding.
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
+        Row(modifier.fillMaxWidth().padding(horizontal = Tokens.Space.m, vertical = Tokens.Space.xxs)) {
+            JChip(stringResource(R.string.chat_tasks_route_chip, task.title), Modifier.testTag("assistant-route-chip"),
+                icon = PhIcons.PaperPlaneTilt, accent = true, onRemove = { host.tasks.setRoute(host.conversation, null) },
+                removeLabel = stringResource(R.string.chat_tasks_route_clear))
+        }
     }
 }
 
