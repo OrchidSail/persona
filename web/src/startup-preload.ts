@@ -268,7 +268,7 @@ export async function brotliCopies(dir: string, files: string[]): Promise<{ file
 // 475,635 B, zh-Hans 476,595 B to 476,620 B). The budget moves by the same 25 B.
 // #6563: the minutes' summary card adds 85 B to each language (ja 478,898 B on fd8c988b6 to 478,983 B; en 475,201 B to
 // 475,286 B, zh-Hans 476,188 B to 476,273 B): the Knowledge page's first stylesheet (the card's tints and grid,
-// views/knowledge/minutes-overview.css) named in the app's preload map, and Button passing aria-controls and aria-label
+// modules/recording/minutes-overview.css) named in the app's preload map, and Button passing aria-controls and aria-label
 // (a topic's Show N more names its topic). The budget moves by the same 85 B, keeping that 31 B room.
 // #6662: the paged Agents list under the complete list's title row, grouping bar and quick filters (By to-do / By
 // status sections, the to-do names, the quick filters' hub keys, the quiet Load more line, the ⋯'s sorts ordering its
@@ -546,6 +546,12 @@ export async function brotliCopies(dir: string, files: string[]): Promise<{ file
 // Interactions.tsx). 799 B in ja, measured in one environment against main 7be9a71cc (ja 484,445 B to 485,244 B; en
 // 481,786 B to 482,585 B, zh-Hans 482,421 B to 483,220 B). Main had 46 B of room, so the budget is main's 484,491 B
 // ceiling plus those 799 B. The web half of #13431 takes voice's first-screen parts off with the move into a module.
+// #13021: main ec2563b7d7 itself measures ja 484,587 B (en 481,938 B, zh-Hans 482,579 B), 96 B over the 484,491 B
+// above. The question rail's marks add 141 B in ja (en 141 B, zh-Hans 141 B): the rail now drawn on a touch screen for
+// Persona's chats, the marks' state in ChatView and the lazy import of views/chat/QuestionMarksHost.tsx (the rules and
+// read marks moved out of the first screen into that chunk, which took 808 B off the first version). ja 484,728 B;
+// 10 B of room on top. Merged with #13846, the voice module's first-screen reduction leaves room for these 141 B,
+// so the budget stays at #13846's 485,290 B ceiling.
 // #13803: mount-once long-chat windowing adds 200 B to the ja first screen, measured in one environment against main at
 // 464c1b17b3 (ja 484,433 B to 484,633 B; en 481,792 B to 481,992 B, zh-Hans 482,418 B to 482,618 B). The near-viewport
 // observer, searchable estimated placeholders and synchronous scroll compensation start with the chat; rich bodies stay

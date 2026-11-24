@@ -1113,6 +1113,12 @@ func (m *memStore) failKey(key string, err error) {
 // noPlans is a store without the task_plans and assistant_feed tables.
 type noPlans struct{}
 
+func (m *memStore) PutPlacement(ctx context.Context, p db.PlacementRow) error {
+	return m.PutSetting(ctx, "placement."+p.ID, p.Decision)
+}
+
+func (noPlans) PutPlacement(context.Context, db.PlacementRow) error { return nil }
+
 func (noPlans) CreateTaskPlan(context.Context, db.TaskPlanRow) error {
 	return errors.New("no task_plans here")
 }
@@ -1375,6 +1381,9 @@ func withSettings(t testing.TB, f *fakeHub, s *Service) *Service {
 	// These tests are about what a plan does once it exists; what task_plan requires of a brief is task_brief_test.go's,
 	// which turns this off.
 	s.briefsOptional = true
+	// And they start the main conversation's plans from their cards: that a supervisor's plan starts at once is
+	// plan_owner_step_test.go's, which turns this off.
+	s.mainPlansWait = true
 	// And about what a supervisor does with its tasks, told to the main conversation: the background supervisor that
 	// takes them by default is supervise_background_test.go's, which turns this off.
 	s.noBackground = true
