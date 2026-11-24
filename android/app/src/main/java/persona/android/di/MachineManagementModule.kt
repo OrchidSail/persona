@@ -155,6 +155,20 @@ object MachineManagementModule {
         override suspend fun dismiss(dismissed: Boolean) = api().dismissReadiness(dismissed)
     }
 
+    // What each extension may read of the user's personal information (#13500): the selected group's hub, its default
+    // manager's grants (another manager's extension page leaves the group out).
+    @Provides @Singleton fun extensionTrust(runtime: ConnectionRuntime): ExtensionTrustSource = object : ExtensionTrustSource {
+        private fun api(): AssistantManagement {
+            val connection = runtime.connection()
+            val route = connection.route.value ?: throw HubFailure(HubError.NoNetwork)
+            return persona.core.hub.HttpAssistantManagement(route.endpoint.url, connection.token, connection.http.client) {
+                connection.route.value === route
+            }.forManager(null)
+        }
+        override suspend fun list() = api().extensionTrust()
+        override suspend fun set(id: String, trust: ExtensionTrust) = api().setExtensionTrust(id, trust)
+    }
+
     // "Add model provider" from model configuration: the selected group's hub keeps the provider.
     @OptIn(ExperimentalCoroutinesApi::class)
     @Provides @Singleton fun providers(runtime: ConnectionRuntime, application: Application, extensions: ExtensionManagement): ProviderSetup = object : ProviderSetup {
@@ -280,6 +294,7 @@ object MachineManagementModule {
         override suspend fun autoUpgrades() = api().autoUpgrades()
         override suspend fun setAutoUpgrades(auto: Boolean) = changed { api().setAutoUpgrades(auto) }
         override suspend fun setConfig(id: String, config: JsonObject) = api().setConfig(id, config)
+        override suspend fun setConfigPreservingEntries(id: String, config: JsonObject) = api().setConfigPreservingEntries(id, config)
         override suspend fun setSecret(id: String, name: String, value: String) = api().setSecret(id, name, value)
         override suspend fun setSecretReference(id: String, name: String, reference: String) = api().setSecretReference(id, name, reference)
         override suspend fun clearSecret(id: String, name: String) = api().clearSecret(id, name)

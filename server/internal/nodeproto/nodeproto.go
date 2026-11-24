@@ -202,6 +202,9 @@ const (
 	// reads the id. Without it the hub refuses such a resume itself: an older node would start a new conversation
 	// under an id it has nothing of.
 	ResumeOutsideHealth = "resume_outside_health"
+	// StartOpID: session.start and session.start.work record op_id on the started session (persisted via state.put)
+	// and answer start.status for reconnect reconciliation of held Agent starts (#10674).
+	StartOpID = "start_op_id_v1"
 )
 
 // ResumeWindowSeconds is how long the manager tries to resume a dropped connection that can resume, from when it
@@ -222,6 +225,11 @@ var (
 	ControlLane = []string{"ping", "stream.ack"}
 	// BulkLane: what carries a file's or a package's bytes, and a forwarded port's.
 	BulkLane = []string{"file.chunk", "file.read", "file.upload.chunk", "node.update.chunk", "stream.data"}
+	// NodeCreditReplies: the node's answers that can run to megabytes (a page of a transcript, an item whole, an
+	// image) wait for credit on the interactive lane (rpc.Peer.CreditReplies), ahead of bulk. Its own session.items
+	// pushes go on the bulk lane with credit (rpc.Peer.NotifyBulk); a runtime's, forwarded from that runtime's read
+	// loop, do not (#13677).
+	NodeCreditReplies = []string{"session.items", "session.item", "session.image"}
 )
 
 // Error codes in the manager's answers to a resident node's replayed notifications (a notify with spool_id,
@@ -257,7 +265,7 @@ const TaskWorkspace = "task_workspace_v1"
 const MarkdownCloseout = "closeout.markdown.v1"
 
 // Announced is what a node built from this code announces.
-var Announced = []string{MarkdownCloseout, TaskWorkspace, TaskInstructions, SourcePermissions, OwnerControls, SessionSkills, ShareProjection, CreationReceipt, PersonaContracts, ManagerUpdateInventory, MCPWait, Sessions, SessionEchoStatus, ModelConfiguration, AssistantConfigDir, AssistantSupervisionInstructions, AssistantServiceTier, SessionStartSpeed, TaskExecution, TaskInput, NodeUpdate, Engines, MachineUID, HerdrServer, PluginNodeCall, Ultracode, HealthSpaces, Preview, SecretRun, Clipboard, SecretEnv, LauncherSwitch, ModelHTTP, EngineSwitch, ModelRun, LauncherSwitchNow, LauncherSwitchIdle, PaneCwd, NodeUpdateIdle, PaneNewSpace, MachineDiagnose, StartGoal, StartContinue, LauncherCheckAssistantTurn, StartAnswer, AssistantToolSearchFallback, AgentDirsBlocked, NodeLanes, ResumeOutsideHealth, DenyDirs}
+var Announced = []string{MarkdownCloseout, TaskWorkspace, TaskInstructions, SourcePermissions, OwnerControls, SessionSkills, ShareProjection, CreationReceipt, PersonaContracts, ManagerUpdateInventory, MCPWait, Sessions, SessionEchoStatus, ModelConfiguration, AssistantConfigDir, AssistantSupervisionInstructions, AssistantServiceTier, SessionStartSpeed, TaskExecution, TaskInput, NodeUpdate, Engines, MachineUID, HerdrServer, PluginNodeCall, Ultracode, HealthSpaces, Preview, SecretRun, Clipboard, SecretEnv, LauncherSwitch, ModelHTTP, EngineSwitch, ModelRun, LauncherSwitchNow, LauncherSwitchIdle, PaneCwd, NodeUpdateIdle, PaneNewSpace, MachineDiagnose, StartGoal, StartContinue, LauncherCheckAssistantTurn, StartAnswer, AssistantToolSearchFallback, AgentDirsBlocked, NodeLanes, ResumeOutsideHealth, DenyDirs, StartOpID}
 
 // ShareProjection is the bounded complete-source sharing projection, not light Items.
 const ShareProjection = "share_projection.v1"

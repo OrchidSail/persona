@@ -91,7 +91,7 @@
     <string name="chat_chrome_conn_details">Diagnostics</string>
     <string name="chat_chrome_got_it">Got it</string>
     <string name="chat_composer_placeholder">Message</string>
-    <string name="chat_composer_photo_limit">You can add up to 4 photos</string>
+    <string name="chat_composer_photo_limit">Up to %1$d photos at a time</string>
     <string name="chat_composer_attachment_unreadable">Can\'t read the attachment. Pick it again; your text is kept</string>
     <string name="chat_composer_no_camera_app">No app on this phone can take photos</string>
     <string name="chat_composer_camera_failed">Can\'t open the camera. Try again later</string>
@@ -520,6 +520,8 @@
     <string name="chat_turn_fix_model_route">Model not connected: this model can\'t be used</string>
     <string name="chat_turn_fix_model_route_launcher">Model not connected: this model isn\'t available on %1$s</string>
     <string name="chat_turn_fix_model_route_detail">The model name is wrong, or the model isn\'t available right now; try another one.</string>
+    <string name="chat_turn_fix_tool_search_unsupported">Model not connected: this gateway can\'t load tools on demand</string>
+    <string name="chat_turn_fix_tool_search_unsupported_detail">Try again.</string>
     <string name="chat_turn_fix_action">Fix it</string>
     <string name="chat_slash_saved_prompts">Saved Prompts</string>
 </resources>

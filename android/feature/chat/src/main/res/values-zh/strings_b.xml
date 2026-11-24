@@ -87,7 +87,7 @@
     <string name="chat_chrome_conn_details">连接诊断</string>
     <string name="chat_chrome_got_it">知道了</string>
     <string name="chat_composer_placeholder">输入消息</string>
-    <string name="chat_composer_photo_limit">最多添加 4 张照片</string>
+    <string name="chat_composer_photo_limit">一次最多 %1$d 张</string>
     <string name="chat_composer_attachment_unreadable">附件无法读取，请重新选择；输入已保留</string>
     <string name="chat_composer_no_camera_app">这台手机上没有能拍照的应用</string>
     <string name="chat_composer_camera_failed">无法打开相机，请稍后再试</string>
@@ -505,6 +505,8 @@
     <string name="chat_turn_fix_model_route">模型没接好：这个模型用不了</string>
     <string name="chat_turn_fix_model_route_launcher">模型没接好：%1$s 用不了这个模型</string>
     <string name="chat_turn_fix_model_route_detail">模型名不对，或者这个模型现在用不了，换一个试试。</string>
+    <string name="chat_turn_fix_tool_search_unsupported">模型没接好：这个网关不支持按需加载工具</string>
+    <string name="chat_turn_fix_tool_search_unsupported_detail">请重试。</string>
     <string name="chat_turn_fix_action">去修</string>
     <string name="chat_slash_saved_prompts">已保存的提示词</string>
 </resources>

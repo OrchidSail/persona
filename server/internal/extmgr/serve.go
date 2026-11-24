@@ -19,10 +19,13 @@ import (
 	"github.com/nwverse/persona/sdk/go/wire"
 	"github.com/nwverse/persona/server/internal/assistantwire"
 	"github.com/nwverse/persona/server/internal/bus"
+	"github.com/nwverse/persona/server/internal/connector"
 	"github.com/nwverse/persona/server/internal/extension"
 	"github.com/nwverse/persona/server/internal/extension/uistream"
+	"github.com/nwverse/persona/server/internal/extmgr/mailport"
 	"github.com/nwverse/persona/server/internal/extwire"
 	"github.com/nwverse/persona/server/internal/i18n"
+	"github.com/nwverse/persona/server/internal/mailwire"
 	"github.com/nwverse/persona/server/internal/prompts"
 	"github.com/nwverse/persona/server/internal/proto"
 	"github.com/nwverse/persona/server/internal/rpc"
@@ -35,9 +38,11 @@ import (
 // Run starts the extensions, connectors and bots and runs their loops until ctx ends; then it stops the programs.
 func (h *Manager) Run(ctx context.Context) error {
 	h.ctx = ctx
-	if ms, ok := h.store.(mailStore); ok && NewMail != nil {
+	if ms, ok := h.store.(mailStore); ok && mailport.Factory(h.modules()) != nil {
 		var err error
-		if h.mail, err = NewMail(h.cfg.dir, h.secretKeyPath(), ms, h.cfg.Google, h.cfg.Microsoft); err != nil {
+		if h.mail, err = mailport.Factory(h.modules())(mailwire.Config{DataDir: h.cfg.dir, SecretKey: h.secretKeyPath(), Store: ms,
+			GoogleClientID: h.cfg.Google.ClientID, GoogleProxy: h.cfg.Google.Proxy,
+			MicrosoftClientID: h.cfg.Microsoft.ClientID, MicrosoftRedirect: h.cfg.Microsoft.RedirectURI}); err != nil {
 			h.logf("mail disabled: %v", err)
 			h.mail = nil
 		}
@@ -50,12 +55,13 @@ func (h *Manager) Run(ctx context.Context) error {
 	go h.inboxLoop(ctx)
 	go h.noLockLoop(ctx)
 	go h.extensionLeaseLoop(ctx)
-	h.extensions = newExtensions(h.cfg.dir, h.cfg.extensionConfigs(h.logf), h.logf)
+	h.extensions = newExtensionsWith(h.cfg.dir, h.cfg.extensionConfigs(h.logf), h.logf, h.modules())
 	h.extensions.stats.redact = h.redactOwnSecrets
 	h.startTokenRecord(ctx) // before any extension starts with a token (extension_scopes.go)
 	h.startConnectors(ctx)  // the extensions' connectors join here (attachExtensions)
 	h.startExtensions(ctx)
-	h.startSubscriptions(ctx) // after the connectors it pulls from
+	h.startSpacesMigration(ctx) // existing users only; an installed/disabled choice wins
+	h.startSubscriptions(ctx)   // after the connectors it pulls from
 	go h.extensionUpgradeLoop(ctx)
 	go h.extensionMetricsLoop(ctx)
 	go h.pageLoop(ctx)
@@ -628,9 +634,13 @@ func (h *Manager) report() extwire.Report {
 		r.Looks = h.extensionLooks()
 	}
 	if ps := h.extensions; ps != nil {
+		r.PushGradingDeclared = true
 		for _, p := range ps.reg.List() {
 			if !p.Record.Enabled || p.Problem != "" {
 				continue
+			}
+			if ps.reg.HubScopeAllowed(p.Record.ID, extension.ScopePushGrading) {
+				r.PushGradingExtensions = append(r.PushGradingExtensions, p.Record.ID)
 			}
 			hp := ps.get(p.Record.ID)
 			if hp == nil || hp.proc == nil || hp.proxy == nil {
@@ -640,6 +650,7 @@ func (h *Manager) report() extwire.Report {
 				r.APIs = append(r.APIs, extwire.APIPrefix{Prefix: a.Prefix, Receipts: a.Receipts, Events: a.Events})
 			}
 		}
+		slices.Sort(r.PushGradingExtensions)
 	}
 	for _, m := range h.machinesNow() {
 		var x extwire.MachineExtras
@@ -711,7 +722,12 @@ func (h *Manager) AgentTools(ctx context.Context, assistant bool) (agents, assis
 		assistantOnly = append(assistantOnly, h.browserTools()...)
 		assistantOnly = append(assistantOnly, h.iphoneTools()...)
 		assistantOnly = append(assistantOnly, h.subscriptionTools()...)
+		if hp, _ := h.larkImageSource(); hp != nil && connector.StatusOf(ctx, h.connectors.Get(connector.Lark)).State == connector.StateOK {
+			assistantOnly = append(assistantOnly, mcpTool(larkImageTool))
+		}
 		assistantOnly = append(assistantOnly, h.connectors.ToolsFor(ctx, false)...)
+		// A memory extension's read tools reach the assistant's conversations around the hub's filter (memory_sources.go).
+		agents, assistantOnly = h.withoutMemoryReads(agents), h.withoutMemoryReads(assistantOnly)
 	}
 	for _, list := range [][]proto.Tool{agents, assistantOnly} {
 		for i, t := range list {
@@ -729,8 +745,12 @@ func (h *Manager) CallTool(ctx context.Context, machine, session, name string, a
 		return proto.ToolResult{}, false
 	}
 	switch {
+	case assistant && h.memoryWithheld(name): // memory_sources.go
+		return memoryWithheldResult(name), true
 	case h.connectors.Offers(name) && (assistant || h.connectors.ForAgents(name)):
 		return h.callConnector(ctx, asker{machine, session}, name, args), true
+	case assistant && name == larkImageTool:
+		return h.callLarkImage(ctx, args), true
 	case assistant && isComputerTool(name):
 		return h.callComputerTool(ctx, session, name, args), true
 	case assistant && isBrowserTool(name):
@@ -756,6 +776,9 @@ func (h *Manager) ToolAccess(name string) (known, readOnly bool) {
 		return true, h.connectors.ReadOnly(name)
 	}
 	switch {
+	case name == larkImageTool:
+		hp, _ := h.larkImageSource()
+		return hp != nil, hp != nil
 	case isComputerTool(name), isBrowserTool(name), isIPhoneTool(name):
 		return true, false
 	case isSubscriptionTool(name):

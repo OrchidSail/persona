@@ -443,18 +443,18 @@ func TestSetupBlockSwitchesNothingOn(t *testing.T) {
 		}
 		return out
 	}
-	before, puts := snapshot(), store.puts
+	before, puts := snapshot(), store.putCount()
 
 	b := s.setupFor(ctx, now, s.location(ctx), i18n.En, testWeb)
 	if got := setupIDs(b); !slices.Equal(got, []string{setupDelegate, setupAutoContinue}) {
 		t.Fatalf("block: %v", got)
 	}
-	if store.puts != puts {
-		t.Fatalf("computing the block wrote %d settings", store.puts-puts)
+	if after := store.putCount(); after != puts {
+		t.Fatalf("computing the block wrote %d settings", after-puts)
 	}
 	s.setupTold(b, now)
-	if store.puts != puts+1 {
-		t.Fatalf("telling the block wrote %d settings, want its own book only", store.puts-puts)
+	if after := store.putCount(); after != puts+1 {
+		t.Fatalf("telling the block wrote %d settings, want its own book only", after-puts)
 	}
 	after := snapshot()
 	if len(after) != len(before) {
@@ -607,14 +607,14 @@ func TestSetupLinesAreLocalized(t *testing.T) {
 }
 
 // Retired ids keep accurate legacy copy: direct rendering cannot promise fewer main reviews or automatic closure.
-func TestRetiredSetupLinesKeepMainAcceptance(t *testing.T) {
+func TestSetupLinesDescribeCurrentSupervisorOwnership(t *testing.T) {
 	for _, tc := range []struct {
 		lang                  i18n.Lang
 		leaders, reviewSample string
 	}{
-		{i18n.En, "does not remove main-chat review rounds", "not closed automatically"},
-		{i18n.ZhHans, "不会减少主对话的验收轮次", "不会自动关闭"},
-		{i18n.Ja, "レビューラウンドは減りません", "自動ではクローズされず"},
+		{i18n.En, "supervises the tasks it plans or starts", "not closed automatically"},
+		{i18n.ZhHans, "督办自己派出的任务", "不会自动关闭"},
+		{i18n.Ja, "自分で計画・開始したタスク", "自動ではクローズされず"},
 	} {
 		leaders := setupWord(tc.lang, "", setupLeaders, setupNumber{}).Text
 		sample := setupWord(tc.lang, "", setupSample, setupNumber{}).Text

@@ -1,4 +1,5 @@
 import { canonicalAppURL } from "./compatibility";
+import { parse as parseRoute, type Route } from "./router";
 // An extension's declarative UI (docs/extensions/extensions.md "Declarative UI"): the extension sends a View (a few fixed kinds of items), the
 // web draws it with its own design system, and buttons go back to the extension. No extension code runs here, no extension
 // colors, sizes or icons: a tone becomes one of the theme's role colors. The checks match server/internal/extension/ui.go
@@ -14,6 +15,7 @@ import { isHttps, isObject, readAction, readPush } from "./extension-ui-read";
 import { t } from "../i18n";
 import type { Comment, Hunk, Thread, TreeEntry } from "./code-view";
 import type { UIColor, UIImageSource, UIRowAction, UIRowControl, UISpark, UITile } from "./extension-ui-v6";
+import { HEALTH_INTAKE_UI } from "./health-intake-ui";
 import { SUBSCRIPTIONS_UI } from "./subscriptions-ui";
 
 export { isHttps };
@@ -448,9 +450,17 @@ export function placeOf(u: UIPlace & { plugin?: string; plugin_name?: string }):
   return { ...rest, extension: u.extension ?? plugin ?? "", ...((u.extension_name ?? plugin_name) ? { extension_name: u.extension_name ?? plugin_name } : {}) };
 }
 
-// The subscription pages (#2041) are the manager's own, drawn and pressed like an extension's page under a reserved id.
-const uiPath = (extension: string, ui: string) =>
-  extension === SUBSCRIPTIONS_UI ? "/subscriptions/-/ui" : `${extRoot()}/${enc(extension)}/-/ui/${enc(ui)}`;
+// The manager's own pages are drawn and pressed like an extension's page under a reserved id (ids never start with "-"):
+// where each is asked. The health pages (#13176) name the health space, which stays the default manager's whichever
+// assistant the Persona page shows (lib/manager-choice.ts `managerHeaderFor` adds none to a request with `space=`).
+const RESERVED_UI_PATHS: Record<string, string> = {
+  [SUBSCRIPTIONS_UI]: "/subscriptions/-/ui",
+  [HEALTH_INTAKE_UI]: "/assistant/health/intake/ui?space=health",
+};
+/** Whether `extension` is one of the manager's own pages: drawn over HTTP only, never as an extension's. */
+export const isReservedUI = (extension: string): boolean => Object.hasOwn(RESERVED_UI_PATHS, extension);
+export const uiPath = (extension: string, ui: string) =>
+  (isReservedUI(extension) ? RESERVED_UI_PATHS[extension] : undefined) ?? `${extRoot()}/${enc(extension)}/-/ui/${enc(ui)}`;
 
 /** Draws the view (no action). A view that does not read at all is an error; unknown items are left out. `manager`:
  *  whose extension it is (another manager's inbox item, or computer); none: the default's. */
@@ -550,8 +560,9 @@ export function outcome(
   r: UIActionResult,
   item?: string,
   extension?: string,
-): { view?: UIView; items?: UIItem[]; reload: boolean; toast?: string; url?: string; source?: true; settings?: string; ask?: string; push?: UIPush; pop?: true } {
+): { view?: UIView; items?: UIItem[]; reload: boolean; toast?: string; url?: string; source?: true; settings?: string; ask?: string; track?: Route; push?: UIPush; pop?: true } {
   const url = r.open_url && isHttps(r.open_url) ? r.open_url : undefined;
+  const track = r.open_url ? extensionTrackRoute(r.open_url) : undefined;
   const source = !!item && !!r.open_url && inboxSourceItem(r.open_url) === item;
   const settings = r.open_url ? extensionSettingsHref(r.open_url) : undefined;
   const ask = extension === SUBSCRIPTIONS_UI && r.open_url ? askText(r.open_url) : undefined;
@@ -567,9 +578,21 @@ export function outcome(
     ...(source ? { source: true as const } : {}),
     ...(settings ? { settings } : {}),
     ...(ask ? { ask } : {}),
+    ...(track ? { track } : {}),
     ...(push ? { push } : {}),
     ...(pop ? { pop: true as const } : {}),
   };
+}
+
+/** A space conversation handed back to the app. Only this narrow, read-only
+ * navigation contract is accepted; an extension cannot choose another route. */
+export function extensionTrackRoute(link: string): Route | undefined {
+  const match = /^persona:\/\/tracks\/([^/?#]+)\/([^/?#]+)\/([^/?#]+)$/.exec(canonicalAppURL(link));
+  if (!match) return undefined;
+  const parts = match.slice(1);
+  if (parts[1] === "health") return undefined;
+  const route = parseRoute(`persona/${encodeURIComponent(parts[2])}`, `?machine=${encodeURIComponent(parts[0])}`);
+  return route.name === "persona" && route.sid && route.mid ? route : undefined;
 }
 
 /** The text of a persona://ask?text=… link (an older name's scheme too, as other in-app links); undefined for any other

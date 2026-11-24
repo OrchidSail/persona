@@ -206,15 +206,6 @@ struct MachineDetailView: View {
             async let sections: Void = plugins.load(ref, app: model, redraw: true)
             _ = await (refreshed, metrics, launchersLoaded, sections)
         }
-        #if os(macOS)
-        .macRefreshes(id: machineID) {
-            async let refreshed: Void = model.refresh()
-            async let metrics: Void = load()
-            async let launchersLoaded: Void = loadLaunchers(refresh: true)
-            async let sections: Void = plugins.load(ref, app: model, redraw: true)
-            _ = await (refreshed, metrics, launchersLoaded, sections)
-        }
-        #endif
         .tabActiveTask(id: Poll(range: range, active: phase == .active)) { // stops in the background and in another tab
             guard phase == .active else { return }
             while !Task.isCancelled {
@@ -267,7 +258,7 @@ struct MachineDetailView: View {
                         if i > 0 { Divider().padding(.leading, Theme.Space.l) }
                         NavigationLink(value: s.key) {
                             HStack(spacing: Theme.Space.s) {
-                                SessionRow(session: s, machine: machine, showMachine: false)
+                                SessionRow(session: s, machine: machine, showMachine: false, preferHerdrTabName: model.prefersHerdrTabName(for: s))
                                 ThemedIcon(Theme.Icon.disclosure).font(Theme.Font.labelStrong).foregroundStyle(.tertiary)
                             }
                             .padding(.horizontal, Theme.Space.l)

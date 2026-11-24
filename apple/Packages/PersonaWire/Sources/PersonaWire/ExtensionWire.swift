@@ -797,6 +797,7 @@ public nonisolated struct ExtensionContributes: Codable, Hashable, Sendable {
     public var assistant: [ExtensionAssistantItem]?
     public var mcpServers: [ExtensionMCPServerItem]?
     public var ui: [ExtensionUIItem]?
+    public var trackKinds: [ExtensionTrackKindItem]?
     public var agentSources: [ExtensionAgentSourceItem]?
     public var channel: [ExtensionChannelItem]?
     public var events: [ExtensionEventsItem]?
@@ -812,11 +813,12 @@ public nonisolated struct ExtensionContributes: Codable, Hashable, Sendable {
     public var authRelay: [ExtensionAuthRelayItem]?
     public var secretProviders: [ExtensionSecretProviderItem]?
     public var repositoryProviders: [ExtensionRepositoryProviderItem]?
+    public var memorySources: [ExtensionMemorySourceItem]?
     public var messaging: [ExtensionMessagingItem]?
     /// Extra keys stay at this object's level on the wire; declared fields always win.
     public var additionalProperties: [String: JSONValue]
 
-    public init(connectors: [ExtensionConnectorItem]? = nil, voice: [ExtensionNamedItem]? = nil, transcription: [ExtensionNamedItem]? = nil, speech: [ExtensionNamedItem]? = nil, computer: [ExtensionNamedItem]? = nil, browser: [ExtensionNamedItem]? = nil, iphone: [ExtensionNamedItem]? = nil, quota: [ExtensionQuotaItem]? = nil, usage: [ExtensionUsageItem]? = nil, providers: [ExtensionProviderItem]? = nil, api: [ExtensionAPIItem]? = nil, assistant: [ExtensionAssistantItem]? = nil, mcpServers: [ExtensionMCPServerItem]? = nil, ui: [ExtensionUIItem]? = nil, agentSources: [ExtensionAgentSourceItem]? = nil, channel: [ExtensionChannelItem]? = nil, events: [ExtensionEventsItem]? = nil, shortcuts: [ExtensionShortcutItem]? = nil, skills: [ExtensionSkillItem]? = nil, prompts: [ExtensionPromptItem]? = nil, themes: [ExtensionThemeItem]? = nil, looks: [ExtensionLookItem]? = nil, triageTemplates: [ExtensionTriageTemplateItem]? = nil, agentFilters: [ExtensionAgentFilterItem]? = nil, tunnels: [ExtensionTunnelItem]? = nil, errorReports: [ExtensionErrorReportsItem]? = nil, authRelay: [ExtensionAuthRelayItem]? = nil, secretProviders: [ExtensionSecretProviderItem]? = nil, repositoryProviders: [ExtensionRepositoryProviderItem]? = nil, messaging: [ExtensionMessagingItem]? = nil, additionalProperties: [String: JSONValue] = [:]) {
+    public init(connectors: [ExtensionConnectorItem]? = nil, voice: [ExtensionNamedItem]? = nil, transcription: [ExtensionNamedItem]? = nil, speech: [ExtensionNamedItem]? = nil, computer: [ExtensionNamedItem]? = nil, browser: [ExtensionNamedItem]? = nil, iphone: [ExtensionNamedItem]? = nil, quota: [ExtensionQuotaItem]? = nil, usage: [ExtensionUsageItem]? = nil, providers: [ExtensionProviderItem]? = nil, api: [ExtensionAPIItem]? = nil, assistant: [ExtensionAssistantItem]? = nil, mcpServers: [ExtensionMCPServerItem]? = nil, ui: [ExtensionUIItem]? = nil, trackKinds: [ExtensionTrackKindItem]? = nil, agentSources: [ExtensionAgentSourceItem]? = nil, channel: [ExtensionChannelItem]? = nil, events: [ExtensionEventsItem]? = nil, shortcuts: [ExtensionShortcutItem]? = nil, skills: [ExtensionSkillItem]? = nil, prompts: [ExtensionPromptItem]? = nil, themes: [ExtensionThemeItem]? = nil, looks: [ExtensionLookItem]? = nil, triageTemplates: [ExtensionTriageTemplateItem]? = nil, agentFilters: [ExtensionAgentFilterItem]? = nil, tunnels: [ExtensionTunnelItem]? = nil, errorReports: [ExtensionErrorReportsItem]? = nil, authRelay: [ExtensionAuthRelayItem]? = nil, secretProviders: [ExtensionSecretProviderItem]? = nil, repositoryProviders: [ExtensionRepositoryProviderItem]? = nil, memorySources: [ExtensionMemorySourceItem]? = nil, messaging: [ExtensionMessagingItem]? = nil, additionalProperties: [String: JSONValue] = [:]) {
         self.connectors = connectors
         self.voice = voice
         self.transcription = transcription
@@ -831,6 +833,7 @@ public nonisolated struct ExtensionContributes: Codable, Hashable, Sendable {
         self.assistant = assistant
         self.mcpServers = mcpServers
         self.ui = ui
+        self.trackKinds = trackKinds
         self.agentSources = agentSources
         self.channel = channel
         self.events = events
@@ -846,6 +849,7 @@ public nonisolated struct ExtensionContributes: Codable, Hashable, Sendable {
         self.authRelay = authRelay
         self.secretProviders = secretProviders
         self.repositoryProviders = repositoryProviders
+        self.memorySources = memorySources
         self.messaging = messaging
         self.additionalProperties = additionalProperties
     }
@@ -865,6 +869,7 @@ public nonisolated struct ExtensionContributes: Codable, Hashable, Sendable {
         case assistant
         case mcpServers = "mcp_servers"
         case ui
+        case trackKinds = "track_kinds"
         case agentSources = "agent_sources"
         case channel
         case events
@@ -880,6 +885,7 @@ public nonisolated struct ExtensionContributes: Codable, Hashable, Sendable {
         case authRelay = "auth_relay"
         case secretProviders = "secret_providers"
         case repositoryProviders = "repository_providers"
+        case memorySources = "memory_sources"
         case messaging
     }
 
@@ -899,6 +905,7 @@ public nonisolated struct ExtensionContributes: Codable, Hashable, Sendable {
         self.assistant = ExtensionWireJSON.decode([ExtensionAssistantItem].self, from: raw["assistant"])
         self.mcpServers = ExtensionWireJSON.decode([ExtensionMCPServerItem].self, from: raw["mcp_servers"])
         self.ui = ExtensionWireJSON.decode([ExtensionUIItem].self, from: raw["ui"])
+        self.trackKinds = ExtensionWireJSON.decode([ExtensionTrackKindItem].self, from: raw["track_kinds"])
         self.agentSources = ExtensionWireJSON.decode([ExtensionAgentSourceItem].self, from: raw["agent_sources"])
         self.channel = ExtensionWireJSON.decode([ExtensionChannelItem].self, from: raw["channel"])
         self.events = ExtensionWireJSON.decode([ExtensionEventsItem].self, from: raw["events"])
@@ -914,13 +921,14 @@ public nonisolated struct ExtensionContributes: Codable, Hashable, Sendable {
         self.authRelay = ExtensionWireJSON.decode([ExtensionAuthRelayItem].self, from: raw["auth_relay"])
         self.secretProviders = ExtensionWireJSON.decode([ExtensionSecretProviderItem].self, from: raw["secret_providers"])
         self.repositoryProviders = ExtensionWireJSON.decode([ExtensionRepositoryProviderItem].self, from: raw["repository_providers"])
+        self.memorySources = ExtensionWireJSON.decode([ExtensionMemorySourceItem].self, from: raw["memory_sources"])
         self.messaging = ExtensionWireJSON.decode([ExtensionMessagingItem].self, from: raw["messaging"])
-        let known: Set<String> = ["connectors", "voice", "transcription", "speech", "computer", "browser", "iphone", "quota", "usage", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "repository_providers", "messaging"]
+        let known: Set<String> = ["connectors", "voice", "transcription", "speech", "computer", "browser", "iphone", "quota", "usage", "providers", "api", "assistant", "mcp_servers", "ui", "track_kinds", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "repository_providers", "memory_sources", "messaging"]
         additionalProperties = raw.filter { !known.contains($0.key) }
     }
 
     public func encode(to encoder: Encoder) throws {
-        let known: Set<String> = ["connectors", "voice", "transcription", "speech", "computer", "browser", "iphone", "quota", "usage", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "repository_providers", "messaging"]
+        let known: Set<String> = ["connectors", "voice", "transcription", "speech", "computer", "browser", "iphone", "quota", "usage", "providers", "api", "assistant", "mcp_servers", "ui", "track_kinds", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "repository_providers", "memory_sources", "messaging"]
         var fields = additionalProperties.filter { !known.contains($0.key) }
         if let value = connectors { fields["connectors"] = try ExtensionWireJSON.encode(value) }
         if let value = voice { fields["voice"] = try ExtensionWireJSON.encode(value) }
@@ -936,6 +944,7 @@ public nonisolated struct ExtensionContributes: Codable, Hashable, Sendable {
         if let value = assistant { fields["assistant"] = try ExtensionWireJSON.encode(value) }
         if let value = mcpServers { fields["mcp_servers"] = try ExtensionWireJSON.encode(value) }
         if let value = ui { fields["ui"] = try ExtensionWireJSON.encode(value) }
+        if let value = trackKinds { fields["track_kinds"] = try ExtensionWireJSON.encode(value) }
         if let value = agentSources { fields["agent_sources"] = try ExtensionWireJSON.encode(value) }
         if let value = channel { fields["channel"] = try ExtensionWireJSON.encode(value) }
         if let value = events { fields["events"] = try ExtensionWireJSON.encode(value) }
@@ -951,6 +960,7 @@ public nonisolated struct ExtensionContributes: Codable, Hashable, Sendable {
         if let value = authRelay { fields["auth_relay"] = try ExtensionWireJSON.encode(value) }
         if let value = secretProviders { fields["secret_providers"] = try ExtensionWireJSON.encode(value) }
         if let value = repositoryProviders { fields["repository_providers"] = try ExtensionWireJSON.encode(value) }
+        if let value = memorySources { fields["memory_sources"] = try ExtensionWireJSON.encode(value) }
         if let value = messaging { fields["messaging"] = try ExtensionWireJSON.encode(value) }
         var container = encoder.singleValueContainer()
         try container.encode(fields)
@@ -1528,6 +1538,33 @@ public nonisolated struct ExtensionRepositoryProviderItem: Codable, Hashable, Se
     }
 }
 
+/// The extension's memory, read by the manager one entry at a time (memory.entries; memory.schema.json) so the hub
+/// decides which entries reach which scene (a conversation's standing context, a recall, a dispatched task, the
+/// Inbox's helper). Needs the program to speak the protocol; one per extension. Once declared, the hub stops
+/// delivering the extension's own text outlets (its assistant instructions, project context, Inbox context and its
+/// connectors' read tools in the assistant's conversations) directly.
+public nonisolated struct ExtensionMemorySourceItem: Codable, Hashable, Sendable {
+    public var id: String
+    /// What settings call the source (My memory). Not only spaces, no control characters.
+    public var name: String
+
+    public init(id: String = "", name: String = "") {
+        self.id = id
+        self.name = name
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? ""
+        self.name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? ""
+    }
+}
+
 /// A repository provider's optional answer: pr_status (repo.pr_status).
 public nonisolated enum ExtensionRepositoryCapability {
     public static let prStatus = "pr_status"
@@ -1734,6 +1771,150 @@ public nonisolated struct ExtensionConnectorItem: Codable, Hashable, Sendable {
         self.metaDescription = try? c.decodeIfPresent(String.self, forKey: .metaDescription)
         self.cli = try? c.decodeIfPresent(String.self, forKey: .cli)
         self.sendsAsUser = try? c.decodeIfPresent(Bool.self, forKey: .sendsAsUser)
+    }
+}
+
+public nonisolated struct ExtensionTrackAttention: Codable, Hashable, Sendable {
+    public var pushCap: String?
+    public var deepDefault: String?
+    public var enterMode: String?
+
+    public init(pushCap: String? = nil, deepDefault: String? = nil, enterMode: String? = nil) {
+        self.pushCap = pushCap
+        self.deepDefault = deepDefault
+        self.enterMode = enterMode
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case pushCap = "push_cap"
+        case deepDefault = "deep_default"
+        case enterMode = "enter_mode"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.pushCap = try? c.decodeIfPresent(String.self, forKey: .pushCap)
+        self.deepDefault = try? c.decodeIfPresent(String.self, forKey: .deepDefault)
+        self.enterMode = try? c.decodeIfPresent(String.self, forKey: .enterMode)
+    }
+}
+
+public nonisolated struct ExtensionTrackSidebar: Codable, Hashable, Sendable {
+    public var group: String?
+    public var order: Int?
+    public var icon: String?
+
+    public init(group: String? = nil, order: Int? = nil, icon: String? = nil) {
+        self.group = group
+        self.order = order
+        self.icon = icon
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case group
+        case order
+        case icon
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.group = try? c.decodeIfPresent(String.self, forKey: .group)
+        self.order = try? c.decodeIfPresent(Int.self, forKey: .order)
+        self.icon = try? c.decodeIfPresent(String.self, forKey: .icon)
+    }
+}
+
+public nonisolated struct ExtensionTrackKindConfig: Codable, Hashable, Sendable {
+    public var schema: Int
+    public var template: String
+    public var userInstructions: String?
+    public var context: String
+    public var defaultCategories: [String]
+    public var tagFocus: [String]
+    public var rhythms: [[String: JSONValue]]
+    public var attention: ExtensionTrackAttention
+    public var supervision: String
+    public var usage: [[String: JSONValue]]
+    public var assembly: String
+    public var captureTarget: Bool?
+    public var channels: [String]
+    public var sidebar: ExtensionTrackSidebar
+
+    public init(schema: Int = 0, template: String = "", userInstructions: String? = nil, context: String = "", defaultCategories: [String] = [], tagFocus: [String] = [], rhythms: [[String: JSONValue]] = [], attention: ExtensionTrackAttention = ExtensionTrackAttention(), supervision: String = "", usage: [[String: JSONValue]] = [], assembly: String = "", captureTarget: Bool? = nil, channels: [String] = [], sidebar: ExtensionTrackSidebar = ExtensionTrackSidebar()) {
+        self.schema = schema
+        self.template = template
+        self.userInstructions = userInstructions
+        self.context = context
+        self.defaultCategories = defaultCategories
+        self.tagFocus = tagFocus
+        self.rhythms = rhythms
+        self.attention = attention
+        self.supervision = supervision
+        self.usage = usage
+        self.assembly = assembly
+        self.captureTarget = captureTarget
+        self.channels = channels
+        self.sidebar = sidebar
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schema
+        case template
+        case userInstructions = "user_instructions"
+        case context
+        case defaultCategories = "default_categories"
+        case tagFocus = "tag_focus"
+        case rhythms
+        case attention
+        case supervision
+        case usage
+        case assembly
+        case captureTarget = "capture_target"
+        case channels
+        case sidebar
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.schema = (try? c.decodeIfPresent(Int.self, forKey: .schema)) ?? 0
+        self.template = (try? c.decodeIfPresent(String.self, forKey: .template)) ?? ""
+        self.userInstructions = try? c.decodeIfPresent(String.self, forKey: .userInstructions)
+        self.context = (try? c.decodeIfPresent(String.self, forKey: .context)) ?? ""
+        self.defaultCategories = (try? c.decodeIfPresent([String].self, forKey: .defaultCategories)) ?? []
+        self.tagFocus = (try? c.decodeIfPresent([String].self, forKey: .tagFocus)) ?? []
+        self.rhythms = (try? c.decodeIfPresent([[String: JSONValue]].self, forKey: .rhythms)) ?? []
+        self.attention = (try? c.decodeIfPresent(ExtensionTrackAttention.self, forKey: .attention)) ?? ExtensionTrackAttention()
+        self.supervision = (try? c.decodeIfPresent(String.self, forKey: .supervision)) ?? ""
+        self.usage = (try? c.decodeIfPresent([[String: JSONValue]].self, forKey: .usage)) ?? []
+        self.assembly = (try? c.decodeIfPresent(String.self, forKey: .assembly)) ?? ""
+        self.captureTarget = try? c.decodeIfPresent(Bool.self, forKey: .captureTarget)
+        self.channels = (try? c.decodeIfPresent([String].self, forKey: .channels)) ?? []
+        self.sidebar = (try? c.decodeIfPresent(ExtensionTrackSidebar.self, forKey: .sidebar)) ?? ExtensionTrackSidebar()
+    }
+}
+
+public nonisolated struct ExtensionTrackKindItem: Codable, Hashable, Sendable {
+    public var id: String
+    public var title: String
+    public var config: ExtensionTrackKindConfig
+
+    public init(id: String = "", title: String = "", config: ExtensionTrackKindConfig = ExtensionTrackKindConfig()) {
+        self.id = id
+        self.title = title
+        self.config = config
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case config
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? ""
+        self.title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? ""
+        self.config = (try? c.decodeIfPresent(ExtensionTrackKindConfig.self, forKey: .config)) ?? ExtensionTrackKindConfig()
     }
 }
 

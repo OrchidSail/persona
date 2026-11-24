@@ -23,7 +23,25 @@ nonisolated enum Supervision {
         }
     }
 
-    static func visible(_ items: [Item], results: [String: Item], live: Bool, routineMainRelay: Bool = false) -> Bool {
+    /// A completed round whose canonical finish receipt succeeded with `visibility: "silent"`, and which nothing
+    /// promoted to the user. This is deliberately narrower than `!visible`: a legacy quiet round without that receipt
+    /// keeps its existing record line, while a failed or malformed receipt never removes history from the main chat.
+    static func completedSilent(_ items: [Item], results: [String: Item], live: Bool,
+                                showReply: (Item) -> Bool = { _ in true },
+                                needsAttention: (Item) -> Bool = { _ in false }) -> Bool {
+        guard !live, !visible(items, results: results, live: live, showReply: showReply, needsAttention: needsAttention) else { return false }
+        for use in items where use.kind == .toolUse && tool(use.toolName) == "supervision_finish" {
+            guard let result = use.toolUseID.flatMap({ results[$0] }), result.isError != true,
+                  let text = result.text, let receipt = try? JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)),
+                  case .string(let disposition)? = receipt["visibility"], disposition == "silent" else { continue }
+            return true
+        }
+        return false
+    }
+
+    static func visible(_ items: [Item], results: [String: Item], live: Bool,
+                        showReply: (Item) -> Bool = { _ in true },
+                        needsAttention: (Item) -> Bool = { _ in false }) -> Bool {
         if items.contains(where: { it in
             it.supervisionUser == true || it.fold?.supervisionUser == true ||
                 (Injected.of(it).map { $0.isSupervision && $0.level == "user" } ?? false)
@@ -47,20 +65,31 @@ nonisolated enum Supervision {
                 if disposition == "silent" { silent = true }
             }
         }
-        return !live && !silent && !routineMainRelay && hasBackgroundReply(items)
+        let reply = backgroundReply(items)
+        let attention = reply.map(needsAttention) ?? false
+        return !live && (!silent || attention) && reply.map(showReply) == true
     }
 
-    private static func hasBackgroundReply(_ items: [Item]) -> Bool {
+    /// A pending card in the main conversation's own attention list, not an Agent's general Needs-you state.
+    /// Current non-delegating questions / elicitations and owner-proposal permissions stay; Agent permissions,
+    /// plan approvals, terminal dialogs and cards still being delegated do not.
+    static func directUserRequest(_ interaction: Interaction) -> Bool {
+        if interaction.isDelegating { return false }
+        if interaction.kind == .question || interaction.kind == .elicitation { return true }
+        return interaction.kind == .permission && interaction.ownerProposal == true
+    }
+
+    private static func backgroundReply(_ items: [Item]) -> Item? {
         // Display lines can put a tool before the latest text even when the tool came after that text.
         let last = items.lazy.filter { item in
             item.wake == true || item.modelRefusal != nil || isTurnInterrupt(item) ||
                 item.kind == .toolUse || item.kind == .thinking || item.kind == .fold || isAnswerText(item)
         }.max { ($0.seq, $0.part) < ($1.seq, $1.part) }
-        guard let last else { return false }
-        return isAnswerText(last) && last.narration != true && last.codexHeartbeatQuiet != true
+        guard let last, isAnswerText(last), last.narration != true, last.codexHeartbeatQuiet != true else { return nil }
+        return last
     }
 
-    private static func isAnswerText(_ item: Item) -> Bool {
+    static func isAnswerText(_ item: Item) -> Bool {
         item.kind == .text && item.role == "assistant" &&
             !(item.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
