@@ -548,3 +548,252 @@ func TestMainAutoCompactReentrancyCooldownAndRecovery(t *testing.T) {
 		t.Fatalf("retried after permanent unknown-method refusal: %d", compacts.Load())
 	}
 }
+
+func TestMainAutoCompactOmittedTokensPreserveBaseline(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("omitted context_tokens keeps lastTokens/peakTokens/baselineRev intact for primary threshold", func(t *testing.T) {
+		mainID := "agy-91111111-2222-3333-4444-555555555555"
+		s, f, _, _ := newMainAutoCompactTestFixture(t, mainID)
+		var compacts atomic.Int32
+		f.answerNode(DeviceAssistantCompact, func(string, json.RawMessage) (any, error) {
+			compacts.Add(1)
+			return map[string]any{"ok": true}, nil
+		})
+
+		// First plausible reading below threshold.
+		row := proto.Session{
+			SessionID: mainID, Assistant: true, Agent: "agy", Launcher: "agy",
+			Status: proto.StatusDone, Rev: 20, ContextTokens: 220_000, ContextWindow: 1_048_576, OutputTokens: 10_000,
+		}
+		f.setSessions("server", row)
+		s.SessionsChanged(ctx, DeviceSessions{MachineID: "server", Sessions: []proto.Session{row}})
+
+		// Ordinary usage-stripped idle snapshot omits ContextTokens (0): must NOT reset baseline or clear lastTokens/peakTokens.
+		stripped := row
+		stripped.Rev = 22
+		stripped.ContextTokens = 0
+		stripped.ContextWindow = 0
+		f.setSessions("server", stripped)
+		s.SessionsChanged(ctx, DeviceSessions{MachineID: "server", Sessions: []proto.Session{stripped}})
+
+		ref := SessionRef{MachineID: "server", SessionID: mainID}
+		s.mainAutoCompact.mu.Lock()
+		st := s.mainAutoCompact.bySession[ref]
+		gotBase, gotLast, gotPeak, gotChange := st.baselineRev, st.lastTokens, st.peakTokens, st.lastTokenChangeRev
+		s.mainAutoCompact.mu.Unlock()
+		if gotBase != 0 || gotLast != 220_000 || gotPeak != 220_000 || gotChange != 20 {
+			t.Fatalf("omitted snapshot clobbered state: baselineRev=%d lastTokens=%d peakTokens=%d lastTokenChangeRev=%d",
+				gotBase, gotLast, gotPeak, gotChange)
+		}
+
+		// Subsequent plausible reading crossing 75% (300k) triggers primary threshold.
+		row.Rev = 25
+		row.ContextTokens = 320_000
+		f.setSessions("server", row)
+		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
+		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
+		if compacts.Load() != 1 {
+			t.Fatalf("compacts = %d, want 1 after omitted snapshot followed by growth", compacts.Load())
+		}
+	})
+
+	t.Run("over-threshold omitted snapshot still triggers without compaction notice, and suppresses with explicit notice", func(t *testing.T) {
+		// Case A: no compaction notice in items -> triggers via retained lastTokens >= 300k.
+		mainID := "agy-92222222-2222-3333-4444-555555555555"
+		s, f, _, _ := newMainAutoCompactTestFixture(t, mainID)
+		var compacts atomic.Int32
+		f.answerNode(DeviceAssistantCompact, func(string, json.RawMessage) (any, error) {
+			compacts.Add(1)
+			return map[string]any{"ok": true}, nil
+		})
+		high := proto.Session{
+			SessionID: mainID, Assistant: true, Agent: "agy", Launcher: "agy",
+			Status: proto.StatusWorking, Rev: 40, ContextTokens: 320_000, ContextWindow: 1_048_576,
+		}
+		s.SessionsChanged(ctx, DeviceSessions{MachineID: "server", Sessions: []proto.Session{high}})
+		f.setItems(proto.Item{Seq: 41, Role: "assistant", Kind: proto.KindText, Text: "Done without usage"})
+		omitted := proto.Session{
+			SessionID: mainID, Assistant: true, Agent: "agy", Launcher: "agy",
+			Status: proto.StatusDone, Rev: 41, ContextTokens: 0, ContextWindow: 0,
+		}
+		f.setSessions("server", omitted)
+		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
+		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
+		if compacts.Load() != 1 {
+			t.Fatalf("omitted snapshot without compaction notice triggered %d times, want 1", compacts.Load())
+		}
+
+		// Case B: explicit compaction notice at seq 41 clears retained tokens and prevents duplicate trigger.
+		mainID2 := "agy-93333333-2222-3333-4444-555555555555"
+		s2, f2, _, _ := newMainAutoCompactTestFixture(t, mainID2)
+		var compacts2 atomic.Int32
+		f2.answerNode(DeviceAssistantCompact, func(string, json.RawMessage) (any, error) {
+			compacts2.Add(1)
+			return map[string]any{"ok": true}, nil
+		})
+		high2 := high
+		high2.SessionID = mainID2
+		s2.SessionsChanged(ctx, DeviceSessions{MachineID: "server", Sessions: []proto.Session{high2}})
+		f2.setItems(proto.Item{Seq: 41, Role: "system", Kind: proto.KindNotice, Text: transcript.CompactedNotice})
+		omitted2 := omitted
+		omitted2.SessionID = mainID2
+		f2.setSessions("server", omitted2)
+		s2.noteMainAutoCompactTurnEnded(ctx, "server", mainID2)
+		s2.mainAutoCompactTurnSettled(ctx, "server", mainID2)
+		if compacts2.Load() != 0 {
+			t.Fatalf("omitted snapshot with explicit compaction notice triggered %d times, want 0", compacts2.Load())
+		}
+	})
+
+	t.Run("repeated omitted snapshots never advance baselineRev to mask fallback step growth", func(t *testing.T) {
+		mainID := "agy-94444444-2222-3333-4444-555555555555"
+		s, f, _, _ := newMainAutoCompactTestFixture(t, mainID)
+		var compacts atomic.Int32
+		f.answerNode(DeviceAssistantCompact, func(string, json.RawMessage) (any, error) {
+			compacts.Add(1)
+			return map[string]any{"ok": true}, nil
+		})
+		row := proto.Session{
+			SessionID: mainID, Assistant: true, Agent: "agy", Launcher: "agy",
+			Status: proto.StatusDone, Rev: 20, ContextTokens: 180_000, ContextWindow: 1_048_576,
+		}
+		s.SessionsChanged(ctx, DeviceSessions{MachineID: "server", Sessions: []proto.Session{row}})
+		for _, rev := range []int64{50, 100, 150} {
+			stripped := row
+			stripped.Rev = rev
+			stripped.ContextTokens = 0
+			s.SessionsChanged(ctx, DeviceSessions{MachineID: "server", Sessions: []proto.Session{stripped}})
+		}
+		final := row
+		final.Rev = 170
+		final.ContextTokens = 0
+		f.setSessions("server", final)
+		f.setItems(proto.Item{Seq: 170, Role: "assistant", Kind: proto.KindText, Text: "Many steps without usage"})
+		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
+		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
+		if compacts.Load() != 1 {
+			t.Fatalf("repeated omitted snapshots masked fallback growth: compacts = %d, want 1", compacts.Load())
+		}
+	})
+}
+
+func TestMainAutoCompactCompactionNoticePreservesPostBoundaryOutput(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("reconstructs output baseline from post-boundary item usage and deduplicates usage IDs", func(t *testing.T) {
+		mainID := "agy-95555555-2222-3333-4444-555555555555"
+		s, f, _, _ := newMainAutoCompactTestFixture(t, mainID)
+		var compacts atomic.Int32
+		f.answerNode(DeviceAssistantCompact, func(string, json.RawMessage) (any, error) {
+			compacts.Add(1)
+			return map[string]any{"ok": true}, nil
+		})
+
+		// Session has cumulative 150k output; compaction notice at seq 60 is followed by 50k post-boundary output
+		// (30k repeated under the same usage ID + 20k inside a folded run).
+		f.setItems(
+			proto.Item{Seq: 50, Role: "assistant", Kind: proto.KindText, Text: "Old reply", Usage: []proto.TokenUsage{{Model: "gemini-2.5-pro", Output: 90_000}}},
+			proto.Item{Seq: 60, Role: "system", Kind: proto.KindNotice, Text: transcript.CompactedNotice},
+			proto.Item{Seq: 80, Role: "assistant", Kind: proto.KindText, Text: "Post 1", Usage: []proto.TokenUsage{{ID: "req-1", Model: "gemini-2.5-pro", Output: 30_000}}},
+			proto.Item{Seq: 81, Role: "assistant", Kind: proto.KindText, Text: "Post 1 dup", Usage: []proto.TokenUsage{{ID: "req-1", Model: "gemini-2.5-pro", Output: 30_000}}},
+			proto.Item{Seq: 120, Role: "assistant", Kind: proto.KindFold, Fold: &proto.Fold{
+				Items: 3, Usage: []proto.TokenUsage{{Model: "gemini-2.5-pro", Output: 20_000}},
+			}},
+		)
+		row := proto.Session{
+			SessionID: mainID, Assistant: true, Agent: "agy", Launcher: "agy",
+			Status: proto.StatusDone, Rev: 120, ContextTokens: 0, OutputTokens: 150_000,
+		}
+		f.setSessions("server", row)
+		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
+		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
+		if compacts.Load() != 0 {
+			t.Fatalf("compacted early at 50k post-boundary output: %d", compacts.Load())
+		}
+
+		// Baseline must be 150k - 50k = 100k, NOT 150k, so adding 35k more output (total 85k post-compaction) triggers.
+		ref := SessionRef{MachineID: "server", SessionID: mainID}
+		s.mainAutoCompact.mu.Lock()
+		gotBaseOut := s.mainAutoCompact.bySession[ref].baselineOutputTokens
+		s.mainAutoCompact.mu.Unlock()
+		if gotBaseOut != 100_000 {
+			t.Fatalf("baselineOutputTokens = %d, want 100000", gotBaseOut)
+		}
+
+		row.Rev = 130
+		row.OutputTokens = 185_000
+		f.setSessions("server", row)
+		f.setItems(
+			proto.Item{Seq: 60, Role: "system", Kind: proto.KindNotice, Text: transcript.CompactedNotice},
+			proto.Item{Seq: 80, Role: "assistant", Kind: proto.KindText, Text: "Post 1", Usage: []proto.TokenUsage{{ID: "req-1", Model: "gemini-2.5-pro", Output: 30_000}}},
+			proto.Item{Seq: 120, Role: "assistant", Kind: proto.KindFold, Fold: &proto.Fold{
+				Items: 3, Usage: []proto.TokenUsage{{Model: "gemini-2.5-pro", Output: 20_000}},
+			}},
+			proto.Item{Seq: 130, Role: "assistant", Kind: proto.KindText, Text: "Post 2", Usage: []proto.TokenUsage{{Model: "gemini-2.5-pro", Output: 35_000}}},
+		)
+		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
+		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
+		if compacts.Load() != 1 {
+			t.Fatalf("compacts = %d, want 1 once post-boundary output reached 85k", compacts.Load())
+		}
+	})
+
+	t.Run("triggers immediately when probed items after compaction notice already exceed 80k output", func(t *testing.T) {
+		mainID := "agy-96666666-2222-3333-4444-555555555555"
+		s, f, _, _ := newMainAutoCompactTestFixture(t, mainID)
+		var compacts atomic.Int32
+		f.answerNode(DeviceAssistantCompact, func(string, json.RawMessage) (any, error) {
+			compacts.Add(1)
+			return map[string]any{"ok": true}, nil
+		})
+		f.setItems(
+			proto.Item{Seq: 60, Role: "system", Kind: proto.KindNotice, Text: transcript.CompactedNotice},
+			proto.Item{Seq: 90, Role: "assistant", Kind: proto.KindText, Text: "Big post-compact reply 1", Usage: []proto.TokenUsage{{Model: "gemini-2.5-pro", Output: 45_000}}},
+			proto.Item{Seq: 120, Role: "assistant", Kind: proto.KindText, Text: "Big post-compact reply 2", Usage: []proto.TokenUsage{{Model: "gemini-2.5-pro", Output: 40_000}}},
+		)
+		f.setSessions("server", proto.Session{
+			SessionID: mainID, Assistant: true, Agent: "agy", Launcher: "agy",
+			Status: proto.StatusDone, Rev: 120, ContextTokens: 0, OutputTokens: 150_000,
+		})
+		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
+		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
+		if compacts.Load() != 1 {
+			t.Fatalf("compacts = %d, want 1 immediately on 85k post-boundary output", compacts.Load())
+		}
+	})
+
+	t.Run("without per-item usage, boundary discovery subtracts only output observed before the boundary", func(t *testing.T) {
+		mainID := "agy-97777777-2222-3333-4444-555555555555"
+		s, f, _, _ := newMainAutoCompactTestFixture(t, mainID)
+		var compacts atomic.Int32
+		f.answerNode(DeviceAssistantCompact, func(string, json.RawMessage) (any, error) {
+			compacts.Add(1)
+			return map[string]any{"ok": true}, nil
+		})
+
+		// Pre-compaction observations record output 20k at seq 10 and 30k at seq 25.
+		for _, snap := range []proto.Session{
+			{SessionID: mainID, Assistant: true, Agent: "agy", Launcher: "agy", Status: proto.StatusDone, Rev: 10, OutputTokens: 20_000},
+			{SessionID: mainID, Assistant: true, Agent: "agy", Launcher: "agy", Status: proto.StatusDone, Rev: 25, OutputTokens: 30_000},
+		} {
+			s.SessionsChanged(ctx, DeviceSessions{MachineID: "server", Sessions: []proto.Session{snap}})
+		}
+
+		// Compaction notice lands at seq 26; 85k more output accumulates by rev 60 without per-item usage fields.
+		f.setItems(
+			proto.Item{Seq: 26, Role: "system", Kind: proto.KindNotice, Text: transcript.CompactedNotice},
+			proto.Item{Seq: 40, Role: "assistant", Kind: proto.KindText, Text: "Reply A"},
+			proto.Item{Seq: 60, Role: "assistant", Kind: proto.KindText, Text: "Reply B"},
+		)
+		f.setSessions("server", proto.Session{
+			SessionID: mainID, Assistant: true, Agent: "agy", Launcher: "agy",
+			Status: proto.StatusDone, Rev: 60, ContextTokens: 0, OutputTokens: 115_000,
+		})
+		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
+		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
+		if compacts.Load() != 1 {
+			t.Fatalf("compacts = %d, want 1 (baseline should stop at pre-boundary 30k, leaving 85k post-boundary output)", compacts.Load())
+		}
+	})
+}
