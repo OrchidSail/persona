@@ -306,10 +306,11 @@ type relayState struct {
 	// Spoke: when the owner last sent each conversation a message, kept for ownerPresentFor (relay_presence.go).
 	Spoke map[string]time.Time `json:"spoke,omitempty"`
 	// Later: by receiver, what conversation_send with wake: false kept for it, to go in with its next delivered message
-	// (relay_later.go, #11614). A version that does not know it drops it on its next save: those acknowledgements are
-	// then not read.
+	// (relay_later.go, #11614, #12867). A version that does not know it drops it on its next save: those acknowledgements
+	// are then not read.
 	Later map[string][]relayMsg `json:"later,omitempty"`
-	// LaterSends freezes quiet-message context for retries under one assistant.send once_id (relay_later.go).
+	// LaterSends freezes quiet-message context for retries under one delivery ID: an assistant.send once_id or a scoped
+	// owner client_msg_id (relay_later.go).
 	LaterSends map[string]relayLaterSend `json:"later_sends,omitempty"`
 	// Handed: by direction's lead conversation, when a hand-over of the owner's quoted words last went into it
 	// (relay_lead_hold.go, #11699): until the owner next writes there (userSpoke), what it plans that writes waits for
@@ -350,6 +351,10 @@ type relayBook struct {
 	// before that are not counted. In memory like sent.
 	quoted     map[string]time.Time
 	roundsFrom map[string]time.Time
+	// ownerLater tracks in-flight hub owner sends (assistant.send_params -> session.assistant_sent) so unnamed sends
+	// (no client_msg_id) and older hubs settle their reserved quiet relays (relay_later.go, #12867).
+	ownerLater        map[string][]ownerLaterSend
+	ownerLaterNamedOn uint64
 }
 
 // ownerTurn is one conversation's owner-turn gate (#6394).
@@ -1288,7 +1293,11 @@ func (s *Service) assistantConversation(ctx context.Context, id string) (proto.S
 // spaceConversation is assistantConversation among the conversations of one space only (in == nil: any): a
 // conversation's tools reach only the conversations of its own space (docs/assistant/health.md "How directories and memory are isolated").
 func (s *Service) spaceConversation(ctx context.Context, id string, in *string) (proto.Session, error) {
-	list, err := s.sessions(ctx, s.settings(ctx).MachineID)
+	return s.spaceConversationOnMachine(ctx, s.settings(ctx).MachineID, id, in)
+}
+
+func (s *Service) spaceConversationOnMachine(ctx context.Context, machine, id string, in *string) (proto.Session, error) {
+	list, err := s.sessions(ctx, machine)
 	if errors.Is(err, ErrNoDevice) {
 		return proto.Session{}, errors.New("the assistant's machine is not configured")
 	}
@@ -1847,14 +1856,18 @@ func (s *Service) knownSpace(ctx context.Context, self string) (string, error) {
 // ownSpaceConversation finds conversation id among those of self's space: the conversations of different spaces (the
 // assistant's own included) don't read, rename, archive or message each other.
 func (s *Service) ownSpaceConversation(ctx context.Context, self, id string) (proto.Session, error) {
+	return s.ownSpaceConversationOnMachine(ctx, s.settings(ctx).MachineID, self, id)
+}
+
+func (s *Service) ownSpaceConversationOnMachine(ctx context.Context, machine, self, id string) (proto.Session, error) {
 	space, err := s.knownSpace(ctx, self)
 	if err != nil {
 		return proto.Session{}, err
 	}
-	if row, ok, err := s.deletedConversation(ctx, s.settings(ctx).MachineID, id); err != nil {
+	if row, ok, err := s.deletedConversation(ctx, machine, id); err != nil {
 		return proto.Session{}, err
 	} else if ok && row.Space == space {
 		return proto.Session{}, s.conversationAvailable(ctx, row.Machine, id)
 	}
-	return s.spaceConversation(ctx, id, &space)
+	return s.spaceConversationOnMachine(ctx, machine, id, &space)
 }
