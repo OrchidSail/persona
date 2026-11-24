@@ -156,16 +156,18 @@ class ComposerDensityTest {
             val openSend = rule.onNodeWithTag("send").getUnclippedBoundsInRoot()
             val addTouch = rule.onNodeWithTag("add").fetchSemanticsNode().touchBoundsInRoot
             val mentionTouch = rule.onNodeWithTag("mention").fetchSemanticsNode().touchBoundsInRoot
-            // Compact 32dp vertical layout box trims 16dp of dead vertical whitespace while keeping full 48x48dp touch targets.
-            assertEquals("$s expanded add layout height", JButtonSize.Small.height.value, openAdd.height.value, 0.5f)
+            // Balanced 36dp vertical layout box with 4dp top/bottom breathing room keeps icons clear of both the
+            // input surface and keyboard top while preserving full 48x48dp touch targets.
+            assertEquals("$s expanded add layout height", JChipTokens.height.value, openAdd.height.value, 0.5f)
             assertEquals("$s expanded add layout width", Tokens.MinTouch.android.value, openAdd.width.value, 0.5f)
             assertTrue("$s expanded add touch width (${addTouch.width}) >= $minTouchPx", addTouch.width >= minTouchPx - 0.5f)
             assertTrue("$s expanded add touch height (${addTouch.height}) >= $minTouchPx", addTouch.height >= minTouchPx - 0.5f)
             assertTrue("$s expanded mention touch width (${mentionTouch.width}) >= $minTouchPx", mentionTouch.width >= minTouchPx - 0.5f)
             assertTrue("$s expanded mention touch height (${mentionTouch.height}) >= $minTouchPx", mentionTouch.height >= minTouchPx - 0.5f)
-            assertTrue("$s expanded toolbar sits below input row without overlap", openAdd.top >= openSend.bottom - 0.5.dp)
-            // Compact expanded height: top(4) + 48dp input + 32dp toolbar + bottom(2) = 86dp (down from 102dp in #14032).
-            assertTrue("$s expanded frame height (${openFrame.height}) <= 90dp", openFrame.height <= 90.dp)
+            assertEquals("$s expanded toolbar top gap below input row", Tokens.Space.xs.value, (openAdd.top - openSend.bottom).value, 0.5f)
+            assertEquals("$s expanded toolbar bottom breathing room", Tokens.Space.xs.value, (openFrame.bottom - openAdd.bottom).value, 0.5f)
+            // Balanced expanded height: top(4) + 48dp input + gap(4) + 36dp toolbar + bottom(4) = 96dp (down from 102dp in #14032).
+            assertTrue("$s expanded frame height (${openFrame.height}) <= 98dp", openFrame.height <= 98.dp)
 
             rule.onNodeWithTag("add").performClick()
             rule.onNodeWithTag("mention").performClick()

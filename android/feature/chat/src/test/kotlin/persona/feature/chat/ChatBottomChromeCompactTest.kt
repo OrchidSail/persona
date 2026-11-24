@@ -83,7 +83,6 @@ import persona.core.contracts.api.ScheduledTask
 import persona.core.contracts.api.SessionsRepository
 import persona.core.contracts.api.TasksApi
 import persona.core.designsystem.AppStyle
-import persona.core.designsystem.JButtonSize
 import persona.core.designsystem.JChipTokens
 import persona.core.designsystem.PersonaTheme
 import persona.core.designsystem.Tokens
@@ -317,9 +316,10 @@ class ChatBottomChromeCompactTest {
                 assertEquals("$s dark=$isDark: launcher and mode chips align on bottom edge", launcherChip.bottom.value, modeChip.bottom.value, 0.5f)
                 assertTrue("$s dark=$isDark: mode chip sits beside launcher without overlap", modeChip.left >= launcherChip.right + Tokens.Space.s - 0.5.dp)
                 assertTrue("$s dark=$isDark: chip row sits tight above input field ($chipRowToFieldText)", chipRowToFieldText in 4.dp..20.dp)
-                // Expanded toolbar uses 32dp vertical layout box (4dp above 24dp icon) and 48dp width.
-                assertEquals("$s dark=$isDark: toolbar button height is compact 32dp", JButtonSize.Small.height.value, add.height.value, 0.5f)
+                // Expanded toolbar uses 36dp vertical layout box with 4dp top/bottom breathing room and 48dp width.
+                assertEquals("$s dark=$isDark: toolbar button height is balanced 36dp", JChipTokens.height.value, add.height.value, 0.5f)
                 assertEquals("$s dark=$isDark: toolbar button width stays 48dp", Tokens.MinTouch.android.value, add.width.value, 0.5f)
+                assertTrue("$s dark=$isDark: toolbar keeps >= 4dp bottom breathing room above keyboard", root.bottom - add.bottom >= Tokens.Space.xs - 0.5.dp)
             }
             val minQueueRow = if (s == AppStyle.Glass) JChipTokens.height else Tokens.Size.slimBar
             assertTrue("$s dark=$isDark: queue row height >= $minQueueRow", queueItem.height >= minQueueRow)
@@ -327,7 +327,7 @@ class ChatBottomChromeCompactTest {
 
             // Total bottom chrome height drops further once 48dp layout-box bloat is removed.
             val totalChrome = root.bottom - trayBar.top
-            val maxAllowed = if (s == AppStyle.Glass) 270.dp else 275.dp
+            val maxAllowed = if (s == AppStyle.Glass) 275.dp else 285.dp
             assertTrue("$s dark=$isDark: total bottom chrome ($totalChrome) <= $maxAllowed", totalChrome <= maxAllowed)
 
             // Transcript remains clearly visible above the bottom stack.
@@ -451,9 +451,10 @@ class ChatBottomChromeCompactTest {
                 val launcherToFieldText = field.top - launcher.bottom
                 assertTrue("$s no-queue: launcher-to-field gap ($launcherToFieldText) <= 20dp", launcherToFieldText in 4.dp..20.dp)
             } else {
-                // Glass has no accessory chip: tray capsule sits 6dp above the composer card, so tray-to-field-text is <= 24dp.
+                // Glass has no accessory chip: tray capsule sits 6dp above the composer card, keeping tray-to-field-text <= 26dp
+                // (down from ~33dp before removing the capsule's +9dp touch-box padding) while preserving 44dp field / 4dp fieldBottom.
                 val trayToFieldText = field.top - trayEntry.bottom
-                assertTrue("$s no-queue: tray-to-field gap ($trayToFieldText) in 6..24dp", trayToFieldText in 6.dp..24.dp)
+                assertTrue("$s no-queue: tray-to-field gap ($trayToFieldText) in 6..26dp", trayToFieldText in 6.dp..26.dp)
             }
             saveShot("no-queue-open-${s.name.lowercase()}-dark")
         }

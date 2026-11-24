@@ -520,11 +520,7 @@ fun ComposerFrame(
                 Modifier.shadow(HomeTokens.composerShadow, shape, clip = false, ambientColor = shadow, spotColor = shadow)
                     .clip(shape).background(fill).border(HomeTokens.composerStroke, stroke, shape)
             } else Modifier.floatingSurface(shape)
-            val fieldHeight = when {
-                useShellSurface || home -> Tokens.MinTouch.android
-                expanded -> JChipTokens.height
-                else -> Tokens.MinTouch.ios
-            }
+            val fieldHeight = if (home || useShellSurface) Tokens.MinTouch.android else Tokens.MinTouch.ios
             val accessoryPadding = if (home || useShellSurface) Tokens.Space.flush else Tokens.Space.xs
             val outerPadding = if (useShellSurface) {
                 Modifier.padding(horizontal = Tokens.Space.m, vertical = Tokens.Space.s)
@@ -539,14 +535,12 @@ fun ComposerFrame(
             val fieldTop = when {
                 useShellSurface && expanded -> Tokens.Space.s
                 useShellSurface -> Tokens.Space.xs
-                !home && expanded -> Tokens.Space.sm
                 else -> Tokens.Space.s
             }
             val fieldBottom = when {
                 useShellSurface && expanded -> Tokens.Space.flush
                 useShellSurface -> Tokens.Space.xs
-                !home && expanded -> Tokens.Space.flush
-                home && expanded -> Tokens.Space.xs
+                expanded -> Tokens.Space.xs
                 else -> Tokens.Space.s
             }
             Column(modifier.fillMaxWidth().then(outerPadding)
@@ -572,7 +566,7 @@ fun ComposerFrame(
                     start = Tokens.Space.m,
                     end = Tokens.Space.m,
                     top = Tokens.Space.xs,
-                    bottom = if (expanded && leading != null) Tokens.Space.xxs else Tokens.Space.sm,
+                    bottom = if (expanded && leading != null) Tokens.Space.xs else Tokens.Space.sm,
                 ),
         ) {
             accessory?.let { ComposerAccessorySlot(horizontal = Tokens.Space.xs, bottom = Tokens.Space.xs, content = it) }
@@ -587,8 +581,8 @@ fun ComposerFrame(
                     trailing?.let { Row { it() } }
                 }
             }
-            if (expanded && leading != null) CompositionLocalProvider(LocalCompactIconHeight provides JButtonSize.Small.height) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+            if (expanded && leading != null) CompositionLocalProvider(LocalCompactIconHeight provides JChipTokens.height) {
+                Row(Modifier.padding(top = Tokens.Space.xs), verticalAlignment = Alignment.CenterVertically) {
                     leading(this)
                     Spacer(Modifier.weight(1f))
                 }
@@ -603,7 +597,7 @@ fun ComposerFrame(
                     start = Tokens.Space.s,
                     end = Tokens.Space.s,
                     top = Tokens.Space.xs,
-                    bottom = if (expanded && leading != null) Tokens.Space.xxs else Tokens.Space.sm,
+                    bottom = if (expanded && leading != null) Tokens.Space.xs else Tokens.Space.sm,
                 ),
         ) {
             accessory?.let { ComposerAccessorySlot(bottom = Tokens.Space.xs, content = it) }
@@ -616,8 +610,8 @@ fun ComposerFrame(
                 )
                 trailing?.let { Spacer(Modifier.width(Tokens.Space.s)); it() }
             }
-            if (expanded && leading != null) CompositionLocalProvider(LocalCompactIconHeight provides JButtonSize.Small.height) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+            if (expanded && leading != null) CompositionLocalProvider(LocalCompactIconHeight provides JChipTokens.height) {
+                Row(Modifier.padding(top = Tokens.Space.xs), verticalAlignment = Alignment.CenterVertically) {
                     leading(this)
                     Spacer(Modifier.weight(1f))
                 }
