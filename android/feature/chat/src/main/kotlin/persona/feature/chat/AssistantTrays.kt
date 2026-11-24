@@ -2,10 +2,8 @@ package persona.feature.chat
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.relocation.BringIntoViewRequester
@@ -319,12 +317,15 @@ internal fun AssistantTrays(host: AssistantTaskHost, state: AssistantTrayState,
     // the tray closes once its last thing is handled; tapped while empty it still opens "All caught up"
     LaunchedEffect(needsCount) { if (needsCount == 0 && state.expanded == AssistantTray.NeedsYou) state.expanded = null }
     BackHandler(state.expanded != null) { state.expanded = null }
-    // The entry pills already sit inside a 48dp touch box, so only an expanded tray card adds top breathing room.
+    // Glass entry pills sit inside a 48dp touch box, so only an expanded tray card adds top breathing room there;
+    // Brief and Board use compact 28dp visual entries and keep modest vertical cushion above and below the bar.
+    val compactTray = PersonaTheme.style != AppStyle.Glass
     Column(
         Modifier.padding(
             start = Tokens.Space.m,
             end = Tokens.Space.m,
-            top = if (state.expanded != null) Tokens.Space.xs else Tokens.Space.flush,
+            top = if (state.expanded != null || compactTray) Tokens.Space.xs else Tokens.Space.flush,
+            bottom = if (compactTray) Tokens.Space.sm else Tokens.Space.flush,
         ),
         verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
     ) {
@@ -524,9 +525,8 @@ internal fun AssistantTrays(host: AssistantTaskHost, state: AssistantTrayState,
                 }
             }
         }
-        // Content-width chips at the leading edge, like the old All / task chips; a large font scrolls rather than wraps.
-        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).testTag("assistant-tray-bar"),
-            horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s), verticalAlignment = Alignment.CenterVertically) {
+        // Content-width entries at the leading edge; overflowing trays or large fonts scroll with soft edge fades.
+        AssistantTrayBar(Modifier.testTag("assistant-tray-bar")) {
             // Finished is there while it has rows, or its tray is open (an emptied tray stays reachable till it closes)
             for (tray in AssistantTray.entries.filter {
                 (it != AssistantTray.HeldPushes || showHeldEntry) &&

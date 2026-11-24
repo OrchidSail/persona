@@ -53,7 +53,10 @@ import persona.core.contracts.FeedResponse
 import persona.core.contracts.Interaction
 import persona.core.contracts.Item
 import persona.core.contracts.JsonCodec
+import persona.core.contracts.LnModeResponse
 import persona.core.contracts.Machine
+import persona.core.contracts.PushIntercept
+import persona.core.contracts.PushInterceptsResponse
 import persona.core.contracts.QueueEdit
 import persona.core.contracts.Resolution
 import persona.core.contracts.ServerEvent
@@ -81,9 +84,13 @@ import persona.core.contracts.api.ScheduledTask
 import persona.core.contracts.api.SessionsRepository
 import persona.core.contracts.api.TasksApi
 import persona.core.designsystem.AppStyle
+import persona.core.designsystem.HomeChrome
 import persona.core.designsystem.JChipTokens
+import persona.core.designsystem.LocalHomeChrome
+import persona.core.designsystem.NavItem
 import persona.core.designsystem.PersonaTheme
 import persona.core.designsystem.Tokens
+import persona.core.designsystem.icons.PhIcons
 import persona.core.domain.tasks.TasksStore
 import java.io.File
 import java.time.Instant
@@ -342,6 +349,166 @@ class ChatBottomChromeCompactTest {
             assertTrue("$s IME: bottom toolbar stays inside viewport", add.bottom <= root.bottom)
             rule.onNodeWithContentDescription("Add attachments and quick messages").assertIsDisplayed()
             saveShot("stacked-ime-${s.name.lowercase()}-dark")
+        }
+    }
+
+    @Test
+    fun composerTopHierarchyCoversFoldedExpandedTraysAndOverflowFade() {
+        runComposerTopScenario(
+            prefix = "top-en",
+            styles = AppStyle.entries,
+            appearances = listOf(false, true),
+            captureExpandedTray = true,
+            includeHeldPushes = true,
+        )
+    }
+
+    @Test
+    @Config(sdk = [35], qualifiers = "zh-rCN-w400dp-h760dp-xhdpi")
+    fun composerTopHierarchyChineseMatchesPhoneScenario() {
+        runComposerTopScenario(
+            prefix = "top-zh",
+            styles = AppStyle.entries,
+            appearances = listOf(false, true),
+            captureExpandedTray = false,
+            includeHeldPushes = true,
+        )
+    }
+
+    @Test
+    @Config(sdk = [35], qualifiers = "ja-w400dp-h760dp-xhdpi")
+    fun composerTopHierarchyJapaneseStaysCompactAndReadable() {
+        runComposerTopScenario(
+            prefix = "top-ja",
+            styles = AppStyle.entries,
+            appearances = listOf(true),
+            captureExpandedTray = false,
+            includeHeldPushes = false,
+        )
+    }
+
+    private fun runComposerTopScenario(
+        prefix: String,
+        styles: List<AppStyle>,
+        appearances: List<Boolean>,
+        captureExpandedTray: Boolean,
+        includeHeldPushes: Boolean,
+    ) {
+        val idlePersonaSession = JsonCodec.decodeFromString<Session>(
+            """{"machine_id":"computer-a","session_id":"main","title":"Persona","assistant":true,"agent":"claude",
+                "launcher":"agy","permission_mode":"bypassPermissions","effort":"medium","status":"idle","state":"idle"}""",
+        )
+        val scenarioTodos = listOf(
+            Todo("t-run-1", running.title, origin = "main", createdAt = nowIso, updatedAt = nowIso,
+                agents = listOf(TodoAgent(running.machineId, running.sessionId, cwd = running.cwd))),
+            Todo("t-done-1", "Summarize notes", origin = "main", createdAt = nowIso, updatedAt = nowIso, doneAt = nowIso),
+        )
+        val heldRow = PushIntercept(
+            at = nowIso,
+            level = "P1",
+            reason = "ln_p1_held",
+            title = "Build finished on workstation",
+        )
+        val scenarioApi = object : TasksApi by api {
+            override suspend fun todos() = scenarioTodos
+            override suspend fun lnMode() = LnModeResponse(includeHeldPushes)
+            override suspend fun pushIntercepts() = PushInterceptsResponse(if (includeHeldPushes) listOf(heldRow) else emptyList())
+        }
+        val scenarioSessions = object : SessionsRepository {
+            override val sessions = MutableStateFlow(listOf(idlePersonaSession, running))
+            override val machines = MutableStateFlow(listOf(Machine("computer-a", "Computer A", online = true)))
+            override suspend fun refresh() = Unit
+        }
+        val tasks = TasksStore(scenarioApi, connection, scope).also {
+            it.reloadTodos()
+        }
+        var style by mutableStateOf(styles.first())
+        var dark by mutableStateOf(appearances.first())
+        var focused by mutableStateOf(false)
+        val homeChrome = HomeChrome(
+            items = listOf(NavItem("assistant", "Assistant", PhIcons.ChatCircle), NavItem("agents", "Agents", PhIcons.Robot)),
+            selected = "assistant",
+            onSelect = {},
+            leading = {},
+        )
+        rule.mainClock.autoAdvance = false
+        rule.setContent {
+            val configuration = Configuration(LocalConfiguration.current).apply {
+                uiMode = (uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or
+                    if (dark) Configuration.UI_MODE_NIGHT_YES else Configuration.UI_MODE_NIGHT_NO
+            }
+            CompositionLocalProvider(
+                LocalConfiguration provides configuration,
+                LocalHomeChrome provides homeChrome,
+            ) {
+                PersonaTheme(darkTheme = dark, reduceMotion = true, style = style) {
+                    Box(
+                        Modifier.width(400.dp).height(760.dp)
+                            .background(PersonaTheme.palette.background)
+                            .testTag("bottom-chrome-shot"),
+                    ) {
+                        key(style, dark, focused) {
+                            val composer = ChatComposerState().apply {
+                                this.focused = focused
+                                value = TextFieldValue("")
+                            }
+                            ChatScreen(
+                                main, chats, sender, interactions, scenarioSessions, {},
+                                chrome = ChatChromeBindings(
+                                    actions = actions,
+                                    connection = connection,
+                                    tasks = tasks,
+                                    assistantManagement = management,
+                                    onOpenSession = {},
+                                ),
+                                renderStyle = ChatRenderStyle.Assistant,
+                                embedded = true,
+                                showTopBar = false,
+                                composerState = composer,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        settle()
+        rule.waitUntil(10_000) { rule.onAllNodesWithTag("assistant-tray-bar").fetchSemanticsNodes().isNotEmpty() }
+
+        for (s in styles) for (isDark in appearances) {
+            val suffix = "${s.name.lowercase()}-${if (isDark) "dark" else "light"}"
+            // 1. Folded composer (config bar collapsed) with empty Needs you, active In progress, Finished (+ optional Held pushes).
+            style = s; dark = isDark; focused = false
+            settle()
+            val foldedBar = rule.onNodeWithTag("assistant-tray-bar").getUnclippedBoundsInRoot()
+            val foldedField = rule.onNode(hasSetTextAction()).getUnclippedBoundsInRoot()
+            val foldedReply = rule.onNodeWithText("Reviewing the latest commit and test results now.").getUnclippedBoundsInRoot()
+            assertTrue("$prefix folded $suffix: transcript above tray bar", foldedReply.bottom <= foldedBar.top)
+            assertTrue("$prefix folded $suffix: tray bar above input field", foldedBar.bottom <= foldedField.top)
+            saveShot("$prefix-folded-$suffix")
+
+            // 2. Expanded composer (focused: config metadata strip + quick toolbar shown).
+            focused = true
+            settle()
+            rule.onNode(hasSetTextAction()).performClick()
+            settle()
+            val openBar = rule.onNodeWithTag("assistant-tray-bar").getUnclippedBoundsInRoot()
+            val openField = rule.onNode(hasSetTextAction()).getUnclippedBoundsInRoot()
+            val root = rule.onNodeWithTag("bottom-chrome-shot").getUnclippedBoundsInRoot()
+            assertTrue("$prefix expanded $suffix: tray bar above input field", openBar.bottom <= openField.top)
+            val totalNoQueue = root.bottom - openBar.top
+            val maxNoQueue = if (s == AppStyle.Glass) 200.dp else 205.dp
+            assertTrue("$prefix expanded $suffix: chrome without queue ($totalNoQueue) <= $maxNoQueue", totalNoQueue <= maxNoQueue)
+            saveShot("$prefix-expanded-$suffix")
+
+            // 3. Expanded tray panel to verify active highlight contrast across all 3 styles.
+            if (captureExpandedTray && isDark) {
+                rule.onNodeWithTag("assistant-entry-running").performClick()
+                settle()
+                rule.onNodeWithTag("assistant-tray-running").assertIsDisplayed()
+                saveShot("$prefix-tray-open-$suffix")
+                rule.onNodeWithTag("assistant-entry-running").performClick()
+                settle()
+            }
         }
     }
 }

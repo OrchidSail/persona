@@ -591,13 +591,15 @@ fun ChatComposer(
                 PasteImageChip(onPaste = ::pasteImages, onDismiss = clipboardImages::dismiss)
             ComposerAttachmentPreviews(state, service, sending, enabled, onEdit = ::editPhoto)
             if (fullToolbar && (hintChips != null || modeHint != null)) {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
-                    verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
-                    itemVerticalAlignment = Alignment.CenterVertically,
-                ) {
+                ComposerMetaStrip {
                     hintChips?.invoke(this)
-                    modeHint?.let { JChip(it, icon = PhIcons.SlidersHorizontal) }
+                    modeHint?.let {
+                        ComposerMetaChip(
+                            text = it,
+                            icon = PhIcons.SlidersHorizontal,
+                            onClick = onPermissions?.takeIf { enabled },
+                        )
+                    }
                 }
             }
             if (fullToolbar) accessory?.invoke(this)
