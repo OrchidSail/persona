@@ -155,14 +155,6 @@ func (s *Service) invalidateLauncherListCache(machine string) {
 	}
 }
 
-// NodeConnected invalidates machine-scoped caches when a node connects or reconnects.
-func (s *Service) NodeConnected(machine string) {
-	if machine == "" {
-		return
-	}
-	s.invalidateLauncherListCache(machine)
-}
-
 func (s *Service) deviceConnectedAt(machine string) time.Time {
 	if s.devs == nil {
 		return time.Time{}

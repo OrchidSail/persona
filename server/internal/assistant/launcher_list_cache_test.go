@@ -431,6 +431,10 @@ func (d *stubConnectedAtDevices) Summary(string) (devices.Summary, bool) {
 	return devices.Summary{}, false
 }
 
+func (d *stubConnectedAtDevices) MachineResources(string) (*proto.Machine, *proto.MetricSample, *bool) {
+	return nil, nil, nil
+}
+
 func TestLauncherListCacheInvalidatesOnChangeAndReconnect(t *testing.T) {
 	t.Run("launchers.changed invalidates only affected machine", func(t *testing.T) {
 		f := newFakeHub().withMachine()
@@ -507,7 +511,7 @@ func TestLauncherListCacheInvalidatesOnChangeAndReconnect(t *testing.T) {
 		s.models.launcherLists.onFlightEnter = nil
 		s.models.launcherLists.mu.Unlock()
 		// Node state changes and reconnect/invalidation arrives while the first RPC is in flight.
-		s.NodeConnected("server")
+		s.NodeConnected(context.Background(), "server")
 		f.mu.Lock()
 		f.zshrc["server"] = []proto.Launcher{{Name: "fresh", Source: "zshrc"}}
 		f.launcherGate = nil
@@ -561,7 +565,7 @@ func TestLauncherListCacheInvalidatesOnChangeAndReconnect(t *testing.T) {
 		f.mu.Lock()
 		f.zshrc["m1"] = []proto.Launcher{{Name: "v3", Source: "zshrc"}}
 		f.mu.Unlock()
-		s.NodeConnected("m1")
+		s.NodeConnected(ctx, "m1")
 		if got, err := s.machineLaunchers(ctx, "m1"); err != nil || !slices.ContainsFunc(got, func(l proto.Launcher) bool { return l.Name == "v3" }) {
 			t.Fatalf("after NodeConnected: %v, %v", got, err)
 		}
