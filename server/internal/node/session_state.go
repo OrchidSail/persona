@@ -69,13 +69,16 @@ type sessionState struct {
 	// IsMain (the hub's copy keeps neither, so until the node restarts) for a start that carries no execution: a manual
 	// compaction with no process running (assistant_compact.go).
 	MainCompactWindow int `json:"main_compact_window,omitempty"`
-	// AppMode / AppEffort: the permission mode and effort set on an assistant conversation (modes.go). AppMode
+	// AppMode / AppEffort: the permission mode and effort on an assistant conversation (modes.go). AppMode
 	// also retains a terminal Codex start constraint and an agy start's permission mode for later resumes and restarts.
-	// They win over what its transcript recorded and outlive the node: an old "default" there no longer locks it in.
+	// AppModeExplicit distinguishes a deliberate per-conversation mode from a legacy/default value; on Claude Code only
+	// an explicit one outranks the manager's current default, while other agents always retain their legacy AppMode
+	// precedence.
 	// PlanThen: the mode this session, started in plan mode, goes on in once its plan is approved (planthen.go).
-	PlanThen  string `json:"plan_then,omitempty"`
-	AppMode   string `json:"app_mode,omitempty"`
-	AppEffort string `json:"app_effort,omitempty"`
+	PlanThen        string `json:"plan_then,omitempty"`
+	AppMode         string `json:"app_mode,omitempty"`
+	AppModeExplicit bool   `json:"app_mode_explicit,omitempty"`
+	AppEffort       string `json:"app_effort,omitempty"`
 	// DesktopPendingModel / DesktopPendingEffort: requested initial Codex App settings still awaiting the owning
 	// window's readback. They survive partial creation/restarts and must be confirmed before its first message.
 	DesktopPendingModel  string `json:"desktop_pending_model,omitempty"`
