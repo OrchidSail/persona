@@ -411,6 +411,15 @@ class MainChatWidgetTest {
             MainChatText.sanitize("Task queued (sess_1234abcd; ready)"),
         )
 
+        // Long summaries up to 400 characters stay intact for multi-line cards, while longer inputs clip cleanly.
+        val mediumSummary = "Sentence ready for review. ".repeat(12).trim()
+        assertTrue(mediumSummary.length in 300..399)
+        assertEquals(mediumSummary, MainChatText.sanitize(mediumSummary))
+        val overLimit = "Long update line. ".repeat(30).trim()
+        val clippedSummary = MainChatText.sanitize(overLimit)
+        assertTrue(clippedSummary.endsWith("…"))
+        assertTrue(clippedSummary.length <= 401)
+
         // Pending title falls back to localized section 5.6 copy if raw input is purely an internal ID/path.
         val enRes = localizedContext("en").resources
         val scrubOnly = Interaction(
@@ -432,7 +441,12 @@ class MainChatWidgetTest {
             250f to 140f, // Compact 4x2
             290f to 150f, // Default 4x2
             320f to 170f, // Tall 4x2
+            290f to 180f, // Tall 4x2 (high-density launcher lower bound)
+            290f to 190f, // Tall 4x2 (modern flagship launcher)
+            320f to 195f, // Tall 4x2 (wide flagship launcher)
+            320f to 205f, // Tall 4x2 (just below 4x3 threshold)
             280f to 240f, // Standard 4x3
+            290f to 250f, // Standard tall 4x3
             320f to 270f, // Spacious 4x3
         )
         val scales = listOf(1.0f, 1.35f, 1.5f, 2.0f)
@@ -465,12 +479,12 @@ class MainChatWidgetTest {
 
     @Test
     fun adaptiveLayoutExpectationsFor2x2And4x2And4x3() {
-        // 2x2 omits bottom quick action bar & header time, shows concise summary.
+        // 2x2 omits bottom quick action bar & header time and uses remaining height for summary lines.
         val small = MainChatWidgetLayout.compute(140f, 140f, fontScale = 1f, paired = true, hasPending = false, hasStatusBadge = true, availableTodos = 2)
         assertFalse(small.showActionBar)
         assertFalse(small.showHeaderTime)
         assertEquals(0, small.todoRows)
-        assertEquals(2, small.summaryMaxLines)
+        assertTrue("2x2 should fill vertical space (>= 3 lines), got ${small.summaryMaxLines}", small.summaryMaxLines >= 3)
 
         // 2x2 at 2.0x font scale still fits cleanly without clipping.
         val small2x = MainChatWidgetLayout.compute(110f, 100f, fontScale = 2.0f, paired = true, hasPending = true, hasStatusBadge = true, availableTodos = 2)
@@ -478,7 +492,7 @@ class MainChatWidgetTest {
         assertTrue(small2x.showPendingBanner)
         assertTrue(small2x.estimatedHeightDp <= 100f)
 
-        // 4x2 default shows 2 summary lines, quick action bar, and header timestamp.
+        // 4x2 compact/default shows 2 summary lines, quick action bar, and header timestamp.
         val medium = MainChatWidgetLayout.compute(290f, 150f, fontScale = 1f, paired = true, hasPending = false, hasStatusBadge = true, availableTodos = 2)
         assertTrue(medium.showActionBar)
         assertFalse(medium.expandedActionBar)
@@ -486,23 +500,40 @@ class MainChatWidgetTest {
         assertEquals(2, medium.summaryMaxLines)
         assertEquals(0, medium.todoRows)
 
+        // Tall 4x2 cards (190-205dp) dynamically expand summary to >= 4 lines instead of capping at 2.
+        for ((w, h) in listOf(290f to 190f, 320f to 195f, 320f to 205f)) {
+            val tallMedium = MainChatWidgetLayout.compute(w, h, fontScale = 1f, paired = true, hasPending = false, hasStatusBadge = true, availableTodos = 2)
+            assertTrue(tallMedium.showActionBar)
+            assertEquals(0, tallMedium.todoRows)
+            assertTrue("Tall 4x2 ${w}x$h should fit >= 4 summary lines, got ${tallMedium.summaryMaxLines}", tallMedium.summaryMaxLines >= 4)
+            assertTrue(tallMedium.estimatedHeightDp <= h + 0.01f)
+        }
+
         // 4x2 at 2.0x drops action bar automatically to keep header + content unclipped.
         val medium2x = MainChatWidgetLayout.compute(290f, 150f, fontScale = 2.0f, paired = true, hasPending = false, hasStatusBadge = true, availableTodos = 2)
         assertFalse(medium2x.showActionBar)
         assertTrue(medium2x.summaryMaxLines >= 1)
         assertTrue(medium2x.estimatedHeightDp <= 150f)
 
-        // 4x3 without todos gives summary 3 full lines + quick action bar.
+        // 4x3 without todos allocates all remaining vertical space to summary (>= 5 lines) + quick action bar.
         val largeNoTodos = MainChatWidgetLayout.compute(290f, 250f, fontScale = 1f, paired = true, hasPending = false, hasStatusBadge = false, availableTodos = 0)
         assertTrue(largeNoTodos.showActionBar)
-        assertEquals(3, largeNoTodos.summaryMaxLines)
+        assertTrue("4x3 without todos should fit >= 5 summary lines, got ${largeNoTodos.summaryMaxLines}", largeNoTodos.summaryMaxLines >= 5)
         assertEquals(0, largeNoTodos.todoRows)
 
-        // 4x3 with urgent open todos includes up to 2 todo rows alongside summary + quick action bar.
+        // 4x3 with urgent open todos keeps 2 todo rows and gives leftover height to summary (>= 3 lines).
         val largeWithTodos = MainChatWidgetLayout.compute(290f, 250f, fontScale = 1f, paired = true, hasPending = false, hasStatusBadge = false, availableTodos = 2)
         assertTrue(largeWithTodos.showActionBar)
-        assertTrue(largeWithTodos.summaryMaxLines >= 2)
+        assertTrue("4x3 with 2 todos should fit >= 3 summary lines, got ${largeWithTodos.summaryMaxLines}", largeWithTodos.summaryMaxLines >= 3)
         assertEquals(2, largeWithTodos.todoRows)
+
+        // 4x3 with both pending banner and open todos preserves >= 2 summary lines alongside urgent todos.
+        val largePendingTodos = MainChatWidgetLayout.compute(280f, 240f, fontScale = 1f, paired = true, hasPending = true, hasStatusBadge = true, availableTodos = 2)
+        assertTrue(largePendingTodos.showPendingBanner)
+        assertTrue(largePendingTodos.showActionBar)
+        assertTrue(largePendingTodos.summaryMaxLines >= 2)
+        assertTrue(largePendingTodos.todoRows >= 1)
+        assertTrue(largePendingTodos.estimatedHeightDp <= 240f)
 
         // 4x3 at 2.0x expands action bar height and trims todos to prevent clipping.
         val large2x = MainChatWidgetLayout.compute(290f, 250f, fontScale = 2.0f, paired = true, hasPending = true, hasStatusBadge = true, availableTodos = 2)
@@ -533,84 +564,99 @@ class MainChatWidgetTest {
             return view.measuredHeight / density
         }
 
-        val sampleSizes = listOf(110f to 100f, 140f to 140f, 290f to 150f, 290f to 250f)
+        val sampleSizes = listOf(
+            110f to 100f,
+            140f to 140f,
+            290f to 150f,
+            290f to 190f,
+            320f to 195f,
+            320f to 205f,
+            280f to 240f,
+            290f to 250f,
+            320f to 270f,
+        )
+        val longSummarySample =
+            "Your trip itinerary is ready for Friday morning with confirmed flights, hotel check-in details, " +
+                "rail passes, airport transfers, dining reservations, and daily schedule reminders prepared across every stop."
         for (style in AppStyle.entries) {
             val type = SystemSurfaces.type(style)
             for ((w, h) in sampleSizes) {
                 for (paired in listOf(false, true)) {
                     for (hasPending in listOf(false, true)) {
-                        val plan = MainChatWidgetLayout.compute(
-                            widthDp = w,
-                            heightDp = h,
-                            fontScale = 2.0f,
-                            paired = paired,
-                            hasPending = paired && hasPending,
-                            hasStatusBadge = paired,
-                            availableTodos = if (paired) 2 else 0,
-                        )
-                        val pad = when {
-                            plan.tightPadding -> 4f
-                            plan.compactPadding -> 8f
-                            else -> 12f
-                        }
-                        val sectionGap = when {
-                            plan.tightPadding -> 2f
-                            plan.compactPadding -> 4f
-                            else -> 6f
-                        }
-                        val innerWidth = (w - pad * 2f).coerceAtLeast(1f)
-                        val faceDp = if (plan.compactHeader) 24f else 28f
-                        val titleSp = if (plan.compactHeader) type.caption.fontSize.value else type.callout.fontSize.value
-                        val headerTextDp = measureTextDp(titleSp, 1, "Persona", innerWidth)
-                        var totalDp = pad * 2f + maxOf(faceDp, headerTextDp)
+                        for (todos in if (paired) listOf(0, 2) else listOf(0)) {
+                            val plan = MainChatWidgetLayout.compute(
+                                widthDp = w,
+                                heightDp = h,
+                                fontScale = 2.0f,
+                                paired = paired,
+                                hasPending = paired && hasPending,
+                                hasStatusBadge = paired,
+                                availableTodos = todos,
+                            )
+                            val pad = when {
+                                plan.tightPadding -> 4f
+                                plan.compactPadding -> 8f
+                                else -> 12f
+                            }
+                            val sectionGap = when {
+                                plan.tightPadding -> 2f
+                                plan.compactPadding -> 4f
+                                else -> 6f
+                            }
+                            val innerWidth = (w - pad * 2f).coerceAtLeast(1f)
+                            val faceDp = if (plan.compactHeader) 24f else 28f
+                            val titleSp = if (plan.compactHeader) type.caption.fontSize.value else type.callout.fontSize.value
+                            val headerTextDp = measureTextDp(titleSp, 1, "Persona", innerWidth)
+                            var totalDp = pad * 2f + maxOf(faceDp, headerTextDp)
 
-                        if (!paired) {
-                            if (plan.showUnpairedHeadline) {
-                                totalDp += sectionGap
-                                totalDp += measureTextDp(titleSp, 1, "Not paired", innerWidth)
+                            if (!paired) {
+                                if (plan.showUnpairedHeadline) {
+                                    totalDp += sectionGap
+                                    totalDp += measureTextDp(titleSp, 1, "Not paired", innerWidth)
+                                    if (plan.summaryMaxLines > 0) {
+                                        totalDp += 2f
+                                        totalDp += measureTextDp(
+                                            type.caption.fontSize.value,
+                                            plan.summaryMaxLines,
+                                            "Open Persona to connect your hub right away on this device",
+                                            innerWidth,
+                                        )
+                                    }
+                                }
+                            } else {
+                                if (plan.showPendingBanner) {
+                                    val vPad = if (plan.compactPendingBanner) 4f else 12f
+                                    val pendingDp = measureTextDp(type.caption.fontSize.value, 1, "Plan awaiting approval", innerWidth)
+                                    totalDp += sectionGap + vPad + pendingDp
+                                }
                                 if (plan.summaryMaxLines > 0) {
-                                    totalDp += 2f
+                                    totalDp += sectionGap
                                     totalDp += measureTextDp(
                                         type.caption.fontSize.value,
                                         plan.summaryMaxLines,
-                                        "Open Persona to connect your hub right away on this device",
+                                        longSummarySample,
                                         innerWidth,
                                     )
                                 }
-                            }
-                        } else {
-                            if (plan.showPendingBanner) {
-                                val vPad = if (plan.compactPendingBanner) 4f else 12f
-                                val pendingDp = measureTextDp(type.caption.fontSize.value, 1, "Plan awaiting approval", innerWidth)
-                                totalDp += sectionGap + vPad + pendingDp
-                            }
-                            if (plan.summaryMaxLines > 0) {
-                                totalDp += sectionGap
-                                totalDp += measureTextDp(
-                                    type.caption.fontSize.value,
-                                    plan.summaryMaxLines,
-                                    "Your trip itinerary is ready for Friday morning with confirmed flights, hotel check-in details, and rail passes.",
-                                    innerWidth,
-                                )
-                            }
-                            if (plan.todoRows > 0) {
-                                totalDp += 6f
-                                repeat(plan.todoRows) {
-                                    totalDp += 4f + measureTextDp(type.micro.fontSize.value, 1, "Book Kyoto train tickets", innerWidth)
+                                if (plan.todoRows > 0) {
+                                    totalDp += 6f
+                                    repeat(plan.todoRows) {
+                                        totalDp += 4f + measureTextDp(type.micro.fontSize.value, 1, "Book Kyoto train tickets", innerWidth)
+                                    }
+                                }
+                                if (plan.showActionBar) {
+                                    val barMin = if (plan.expandedActionBar) 48f else 40f
+                                    val askDp = measureTextDp(type.caption.fontSize.value, 1, "Ask Persona…", innerWidth) + 16f
+                                    totalDp += 8f + maxOf(barMin, askDp)
                                 }
                             }
-                            if (plan.showActionBar) {
-                                val barMin = if (plan.expandedActionBar) 48f else 40f
-                                val askDp = measureTextDp(type.caption.fontSize.value, 1, "Ask Persona…", innerWidth) + 16f
-                                totalDp += 8f + maxOf(barMin, askDp)
-                            }
-                        }
 
-                        assertTrue(
-                            "Real TextView overflow for $style ${w}x$h @ 2.0x (paired=$paired pending=$hasPending): " +
-                                "measured=$totalDp > height=$h ($plan)",
-                            totalDp <= h + 0.5f,
-                        )
+                            assertTrue(
+                                "Real TextView overflow for $style ${w}x$h @ 2.0x (paired=$paired pending=$hasPending todos=$todos): " +
+                                    "measured=$totalDp > height=$h ($plan)",
+                                totalDp <= h + 0.5f,
+                            )
+                        }
                     }
                 }
             }

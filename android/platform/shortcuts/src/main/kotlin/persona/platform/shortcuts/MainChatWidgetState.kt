@@ -228,7 +228,7 @@ object MainChatWidgetState {
         DirectionTaskState.Planned -> 4
     }
 
-    private const val SUMMARY_MAX_CHARS = 220
+    private const val SUMMARY_MAX_CHARS = 400
     private const val TODO_MAX_CHARS = 80
 }
 
@@ -273,7 +273,7 @@ object MainChatText {
     private val openParenLeadingPunct = Regex("([(\uFF08])(?:\\s*[,;\uFF0C\uFF1B\u3001])+\\s*")
     private val repeatedMiddleDot = Regex("(?:\\s*·\\s*){2,}")
 
-    fun sanitize(raw: String?, maxChars: Int = 220): String {
+    fun sanitize(raw: String?, maxChars: Int = 400): String {
         if (raw.isNullOrBlank()) return ""
         var text: String = raw
 

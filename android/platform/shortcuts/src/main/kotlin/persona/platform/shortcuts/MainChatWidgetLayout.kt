@@ -28,8 +28,12 @@ internal data class MainChatLayoutPlan(
 internal object MainChatWidgetLayout {
     /** Width threshold separating narrow 2×2 cards from wide 4×2 / 4×3 cards. */
     private const val WIDE_MIN_DP = 200f
-    /** Height threshold where large 4×3 density (3 summary lines + open to-dos) becomes eligible. */
+    /** Height threshold where large 4×3 density (open to-dos alongside multi-line summary) becomes eligible. */
     private const val LARGE_MIN_HEIGHT_DP = 210f
+    /** Hard upper bound on summary lines even on unusually tall launcher cells. */
+    private const val MAX_SUMMARY_LINES = 8
+    /** Minimum summary lines preserved on large 4×3 cards before reserving vertical room for urgent to-dos. */
+    private const val MIN_SUMMARY_LINES_WITH_TODOS = 2
     /** Font scale above which the quick action bar expands past 40dp to prevent text clipping. */
     private const val EXPANDED_ACTION_SCALE = 1.25f
 
@@ -43,7 +47,8 @@ internal object MainChatWidgetLayout {
     private const val HEADER_TEXT_STANDARD_DP = 22.5f
     private const val HEADER_TEXT_COMPACT_DP = 21f
 
-    private const val SUMMARY_LINE_DP = 21f
+    // 13sp caption TextView measures ~17.5dp/line (Roboto) to ~19dp/line (CJK/One UI) at 1.0x.
+    private const val SUMMARY_LINE_DP = 19.5f
     private const val SUMMARY_GAP_DP = 6f
     private const val SUMMARY_GAP_COMPACT_DP = 4f
     private const val SUMMARY_GAP_TIGHT_DP = 2f
@@ -160,49 +165,32 @@ internal object MainChatWidgetLayout {
             used += actionBarHeight
         }
 
-        // Priority 2: Main chat dynamic summary (up to 2 lines on 2x2 / 4x2, up to 3 lines on 4x3).
-        val desiredSummaryLines = when {
-            isLarge -> 3
-            else -> 2
-        }
+        // Priority 2 & 3: Fill remaining vertical budget dynamically with summary lines (up to MAX_SUMMARY_LINES).
+        // On large 4x3 cards with open to-dos, reserve room for 1-2 urgent to-dos while preserving at least
+        // MIN_SUMMARY_LINES_WITH_TODOS summary lines, then grant all leftover height to the summary.
         val todoRowHeight = TODO_TEXT_DP * scale + TODO_VPAD_DP
         val cappedTodos = if (isLarge) availableTodos.coerceIn(0, MainChatWidgetState.MAX_TODOS) else 0
-
-        // On 4x3 with open to-dos, allow summary up to 2 lines if reserving room lets 1-2 urgent to-dos appear too,
-        // otherwise give the summary up to 3 full lines.
         val remainingBeforeSummary = (innerHeight - used).coerceAtLeast(0f)
-        val maxFittingSummaryLines = if (remainingBeforeSummary >= summaryGap + summaryLineHeight) {
-            floor((remainingBeforeSummary - summaryGap) / summaryLineHeight).toInt().coerceIn(0, desiredSummaryLines)
+
+        val todoRows = if (cappedTodos > 0) {
+            val minSummaryBudget = summaryGap + MIN_SUMMARY_LINES_WITH_TODOS * summaryLineHeight
+            val budgetForTodos = (remainingBeforeSummary - minSummaryBudget).coerceAtLeast(0f)
+            fittingTodos(budgetForTodos, todoRowHeight, cappedTodos)
         } else {
             0
         }
-
-        var summaryLines = maxFittingSummaryLines
-        var todoRows = 0
-
-        if (cappedTodos > 0 && remainingBeforeSummary > 0f) {
-            // Try fitting up to 2 to-dos with full summary lines first; if needed on 4x3, allow 2 summary lines + to-dos.
-            val summaryHeightFull = if (summaryLines > 0) summaryGap + summaryLines * summaryLineHeight else 0f
-            val leftAfterFull = remainingBeforeSummary - summaryHeightFull
-            val fullTodoCount = fittingTodos(leftAfterFull, todoRowHeight, cappedTodos)
-            if (fullTodoCount > 0) {
-                todoRows = fullTodoCount
-            } else if (summaryLines >= 3) {
-                val summaryHeightTwo = summaryGap + 2 * summaryLineHeight
-                val leftAfterTwo = remainingBeforeSummary - summaryHeightTwo
-                val twoTodoCount = fittingTodos(leftAfterTwo, todoRowHeight, cappedTodos)
-                if (twoTodoCount > 0) {
-                    summaryLines = 2
-                    todoRows = twoTodoCount
-                }
-            }
-        }
+        val todoHeight = if (todoRows > 0) TODO_SECTION_GAP_DP + todoRows * todoRowHeight else 0f
+        val summaryLines = fittingSummaryLines(
+            remainingDp = (remainingBeforeSummary - todoHeight).coerceAtLeast(0f),
+            gapDp = summaryGap,
+            lineHeightDp = summaryLineHeight,
+        )
 
         if (summaryLines > 0) {
             used += summaryGap + summaryLines * summaryLineHeight
         }
         if (todoRows > 0) {
-            used += TODO_SECTION_GAP_DP + todoRows * todoRowHeight
+            used += todoHeight
         }
 
         val showTodoStateLabel = isWide && innerWidth >= (210f + 30f * (scale - 1f).coerceAtLeast(0f))
@@ -270,6 +258,11 @@ internal object MainChatWidgetLayout {
             expandedActionBar = false,
             estimatedHeightDp = pad * 2f + used,
         )
+    }
+
+    private fun fittingSummaryLines(remainingDp: Float, gapDp: Float, lineHeightDp: Float): Int {
+        if (remainingDp < gapDp + lineHeightDp) return 0
+        return floor((remainingDp - gapDp) / lineHeightDp).toInt().coerceIn(0, MAX_SUMMARY_LINES)
     }
 
     private fun fittingTodos(remainingDp: Float, rowHeightDp: Float, maxTodos: Int): Int {
