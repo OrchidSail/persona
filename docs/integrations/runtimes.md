@@ -218,7 +218,9 @@ The list carries only recent sessions (`rt.recent`). A caller reading an older p
   if two runtimes' launchers clash, only the one that connected first provides it.
   A local `agy` launcher supplies the model catalog and starts in a pane when the selected host is herdr (#10237),
   including when herdr is the default and the node detects the local CLI. The connected companion serves Assistant
-  and terminal-less Agent requests (the node RPC can target `host: "agy"`). A shell alias, function or helper definition
+  and terminal-less Agent requests (the node RPC can target `host: "agy"`); the assistant's `task_plan` and `agent_start`
+  target it for an agy launcher it runs when they name no host, and a start targeting it while it is not connected is
+  refused with `agy_companion_offline` (#13447). A shell alias, function or helper definition
   named `agy` still has precedence over automatic companion selection (#9181).
 
 ## Minimal example
@@ -623,7 +625,10 @@ The CLI companion runs the **Antigravity CLI (`agy`)**. When `personad node`
 runs (`--attach` or `--stdio`), `agy` is installed, Node.js 22.5+ (`node:sqlite`) is available, and no external `agy`
 runtime is connected on `runtime.sock`, the node automatically writes out the embedded `persona-antigravity-runtime`
 package and supervises `antigravity/companion.mjs` (passing `--no-update --parent-stdin`), yielding whenever an external
-`agy` runtime connects (`server/internal/node/agybridge.go`). You can also start
+`agy` runtime connects (`server/internal/node/agybridge.go`). The node resolves `agy` when it starts the companion and
+looks again every 30 seconds while it runs (#14533): when the path or the file there changed (replaced by an update,
+installed elsewhere, removed) and two looks in a row agree, it restarts the companion on the `agy` found now, waiting
+while one of its sessions is working or a call to it is pending (the old file keeps running until then). You can also start
 `node integrations/antigravity/companion.mjs` manually from the repository root, or install into the runtime package store
 with `node integrations/antigravity/install.mjs` and supervise
 `node ~/.persona/runtime-packages/persona-antigravity-runtime/current/antigravity/companion.mjs` under launchd / systemd.
@@ -667,9 +672,13 @@ mode and adds one reloadable notice through the existing localized runtime-notic
 authoritative over later settings-file changes. A mode taken from agy's settings is read again on each session projection
 and applied again before the next prompt, so changing `agentMode` needs no companion restart. External session models stay
 unspecified until native metadata is available. Session discovery does not resume them.
+An Antigravity CLI from before `session/set_mode` answers it with -32601 (#14533): a request for `default` is then a no-op
+(the session is already in the CLI's own default), and any other mode fails with "This Antigravity CLI (agy) is too old to
+switch to the … mode … Please update agy.", which launcher health classes as `cli_outdated`.
 
 Availability checks use optional `check({launcher, cwd, prompt})` (`caps.check`) through the companion's authenticated
-ACP client. They run the existing one-word probe, cancel tool permission requests, and close their temporary session
+ACP client. They switch the probe session to `default` only when `session/new` lists that mode (or lists none), and a CLI
+without `session/set_mode` skips the switch. They run the existing one-word probe, cancel tool permission requests, and close their temporary session
 on success, failure or timeout. Completed probe workspaces stay out of the user inventory after companion restarts.
 The runtime bounds native calls to a 75-second budget, followed by bounded session cleanup. Older runtimes keep the
 node's shell check. Shell and managed launchers keep their own execution context.
