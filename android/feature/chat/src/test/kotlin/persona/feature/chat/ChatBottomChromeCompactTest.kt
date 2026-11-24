@@ -306,17 +306,15 @@ class ChatBottomChromeCompactTest {
                 val launcherTouch = rule.onNodeWithText("Default: agy").fetchSemanticsNode().touchBoundsInRoot
                 val modeChip = rule.onNodeWithTag("chat-composer-mode-hint").getUnclippedBoundsInRoot()
                 val queueToLauncher = launcherChip.top - queueItem.bottom
-                val launcherCenterY = (launcherChip.top.value + launcherChip.bottom.value) / 2f
-                val modeCenterY = (modeChip.top.value + modeChip.bottom.value) / 2f
-                val chipRowBottom = maxOf(launcherChip.bottom, modeChip.bottom)
-                val chipRowToFieldText = field.top - chipRowBottom
+                val chipRowToFieldText = field.top - launcherChip.bottom
                 assertEquals("$s dark=$isDark: launcher chip keeps 36dp visual height", JChipTokens.height.value, launcherChip.height.value, 0.5f)
-                assertEquals("$s dark=$isDark: mode hint chip keeps 28dp visual height", JChipTokens.quietHeight.value, modeChip.height.value, 0.5f)
+                assertEquals("$s dark=$isDark: mode hint chip matches launcher 36dp visual height", launcherChip.height.value, modeChip.height.value, 0.5f)
                 assertTrue("$s dark=$isDark: launcher chip keeps 48dp touch height", launcherTouch.height >= minTouchPx - 0.5f)
                 // Queue row bottom includes 2dp card bottom + 2dp strip bottom + 4dp composer top = 8dp (down from 14-16dp).
                 assertTrue("$s dark=$isDark: queue-to-launcher gap ($queueToLauncher) in 4..9dp", queueToLauncher in 4.dp..9.dp)
-                // Launcher and mode chips share one vertically centered row with horizontal spacing (#13661) and no 48dp box bloat.
-                assertEquals("$s dark=$isDark: launcher and mode chips stay centered on one row", launcherCenterY, modeCenterY, 1.5f)
+                // Launcher and mode chips share one flush row with matching top/bottom visual bounds (#13661) and no 48dp box bloat.
+                assertEquals("$s dark=$isDark: launcher and mode chips align on top edge", launcherChip.top.value, modeChip.top.value, 0.5f)
+                assertEquals("$s dark=$isDark: launcher and mode chips align on bottom edge", launcherChip.bottom.value, modeChip.bottom.value, 0.5f)
                 assertTrue("$s dark=$isDark: mode chip sits beside launcher without overlap", modeChip.left >= launcherChip.right + Tokens.Space.s - 0.5.dp)
                 assertTrue("$s dark=$isDark: chip row sits tight above input field ($chipRowToFieldText)", chipRowToFieldText in 4.dp..20.dp)
                 // Expanded toolbar uses 32dp vertical layout box (4dp above 24dp icon) and 48dp width.

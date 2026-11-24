@@ -539,7 +539,14 @@ fun ChatComposer(
                         itemVerticalAlignment = Alignment.CenterVertically,
                     ) {
                         hintChips?.invoke(this)
-                        modeHint?.let { JChip(it, Modifier.testTag("chat-composer-mode-hint"), icon = PhIcons.SlidersHorizontal) }
+                        modeHint?.let {
+                            // Match clickable chip height so side-by-side hint pills align visually without growing row height.
+                            JChip(
+                                it,
+                                Modifier.heightIn(min = JChipTokens.height).testTag("chat-composer-mode-hint"),
+                                icon = PhIcons.SlidersHorizontal,
+                            )
+                        }
                     }
                 }
                 if (fullToolbar && accessory != null) {
