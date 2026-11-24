@@ -119,7 +119,7 @@ func TestRegistrySnapshotKeepsProcessState(t *testing.T) {
 // push.grading, assistant.start_defaults, decisions.raise, dispatch.guard and market.refresh_own); the install screen still lists each.
 func TestEveryScopeLeavesOutThePermissionMode(t *testing.T) {
 	every := EveryScope()
-	excluded := []string{ScopeAgentsPermissionMode, ScopePushGrading, ScopeAssistantStartDefaults, ScopeDecisionsRaise, ScopeDispatchGuard, ScopeMachinesPair, ScopeBrowserRun, ScopeMarketRefreshOwn, ScopeSpaces}
+	excluded := []string{ScopeAgentsPermissionMode, ScopePushGrading, ScopeAssistantStartDefaults, ScopeDecisionsRaise, ScopeDispatchGuard, ScopeMachinesPair, ScopeBrowserRun, ScopePhoneControl, ScopeMarketRefreshOwn, ScopeSpaces}
 	for _, named := range excluded {
 		if slices.Contains(every, named) || !slices.Contains(HubScopes, named) || InEveryScope(named) {
 			t.Fatalf("every scope has %s: %v", named, every)
@@ -141,6 +141,7 @@ func TestFullHubGrantLeavesOutThePermissionMode(t *testing.T) {
 		"legacy":  {HubAPI: true},
 		"named":   {Hub: []string{ScopeAgentsPermissionMode}},
 		"grading": {Hub: []string{ScopePushGrading}},
+		"phone":   {Hub: []string{ScopePhoneControl}},
 		"refresh": {Hub: []string{ScopeMarketRefreshOwn}},
 	} {
 		m := &Manifest{ID: id, Version: "1.0.0", Permissions: grant,
@@ -155,6 +156,9 @@ func TestFullHubGrantLeavesOutThePermissionMode(t *testing.T) {
 	if r.HubScopeAllowed("legacy", ScopeAgentsPermissionMode) || !r.HubScopeAllowed("legacy", ScopeAgentsControl) ||
 		!r.HubScopeAllowed("named", ScopeAgentsPermissionMode) {
 		t.Fatal("the full-hub grant and the permission mode")
+	}
+	if r.HubScopeAllowed("legacy", ScopePhoneControl) || !r.HubScopeAllowed("phone", ScopePhoneControl) {
+		t.Fatal("the full-hub grant and phone control")
 	}
 	if r.HubScopeAllowed("legacy", ScopeMarketRefreshOwn) || !r.HubScopeAllowed("refresh", ScopeMarketRefreshOwn) {
 		t.Fatal("the full-hub grant and own-market refresh")

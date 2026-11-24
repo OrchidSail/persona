@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "phone_control.schema.json",
+  "title": "Remote Android phone control bridge",
+  "description": "Discovering paired Android phones with remote screen control enabled and dispatching targeted atomic calls over their authenticated /api/v1/ws connection: phone.control.devices, phone.control.call and phone.control.cancel require phone.control in permissions.hub (named grant only). Params are strict: an unknown field is invalid_params. Plugin-side: only the hub and the program speak it.",
+  "x-side": "plugin",
+  "x-methods": {
+    "phone.control.devices": {"from": "program", "params": "PhoneControlDevicesParams", "result": "PhoneControlDevicesResult"},
+    "phone.control.call": {"from": "program", "params": "PhoneControlCallParams", "result": "PhoneControlCallResult"},
+    "phone.control.cancel": {"from": "program", "params": "PhoneControlCancelParams", "result": "PhoneControlCancelResult"}
+  },
+  "$defs": {
+    "PhoneControlDevicesParams": {
+      "description": "phone.control.devices (phone.control): list online paired phones that enabled remote screen control.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "include_not_ready": {"type": "boolean", "description": "When true, include enabled online devices whose accessibility permission or screen lock prevents immediate execution."}
+      }
+    },
+    "PhoneControlPermissions": {
+      "description": "Live Android permission status reported by the phone control shell.",
+      "type": "object",
+      "properties": {
+        "accessibility": {"type": "boolean"},
+        "notification_listener": {"type": "boolean"},
+        "overlay": {"type": "boolean"},
+        "screen_capture": {"type": "boolean"},
+        "battery_optimization_ignored": {"type": "boolean"}
+      },
+      "required": ["accessibility", "notification_listener", "overlay", "screen_capture", "battery_optimization_ignored"]
+    },
+    "PhoneControlSafetyPolicy": {
+      "description": "Read-only mirror of the phone-local safety gate switches; only the phone can change them.",
+      "type": "object",
+      "properties": {
+        "allow_notification_otp_auto_login": {"type": "boolean"},
+        "block_real_payment": {"type": "boolean"},
+        "allow_normal_actions_directly": {"type": "boolean"},
+        "require_phone_for_biometric_or_captcha": {"type": "boolean"}
+      },
+      "required": ["allow_notification_otp_auto_login", "block_real_payment", "allow_normal_actions_directly", "require_phone_for_biometric_or_captcha"]
+    },
+    "PhoneControlRuntimeState": {
+      "description": "Live runtime state reported by the phone control shell.",
+      "type": "object",
+      "properties": {
+        "interactive": {"type": "boolean"},
+        "keyguard_showing": {"type": "boolean"},
+        "device_locked": {"type": "boolean"},
+        "overlay_active": {"type": "boolean"},
+        "virtual_display_active": {"type": "boolean"},
+        "resident_connection": {"type": "boolean"}
+      },
+      "required": ["interactive", "keyguard_showing", "device_locked", "overlay_active", "virtual_display_active", "resident_connection"]
+    },
+    "PhoneControlDevice": {
+      "description": "One online paired Android device advertising remote phone control capability.",
+      "type": "object",
+      "properties": {
+        "device_id": {"type": "string"},
+        "credential_id": {"type": "string"},
+        "name": {"type": "string"},
+        "manufacturer": {"type": "string"},
+        "model": {"type": "string"},
+        "platform": {"type": "string"},
+        "android_release": {"type": "string"},
+        "android_sdk": {"type": "integer"},
+        "app_version": {"type": "string"},
+        "online": {"type": "boolean"},
+        "enabled": {"type": "boolean"},
+        "ready": {"type": "boolean"},
+        "primary": {"type": "boolean"},
+        "protocol_version": {"type": "integer"},
+        "capabilities": {"type": "array", "items": {"type": "string"}},
+        "permissions": {"$ref": "#/$defs/PhoneControlPermissions"},
+        "safety_policy": {"$ref": "#/$defs/PhoneControlSafetyPolicy"},
+        "runtime": {"$ref": "#/$defs/PhoneControlRuntimeState"},
+        "connected_since": {"type": "string", "format": "date-time"},
+        "last_seen": {"type": "string", "format": "date-time"}
+      },
+      "required": ["device_id", "name", "platform", "online", "enabled", "ready", "primary", "protocol_version", "capabilities", "permissions", "safety_policy", "runtime"]
+    },
+    "PhoneControlDevicesResult": {
+      "type": "object",
+      "properties": {
+        "devices": {"type": "array", "items": {"$ref": "#/$defs/PhoneControlDevice"}}
+      },
+      "required": ["devices"]
+    },
+    "PhoneControlCallParams": {
+      "description": "phone.control.call (phone.control): dispatch one atomic operation to a specific paired phone without cross-device fallback.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "device_id": {"type": "string", "minLength": 1, "description": "Exact target phone device_id; never falls back to another device."},
+        "op": {"type": "string", "enum": ["device_state", "observe", "action", "session", "otp_consume"], "description": "Atomic phone control operation name."},
+        "call_id": {"type": "string", "maxLength": 128, "description": "Optional caller-supplied correlation id; generated by the hub when omitted."},
+        "idempotency_key": {"type": "string", "maxLength": 256, "description": "Optional idempotency key for deduplicating action or otp_consume retries on the phone."},
+        "timeout_ms": {"type": "integer", "minimum": 0, "maximum": 60000, "description": "Optional hub wait timeout in milliseconds; defaults by operation when zero."},
+        "args": {"description": "Operation arguments object."}
+      },
+      "required": ["device_id", "op"]
+    },
+    "PhoneControlError": {
+      "description": "Structured phone-side or transport error returned in PhoneControlCallResult.",
+      "type": "object",
+      "properties": {
+        "code": {"type": "string"},
+        "message": {"type": "string"}
+      },
+      "required": ["code", "message"]
+    },
+    "PhoneControlCallResult": {
+      "type": "object",
+      "properties": {
+        "call_id": {"type": "string"},
+        "device_id": {"type": "string"},
+        "ok": {"type": "boolean"},
+        "result": {"description": "Operation result payload when ok is true."},
+        "error": {"$ref": "#/$defs/PhoneControlError"}
+      },
+      "required": ["call_id", "device_id", "ok"]
+    },
+    "PhoneControlCancelParams": {
+      "description": "phone.control.cancel (phone.control): cancel an in-flight call on a specific paired phone.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "device_id": {"type": "string", "minLength": 1},
+        "call_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "reason": {"type": "string", "maxLength": 128}
+      },
+      "required": ["device_id", "call_id"]
+    },
+    "PhoneControlCancelResult": {
+      "type": "object",
+      "properties": {
+        "cancelled": {"type": "boolean"}
+      },
+      "required": ["cancelled"]
+    }
+  }
+}

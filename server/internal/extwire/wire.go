@@ -286,6 +286,15 @@ const (
 	// HubMachinesStatus: {extension, request} → wire.MachinesStatusResult: returns the current connection and
 	// confirmation status of a computer.
 	HubMachinesStatus = "machines.status"
+	// HubPhoneControlDevices: {extension, request} → wire.PhoneControlDevicesResult: lists online paired phones that
+	// enabled remote screen control over /api/v1/ws.
+	HubPhoneControlDevices = "phone.control.devices"
+	// HubPhoneControlCall: {extension, request} → wire.PhoneControlCallResult: dispatches one targeted atomic call
+	// to an exact device_id over /api/v1/ws without cross-device fallback.
+	HubPhoneControlCall = "phone.control.call"
+	// HubPhoneControlCancel: {extension, request} → wire.PhoneControlCancelResult: cancels an in-flight call on a
+	// specific paired phone.
+	HubPhoneControlCancel = "phone.control.cancel"
 )
 
 // MethodAccept: {id} → {}: the hub holds a request for the manager (a relayed route): it dials the relay with the id.

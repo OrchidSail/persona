@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="phonetools_overlay_bg">#EE111827</color>
+    <color name="phonetools_overlay_stroke">#5A94A3B8</color>
+    <color name="phonetools_overlay_text">#FFFFFFFF</color>
+    <color name="phonetools_overlay_text_secondary">#FFCBD5E1</color>
+    <color name="phonetools_overlay_dot_running">#FF22C55E</color>
+    <color name="phonetools_overlay_dot_warning">#FFF59E0B</color>
+    <color name="phonetools_overlay_dot_done">#FF38BDF8</color>
+    <color name="phonetools_overlay_dot_error">#FFEF4444</color>
+    <color name="phonetools_overlay_dot_idle">#FF94A3B8</color>
+    <color name="phonetools_overlay_btn_neutral">#FF334155</color>
+    <color name="phonetools_overlay_btn_primary">#FF1D4ED8</color>
+    <color name="phonetools_overlay_btn_stop">#FFDC2626</color>
+</resources>

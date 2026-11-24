@@ -23,6 +23,10 @@ const (
 	// extension-isolated task space (browser.run) via a pluggable BrowserBackend (e.g. ego lite, future CDP). Granted
 	// by name only (#12866).
 	ScopeBrowserRun = "browser.run"
+	// ScopePhoneControl lets an extension list paired Android phones that enabled remote screen control
+	// (phone.control.devices) and dispatch/cancel targeted atomic calls (phone.control.call / phone.control.cancel).
+	// Granted by name only; never covered by legacy all-scope tokens.
+	ScopePhoneControl = "phone.control"
 	ScopeNotify     = "notify"
 	// ScopePushGrading lets an extension manage its own push grading layer and preview grading decisions.
 	// It is granted by name only and does not include reading held pushes or changing the owner's base settings.

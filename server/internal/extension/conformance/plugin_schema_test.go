@@ -187,6 +187,15 @@ var goTypes = map[string]any{
 	"BrowserRunParams":      wire.BrowserRunParams{},
 	"BrowserRunResult":      wire.BrowserRunResult{},
 
+	// The hub decodes and answers phone control bridge calls using the generated wire types
+	// (hub/phone_control.go, extmgr/extension_phone_control.go).
+	"PhoneControlDevicesParams": wire.PhoneControlDevicesParams{},
+	"PhoneControlDevicesResult": wire.PhoneControlDevicesResult{},
+	"PhoneControlCallParams":    wire.PhoneControlCallParams{},
+	"PhoneControlCallResult":    wire.PhoneControlCallResult{},
+	"PhoneControlCancelParams":  wire.PhoneControlCancelParams{},
+	"PhoneControlCancelResult":  wire.PhoneControlCancelResult{},
+
 	// Storage params are the actual manager-engine decoder types. Dynamic result
 	// objects are validated against these wire DTOs before committing/acknowledging.
 	"StorageEmptyParams":       struct{}{},

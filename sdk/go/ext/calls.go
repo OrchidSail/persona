@@ -253,6 +253,21 @@ func (h *Hub) BrowserRun(ctx context.Context, p wire.BrowserRunParams) (wire.Bro
 	return callHub[wire.BrowserRunResult](ctx, h, "browser.run", p)
 }
 
+// PhoneControlDevices lists online paired Android phones with remote screen control enabled (permission phone.control).
+func (h *Hub) PhoneControlDevices(ctx context.Context, p wire.PhoneControlDevicesParams) (wire.PhoneControlDevicesResult, error) {
+	return callHub[wire.PhoneControlDevicesResult](ctx, h, "phone.control.devices", p)
+}
+
+// PhoneControlCall dispatches one atomic phone control operation to an exact device_id (permission phone.control).
+func (h *Hub) PhoneControlCall(ctx context.Context, p wire.PhoneControlCallParams) (wire.PhoneControlCallResult, error) {
+	return callHub[wire.PhoneControlCallResult](ctx, h, "phone.control.call", p)
+}
+
+// PhoneControlCancel cancels an in-flight phone control call on a specific device_id (permission phone.control).
+func (h *Hub) PhoneControlCancel(ctx context.Context, p wire.PhoneControlCancelParams) (wire.PhoneControlCancelResult, error) {
+	return callHub[wire.PhoneControlCancelResult](ctx, h, "phone.control.cancel", p)
+}
+
 func callHub[R any](ctx context.Context, h *Hub, method string, params any) (R, error) {
 	var r R
 	err := h.Call(ctx, method, params, &r)

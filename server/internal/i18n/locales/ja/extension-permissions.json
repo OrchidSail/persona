@@ -72,6 +72,7 @@
   "scope_machines_read": "コンピューターの接続状態と負荷を表示",
   "scope_machines_pair": "新しいコンピューターのペアリングリンクを作成（確認後に有効）",
   "scope_browser_run": "ペアリング済みコンピューターのブラウザー隔離空間でスクリプトを実行",
+  "scope_phone_control": "スマートフォン側で有効な場合、ペアリング済み Android 端末を遠隔で確認・操作",
   "scope_notify": "デバイスに通知を送信",
   "scope_push_grading": "自身の通知グレーディングレイヤーを管理し、判定をプレビュー",
   "scope_assistant_ask": "Persona の会話を開始して会話の動きを読み取り",

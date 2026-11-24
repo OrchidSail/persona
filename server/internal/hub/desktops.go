@@ -325,6 +325,8 @@ func (h *Hub) dropClient(c *client) {
 	h.mu.Lock()
 	delete(h.clients, c)
 	delete(h.wsConnections, c)
+	c.phoneControl = nil
+	h.failClientPhoneControlCallsLocked(c, "device_disconnected", "target phone disconnected mid-call")
 	desktop := c.desktop
 	if desktop {
 		h.announceDesktopsLocked(false)

@@ -72,6 +72,7 @@
   "scope_machines_read": "看你的各台电脑（在不在线、负载）",
   "scope_machines_pair": "配对新电脑（仍需你确认后生效）",
   "scope_browser_run": "在已配对电脑的浏览器隔离空间里执行脚本",
+  "scope_phone_control": "在手机端开启远程操控后，远程查看并操作已配对的安卓手机",
   "scope_notify": "给你的设备发通知",
   "scope_push_grading": "管理自己的推送分级配置层，并预演分级结果",
   "scope_assistant_ask": "给 Persona 开对话、读对话动态",

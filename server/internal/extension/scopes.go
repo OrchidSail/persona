@@ -24,6 +24,7 @@ const (
 	ScopeMachinesRead            = extwire.ScopeMachinesRead
 	ScopeMachinesPair            = extwire.ScopeMachinesPair
 	ScopeBrowserRun              = extwire.ScopeBrowserRun
+	ScopePhoneControl            = extwire.ScopePhoneControl
 	ScopeNotify                  = extwire.ScopeNotify
 	ScopePushGrading             = extwire.ScopePushGrading
 	ScopeTodosRead               = extwire.ScopeTodosRead
@@ -44,7 +45,7 @@ const (
 
 // HubScopes are the scopes, in the order the install screen lists them.
 var HubScopes = []string{ScopeKBRead, ScopeKBWrite, ScopeSentRead, ScopeInboxRead, ScopeInboxWrite, ScopeAgentsRead, ScopeAgentsControl,
-	ScopeAgentsPermissionMode, ScopeMachinesRead, ScopeMachinesPair, ScopeBrowserRun, ScopeNotify, ScopePushGrading, ScopeAssistantAsk, ScopeSpaces, ScopeAssistantRead, ScopeAssistantMemoryRead, ScopeAssistantEntriesRead,
+	ScopeAgentsPermissionMode, ScopeMachinesRead, ScopeMachinesPair, ScopeBrowserRun, ScopePhoneControl, ScopeNotify, ScopePushGrading, ScopeAssistantAsk, ScopeSpaces, ScopeAssistantRead, ScopeAssistantMemoryRead, ScopeAssistantEntriesRead,
 	ScopeTodosRead, ScopeTodosWrite, ScopeDecisionsRaise, ScopeLeadersRead, ScopeLeadersWrite, ScopeAssistantDispatchPolicy, ScopeAssistantStartDefaults, ScopeDispatchGuard, ScopeModels,
 	ScopeTranscription, ScopeMarketRefreshOwn}
 
@@ -54,10 +55,11 @@ var HubScopes = []string{ScopeKBRead, ScopeKBWrite, ScopeSentRead, ScopeInboxRea
 // assistant.start_defaults (which can raise what task Agents spend), decisions.raise (which can
 // interrupt the owner with a new decision), dispatch.guard (which changes which conversations may hand work out),
 // machines.pair (which can issue one-time pairing links for new pending computers),
-// browser.run (which runs scripts in a paired computer's browser), and
+// browser.run (which runs scripts in a paired computer's browser),
+// phone.control (which remotely observes and controls paired Android phones), and
 // market.refresh_own (which spends the source marketplace's API quota).
 func InEveryScope(s string) bool {
-	return s != ScopeAgentsPermissionMode && s != ScopePushGrading && s != ScopeAssistantStartDefaults && s != ScopeDecisionsRaise && s != ScopeDispatchGuard && s != ScopeMachinesPair && s != ScopeBrowserRun && s != ScopeMarketRefreshOwn && s != ScopeSpaces
+	return s != ScopeAgentsPermissionMode && s != ScopePushGrading && s != ScopeAssistantStartDefaults && s != ScopeDecisionsRaise && s != ScopeDispatchGuard && s != ScopeMachinesPair && s != ScopeBrowserRun && s != ScopePhoneControl && s != ScopeMarketRefreshOwn && s != ScopeSpaces
 }
 
 // EveryScope is the scopes of a token of every scope (InEveryScope), in HubScopes' order.
@@ -77,6 +79,7 @@ var scopeTitles = map[string]string{
 	ScopeMachinesRead:            "scope_machines_read",
 	ScopeMachinesPair:            "scope_machines_pair",
 	ScopeBrowserRun:              "scope_browser_run",
+	ScopePhoneControl:            "scope_phone_control",
 	ScopeNotify:                  "scope_notify",
 	ScopePushGrading:             "scope_push_grading",
 	ScopeAssistantAsk:            "scope_assistant_ask",

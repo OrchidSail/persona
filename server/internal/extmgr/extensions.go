@@ -1186,6 +1186,8 @@ func (ps *extensions) specOf(ctx context.Context, p *extension.Extension, hp *hu
 			return ps.extensionMachinesCall(ctx, id, method, params)
 		case "browser.machines", "browser.run": // browser.run (extension_browser.go)
 			return ps.extensionBrowserCall(ctx, id, method, params)
+		case "phone.control.devices", "phone.control.call", "phone.control.cancel": // phone.control (extension_phone_control.go)
+			return ps.extensionPhoneControlCall(ctx, id, method, params)
 		case "model.complete": // assistantwire.MethodModelComplete (extension_model_calls.go)
 			return ps.extensionModelCall(ctx, id, params)
 		case assistantwire.MethodTranscriptionStart, assistantwire.MethodTranscriptionAudio, assistantwire.MethodTranscriptionFinish,

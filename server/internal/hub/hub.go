@@ -142,9 +142,11 @@ type Hub struct {
 	// client subscribing in the middle of it gets it after the backlog instead of waiting for the next token.
 	deltas     map[[2]string]string
 	ttft       hubTTFTTracker
-	phoneTools map[string]db.PhoneToolRegistration
-	calls      map[string]chan proto.ToolResult
-	wokeAt     map[string]time.Time // device -> last silent push to wake it for a tool call
+	phoneTools        map[string]db.PhoneToolRegistration
+	calls             map[string]chan proto.ToolResult
+	phoneControlCalls map[string]*phoneControlPending
+	phoneControlSeen  map[string]bool
+	wokeAt            map[string]time.Time // device -> last silent push to wake it for a tool call
 	live       *liveActivities      // the lock screen / Dynamic Island activity (liveactivity.go)
 	// primaryPhone: the device the owner chose to take phone calls first (phone_primary.go); the zero value is
 	// Automatic. Under mu; primaryPhoneMu keeps one choice written at a time.

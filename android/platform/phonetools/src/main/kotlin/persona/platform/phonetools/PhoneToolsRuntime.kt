@@ -3,6 +3,7 @@ package persona.platform.phonetools
 import android.content.Context
 import persona.core.contracts.HubScope
 import persona.core.contracts.api.*
+import persona.platform.phonetools.control.PhoneControlRuntime
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Semaphore
@@ -28,12 +29,25 @@ class PhoneToolsRuntime(
      * system providers. Defaults to the real `AndroidPhoneTools.execute`. */
     executeOverride: (suspend (String, kotlinx.serialization.json.JsonObject) -> PhoneToolResult)? = null,
     prepareConfirmationOverride: (suspend (String, kotlinx.serialization.json.JsonObject) -> PhonePreparedConfirmation)? = null,
+    controlTransport: PhoneControlTransport? = null,
+    onControlKeepAliveChanged: (Boolean) -> Unit = {},
 ) : AutoCloseable {
     private val job = SupervisorJob(parentScope.coroutineContext[Job])
     private val scope = CoroutineScope(parentScope.coroutineContext + job + Dispatchers.Main.immediate)
     val settings = PhoneToolSettings(context.applicationContext, hubScope, scope)
     val permissions = PhonePermissions(context.applicationContext)
     val confirmations = PhoneConfirmations(context.applicationContext)
+    val control = PhoneControlRuntime(
+        context = context.applicationContext,
+        deviceId = deviceId,
+        settings = settings,
+        connection = connection,
+        transport = controlTransport,
+        parentScope = scope,
+        automation = automation,
+        deviceName = deviceName,
+        onKeepAliveLeaseChanged = onControlKeepAliveChanged,
+    )
     private val visibility = MutableStateFlow(false)
     private val resident = MutableStateFlow(false)
     private val permissionRevision = MutableStateFlow(0)
@@ -113,10 +127,11 @@ class PhoneToolsRuntime(
     /** Feed application foreground state, not the visibility of the settings destination. */
     fun setForeground(value: Boolean) { visibility.value = value; confirmations.setForeground(value); refreshPermissions() }
     /** True only while the shared foreground service is actually keeping this connection alive. */
-    fun setResidentConnection(value: Boolean) { resident.value = value }
-    fun refreshPermissions() { permissionRevision.value += 1 }
+    fun setResidentConnection(value: Boolean) { resident.value = value; control.setResidentConnection(value) }
+    fun refreshPermissions() { permissionRevision.value += 1; control.refreshPermissions() }
     override fun close() {
-        transport.register(deviceId, deviceName, simulator, emptyList())
+        control.close()
+        val _ = transport.register(deviceId, deviceName, simulator, emptyList())
         confirmations.close(); outbox.close(); job.cancel(); transport.discardPending()
     }
 

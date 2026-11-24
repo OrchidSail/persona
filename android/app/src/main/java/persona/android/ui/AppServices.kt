@@ -151,11 +151,38 @@ class AppServices @Inject constructor(
                     override fun isCurrent() = current()
                 })
                 val phoneTransport = data.credentials.deviceId?.let { HubPhoneToolsTransport(socket) }
+                val phoneControlTransport = data.credentials.deviceId?.let { HubPhoneControlTransport(socket) }
+                var controlStartedHubService = false
                 val phone = phoneTransport?.let {
-                    PhoneToolsRuntime(app, data.scope, requireNotNull(data.credentials.deviceId), socket, it, data.coroutineScope,
-                        simulator = android.os.Build.FINGERPRINT.contains("generic"), automation = automation)
+                    PhoneToolsRuntime(
+                        app,
+                        data.scope,
+                        requireNotNull(data.credentials.deviceId),
+                        socket,
+                        it,
+                        data.coroutineScope,
+                        simulator = android.os.Build.FINGERPRINT.contains("generic"),
+                        automation = automation,
+                        controlTransport = phoneControlTransport,
+                        onControlKeepAliveChanged = { active ->
+                            if (active) {
+                                if (!HubService.runningState.value) {
+                                    controlStartedHubService = HubService.start(app)
+                                }
+                            } else if (controlStartedHubService) {
+                                controlStartedHubService = false
+                                if (!ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                                    HubService.stop(app)
+                                }
+                            }
+                        },
+                    )
                 }
-                socket.phoneMessageHandler = phoneTransport?.let { it::accept }
+                socket.phoneMessageHandler = if (phoneTransport != null || phoneControlTransport != null) {
+                    { raw -> (phoneTransport?.accept(raw) == true) || (phoneControlTransport?.accept(raw) == true) }
+                } else {
+                    null
+                }
                 val boundInteractions = object : InteractionCenter by interactions {
                     override suspend fun resolve(id: String, resolution: Resolution) { resolveOutcome(id, resolution) }
                     override suspend fun resolveOutcome(id: String, resolution: Resolution) =
@@ -201,7 +228,14 @@ class AppServices @Inject constructor(
                     knowledgeState.value = null
                     socket.phoneMessageHandler = null
                     phone?.close()
+                    phoneControlTransport?.close()
                     phoneTransport?.close()
+                    if (controlStartedHubService) {
+                        controlStartedHubService = false
+                        if (!ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                            HubService.stop(app)
+                        }
+                    }
                     if (mutableSession.value?.identity == data.scope.path) mutableSession.value = null
                 }
             }
