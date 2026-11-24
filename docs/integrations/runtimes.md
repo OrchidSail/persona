@@ -561,6 +561,13 @@ input clears the previous reply preview, including input with no visible text. T
 until the assistant writes response text. This keeps user-authored questions out of awaiting-reply detection while
 preserving genuine assistant questions. User messages and tool records remain available in the conversation items.
 
+agy leaves print-mode (`agy -p`) conversations untitled. Before falling back to the folder name, the session title uses
+the first non-empty line of the cached metadata `summary.Preview`, with agy's request wrapper and Persona's context
+removed, cut to 60 characters (#14629). Several one-shot runs in one folder then show their own prompts. Such a title
+carries `title_source: "prompt"`, so the node keeps that provenance for the agy pane and Persona's naming may replace it.
+A preview whose first line is Persona's context (`Content of persona-context:…`, `<persona-context …>`) gives no title:
+agy keeps only that line, so the block cannot be removed whole.
+
 A session is listed `unknown` when the evidence cannot say working, idle or done (`transcriptState` in
 `integrations/antigravity/lib/map.js`). It is never guessed as idle: an idle native summary closes a turn only when its
 step count covers the last exported step. The companion logs why, as reason counts, each time the tally across listed

@@ -28,10 +28,11 @@ import (
 // Keeping Antigravity steps at a reused lower index when the export goes on past them, dropping them again once the run re-covers them (#14626), adds 230 B (262,818 B).
 // Antigravity native error backfill at every unexported index, loading conversations another agy process created, with read failures in the history token (#14627), 427 B (263,245 B).
 // Antigravity subagent reports and background task results as task notices, invoke_subagent Role / Prompt (#14625), 749 B (263,994 B).
-// Antigravity non-rewind negative cache for summary_behind GetCascadeTrajectory checks and summarizeTranscript prefix summary reuse (#13086), 786 B (264,780 B).
+// Untitled Antigravity conversations take a short title from their first prompt line (#14629), 218 B (264,212 B).
+// Antigravity non-rewind negative cache for summary_behind GetCascadeTrajectory checks and summarizeTranscript prefix summary reuse (#13086), 788 B (265,000 B).
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 264_780
+	const budget = 265_000
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {
