@@ -150,9 +150,10 @@ input.on('line', (line) => {
         append('PLANNER_RESPONSE', { content: plan.flushReply.reply })
       }
       if (plan.export) {
-        append('USER_INPUT', { content: (plan.planMode ? '/plan ' : '') + req.params.prompt[0].text })
+        if (!plan.skipInput) append('USER_INPUT', { content: (plan.planMode ? '/plan ' : '') + req.params.prompt[0].text })
         if (plan.undatedStep) appendFileSync(transcript,
           JSON.stringify({ type: 'SYSTEM_MESSAGE', content: 'System notice.', step_index: index++, status: 'DONE' }) + '\n')
+        if (plan.checkpoint) append('CHECKPOINT', { source: 'SYSTEM' })
         if (plan.error) append('ERROR_MESSAGE', { content: plan.error })
         if (plan.reply !== undefined || plan.thinking || plan.calls) {
           append('PLANNER_RESPONSE', { content: plan.reply, thinking: plan.thinking, tool_calls: plan.calls })
