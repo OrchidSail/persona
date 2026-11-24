@@ -149,12 +149,22 @@
     <string name="app_assist_model_default_short">Main chat</string>
     <string name="app_assist_model_default_title">Default (Main chat)</string>
     <string name="app_assist_model_default_subtitle">Use your main conversation\'s default model</string>
-    <string name="app_assist_model_picker_title">Quick window model</string>
-    <string name="app_assist_model_picker_description">Switch quick window model: %1$s</string>
+    <string name="app_assist_model_picker_title">Conversation &amp; model</string>
+    <string name="app_assist_model_picker_description">Switch conversation or model: %1$s</string>
     <string name="app_assist_model_loading">Loading models…</string>
     <string name="app_assist_model_load_failed">Couldn\'t load models from Hub</string>
     <string name="app_assist_model_empty">No additional models available</string>
     <string name="app_assist_model_start_failed">Selected model is unavailable right now</string>
     <string name="app_assist_model_fallback_main">Use Default (Main chat)</string>
+    <string name="app_assist_model_fallback_default">Use default model</string>
     <string name="app_assist_model_selected">Selected</string>
+    <string name="app_assist_conversation_section_title">Conversation</string>
+    <string name="app_assist_model_section_title">Model</string>
+    <string name="app_assist_conversation_main">Main chat</string>
+    <string name="app_assist_conversation_new">New chat</string>
+    <string name="app_assist_conversation_new_short">New</string>
+    <string name="app_assist_conversation_untitled">Untitled chat</string>
+    <string name="app_assist_model_follow_default_title">Follow default</string>
+    <string name="app_assist_model_follow_default_subtitle">Use Hub\'s default assistant model</string>
+    <string name="app_assist_target_model_format">%1$s · %2$s</string>
 </resources>

@@ -48,6 +48,7 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -210,6 +211,9 @@ internal fun AssistOverlaySheet(
     onToggleModelPicker: () -> Unit = {},
     onCloseModelPicker: () -> Unit = {},
     onRefreshModels: () -> Unit = {},
+    onSelectMainConversation: () -> Unit = {},
+    onSelectExistingConversation: (AssistConversationOption) -> Unit = {},
+    onSelectNewConversation: () -> Unit = {},
     onSelectDefaultModel: () -> Unit = {},
     onSelectModel: (DigitalAssistantModelChoice) -> Unit = {},
     onRetryWithDefaultMain: () -> Unit = {},
@@ -394,7 +398,7 @@ internal fun AssistOverlaySheet(
         val availableHeight = (maxHeight - bottomInsetDp - topInsetDp - floatingBottomLift - Tokens.Space.l)
             .coerceAtLeast(Tokens.Size.box150)
         val replyMaxHeight = (availableHeight * 0.56f).coerceAtLeast(Tokens.Size.box120)
-        val pickerMaxHeight = (availableHeight * 0.40f).coerceAtLeast(Tokens.Size.box120)
+        val pickerMaxHeight = (availableHeight * if (ui.expanded) 0.40f else 0.48f).coerceAtLeast(Tokens.Size.box120)
 
         // Full-viewport dimmed backdrop scrim; tapping dismisses cleanly without an X button.
         Box(
@@ -459,6 +463,7 @@ internal fun AssistOverlaySheet(
                         AssistReplyIsland(
                             turns = ui.turns,
                             awaitingReply = ui.awaitingReply,
+                            targetConversation = ui.targetConversation,
                             personaState = personaState,
                             shape = cardShape,
                             maxHeight = replyMaxHeight,
@@ -486,15 +491,20 @@ internal fun AssistOverlaySheet(
                         onRetryWithDefaultMain = onRetryWithDefaultMain,
                     )
 
-                    // Single-layer floating Model Picker card above the unified composer card.
+                    // Single-layer floating Conversation + Model Picker card above the unified composer card.
                     if (ui.modelPickerOpen) {
                         AssistModelPickerIsland(
+                            targetConversation = ui.targetConversation,
+                            conversations = ui.availableConversations,
                             choice = ui.modelChoice,
                             catalog = ui.modelCatalog,
                             hubStatus = ui.hubStatus,
                             shape = cardShape,
                             maxHeight = pickerMaxHeight,
                             onRefresh = onRefreshModels,
+                            onSelectMainConversation = onSelectMainConversation,
+                            onSelectExistingConversation = onSelectExistingConversation,
+                            onSelectNewConversation = onSelectNewConversation,
                             onSelectDefault = onSelectDefaultModel,
                             onSelectModel = onSelectModel,
                         )
@@ -515,7 +525,12 @@ internal fun AssistOverlaySheet(
                         glowAlpha = glowAlpha,
                         expandDragReady = expandDragReady,
                         swipeModifier = verticalDragModifier,
-                        onFocusChange = { composerFocused = it },
+                        onFocusChange = { isFocused ->
+                            composerFocused = isFocused
+                            if (isFocused && ui.modelPickerOpen) {
+                                latestOnCloseModelPicker()
+                            }
+                        },
                         onDraftChange = onDraftChange,
                         onAttachScreen = onAttachScreen,
                         onRemoveScreen = onRemoveScreen,
@@ -703,14 +718,34 @@ private fun AssistUnifiedComposerCard(
     val inputEnabled = !ui.sending && ui.hubStatus != AssistHubStatus.Unpaired
     val voiceAvailable = onStartVoiceInput != null && onFinishDictation != null
     val defaultShortLabel = stringResource(R.string.app_assist_model_default_short)
+    val newChatLabel = stringResource(R.string.app_assist_conversation_new)
+    val newChatShortLabel = stringResource(R.string.app_assist_conversation_new_short)
+    val untitledChatLabel = stringResource(R.string.app_assist_conversation_untitled)
     val openInPersonaLabel = stringResource(R.string.app_assist_open_in_persona)
     val dictateLabel = stringResource(R.string.app_assist_dictate)
     val stopDictateLabel = stringResource(R.string.app_assist_dictate_stop)
-    val modelPillLabel = if (ui.modelChoice.isDefault) {
-        defaultShortLabel
-    } else {
-        ui.modelChoice.compactLabel.ifBlank { defaultShortLabel }
+    val modelCompactLabel = ui.modelChoice.compactLabel
+    val modelPillLabel = when (val target = ui.targetConversation) {
+        AssistTargetConversation.Main -> if (ui.modelChoice.isDefault) {
+            defaultShortLabel
+        } else {
+            modelCompactLabel.ifBlank { defaultShortLabel }
+        }
+        AssistTargetConversation.NewChat -> if (ui.modelChoice.isDefault || modelCompactLabel.isBlank()) {
+            newChatLabel
+        } else {
+            stringResource(R.string.app_assist_target_model_format, newChatShortLabel, modelCompactLabel)
+        }
+        is AssistTargetConversation.Existing -> {
+            val chatLabel = target.title.ifBlank { untitledChatLabel }
+            if (ui.modelChoice.isDefault || modelCompactLabel.isBlank()) {
+                chatLabel
+            } else {
+                stringResource(R.string.app_assist_target_model_format, chatLabel, modelCompactLabel)
+            }
+        }
     }
+    val modelPillHighlighted = !ui.modelChoice.isDefault || ui.targetConversation !is AssistTargetConversation.Main
     val placeholder = stringResource(
         if (voiceAvailable) {
             R.string.app_assist_input_placeholder_voice
@@ -1047,7 +1082,7 @@ private fun AssistUnifiedComposerCard(
                         label = modelPillLabel,
                         open = ui.modelPickerOpen,
                         enabled = !ui.sending,
-                        isCustom = !ui.modelChoice.isDefault,
+                        isCustom = modelPillHighlighted,
                         style = style,
                         chipShape = chipShape,
                         onClick = onToggleModelPicker,
@@ -1386,6 +1421,7 @@ private fun AssistModelSwitcherButton(
 private fun AssistReplyIsland(
     turns: List<AssistOverlayTurn>,
     awaitingReply: Boolean,
+    targetConversation: AssistTargetConversation,
     personaState: PersonaState,
     shape: Shape,
     maxHeight: Dp,
@@ -1399,6 +1435,12 @@ private fun AssistReplyIsland(
     val palette = PersonaTheme.palette
     val type = PersonaTheme.type
     val personaName = LocalPersonaName.current
+    val untitledChatLabel = stringResource(R.string.app_assist_conversation_untitled)
+    val replyTargetLabel = when (targetConversation) {
+        AssistTargetConversation.Main -> null
+        AssistTargetConversation.NewChat -> stringResource(R.string.app_assist_conversation_new)
+        is AssistTargetConversation.Existing -> targetConversation.title.ifBlank { untitledChatLabel }
+    }
 
     Column(
         modifier
@@ -1454,6 +1496,18 @@ private fun AssistReplyIsland(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (!replyTargetLabel.isNullOrBlank()) {
+                    Text(
+                        text = replyTargetLabel,
+                        style = type.caption,
+                        color = palette.ink3,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .testTag("assist-reply-target-label"),
+                    )
+                }
             }
         }
 
@@ -1522,7 +1576,13 @@ private fun AssistFloatingNoticeIslands(
             title = null,
             body = error,
             actionLabel = if (ui.modelFallbackAvailable) {
-                stringResource(R.string.app_assist_model_fallback_main)
+                stringResource(
+                    if (ui.targetConversation is AssistTargetConversation.Main) {
+                        R.string.app_assist_model_fallback_main
+                    } else {
+                        R.string.app_assist_model_fallback_default
+                    },
+                )
             } else {
                 null
             },
@@ -1630,18 +1690,26 @@ private fun AssistSingleLayerNoticeIsland(
 
 @Composable
 private fun AssistModelPickerIsland(
+    targetConversation: AssistTargetConversation,
+    conversations: List<AssistConversationOption>,
     choice: DigitalAssistantModelChoice,
     catalog: DigitalAssistantModelCatalog,
     hubStatus: AssistHubStatus,
     shape: Shape,
     maxHeight: Dp,
     onRefresh: () -> Unit,
+    onSelectMainConversation: () -> Unit,
+    onSelectExistingConversation: (AssistConversationOption) -> Unit,
+    onSelectNewConversation: () -> Unit,
     onSelectDefault: () -> Unit,
     onSelectModel: (DigitalAssistantModelChoice) -> Unit,
 ) {
     val palette = PersonaTheme.palette
     val type = PersonaTheme.type
+    val style = PersonaTheme.style
     val selectedDescription = stringResource(R.string.app_assist_model_selected)
+    val untitledChatLabel = stringResource(R.string.app_assist_conversation_untitled)
+    val isMainTarget = targetConversation is AssistTargetConversation.Main
 
     Column(
         Modifier
@@ -1677,15 +1745,106 @@ private fun AssistModelPickerIsland(
             }
         }
         JDivider()
+
+        // Compact horizontal target conversation selector (Main / New chat / recent non-archived chats).
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .testTag("assist-conversation-strip"),
+            verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+        ) {
+            Text(
+                text = stringResource(R.string.app_assist_conversation_section_title),
+                style = type.micro.copy(fontWeight = FontWeight.SemiBold),
+                color = palette.ink3,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = Tokens.Space.m),
+            )
+            LazyRow(
+                Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = Tokens.Space.m),
+                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+            ) {
+                item(key = "assist-conv-main") {
+                    AssistConversationChip(
+                        label = stringResource(R.string.app_assist_conversation_main),
+                        icon = PersonaIcons.home,
+                        isSelected = isMainTarget,
+                        working = false,
+                        style = style,
+                        onClick = onSelectMainConversation,
+                        modifier = Modifier.testTag("assist-conversation-option-main"),
+                    )
+                }
+                item(key = "assist-conv-new") {
+                    AssistConversationChip(
+                        label = stringResource(R.string.app_assist_conversation_new),
+                        icon = PersonaIcons.newConversation,
+                        isSelected = targetConversation is AssistTargetConversation.NewChat,
+                        working = false,
+                        style = style,
+                        onClick = onSelectNewConversation,
+                        modifier = Modifier.testTag("assist-conversation-option-new"),
+                    )
+                }
+                items(
+                    items = conversations,
+                    key = { "assist-conv-${it.key.path}" },
+                ) { option ->
+                    val optionSelected = (targetConversation as? AssistTargetConversation.Existing)?.key == option.key
+                    AssistConversationChip(
+                        label = option.title.ifBlank { untitledChatLabel },
+                        icon = PersonaIcons.conversation,
+                        isSelected = optionSelected,
+                        working = option.working,
+                        style = style,
+                        onClick = { onSelectExistingConversation(option) },
+                        modifier = Modifier.testTag("assist-conversation-option-${option.key.sessionId}"),
+                    )
+                }
+            }
+        }
+
+        JDivider()
+
         LazyColumn(
-            Modifier.fillMaxWidth(),
+            Modifier
+                .weight(1f, fill = false)
+                .fillMaxWidth(),
             contentPadding = PaddingValues(horizontal = Tokens.Space.s, vertical = Tokens.Space.xs),
             verticalArrangement = Arrangement.spacedBy(Tokens.Space.xxs),
         ) {
+            item(key = "assist-model-section-header") {
+                Text(
+                    text = stringResource(R.string.app_assist_model_section_title),
+                    style = type.micro.copy(fontWeight = FontWeight.SemiBold),
+                    color = palette.ink3,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(
+                        start = Tokens.Space.s,
+                        end = Tokens.Space.s,
+                        bottom = Tokens.Space.xxs,
+                    ),
+                )
+            }
             item(key = "assist-model-default") {
                 AssistModelPickerRow(
-                    title = stringResource(R.string.app_assist_model_default_title),
-                    subtitle = stringResource(R.string.app_assist_model_default_subtitle),
+                    title = stringResource(
+                        if (isMainTarget) {
+                            R.string.app_assist_model_default_title
+                        } else {
+                            R.string.app_assist_model_follow_default_title
+                        },
+                    ),
+                    subtitle = stringResource(
+                        if (isMainTarget) {
+                            R.string.app_assist_model_default_subtitle
+                        } else {
+                            R.string.app_assist_model_follow_default_subtitle
+                        },
+                    ),
                     selected = choice.isDefault,
                     selectedDescription = selectedDescription,
                     onClick = onSelectDefault,
@@ -1770,6 +1929,67 @@ private fun AssistModelPickerIsland(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun AssistConversationChip(
+    label: String,
+    icon: PhIcon,
+    isSelected: Boolean,
+    working: Boolean,
+    style: AppStyle,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val palette = PersonaTheme.palette
+    val type = PersonaTheme.type
+    val chipShape = PersonaTheme.shapes.chipShape
+    val fill = if (isSelected) palette.accentSoft else assistTonalFill(style)
+    val contentTint = if (isSelected) palette.accent else palette.ink2
+
+    Row(
+        modifier
+            .heightIn(min = Tokens.MinTouch.ios)
+            .widthIn(max = Tokens.Size.box150)
+            .clip(chipShape)
+            .background(fill)
+            .then(
+                if (isSelected) {
+                    Modifier.border(Tokens.Size.hairline, palette.accent.copy(alpha = 0.45f), chipShape)
+                } else {
+                    Modifier
+                },
+            )
+            .clickable(
+                role = Role.Button,
+                onClickLabel = label,
+                onClick = onClick,
+            )
+            .semantics { selected = isSelected }
+            .padding(horizontal = Tokens.Space.s, vertical = Tokens.Space.xs),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+    ) {
+        if (working) {
+            JSpinner(Modifier.size(Tokens.Size.markS), color = contentTint)
+        } else {
+            JIcon(
+                icon = icon,
+                contentDescription = null,
+                size = Tokens.Size.markS,
+                tint = contentTint,
+            )
+        }
+        Text(
+            text = label,
+            style = type.labelSmall.copy(
+                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+            ),
+            color = if (isSelected) palette.accent else palette.ink,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

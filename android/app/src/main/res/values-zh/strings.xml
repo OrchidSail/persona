@@ -148,12 +148,22 @@
     <string name="app_assist_model_default_short">主对话</string>
     <string name="app_assist_model_default_title">默认（主对话）</string>
     <string name="app_assist_model_default_subtitle">使用主对话默认模型</string>
-    <string name="app_assist_model_picker_title">快捷浮窗模型</string>
-    <string name="app_assist_model_picker_description">切换快捷浮窗模型：%1$s</string>
+    <string name="app_assist_model_picker_title">对话与模型</string>
+    <string name="app_assist_model_picker_description">切换对话或模型：%1$s</string>
     <string name="app_assist_model_loading">正在加载模型…</string>
     <string name="app_assist_model_load_failed">无法从 Hub 加载模型列表</string>
     <string name="app_assist_model_empty">暂无其他可选模型</string>
     <string name="app_assist_model_start_failed">所选模型暂时不可用</string>
     <string name="app_assist_model_fallback_main">改用默认（主对话）</string>
+    <string name="app_assist_model_fallback_default">改用默认模型</string>
     <string name="app_assist_model_selected">已选中</string>
+    <string name="app_assist_conversation_section_title">目标对话</string>
+    <string name="app_assist_model_section_title">模型</string>
+    <string name="app_assist_conversation_main">主对话</string>
+    <string name="app_assist_conversation_new">新建对话</string>
+    <string name="app_assist_conversation_new_short">新建</string>
+    <string name="app_assist_conversation_untitled">未命名对话</string>
+    <string name="app_assist_model_follow_default_title">跟随默认</string>
+    <string name="app_assist_model_follow_default_subtitle">使用 Hub 默认助手模型</string>
+    <string name="app_assist_target_model_format">%1$s · %2$s</string>
 </resources>

@@ -148,12 +148,22 @@
     <string name="app_assist_model_default_short">メイン</string>
     <string name="app_assist_model_default_title">デフォルト（メインチャット）</string>
     <string name="app_assist_model_default_subtitle">メインチャットのデフォルトモデルを使用</string>
-    <string name="app_assist_model_picker_title">クイックウィンドウのモデル</string>
-    <string name="app_assist_model_picker_description">クイックウィンドウのモデルを切替：%1$s</string>
+    <string name="app_assist_model_picker_title">チャットとモデル</string>
+    <string name="app_assist_model_picker_description">チャット・モデルを切替：%1$s</string>
     <string name="app_assist_model_loading">モデルを読み込み中…</string>
     <string name="app_assist_model_load_failed">Hub からモデルを読み込めませんでした</string>
     <string name="app_assist_model_empty">他の選択可能なモデルはありません</string>
     <string name="app_assist_model_start_failed">選択したモデルは現在利用できません</string>
     <string name="app_assist_model_fallback_main">デフォルト（メインチャット）で送信</string>
+    <string name="app_assist_model_fallback_default">デフォルトモデルで送信</string>
     <string name="app_assist_model_selected">選択中</string>
+    <string name="app_assist_conversation_section_title">送信先チャット</string>
+    <string name="app_assist_model_section_title">モデル</string>
+    <string name="app_assist_conversation_main">メインチャット</string>
+    <string name="app_assist_conversation_new">新規チャット</string>
+    <string name="app_assist_conversation_new_short">新規</string>
+    <string name="app_assist_conversation_untitled">無題のチャット</string>
+    <string name="app_assist_model_follow_default_title">デフォルトに従う</string>
+    <string name="app_assist_model_follow_default_subtitle">Hub のデフォルトモデルを使用</string>
+    <string name="app_assist_target_model_format">%1$s · %2$s</string>
 </resources>

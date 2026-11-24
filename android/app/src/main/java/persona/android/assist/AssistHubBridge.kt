@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.launch
 import persona.android.PersonaApp
 import persona.android.R
@@ -24,7 +25,9 @@ import persona.android.ui.AppServices
 import persona.android.ui.ShellSession
 import persona.core.contracts.AgentState
 import persona.core.contracts.ModelPick
+import persona.core.contracts.Session
 import persona.core.contracts.SessionKey
+import persona.core.contracts.api.AssistantSnapshot
 import persona.core.contracts.api.ChatSnapshot
 import persona.core.contracts.api.ConnectionState
 import persona.core.contracts.api.DigitalAssistantModelCatalog
@@ -48,9 +51,10 @@ internal interface AssistOverlayEntryPoint {
 }
 
 /**
- * Connects [AssistOverlayController] to the app's existing Hub connection, main conversation
- * repository, in-place main-conversation model switcher, attachment uploader, model catalog, and
- * live streaming transcript without opening any extra socket or creating side conversations.
+ * Connects [AssistOverlayController] to the app's existing Hub connection, assistant conversation
+ * list, live streaming transcript observer for the active target conversation (main, another
+ * existing conversation, or a newly created standalone conversation), per-conversation model
+ * switcher, attachment uploader, and model catalog without opening any extra socket.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 internal class AssistHubBridge(
@@ -65,11 +69,17 @@ internal class AssistHubBridge(
         EntryPointAccessors.fromApplication(appContext, AssistOverlayEntryPoint::class.java)
     }.getOrNull()
 
+    private val targetSessionOverride = MutableStateFlow<SessionKey?>(null)
     private var observeJob: Job? = null
     private var modelChoiceJob: Job? = null
 
     fun wakeHub() {
         val _ = runCatching { entryPoint?.assistConnections()?.wake() }
+    }
+
+    /** Routes live chat observation (`chatFlow`, `activeModelPick`, `activeWorking`) to [sessionKey], or Main when null. */
+    fun setObservedSession(sessionKey: SessionKey?) {
+        targetSessionOverride.value = sessionKey
     }
 
     fun currentModelChoice(): DigitalAssistantModelChoice =
@@ -129,10 +139,18 @@ internal class AssistHubBridge(
                 }
                 val activeBinding = tuple.binding?.takeIf { it.scope.path == session.identity }
                 val connStateFlow = (activeBinding?.connection ?: session.connection).state
-                val mainSessionFlow = session.assistant.assistant.map { it.mainSession }.distinctUntilChanged()
-                val chatFlow = mainSessionFlow.flatMapLatest { key ->
-                    if (key == null) flowOf<Pair<SessionKey?, ChatSnapshot?>>(null to null)
-                    else session.chats.observe(key).map { key to it }
+                val observedKeyFlow = combine(
+                    session.assistant.assistant.map { it.mainSession }.distinctUntilChanged(),
+                    targetSessionOverride,
+                ) { mainKey, overrideKey -> overrideKey ?: mainKey }.distinctUntilChanged()
+                val chatFlow = observedKeyFlow.flatMapLatest { key ->
+                    if (key == null) {
+                        flowOf(ObservedChat(key = null, snapshot = null))
+                    } else {
+                        session.chats.observe(key)
+                            .map { ObservedChat(key = key, snapshot = it) }
+                            .onStart { emit(ObservedChat(key = key, snapshot = null)) }
+                    }
                 }
                 val mainOutboxFlow = activeBinding?.mainSender?.outbox
                 val outboxFlow = if (mainOutboxFlow != null && mainOutboxFlow !== session.sender.outbox) {
@@ -150,13 +168,20 @@ internal class AssistHubBridge(
                     outboxFlow,
                 ) { connState, assistant, sessions, observedChat, outbox ->
                     val mainKey = assistant.mainSession
-                    val activeRow = mainKey?.let { key ->
+                    val activeKey = targetSessionOverride.value ?: mainKey
+                    val mainRow = mainKey?.let { key ->
                         sessions.firstOrNull { it.key == key }
                             ?: assistant.conversations.firstOrNull { it.key == key }
                     }
-                    val working = activeRow?.foldedState == AgentState.Working ||
+                    val activeRow = activeKey?.let { key ->
+                        sessions.firstOrNull { it.key == key }
+                            ?: assistant.conversations.firstOrNull { it.key == key }
+                    }
+                    val mainWorking = mainRow?.foldedState == AgentState.Working ||
+                        mainRow?.status == "working"
+                    val activeWorking = activeRow?.foldedState == AgentState.Working ||
                         activeRow?.status == "working"
-                    val chat = observedChat.second?.takeIf { observedChat.first == mainKey }
+                    val chat = observedChat.snapshot?.takeIf { observedChat.key == activeKey }
                     val hubStatus = mapConnectionStateToHubStatus(
                         connectionState = connState,
                         hasBinding = activeBinding != null || session.demo != null,
@@ -164,8 +189,12 @@ internal class AssistHubBridge(
                     AssistHubSnapshot(
                         status = hubStatus,
                         mainSession = mainKey,
-                        mainModelPick = activeRow?.modelPick,
-                        mainWorking = working,
+                        mainModelPick = mainRow?.modelPick,
+                        mainWorking = mainWorking,
+                        activeSession = activeKey,
+                        activeModelPick = activeRow?.modelPick,
+                        activeWorking = activeWorking,
+                        conversations = selectOverlayConversations(assistant, sessions),
                         chatSnapshot = chat,
                         outbox = outbox,
                     )
@@ -177,6 +206,7 @@ internal class AssistHubBridge(
     }
 
     fun stop() {
+        targetSessionOverride.value = null
         observeJob?.cancel()
         observeJob = null
         modelChoiceJob?.cancel()
@@ -184,38 +214,39 @@ internal class AssistHubBridge(
     }
 
     /**
-     * Switches the Hub's main conversation in place to [pick] (`PUT /api/v1/assistant/conversations/{id}/model`),
-     * or clears its custom pick (`DELETE .../model`) when [pick] is null.
-     *
-     * When the paired Hub has no main conversation yet (first-time pairing), creates the main
-     * conversation (`main = true`) directly with [pick] when [pick] != null — never creating a
-     * non-main side conversation.
+     * Switches the target conversation's model in place to [pick] (`PUT /api/v1/assistant/conversations/{id}/model`),
+     * or clears its custom pick (`DELETE .../model`) when [pick] is null. When [targetSession] is null, targets
+     * the Hub's main conversation (creating main with [pick] only on first-time pairing when no main exists).
      */
-    suspend fun prepareMainModel(pick: ModelPick?, clearIfDefault: Boolean): SessionKey? {
+    suspend fun prepareConversationModel(
+        targetSession: SessionKey?,
+        pick: ModelPick?,
+        clearIfDefault: Boolean,
+    ): SessionKey? {
         val (session, binding) = requireReadySession()
-        val mainKey = resolveExistingMainSession(session)
+        val key = targetSession ?: resolveExistingMainSession(session)
         if (pick != null) {
-            if (mainKey != null) {
+            if (key != null) {
                 val activeBinding = binding ?: error(context.getString(R.string.app_assist_hub_offline_title))
-                val currentPick = currentMainModelPick(session, mainKey)
+                val currentPick = currentSessionModelPick(session, key)
                 if (currentPick != pick) {
-                    val _ = activeBinding.assistantManagement.setModelPick(mainKey, pick)
+                    val _ = activeBinding.assistantManagement.setModelPick(key, pick)
                 }
-                return mainKey
+                return key
             }
             return session.assistant.startConversation(pick)
         }
-        if (mainKey != null) {
-            val currentPick = currentMainModelPick(session, mainKey)
+        if (key != null) {
+            val currentPick = currentSessionModelPick(session, key)
             if (clearIfDefault || currentPick != null) {
                 val management = binding?.assistantManagement
                 if (management != null) {
                     try {
-                        management.clearModelPick(mainKey)
+                        management.clearModelPick(key)
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (failure: HubFailure) {
-                        // Older hubs without `assistant_model_pick` answer 404 / 405; keep sending to main.
+                        // Older hubs without `assistant_model_pick` answer 404 / 405; keep sending.
                         if (failure.status != 404 && failure.status != 405) throw failure
                     } catch (_: UnsupportedOperationException) {
                         // Demo or legacy transport without model_pick support.
@@ -223,7 +254,23 @@ internal class AssistHubBridge(
                 }
             }
         }
-        return mainKey
+        return key
+    }
+
+    suspend fun prepareMainModel(pick: ModelPick?, clearIfDefault: Boolean): SessionKey? =
+        prepareConversationModel(targetSession = null, pick = pick, clearIfDefault = clearIfDefault)
+
+    /**
+     * Creates a new standalone non-main conversation via `session.assistant.startConversation(...)`
+     * (never passing `main = true` when a main conversation exists) with an optional independent [pick].
+     */
+    suspend fun createNewConversation(pick: ModelPick?): SessionKey {
+        val (session, _) = requireReadySession()
+        return if (pick != null) {
+            session.assistant.startConversation(pick)
+        } else {
+            session.assistant.startConversation()
+        }
     }
 
     suspend fun sendTextToMain(targetMain: SessionKey?, prompt: String, clientMessageId: String) {
@@ -287,9 +334,9 @@ internal class AssistHubBridge(
         return session.assistant.assistant.value.mainSession
     }
 
-    private fun currentMainModelPick(session: ShellSession, mainKey: SessionKey): ModelPick? =
-        session.sessions.sessions.value.firstOrNull { it.key == mainKey }?.modelPick
-            ?: session.assistant.assistant.value.conversations.firstOrNull { it.key == mainKey }?.modelPick
+    private fun currentSessionModelPick(session: ShellSession, key: SessionKey): ModelPick? =
+        session.sessions.sessions.value.firstOrNull { it.key == key }?.modelPick
+            ?: session.assistant.assistant.value.conversations.firstOrNull { it.key == key }?.modelPick
 
     private fun requireReadySession(): Pair<ShellSession, ChatAppBindings?> {
         val services = entryPoint?.assistAppServices()
@@ -311,6 +358,70 @@ internal class AssistHubBridge(
         val session: ShellSession?,
         val binding: ChatAppBindings?,
     )
+
+    private data class ObservedChat(
+        val key: SessionKey?,
+        val snapshot: ChatSnapshot?,
+    )
+}
+
+internal const val MAX_OVERLAY_CONVERSATIONS = 12
+
+/**
+ * Selects recent non-archived, sendable non-main assistant conversations for the floating overlay
+ * target picker, merging live [sessions] status/model metadata and respecting saved conversation order.
+ */
+internal fun selectOverlayConversations(
+    assistant: AssistantSnapshot,
+    sessions: List<Session>,
+    limit: Int = MAX_OVERLAY_CONVERSATIONS,
+): List<AssistConversationOption> {
+    val mainKey = assistant.mainSession
+    val backgroundId = assistant.backgroundSupervisor?.takeIf(String::isNotBlank)
+    val liveByKey = sessions.associateBy { it.key }
+    val candidates = assistant.conversations
+        .distinctBy { it.key }
+        .mapNotNull { row ->
+            val live = liveByKey[row.key]
+            val archived = live?.archived ?: row.archived
+            val isSpace = live?.isSpace ?: row.isSpace
+            val readOnly = live?.readOnlyReason ?: row.readOnlyReason
+            if (archived || isSpace || readOnly != null) return@mapNotNull null
+            if (row.key == mainKey || row.sessionId.isBlank() || row.machineId.isBlank()) return@mapNotNull null
+            if (backgroundId != null && row.sessionId == backgroundId) return@mapNotNull null
+            val title = (live?.title?.takeIf(String::isNotBlank)
+                ?: row.title.takeIf(String::isNotBlank)
+                ?: assistant.directionNames[row.sessionId]?.takeIf(String::isNotBlank)).orEmpty().trim()
+            val modelPick = live?.modelPick ?: row.modelPick
+            val working = (live ?: row).let { it.foldedState == AgentState.Working || it.status == "working" }
+            val updated = live?.updated ?: row.updated
+            Triple(
+                AssistConversationOption(
+                    key = row.key,
+                    title = title,
+                    modelPick = modelPick,
+                    working = working,
+                ),
+                updated,
+                row.sessionId,
+            )
+        }
+        .sortedWith(
+            compareByDescending<Triple<AssistConversationOption, java.time.Instant?, String>> { it.second }
+                .thenBy { it.third },
+        )
+        .map { it.first }
+
+    val savedOrder = assistant.conversationOrder
+    val ordered = if (savedOrder.isNullOrEmpty()) {
+        candidates
+    } else {
+        val byId = candidates.associateBy { it.key.sessionId }
+        val pinned = savedOrder.distinct().mapNotNull(byId::get)
+        val seen = pinned.mapTo(HashSet()) { it.key.sessionId }
+        pinned + candidates.filter { it.key.sessionId !in seen }
+    }
+    return ordered.take(limit)
 }
 
 internal fun mergeOutbox(

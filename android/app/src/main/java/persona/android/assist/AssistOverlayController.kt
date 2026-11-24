@@ -71,11 +71,39 @@ internal data class AssistOverlayTurn(
     val delivery: AssistTurnDelivery = AssistTurnDelivery.Sent,
 )
 
+/** Target conversation routed by the Digital Assistant floating overlay. */
+internal sealed interface AssistTargetConversation {
+    /** Default: the Hub's main conversation (never auto-creates side conversations). */
+    data object Main : AssistTargetConversation
+
+    /** An existing non-main assistant conversation (or a newly created standalone conversation). */
+    data class Existing(
+        val key: SessionKey,
+        val title: String,
+        val modelPick: ModelPick? = null,
+    ) : AssistTargetConversation
+
+    /** Staged new conversation: next send creates a standalone non-main chat with the chosen model. */
+    data object NewChat : AssistTargetConversation
+}
+
+/** One non-archived, sendable non-main assistant conversation exposed in the overlay picker. */
+internal data class AssistConversationOption(
+    val key: SessionKey,
+    val title: String,
+    val modelPick: ModelPick? = null,
+    val working: Boolean = false,
+)
+
 internal data class AssistHubSnapshot(
     val status: AssistHubStatus = AssistHubStatus.Connecting,
     val mainSession: SessionKey? = null,
     val mainModelPick: ModelPick? = null,
     val mainWorking: Boolean = false,
+    val activeSession: SessionKey? = mainSession,
+    val activeModelPick: ModelPick? = mainModelPick,
+    val activeWorking: Boolean = mainWorking,
+    val conversations: List<AssistConversationOption> = emptyList(),
     val chatSnapshot: ChatSnapshot? = null,
     val outbox: List<OutboxMessage> = emptyList(),
 )
@@ -90,6 +118,8 @@ internal data class AssistOverlayUiState(
     val attachingScreen: Boolean = false,
     val hubStatus: AssistHubStatus = AssistHubStatus.Connecting,
     val mainSession: SessionKey? = null,
+    val targetConversation: AssistTargetConversation = AssistTargetConversation.Main,
+    val availableConversations: List<AssistConversationOption> = emptyList(),
     val modelChoice: DigitalAssistantModelChoice = DigitalAssistantModelChoice(),
     val modelPickerOpen: Boolean = false,
     val modelCatalog: DigitalAssistantModelCatalog = DigitalAssistantModelCatalog(),
@@ -125,10 +155,10 @@ internal data class SentOverlayTurn(
  *   in memory until the user explicitly taps "Attach current screen".
  * - Disk writes (`cacheDir/assist/`) happen strictly upon manual user confirmation, and are deleted
  *   immediately upon removal (`×`), successful upload/send, or overlay dismissal.
- * - All overlay turns stay in the Hub's main conversation (never creating side conversations). When
- *   a specific model is selected, the controller switches the main conversation's `model_pick` in
- *   place (`PUT /api/v1/assistant/conversations/{id}/model`) before sending, or clears it back to
- *   the Hub default (`DELETE .../model`) when switched back to Default (Main chat).
+ * - By default every invocation targets the Hub's main conversation without creating side chats.
+ *   Users can optionally switch to another non-archived conversation or stage a new standalone
+ *   conversation so each conversation runs on its own independent `model_pick` without overwriting
+ *   the main conversation's model or history.
  */
 internal class AssistOverlayController(
     private val mainScope: CoroutineScope,
@@ -136,6 +166,14 @@ internal class AssistOverlayController(
     private val saveScreenshot: suspend (Bitmap, String) -> ComposerAttachment?,
     private val deleteScreenshot: suspend (ComposerAttachment) -> Unit,
     private val prepareMainModel: suspend (pick: ModelPick?, clearIfDefault: Boolean) -> SessionKey? = { _, _ -> null },
+    private val prepareConversationModel: suspend (targetSession: SessionKey?, pick: ModelPick?, clearIfDefault: Boolean) -> SessionKey? =
+        { target, pick, clearIfDefault ->
+            if (target == null) prepareMainModel(pick, clearIfDefault) else target
+        },
+    private val createNewConversation: suspend (pick: ModelPick?) -> SessionKey = {
+        throw UnsupportedOperationException()
+    },
+    private val onSelectObservedSession: (SessionKey?) -> Unit = {},
     private val sendTextToMain: suspend (SessionKey?, String, String) -> Unit,
     private val sendWithScreenToMain: suspend (SessionKey?, String, ComposerAttachment, ChatLinkContext?, String) -> Unit,
     private val loadModelCatalog: suspend (Boolean) -> DigitalAssistantModelCatalog = {
@@ -171,9 +209,12 @@ internal class AssistOverlayController(
     private var hubSnapshot = AssistHubSnapshot()
     private var resolvedMainSession: SessionKey? = null
     private var baselineItemIds: Set<String> = emptySet()
+    private var baselineCaptured = false
     private val sentTurns = mutableListOf<SentOverlayTurn>()
     private var persistedModelChoice: DigitalAssistantModelChoice = initialModelChoice
     private var clearMainModelOnNextSend = false
+    private var userModifiedTargetModel = false
+    private var clearTargetModelOnNextSend = false
     private var cachedCatalog: DigitalAssistantModelCatalog? = null
 
     private var screenshotWaitJob: Job? = null
@@ -218,7 +259,11 @@ internal class AssistOverlayController(
         handedOffAttachment = null
         resolvedMainSession = hubSnapshot.mainSession
         baselineItemIds = emptySet()
+        baselineCaptured = false
         sentTurns.clear()
+        userModifiedTargetModel = false
+        clearTargetModelOnNextSend = false
+        onSelectObservedSession(null)
         val initialCaptureStatus = when {
             !allowCapture -> AssistCaptureStatus.NotSupported
             screenshotDisabledBySettings -> AssistCaptureStatus.DisabledBySettings
@@ -238,6 +283,8 @@ internal class AssistOverlayController(
             captureStatus = initialCaptureStatus,
             hubStatus = hubSnapshot.status,
             mainSession = hubSnapshot.mainSession,
+            targetConversation = AssistTargetConversation.Main,
+            availableConversations = hubSnapshot.conversations,
             modelChoice = persistedModelChoice,
             modelCatalog = cachedCatalog ?: DigitalAssistantModelCatalog(),
         )
@@ -274,7 +321,7 @@ internal class AssistOverlayController(
         }
     }
 
-    /** Keeps the overlay model pill synced live with Hub-scoped preferences (including changes from Settings). */
+    /** Keeps the overlay model pill synced live with Hub-scoped preferences when targeting Main chat. */
     fun onModelChoiceUpdated(choice: DigitalAssistantModelChoice) {
         if (choice.isDefault && !persistedModelChoice.isDefault) {
             clearMainModelOnNextSend = true
@@ -282,24 +329,68 @@ internal class AssistOverlayController(
             clearMainModelOnNextSend = false
         }
         persistedModelChoice = choice
-        mutableState.update { it.copy(modelChoice = choice) }
+        mutableState.update { current ->
+            if (current.targetConversation is AssistTargetConversation.Main) {
+                current.copy(modelChoice = choice)
+            } else {
+                current
+            }
+        }
     }
 
-    /** Updates live Hub connection, main conversation state, and streaming transcript snapshot. */
+    /** Updates live Hub connection, conversation list, target metadata, and streaming transcript snapshot. */
     fun onHubUpdate(snapshot: AssistHubSnapshot) {
         hubSnapshot = snapshot
         if (snapshot.mainSession != null) {
             resolvedMainSession = snapshot.mainSession
         }
-        val projection = if (deviceLockedForInvocation) {
-            OverlayTurnsProjection(emptyList(), awaitingReply = false)
-        } else {
-            projectOverlayTurns(snapshot, sentTurns, baselineItemIds)
+        val currentState = mutableState.value
+        val updatedTarget = when (val target = currentState.targetConversation) {
+            AssistTargetConversation.Main -> target
+            AssistTargetConversation.NewChat -> target
+            is AssistTargetConversation.Existing -> {
+                val matchingOption = snapshot.conversations.firstOrNull { it.key == target.key }
+                val updatedTitle = matchingOption?.title?.takeIf(String::isNotBlank) ?: target.title
+                val updatedPick = when {
+                    snapshot.activeSession == target.key &&
+                        (snapshot.activeModelPick != null || matchingOption != null) -> snapshot.activeModelPick
+                    matchingOption != null -> matchingOption.modelPick
+                    else -> target.modelPick
+                }
+                target.copy(title = updatedTitle, modelPick = updatedPick)
+            }
         }
+        if (sentTurns.isNotEmpty() && !baselineCaptured && snapshotMatchesTarget(snapshot, updatedTarget)) {
+            val items = snapshot.chatSnapshot?.items
+            if (items != null) {
+                val sentIds = sentTurns.mapTo(HashSet()) { it.clientMessageId }
+                val firstSentIndex = items.indexOfFirst { it.clientMsgId != null && it.clientMsgId in sentIds }
+                baselineItemIds = if (firstSentIndex >= 0) {
+                    items.take(firstSentIndex).mapTo(HashSet()) { it.id }
+                } else {
+                    items.mapTo(HashSet()) { it.id }
+                }
+                baselineCaptured = true
+            }
+        }
+        val projection = projectForTarget(snapshot, updatedTarget)
+        val updatedConversations = mergeAvailableConversations(snapshot.conversations, updatedTarget)
         mutableState.update { current ->
+            val syncedModelChoice = if (
+                updatedTarget is AssistTargetConversation.Existing &&
+                !userModifiedTargetModel &&
+                !current.sending
+            ) {
+                resolveModelChoiceForPick(updatedTarget.modelPick, cachedCatalog ?: current.modelCatalog)
+            } else {
+                current.modelChoice
+            }
             current.copy(
                 hubStatus = snapshot.status,
                 mainSession = snapshot.mainSession ?: resolvedMainSession,
+                targetConversation = updatedTarget,
+                availableConversations = updatedConversations,
+                modelChoice = syncedModelChoice,
                 turns = projection.turns,
                 awaitingReply = projection.awaitingReply,
             )
@@ -435,13 +526,103 @@ internal class AssistOverlayController(
         fetchModelCatalog(refresh = true)
     }
 
-    fun selectDefaultModel() {
-        persistedModelChoice = DigitalAssistantModelChoice()
-        clearMainModelOnNextSend = true
-        onPersistDefaultModel()
+    /** Routes the overlay back to the Hub's main conversation and restores its persisted model choice. */
+    fun selectMainConversation() {
+        val current = mutableState.value
+        if (!invocationOpen || current.deviceLocked || current.sending) return
+        if (current.targetConversation is AssistTargetConversation.Main) {
+            mutableState.update { it.copy(errorMessage = null, modelFallbackAvailable = false) }
+            return
+        }
+        resetProjectionForConversationSwitch()
+        onSelectObservedSession(null)
         mutableState.update {
             it.copy(
+                targetConversation = AssistTargetConversation.Main,
+                availableConversations = hubSnapshot.conversations,
                 modelChoice = persistedModelChoice,
+                turns = emptyList(),
+                awaitingReply = false,
+                modelFallbackAvailable = false,
+                errorMessage = null,
+            )
+        }
+    }
+
+    /** Routes the overlay to an existing non-main conversation with its own independent model and stream. */
+    fun selectExistingConversation(option: AssistConversationOption) {
+        val current = mutableState.value
+        if (!invocationOpen || current.deviceLocked || current.sending) return
+        val existingTarget = current.targetConversation as? AssistTargetConversation.Existing
+        if (existingTarget?.key == option.key) {
+            mutableState.update { it.copy(errorMessage = null, modelFallbackAvailable = false) }
+            return
+        }
+        val nextTarget = AssistTargetConversation.Existing(
+            key = option.key,
+            title = option.title,
+            modelPick = option.modelPick,
+        )
+        resetProjectionForConversationSwitch()
+        onSelectObservedSession(option.key)
+        val targetModel = resolveModelChoiceForPick(option.modelPick, cachedCatalog ?: current.modelCatalog)
+        mutableState.update {
+            it.copy(
+                targetConversation = nextTarget,
+                availableConversations = mergeAvailableConversations(hubSnapshot.conversations, nextTarget),
+                modelChoice = targetModel,
+                turns = emptyList(),
+                awaitingReply = false,
+                modelFallbackAvailable = false,
+                errorMessage = null,
+            )
+        }
+    }
+
+    /** Stages a new standalone conversation (created lazily on next send without touching Main chat). */
+    fun selectNewConversation() {
+        val current = mutableState.value
+        if (!invocationOpen || current.deviceLocked || current.sending) return
+        if (current.targetConversation is AssistTargetConversation.NewChat) {
+            mutableState.update { it.copy(errorMessage = null, modelFallbackAvailable = false) }
+            return
+        }
+        resetProjectionForConversationSwitch()
+        onSelectObservedSession(null)
+        mutableState.update {
+            it.copy(
+                targetConversation = AssistTargetConversation.NewChat,
+                availableConversations = hubSnapshot.conversations,
+                modelChoice = DigitalAssistantModelChoice(),
+                turns = emptyList(),
+                awaitingReply = false,
+                modelFallbackAvailable = false,
+                errorMessage = null,
+            )
+        }
+    }
+
+    fun selectDefaultModel() {
+        val target = mutableState.value.targetConversation
+        if (target is AssistTargetConversation.Main) {
+            persistedModelChoice = DigitalAssistantModelChoice()
+            clearMainModelOnNextSend = true
+            onPersistDefaultModel()
+            mutableState.update {
+                it.copy(
+                    modelChoice = persistedModelChoice,
+                    modelPickerOpen = false,
+                    modelFallbackAvailable = false,
+                    errorMessage = null,
+                )
+            }
+            return
+        }
+        userModifiedTargetModel = true
+        clearTargetModelOnNextSend = true
+        mutableState.update {
+            it.copy(
+                modelChoice = DigitalAssistantModelChoice(),
                 modelPickerOpen = false,
                 modelFallbackAvailable = false,
                 errorMessage = null,
@@ -454,9 +635,23 @@ internal class AssistOverlayController(
             selectDefaultModel()
             return
         }
-        persistedModelChoice = choice
-        clearMainModelOnNextSend = false
-        onPersistModelChoice(choice)
+        val target = mutableState.value.targetConversation
+        if (target is AssistTargetConversation.Main) {
+            persistedModelChoice = choice
+            clearMainModelOnNextSend = false
+            onPersistModelChoice(choice)
+            mutableState.update {
+                it.copy(
+                    modelChoice = choice,
+                    modelPickerOpen = false,
+                    modelFallbackAvailable = false,
+                    errorMessage = null,
+                )
+            }
+            return
+        }
+        userModifiedTargetModel = true
+        clearTargetModelOnNextSend = false
         mutableState.update {
             it.copy(
                 modelChoice = choice,
@@ -554,13 +749,13 @@ internal class AssistOverlayController(
         mutableState.update { it.copy(errorMessage = message) }
     }
 
-    /** Sends the message to the main conversation (switching its model in place if selected) and streams the reply. */
-    fun send() = sendInternal(forceMainDefault = false)
+    /** Sends the message to the selected conversation (main, existing, or newly created standalone chat). */
+    fun send() = sendInternal(forceDefaultModel = false)
 
-    /** One-tap fallback after switching to a custom model fails: clears/skips the custom pick and sends on Main default. */
-    fun retryWithDefaultMain() = sendInternal(forceMainDefault = true)
+    /** One-tap fallback after a custom model fails: clears/skips the custom pick and sends on default model. */
+    fun retryWithDefaultMain() = sendInternal(forceDefaultModel = true)
 
-    private fun sendInternal(forceMainDefault: Boolean) {
+    private fun sendInternal(forceDefaultModel: Boolean) {
         val current = mutableState.value
         if (!invocationOpen || !current.canSend) return
         val prompt = current.draftText.trim()
@@ -568,10 +763,8 @@ internal class AssistOverlayController(
         val contextCard = current.attachedContext
         val clientId = nextId()
         val activeId = invocationId
-        val selectedPick = if (forceMainDefault) null else current.modelChoice.pick
-        val shouldClearDefault = forceMainDefault ||
-            clearMainModelOnNextSend ||
-            (selectedPick == null && hubSnapshot.mainModelPick != null)
+        val targetAtSend = current.targetConversation
+        val selectedPick = if (forceDefaultModel) null else current.modelChoice.pick
 
         mutableState.update {
             it.copy(
@@ -583,28 +776,101 @@ internal class AssistOverlayController(
         }
         sendJob = mainScope.launch {
             var modelApplied = false
+            var effectiveTarget = targetAtSend
             try {
-                if (sentTurns.isEmpty()) {
-                    baselineItemIds = hubSnapshot.chatSnapshot?.items.orEmpty().mapTo(HashSet()) { it.id }
-                }
-
-                val targetMain: SessionKey? = if (selectedPick != null || shouldClearDefault) {
-                    val prepared = prepareMainModel(selectedPick, shouldClearDefault)
-                    if (!invocationOpen || invocationId != activeId) return@launch
-                    modelApplied = true
-                    clearMainModelOnNextSend = false
-                    if (prepared != null) {
-                        resolvedMainSession = prepared
+                val targetKey: SessionKey? = when (targetAtSend) {
+                    AssistTargetConversation.NewChat -> {
+                        val createdKey = createNewConversation(selectedPick)
+                        if (!invocationOpen || invocationId != activeId) return@launch
+                        modelApplied = true
+                        userModifiedTargetModel = false
+                        clearTargetModelOnNextSend = false
+                        baselineItemIds = emptySet()
+                        baselineCaptured = true
+                        sentTurns.clear()
+                        val boundTarget = AssistTargetConversation.Existing(
+                            key = createdKey,
+                            title = "",
+                            modelPick = selectedPick,
+                        )
+                        effectiveTarget = boundTarget
+                        onSelectObservedSession(createdKey)
+                        val boundModelChoice = if (forceDefaultModel) {
+                            DigitalAssistantModelChoice()
+                        } else {
+                            mutableState.value.modelChoice
+                        }
+                        mutableState.update {
+                            it.copy(
+                                targetConversation = boundTarget,
+                                availableConversations = mergeAvailableConversations(hubSnapshot.conversations, boundTarget),
+                                modelChoice = boundModelChoice,
+                            )
+                        }
+                        createdKey
                     }
-                    prepared ?: hubSnapshot.mainSession ?: resolvedMainSession
-                } else {
-                    hubSnapshot.mainSession ?: resolvedMainSession
+
+                    is AssistTargetConversation.Existing -> {
+                        if (sentTurns.isEmpty()) {
+                            if (snapshotMatchesTarget(hubSnapshot, targetAtSend) && hubSnapshot.chatSnapshot != null) {
+                                baselineItemIds = hubSnapshot.chatSnapshot?.items.orEmpty().mapTo(HashSet()) { it.id }
+                                baselineCaptured = true
+                            } else {
+                                baselineItemIds = emptySet()
+                                baselineCaptured = false
+                            }
+                        }
+                        val remotePick = if (hubSnapshot.activeSession == targetAtSend.key) {
+                            hubSnapshot.activeModelPick
+                        } else {
+                            targetAtSend.modelPick
+                        }
+                        val shouldClearDefault = (forceDefaultModel || clearTargetModelOnNextSend) && remotePick != null
+                        val shouldApplyPick = selectedPick != null &&
+                            (userModifiedTargetModel || selectedPick != remotePick)
+                        if (shouldApplyPick || shouldClearDefault) {
+                            val _ = prepareConversationModel(targetAtSend.key, selectedPick, shouldClearDefault)
+                            if (!invocationOpen || invocationId != activeId) return@launch
+                            modelApplied = true
+                            userModifiedTargetModel = false
+                            clearTargetModelOnNextSend = false
+                            effectiveTarget = targetAtSend.copy(modelPick = selectedPick)
+                        }
+                        targetAtSend.key
+                    }
+
+                    AssistTargetConversation.Main -> {
+                        if (sentTurns.isEmpty()) {
+                            if (snapshotMatchesTarget(hubSnapshot, targetAtSend)) {
+                                baselineItemIds = hubSnapshot.chatSnapshot?.items.orEmpty().mapTo(HashSet()) { it.id }
+                                baselineCaptured = true
+                            } else {
+                                baselineItemIds = emptySet()
+                                baselineCaptured = false
+                            }
+                        }
+                        val shouldClearDefault = forceDefaultModel ||
+                            clearMainModelOnNextSend ||
+                            (selectedPick == null && hubSnapshot.mainModelPick != null)
+                        if (selectedPick != null || shouldClearDefault) {
+                            val prepared = prepareConversationModel(null, selectedPick, shouldClearDefault)
+                            if (!invocationOpen || invocationId != activeId) return@launch
+                            modelApplied = true
+                            clearMainModelOnNextSend = false
+                            if (prepared != null) {
+                                resolvedMainSession = prepared
+                            }
+                            prepared ?: hubSnapshot.mainSession ?: resolvedMainSession
+                        } else {
+                            hubSnapshot.mainSession ?: resolvedMainSession
+                        }
+                    }
                 }
 
                 if (screenshot != null) {
-                    sendWithScreenToMain(targetMain, prompt, screenshot, contextCard, clientId)
+                    sendWithScreenToMain(targetKey, prompt, screenshot, contextCard, clientId)
                 } else {
-                    sendTextToMain(targetMain, prompt, clientId)
+                    sendTextToMain(targetKey, prompt, clientId)
                 }
 
                 if (!invocationOpen || invocationId != activeId) {
@@ -621,12 +887,14 @@ internal class AssistOverlayController(
                 }
                 // Release staged capture immediately after any successful turn (text-only or with screen).
                 releaseStagedCaptureOnly()
-                val projection = projectOverlayTurns(hubSnapshot, sentTurns, baselineItemIds)
+                val projection = projectForTarget(hubSnapshot, effectiveTarget)
                 mutableState.update {
                     it.copy(
                         draftText = "",
                         sending = false,
                         mainSession = hubSnapshot.mainSession ?: resolvedMainSession,
+                        targetConversation = effectiveTarget,
+                        availableConversations = mergeAvailableConversations(hubSnapshot.conversations, effectiveTarget),
                         modelFallbackAvailable = false,
                         errorMessage = null,
                         turns = projection.turns,
@@ -651,13 +919,18 @@ internal class AssistOverlayController(
     }
 
     /**
-     * Opens Persona's full `MainActivity` directly at the main conversation. Preserves any unsent
-     * text or manually-attached screen (never unconfirmed screenshots, never while device is locked),
-     * then dismisses the overlay.
+     * Opens Persona's full `MainActivity` directly at the active target conversation (main, selected
+     * existing conversation, or newly created conversation). Preserves any unsent text or
+     * manually-attached screen (never unconfirmed screenshots, never while device is locked), then
+     * dismisses the overlay.
      */
     fun openInPersona() {
         val current = mutableState.value
-        val targetSession = current.mainSession ?: resolvedMainSession
+        val targetSession = when (val target = current.targetConversation) {
+            AssistTargetConversation.Main -> current.mainSession ?: resolvedMainSession
+            is AssistTargetConversation.Existing -> target.key
+            AssistTargetConversation.NewChat -> null
+        }
         if (!current.deviceLocked) {
             val unsentText = current.draftText.trim()
             val confirmedShot = current.attachedScreenshot
@@ -691,12 +964,18 @@ internal class AssistOverlayController(
         deviceLockedForInvocation = false
         resolvedMainSession = null
         baselineItemIds = emptySet()
+        baselineCaptured = false
         sentTurns.clear()
+        userModifiedTargetModel = false
+        clearTargetModelOnNextSend = false
+        onSelectObservedSession(null)
         val previousState = mutableState.value
         mutableState.value = AssistOverlayUiState(
             captureStatus = AssistCaptureStatus.NotSupported,
             hubStatus = hubSnapshot.status,
             mainSession = hubSnapshot.mainSession,
+            targetConversation = AssistTargetConversation.Main,
+            availableConversations = hubSnapshot.conversations,
             modelChoice = persistedModelChoice,
             modelCatalog = cachedCatalog ?: DigitalAssistantModelCatalog(),
         )
@@ -740,8 +1019,70 @@ internal class AssistOverlayController(
             }
             if (!invocationOpen || invocationId != activeId) return@launch
             cachedCatalog = loaded
-            mutableState.update { it.copy(modelCatalog = loaded) }
+            mutableState.update { current ->
+                val target = current.targetConversation
+                val upgradedChoice = if (
+                    target is AssistTargetConversation.Existing &&
+                    !userModifiedTargetModel &&
+                    target.modelPick != null
+                ) {
+                    resolveModelChoiceForPick(target.modelPick, loaded)
+                } else {
+                    current.modelChoice
+                }
+                current.copy(modelCatalog = loaded, modelChoice = upgradedChoice)
+            }
         }
+    }
+
+    private fun resetProjectionForConversationSwitch() {
+        sentTurns.clear()
+        baselineItemIds = emptySet()
+        baselineCaptured = false
+        userModifiedTargetModel = false
+        clearTargetModelOnNextSend = false
+    }
+
+    private fun snapshotMatchesTarget(
+        snapshot: AssistHubSnapshot,
+        target: AssistTargetConversation,
+    ): Boolean = when (target) {
+        AssistTargetConversation.Main -> {
+            val expectedMain = snapshot.mainSession ?: resolvedMainSession
+            snapshot.activeSession == null || expectedMain == null || snapshot.activeSession == expectedMain
+        }
+        is AssistTargetConversation.Existing -> snapshot.activeSession == target.key
+        AssistTargetConversation.NewChat -> false
+    }
+
+    private fun projectForTarget(
+        snapshot: AssistHubSnapshot,
+        target: AssistTargetConversation,
+    ): OverlayTurnsProjection {
+        if (deviceLockedForInvocation || sentTurns.isEmpty()) {
+            return OverlayTurnsProjection(emptyList(), awaitingReply = false)
+        }
+        val safeSnapshot = if (snapshotMatchesTarget(snapshot, target)) {
+            snapshot
+        } else {
+            snapshot.copy(chatSnapshot = null, activeWorking = false, mainWorking = false)
+        }
+        return projectOverlayTurns(safeSnapshot, sentTurns, baselineItemIds, baselineCaptured = baselineCaptured)
+    }
+
+    private fun mergeAvailableConversations(
+        remote: List<AssistConversationOption>,
+        target: AssistTargetConversation,
+    ): List<AssistConversationOption> {
+        val existing = target as? AssistTargetConversation.Existing ?: return remote
+        if (remote.any { it.key == existing.key }) return remote
+        return listOf(
+            AssistConversationOption(
+                key = existing.key,
+                title = existing.title,
+                modelPick = existing.modelPick,
+            ),
+        ) + remote
     }
 
     private fun releaseStagedCaptureOnly() {
@@ -810,10 +1151,40 @@ internal data class OverlayTurnsProjection(
  * conversation's live [AssistHubSnapshot], preserving real-time streaming state and immediate
  * optimistic user bubbles.
  */
+internal fun resolveModelChoiceForPick(
+    pick: ModelPick?,
+    catalog: DigitalAssistantModelCatalog,
+): DigitalAssistantModelChoice {
+    if (pick == null) return DigitalAssistantModelChoice()
+    for (group in catalog.groups) {
+        val exact = group.options.firstOrNull { it.pick == pick }
+        if (exact != null) return exact.toChoice()
+    }
+    for (group in catalog.groups) {
+        val sameModel = group.options.firstOrNull {
+            it.pick.launcher == pick.launcher && it.pick.model == pick.model
+        }
+        if (sameModel != null) {
+            return DigitalAssistantModelChoice(
+                pick = pick,
+                modelLabel = sameModel.modelLabel,
+                launcherLabel = sameModel.launcherLabel,
+            )
+        }
+    }
+    val launcherTitle = catalog.groups.firstOrNull { it.launcher == pick.launcher }?.title.orEmpty()
+    return DigitalAssistantModelChoice(
+        pick = pick,
+        modelLabel = pick.model.orEmpty(),
+        launcherLabel = launcherTitle.ifBlank { pick.launcher },
+    )
+}
+
 internal fun projectOverlayTurns(
     hub: AssistHubSnapshot,
     sentTurns: List<SentOverlayTurn>,
     baselineItemIds: Set<String>,
+    baselineCaptured: Boolean = true,
 ): OverlayTurnsProjection {
     if (sentTurns.isEmpty()) return OverlayTurnsProjection(emptyList(), awaitingReply = false)
     val items = hub.chatSnapshot?.items.orEmpty()
@@ -823,8 +1194,12 @@ internal fun projectOverlayTurns(
 
     val firstIndex = items.indexOfFirst { item ->
         item.clientMsgId != null && item.clientMsgId in sentById
-    }.takeIf { it >= 0 } ?: items.indexOfFirst { item ->
-        item.id !in baselineItemIds && item.role == "user" && item.kind == "text"
+    }.takeIf { it >= 0 } ?: if (baselineCaptured) {
+        items.indexOfFirst { item ->
+            item.id !in baselineItemIds && item.role == "user" && item.kind == "text"
+        }
+    } else {
+        -1
     }
 
     val projected = mutableListOf<AssistOverlayTurn>()
@@ -894,7 +1269,7 @@ internal fun projectOverlayTurns(
     val awaitingReply = last != null &&
         last.fromUser &&
         last.delivery != AssistTurnDelivery.Failed &&
-        (hub.mainWorking || last.delivery == AssistTurnDelivery.Sending || last.delivery == AssistTurnDelivery.Sent)
+        (hub.activeWorking || last.delivery == AssistTurnDelivery.Sending || last.delivery == AssistTurnDelivery.Sent)
 
     return OverlayTurnsProjection(projected, awaitingReply)
 }

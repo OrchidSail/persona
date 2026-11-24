@@ -20,7 +20,9 @@ import org.robolectric.annotation.Config
 import persona.core.contracts.Item
 import persona.core.contracts.ModelPick
 import persona.core.contracts.ProtocolCompatibility
+import persona.core.contracts.Session
 import persona.core.contracts.SessionKey
+import persona.core.contracts.api.AssistantSnapshot
 import persona.core.contracts.api.ChatSnapshot
 import persona.core.contracts.api.ConnectionState
 import persona.core.contracts.api.DigitalAssistantModelCatalog
@@ -60,6 +62,7 @@ class AssistOverlayControllerTest {
     private data class PreparedModelCall(
         val pick: ModelPick?,
         val clearIfDefault: Boolean,
+        val targetSession: SessionKey? = null,
     )
 
     private class Harness(
@@ -72,11 +75,15 @@ class AssistOverlayControllerTest {
         var saveCount = 0
         val deletedAttachments = mutableListOf<ComposerAttachment>()
         val preparedModels = mutableListOf<PreparedModelCall>()
+        val createdNewConversations = mutableListOf<ModelPick?>()
+        val observedSessions = mutableListOf<SessionKey?>()
         val sentTexts = mutableListOf<Pair<String, String>>()
         val sentTargets = mutableListOf<SessionKey?>()
         val sentWithScreen = mutableListOf<Triple<String, ComposerAttachment, ChatLinkContext?>>()
         val persistedChoices = mutableListOf<DigitalAssistantModelChoice>()
         var modelSwitchFailure: Exception? = null
+        var createConversationFailure: Exception? = null
+        var nextCreatedSession: SessionKey = SessionKey("machine-1", "created-1")
         var catalogLoads = 0
         var catalogResponse = DigitalAssistantModelCatalog(
             groups = listOf(
@@ -115,13 +122,21 @@ class AssistOverlayControllerTest {
                 )
             },
             deleteScreenshot = { deletedAttachments += it },
-            prepareMainModel = { pick, clearIfDefault ->
-                preparedModels += PreparedModelCall(pick, clearIfDefault)
+            prepareConversationModel = { targetSession, pick, clearIfDefault ->
+                preparedModels += PreparedModelCall(pick, clearIfDefault, targetSession)
                 if (pick != null) {
                     modelSwitchFailure?.let { throw it }
                 }
-                resolvedMainSession
+                targetSession ?: resolvedMainSession
             },
+            createNewConversation = { pick ->
+                createdNewConversations += pick
+                if (pick != null) {
+                    createConversationFailure?.let { throw it }
+                }
+                nextCreatedSession
+            },
+            onSelectObservedSession = { observedSessions += it },
             sendTextToMain = { target, prompt, clientId ->
                 sentTargets += target
                 sentTexts += prompt to clientId
@@ -1047,5 +1062,339 @@ class AssistOverlayControllerTest {
         shot.recycle()
         controller.endSession()
         runCurrent()
+    }
+
+    @Test
+    fun switchingToExistingConversationIsolatesModelStreamAndFullAppTargetWithoutTouchingMain() = runTest {
+        val claudePick = ModelPick(launcher = "claude", model = "claude-sonnet-4-6")
+        val claudeChoice = DigitalAssistantModelChoice(
+            pick = claudePick,
+            modelLabel = "Claude Sonnet 4.6",
+            launcherLabel = "Claude",
+        )
+        val otherKey = SessionKey("machine-1", "conv-research")
+        val otherOption = AssistConversationOption(
+            key = otherKey,
+            title = "Price Research",
+            modelPick = fastPick,
+        )
+        val harness = Harness(this, initialModelChoice = claudeChoice)
+        val controller = harness.controller
+
+        // Default invocation starts on Main with Main's persisted model and never auto-creates conversations.
+        controller.onHubUpdate(
+            AssistHubSnapshot(
+                status = AssistHubStatus.Ready,
+                mainSession = mainKey,
+                mainModelPick = claudePick,
+                activeSession = mainKey,
+                activeModelPick = claudePick,
+                conversations = listOf(otherOption),
+                chatSnapshot = ChatSnapshot(
+                    items = listOf(Item(id = "main-old-1", role = "assistant", kind = "text", text = "Main history")),
+                    loading = false,
+                ),
+            ),
+        )
+        controller.beginSession(supportsScreenshot = false)
+        assertEquals(AssistTargetConversation.Main, controller.state.value.targetConversation)
+        assertEquals(claudeChoice, controller.state.value.modelChoice)
+        assertTrue(harness.createdNewConversations.isEmpty())
+        assertEquals(listOf<SessionKey?>(null), harness.observedSessions)
+
+        // Send one turn on Main so Main has active turns.
+        controller.updateDraftText("Main turn")
+        controller.send()
+        runCurrent()
+        assertEquals(listOf<SessionKey?>(mainKey), harness.sentTargets)
+        assertEquals(listOf(PreparedModelCall(claudePick, clearIfDefault = false, targetSession = null)), harness.preparedModels)
+        assertEquals(1, controller.state.value.turns.size)
+        harness.preparedModels.clear()
+
+        // Switch to existing non-main conversation: clears turns, routes observation, adopts its own model without persisting over Main.
+        controller.selectExistingConversation(otherOption)
+        assertEquals(
+            AssistTargetConversation.Existing(otherKey, "Price Research", fastPick),
+            controller.state.value.targetConversation,
+        )
+        assertEquals(fastPick, controller.state.value.modelChoice.pick)
+        assertTrue("Switching conversations must reset displayed turns", controller.state.value.turns.isEmpty())
+        assertFalse(controller.state.value.awaitingReply)
+        assertEquals(otherKey, harness.observedSessions.last())
+        assertTrue("Selecting another conversation must not overwrite Main preference", harness.persistedChoices.isEmpty())
+
+        // Stale Hub update still carrying Main's activeSession must NOT bleed Main turns into otherKey.
+        controller.onHubUpdate(
+            AssistHubSnapshot(
+                status = AssistHubStatus.Ready,
+                mainSession = mainKey,
+                mainWorking = true,
+                activeSession = mainKey,
+                activeWorking = true,
+                conversations = listOf(otherOption),
+                chatSnapshot = ChatSnapshot(
+                    items = listOf(
+                        Item(id = "main-u-1", role = "user", kind = "text", text = "Main turn"),
+                        Item(id = "main-a-1", role = "assistant", kind = "text", text = "Main streaming reply"),
+                    ),
+                    loading = false,
+                    streamingItemIds = setOf("main-a-1"),
+                ),
+            ),
+        )
+        assertTrue(controller.state.value.turns.isEmpty())
+
+        // Bridge switches to observing otherKey with existing history.
+        val otherHistory = Item(id = "other-old-1", role = "assistant", kind = "text", text = "Earlier research")
+        controller.onHubUpdate(
+            AssistHubSnapshot(
+                status = AssistHubStatus.Ready,
+                mainSession = mainKey,
+                mainModelPick = claudePick,
+                activeSession = otherKey,
+                activeModelPick = fastPick,
+                conversations = listOf(otherOption),
+                chatSnapshot = ChatSnapshot(items = listOf(otherHistory), loading = false),
+            ),
+        )
+
+        // Change otherKey's model independently -> must NOT persist to Main's preferences.
+        val codexPick = ModelPick(launcher = "codex", model = "gpt-5.4")
+        val codexChoice = DigitalAssistantModelChoice(pick = codexPick, modelLabel = "GPT-5.4", launcherLabel = "Codex")
+        controller.selectModel(codexChoice)
+        assertEquals(codexChoice, controller.state.value.modelChoice)
+        assertTrue("Changing model on non-main conversation must not touch Main preference", harness.persistedChoices.isEmpty())
+
+        // Send in otherKey -> updates ONLY otherKey's model and routes message to otherKey.
+        controller.updateDraftText("Compare Q4 pricing")
+        controller.send()
+        runCurrent()
+        assertEquals(
+            listOf(PreparedModelCall(pick = codexPick, clearIfDefault = false, targetSession = otherKey)),
+            harness.preparedModels,
+        )
+        assertEquals(listOf<SessionKey?>(mainKey, otherKey), harness.sentTargets)
+
+        val sentClientId = controller.state.value.turns.single().id.removePrefix("pending:")
+        controller.onHubUpdate(
+            AssistHubSnapshot(
+                status = AssistHubStatus.Ready,
+                mainSession = mainKey,
+                mainModelPick = claudePick,
+                activeSession = otherKey,
+                activeModelPick = codexPick,
+                activeWorking = true,
+                conversations = listOf(otherOption.copy(modelPick = codexPick)),
+                chatSnapshot = ChatSnapshot(
+                    items = listOf(
+                        otherHistory,
+                        Item(id = "other-u-1", role = "user", kind = "text", text = "Compare Q4 pricing", clientMsgId = sentClientId),
+                        Item(id = "other-a-1", role = "assistant", kind = "text", text = "Q4 summary"),
+                    ),
+                    loading = false,
+                    streamingItemIds = setOf("other-a-1"),
+                ),
+            ),
+        )
+        assertEquals(2, controller.state.value.turns.size)
+        assertEquals("Compare Q4 pricing", controller.state.value.turns[0].text)
+        assertEquals("Q4 summary", controller.state.value.turns[1].text)
+        assertTrue(controller.state.value.turns[1].streaming)
+
+        // Swipe-up / open in Persona opens otherKey directly (not Main).
+        controller.updateDraftText("Unsent note")
+        controller.openInPersona()
+        assertEquals(listOf<SessionKey?>(otherKey), harness.launchedTargets)
+        assertEquals(otherKey, harness.publishedDrafts.single().targetSession)
+
+        // Switching back to Main restores Main's persisted model choice and clears otherKey turns.
+        controller.selectMainConversation()
+        assertEquals(AssistTargetConversation.Main, controller.state.value.targetConversation)
+        assertEquals(claudeChoice, controller.state.value.modelChoice)
+        assertTrue(controller.state.value.turns.isEmpty())
+        assertNull(harness.observedSessions.last())
+
+        controller.endSession()
+        runCurrent()
+    }
+
+    @Test
+    fun creatingNewStandaloneConversationUsesIndependentModelAndStaysBoundAcrossFollowUps() = runTest {
+        val mainChoice = DigitalAssistantModelChoice(
+            pick = ModelPick("claude", "claude-sonnet-4-6"),
+            modelLabel = "Claude Sonnet 4.6",
+            launcherLabel = "Claude",
+        )
+        val createdKey = SessionKey("machine-1", "standalone-42")
+        val harness = Harness(this, initialModelChoice = mainChoice).apply {
+            nextCreatedSession = createdKey
+        }
+        val controller = harness.controller
+        controller.onHubUpdate(
+            AssistHubSnapshot(
+                status = AssistHubStatus.Ready,
+                mainSession = mainKey,
+                mainModelPick = mainChoice.pick,
+            ),
+        )
+        controller.beginSession(supportsScreenshot = false)
+
+        // Stage a new conversation and pick an independent model -> never touches Main's persisted choice.
+        controller.selectNewConversation()
+        assertEquals(AssistTargetConversation.NewChat, controller.state.value.targetConversation)
+        assertTrue("New conversation starts with independent default model", controller.state.value.modelChoice.isDefault)
+        controller.selectModel(fastChoice)
+        assertEquals(fastChoice, controller.state.value.modelChoice)
+        assertTrue(harness.persistedChoices.isEmpty())
+        assertTrue("Must not hit Hub until user actually sends", harness.createdNewConversations.isEmpty())
+
+        // Turn 1: creates standalone non-main conversation with fastPick and binds overlay to it.
+        controller.updateDraftText("Draft a quick travel checklist")
+        controller.send()
+        runCurrent()
+
+        assertEquals(listOf<ModelPick?>(fastPick), harness.createdNewConversations)
+        assertTrue("Creating new conversation must never mutate Main's model", harness.preparedModels.isEmpty())
+        assertEquals(listOf<SessionKey?>(createdKey), harness.sentTargets)
+        assertEquals(createdKey, harness.observedSessions.last())
+        assertEquals(
+            AssistTargetConversation.Existing(createdKey, "", fastPick),
+            controller.state.value.targetConversation,
+        )
+
+        // Turn 2 follow-up stays inside createdKey without creating another conversation.
+        controller.updateDraftText("Add rain gear")
+        controller.send()
+        runCurrent()
+        assertEquals(1, harness.createdNewConversations.size)
+        assertEquals(listOf<SessionKey?>(createdKey, createdKey), harness.sentTargets)
+
+        // Opening full Persona lands directly on createdKey.
+        controller.openInPersona()
+        assertEquals(listOf<SessionKey?>(createdKey), harness.launchedTargets)
+
+        controller.endSession()
+        runCurrent()
+    }
+
+    @Test
+    fun newConversationModelErrorAllowsFallbackToDefaultModelWithoutTouchingMain() = runTest {
+        val createdKey = SessionKey("machine-1", "standalone-fallback")
+        val harness = Harness(this).apply {
+            nextCreatedSession = createdKey
+            createConversationFailure = IllegalStateException("Provider unavailable")
+        }
+        val controller = harness.controller
+        controller.onHubUpdate(AssistHubSnapshot(status = AssistHubStatus.Ready, mainSession = mainKey))
+        controller.beginSession(supportsScreenshot = false)
+
+        controller.selectNewConversation()
+        controller.selectModel(fastChoice)
+        controller.updateDraftText("Summarize this article")
+        controller.send()
+        runCurrent()
+
+        assertTrue(controller.state.value.modelFallbackAvailable)
+        assertEquals("Provider unavailable", controller.state.value.errorMessage)
+        assertEquals(AssistTargetConversation.NewChat, controller.state.value.targetConversation)
+
+        // One-tap fallback retries new conversation creation with default model (pick = null), never overwriting Main.
+        controller.retryWithDefaultMain()
+        runCurrent()
+
+        assertEquals(listOf<ModelPick?>(fastPick, null), harness.createdNewConversations)
+        assertTrue(harness.preparedModels.isEmpty())
+        assertEquals(listOf<SessionKey?>(createdKey), harness.sentTargets)
+        assertEquals(AssistTargetConversation.Existing(createdKey, "", null), controller.state.value.targetConversation)
+        assertTrue(controller.state.value.modelChoice.isDefault)
+        assertFalse(controller.state.value.modelFallbackAvailable)
+
+        controller.endSession()
+        runCurrent()
+    }
+
+    @Test
+    fun selectOverlayConversationsFiltersArchivedMainSpaceReadOnlyAndRespectsOrder() {
+        val archivedSession = Session(
+            machineId = "m1",
+            sessionId = "conv-archived",
+            title = "Old Archived",
+            archived = true,
+            updatedAt = "2026-11-24T12:00:00Z",
+        )
+        val liveArchivedSession = Session(
+            machineId = "m1",
+            sessionId = "conv-archived-live",
+            title = "Archived Live",
+            archived = false,
+            updatedAt = "2026-11-24T12:01:00Z",
+        )
+        val mainSession = Session(
+            machineId = "m1",
+            sessionId = "main-1",
+            title = "Main",
+            updatedAt = "2026-11-24T12:10:00Z",
+        )
+        val spaceSession = Session(
+            machineId = "m1",
+            sessionId = "conv-space",
+            title = "Health",
+            space = "health",
+            updatedAt = "2026-11-24T12:05:00Z",
+        )
+        val readOnlySession = Session(
+            machineId = "m1",
+            sessionId = "conv-ro",
+            title = "Read Only",
+            readOnlyReason = "viewer",
+            updatedAt = "2026-11-24T12:05:00Z",
+        )
+        val bgSession = Session(
+            machineId = "m1",
+            sessionId = "conv-bg",
+            title = "Supervisor",
+            updatedAt = "2026-11-24T12:05:00Z",
+        )
+        val chatOlder = Session(
+            machineId = "m1",
+            sessionId = "conv-older",
+            title = "",
+            updatedAt = "2026-11-24T10:00:00Z",
+        )
+        val chatNewer = Session(
+            machineId = "m1",
+            sessionId = "conv-newer",
+            title = "Research",
+            modelPick = fastPick,
+            updatedAt = "2026-11-24T11:30:00Z",
+        )
+        val snapshot = AssistantSnapshot(
+            mainSession = SessionKey("m1", "main-1"),
+            conversations = listOf(
+                archivedSession,
+                liveArchivedSession,
+                mainSession,
+                spaceSession,
+                readOnlySession,
+                bgSession,
+                chatOlder,
+                chatNewer,
+            ),
+            directionNames = mapOf("conv-older" to "Weekly Plan"),
+            backgroundSupervisor = "conv-bg",
+            conversationOrder = listOf("conv-older"),
+        )
+        val liveSessions = listOf(
+            liveArchivedSession.copy(archived = true),
+            chatNewer.copy(status = "working"),
+        )
+
+        val options = selectOverlayConversations(snapshot, liveSessions)
+        assertEquals(listOf("conv-older", "conv-newer"), options.map { it.key.sessionId })
+        assertEquals("Weekly Plan", options[0].title)
+        assertFalse(options[0].working)
+        assertEquals("Research", options[1].title)
+        assertEquals(fastPick, options[1].modelPick)
+        assertTrue(options[1].working)
     }
 }

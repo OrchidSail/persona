@@ -36,7 +36,11 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import persona.android.ui.ComponentActivityHostRule
 import persona.core.contracts.ModelPick
+import persona.core.contracts.SessionKey
+import persona.core.contracts.api.DigitalAssistantModelCatalog
 import persona.core.contracts.api.DigitalAssistantModelChoice
+import persona.core.contracts.api.DigitalAssistantModelGroup
+import persona.core.contracts.api.DigitalAssistantModelOption
 import persona.core.designsystem.AppStyle
 import persona.core.designsystem.PersonaTheme
 import persona.core.designsystem.Tokens
@@ -685,6 +689,112 @@ class AssistOverlaySheetUiTest {
         }
         rule.waitForIdle()
         assertEquals("Locked overlay still dismisses via swipe-down", 2, dismissed)
+    }
+
+    @Test
+    fun conversationAndModelPickerSwitchesTargetsAndUpdatesPillAndReplyHeader() {
+        val convA = AssistConversationOption(
+            key = SessionKey("m1", "conv-a"),
+            title = "Travel Plan",
+            modelPick = ModelPick("gemini", "gemini-2.5-flash"),
+        )
+        val convB = AssistConversationOption(
+            key = SessionKey("m1", "conv-b"),
+            title = "Budget",
+        )
+        val fastChoice = DigitalAssistantModelChoice(
+            pick = ModelPick("gemini", "gemini-2.5-flash"),
+            modelLabel = "Gemini 2.5 Flash",
+            launcherLabel = "Gemini",
+        )
+        val catalog = DigitalAssistantModelCatalog(
+            groups = listOf(
+                DigitalAssistantModelGroup(
+                    launcher = "gemini",
+                    title = "Gemini",
+                    options = listOf(
+                        DigitalAssistantModelOption(
+                            pick = ModelPick("gemini", "gemini-2.5-flash"),
+                            modelLabel = "Gemini 2.5 Flash",
+                            launcherLabel = "Gemini",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        var selectedMain = 0
+        var selectedNew = 0
+        val selectedExisting = mutableListOf<AssistConversationOption>()
+        var uiState by mutableStateOf(
+            AssistOverlayUiState(
+                invocationId = "inv-conv-picker",
+                captureStatus = AssistCaptureStatus.Available,
+                hubStatus = AssistHubStatus.Ready,
+                modelPickerOpen = true,
+                availableConversations = listOf(convA, convB),
+                modelCatalog = catalog,
+            ),
+        )
+
+        rule.setContent {
+            PersonaTheme(darkTheme = false, reduceMotion = true, style = AppStyle.Glass) {
+                AssistOverlaySheet(
+                    ui = uiState,
+                    onDraftChange = {},
+                    onDictationHeard = {},
+                    onNotice = {},
+                    onAttachScreen = {},
+                    onRemoveScreen = {},
+                    onSelectMainConversation = { selectedMain++ },
+                    onSelectExistingConversation = { selectedExisting += it },
+                    onSelectNewConversation = { selectedNew++ },
+                    onSend = {},
+                    onOpenInPersona = {},
+                    onDismiss = {},
+                )
+            }
+        }
+
+        rule.onNodeWithTag("assist-conversation-strip").assertExists()
+        val mainChip = rule.onNodeWithTag("assist-conversation-option-main").getUnclippedBoundsInRoot()
+        val newChip = rule.onNodeWithTag("assist-conversation-option-new").getUnclippedBoundsInRoot()
+        val existingChip = rule.onNodeWithTag("assist-conversation-option-conv-a").getUnclippedBoundsInRoot()
+        assertTrue("Main chip >= 44dp tall", mainChip.height >= 44.dp)
+        assertTrue("New chat chip >= 44dp tall", newChip.height >= 44.dp)
+        assertTrue("Existing conversation chip >= 44dp tall", existingChip.height >= 44.dp)
+
+        rule.onNodeWithTag("assist-conversation-option-new").performClick()
+        assertEquals(1, selectedNew)
+        rule.onNodeWithTag("assist-conversation-option-conv-a").performClick()
+        assertEquals(listOf(convA), selectedExisting)
+        rule.onNodeWithTag("assist-conversation-option-main").performClick()
+        assertEquals(1, selectedMain)
+
+        // NewChat + custom model shows concise combined label on bottom pill.
+        rule.runOnIdle {
+            uiState = uiState.copy(
+                modelPickerOpen = false,
+                targetConversation = AssistTargetConversation.NewChat,
+                modelChoice = fastChoice,
+            )
+        }
+        rule.waitForIdle()
+        rule.onNodeWithText("New · Gemini 2.5 Flash").assertExists()
+
+        // Existing non-main conversation shows its title on both pill and expanded reply header.
+        rule.runOnIdle {
+            uiState = uiState.copy(
+                targetConversation = AssistTargetConversation.Existing(convA.key, convA.title, convA.modelPick),
+                modelChoice = fastChoice,
+                turns = listOf(
+                    AssistOverlayTurn(id = "u-1", fromUser = true, text = "Check flights"),
+                    AssistOverlayTurn(id = "a-1", fromUser = false, text = "Checking options"),
+                ),
+            )
+        }
+        rule.waitForIdle()
+        rule.onNodeWithText("Travel Plan · Gemini 2.5 Flash").assertExists()
+        rule.onNodeWithTag("assist-reply-target-label").assertExists()
     }
 
     private class FakeDictationController : AssistDictationController {
