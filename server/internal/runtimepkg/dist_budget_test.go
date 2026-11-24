@@ -27,10 +27,13 @@ import (
 // Antigravity Gemini API-key gateway model discovery routes through HTTP(S)_PROXY and honors NO_PROXY (#14552), 1,497 B (262,588 B).
 // Keeping Antigravity steps at a reused lower index when the export goes on past them, dropping them again once the run re-covers them (#14626), adds 230 B (262,818 B).
 // Antigravity native error backfill at every unexported index, loading conversations another agy process created, with read failures in the history token (#14627), 427 B (263,245 B).
-// Keeping delivered Antigravity replies visible across background task wakes (retiring idle-with-background autonomous turns, detecting live native wake boundaries, in-place RUNNING->DONE step updates, and item-before-delta ordering in runtime-sdk; #14920), 1,004 B (264,249 B).
+// Antigravity subagent reports and background task results as task notices, invoke_subagent Role / Prompt (#14625), 749 B (263,994 B).
+// Untitled Antigravity conversations take a short title from their first prompt line (#14629), 218 B (264,212 B).
+// An API error agy streams as message text becomes the turn's error, kept in history and settled idle (#14628), 231 B (264,443 B).
+// Keeping Antigravity context compatibility in compat.js (#14922) added 123 B on main (264,538 B generated); preserving delivered replies across live background wakes, in-place RUNNING->DONE updates and runtime-sdk catch-up/batch delta ordering (#14920) adds 1,025 B (265,563 B generated, 265,591 B ceiling).
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 264_249
+	const budget = 265_591
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {
