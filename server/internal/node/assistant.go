@@ -169,9 +169,12 @@ type assistantProc struct {
 	// (workingLocked).
 	lifecycle bool
 
-	// owner: the Node that took it over from an earlier connection of a resident node (assistant_keep.go); nil: the
-	// one that started it.
+	// owner: the Node that started it, or the one that took it over from an earlier connection of a resident node
+	// (assistant_keep.go); nil in synthetic tests that never went through spawn.
 	owner atomic.Pointer[Node]
+	// stopped: stop() has been invoked on this process, so its exit waiter sweeps any straggler descendants from its
+	// process group before dropping it from liveAssistants and closing exited.
+	stopped atomic.Bool
 
 	// round: it runs a round of the background supervisor, resumed at the end of the conversation's first turn
 	// (assistant_round.go). It is never compacted when idle: that would cut the first turn off the chain the next
@@ -691,6 +694,9 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 	}
 	asked := ""
 	if agent == "claude" {
+		if _, err := n.resolveClaudeModelArg(ctx, launcher, execution.Model); err != nil {
+			return "", err
+		}
 		asked = n.startProfile(executionOption(options).ConfigDir, guestKind, resume)
 		execution.ConfigDir, err = n.assistantProfileSelection(ctx, id, launcher, asked, resume)
 		if err != nil {
@@ -961,6 +967,14 @@ func (n *Node) assistantSend(ctx context.Context, id, cwd, launcher, text string
 	if p == nil {
 		if p, err = n.spawnAssistantWith(id, cwd, launcher, resume && n.transcriptPath(id) != "", false, round, execution); err != nil {
 			return "", err
+		}
+	}
+	if title, preparing := ctx.Value(segmentTitleKey{}).(string); preparing && p.cx != nil {
+		// Codex writes the empty rollout when named. The receipt must remain resumable after idle release.
+		if err := p.cx.call(ctx, "thread/name/set", map[string]any{"threadId": id, "name": title}, nil); err != nil {
+			n.logf("assistant %s: could not persist prepared Codex thread: %v", short(id), err)
+			n.stopAssistantProcess(id)
+			return "", refusal("missing_generation", i18n.T(i18n.From(ctx), "assistant-conversation_segments.missing_generation"), nil)
 		}
 	}
 	if startTier != "" {
