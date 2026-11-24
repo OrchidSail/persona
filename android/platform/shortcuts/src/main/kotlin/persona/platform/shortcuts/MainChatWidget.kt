@@ -74,7 +74,7 @@ class MainChatWidget : GlanceAppWidget() {
         val assistant = dependencies.assistant()
         val sessions = dependencies.sessions()
         val interactions = dependencies.interactions()
-        val persisted = MainChatWidgetStore.read(context)
+        val runtime = dependencies.surfaces()
 
         provideContent {
             val revision by lookRevision.collectAsState()
@@ -90,6 +90,8 @@ class MainChatWidget : GlanceAppWidget() {
             val assistantSnapshot by assistant.assistant.collectAsState()
             val sessionList by sessions.sessions.collectAsState()
             val pendingList by interactions.pending.collectAsState()
+            val settledPairing by runtime.mainChatLivePairing.collectAsState()
+            val activePairing = if (paired) feed.activePairing()?.takeIf(String::isNotBlank) else null
             val live = MainChatWidgetState.build(
                 paired = paired,
                 assistant = assistantSnapshot,
@@ -97,8 +99,22 @@ class MainChatWidget : GlanceAppWidget() {
                 interactions = pendingList,
                 resources = context.resources,
             )
-            // Keep persisted snapshot visible while paired repositories finish warming up after a cold start.
-            val snapshot = if (paired && !live.hasPopulatedState() && persisted?.paired == true) persisted else live
+            val liveSettled = MainChatWidgetState.isLiveSettled(
+                paired = paired,
+                activePairing = activePairing,
+                settledPairing = settledPairing,
+                assistant = assistantSnapshot,
+                sessions = sessionList,
+                interactions = pendingList,
+            )
+            val persisted = remember(paired, activePairing, liveSettled, revision) {
+                if (paired && !liveSettled) MainChatWidgetStore.read(context, activePairing) else null
+            }
+            val snapshot = MainChatWidgetState.selectSnapshot(
+                live = live,
+                persisted = persisted,
+                liveSettled = liveSettled,
+            )
             Content(context, look, snapshot)
         }
     }

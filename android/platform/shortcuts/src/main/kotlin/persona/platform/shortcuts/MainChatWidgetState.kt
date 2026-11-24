@@ -82,12 +82,7 @@ data class MainChatWidgetSnapshot(
     val pendingCount: Int = 0,
     val pending: MainChatPendingItem? = null,
     val todos: List<MainChatTodoItem> = emptyList(),
-) {
-    /** True when live repositories already populated meaningful main-chat state beyond an empty default shell. */
-    fun hasPopulatedState(): Boolean =
-        mainSession != null || summary.isNotEmpty() || pending != null || pendingCount > 0 ||
-            todos.isNotEmpty() || phase != MainChatPhase.Idle
-}
+)
 
 /** Pure projection from repository state into [MainChatWidgetSnapshot]. */
 object MainChatWidgetState {
@@ -227,6 +222,44 @@ object MainChatWidgetState {
         DirectionTaskState.Working -> 3
         DirectionTaskState.Planned -> 4
     }
+
+    /** True when any live repository carries state beyond its initial empty cold-start placeholder. */
+    internal fun hasLiveRepositoryData(
+        assistant: AssistantSnapshot,
+        sessions: List<Session>,
+        interactions: List<Interaction>,
+    ): Boolean = assistant != AssistantSnapshot() || sessions.isNotEmpty() || interactions.isNotEmpty()
+
+    /**
+     * True once live repositories are authoritative for [activePairing] — either because [SurfacesRuntime]
+     * explicitly settled this pairing (via a prior live emission or online warmup completion) or because
+     * the live flows already carry non-placeholder repository state.
+     */
+    internal fun isLiveSettled(
+        paired: Boolean,
+        activePairing: String?,
+        settledPairing: String?,
+        assistant: AssistantSnapshot,
+        sessions: List<Session>,
+        interactions: List<Interaction>,
+    ): Boolean {
+        if (!paired) return true
+        val scope = activePairing?.takeIf(String::isNotBlank) ?: return false
+        if (settledPairing == scope) return true
+        return hasLiveRepositoryData(assistant, sessions, interactions)
+    }
+
+    /**
+     * Selects the snapshot to display on [MainChatWidget]: renders [live] whenever unpaired or live state
+     * has settled for the active pairing, falling back to a pairing-verified [persisted] snapshot only
+     * during cold-start warmup before live repositories settle.
+     */
+    internal fun selectSnapshot(
+        live: MainChatWidgetSnapshot,
+        persisted: MainChatWidgetSnapshot?,
+        liveSettled: Boolean,
+    ): MainChatWidgetSnapshot =
+        if (!live.paired || liveSettled) live else (persisted?.takeIf { it.paired } ?: live)
 
     private const val SUMMARY_MAX_CHARS = 400
     private const val TODO_MAX_CHARS = 80
@@ -377,21 +410,56 @@ object MainChatText {
 
 /**
  * Pairing-scoped disk cache for [MainChatWidgetSnapshot] in SharedPreferences (`main_chat_widget`),
- * enabling instant local-first widget rendering before live hub streams populate and clean wipe on unpair.
+ * enabling instant local-first widget rendering before live hub streams settle and preventing any
+ * cross-hub leakage across unpair or re-pair.
  */
 internal object MainChatWidgetStore {
     const val PREFS_NAME = "main_chat_widget"
+    private const val KEY_PAIRING = "pairing"
     private const val KEY_SNAPSHOT = "snapshot"
 
-    fun save(context: Context, snapshot: MainChatWidgetSnapshot) {
+    private data class StoredRecord(
+        val pairingScope: String,
+        val snapshot: MainChatWidgetSnapshot,
+    )
+
+    fun save(context: Context, pairingScope: String?, snapshot: MainChatWidgetSnapshot) {
+        if (!snapshot.paired) {
+            clear(context)
+            return
+        }
+        val scope = pairingScope?.takeIf(String::isNotBlank) ?: return
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit { val _ = putString(KEY_SNAPSHOT, encode(snapshot)) }
+        prefs.edit {
+            val _ = putString(KEY_PAIRING, scope)
+            val _ = putString(KEY_SNAPSHOT, encode(snapshot, scope))
+        }
     }
 
-    fun read(context: Context): MainChatWidgetSnapshot? {
+    /**
+     * Reads the persisted snapshot only when both [KEY_PAIRING] and the stored JSON `"pairing"` field
+     * match [activePairing]. Legacy unscoped records, corrupt payloads, or snapshots belonging to a
+     * different pairing are cleared immediately and never returned.
+     */
+    fun read(context: Context, activePairing: String?): MainChatWidgetSnapshot? {
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val raw = prefs.getString(KEY_SNAPSHOT, null) ?: return null
-        return decode(raw)
+        val raw = prefs.getString(KEY_SNAPSHOT, null)
+        val storedPairing = prefs.getString(KEY_PAIRING, null)?.takeIf(String::isNotBlank)
+        if (raw == null) {
+            if (storedPairing != null) clear(context)
+            return null
+        }
+        val scope = activePairing?.takeIf(String::isNotBlank)
+        if (scope == null || storedPairing != scope) {
+            clear(context)
+            return null
+        }
+        val record = decodeRecord(raw)
+        if (record == null || record.pairingScope != scope) {
+            clear(context)
+            return null
+        }
+        return record.snapshot
     }
 
     fun clear(context: Context) {
@@ -399,8 +467,9 @@ internal object MainChatWidgetStore {
         prefs.edit { val _ = clear() }
     }
 
-    internal fun encode(snapshot: MainChatWidgetSnapshot): String {
+    internal fun encode(snapshot: MainChatWidgetSnapshot, pairingScope: String): String {
         val root = JSONObject()
+        val _ = root.put("pairing", pairingScope)
         val _ = root.put("paired", snapshot.paired)
         val _ = root.put("phase", snapshot.phase.wire)
         snapshot.mainSession?.let {
@@ -434,8 +503,15 @@ internal object MainChatWidgetStore {
         return root.toString()
     }
 
-    internal fun decode(raw: String): MainChatWidgetSnapshot? = runCatching {
+    internal fun decode(raw: String, expectedPairing: String): MainChatWidgetSnapshot? {
+        val scope = expectedPairing.takeIf(String::isNotBlank) ?: return null
+        val record = decodeRecord(raw) ?: return null
+        return if (record.pairingScope == scope) record.snapshot else null
+    }
+
+    private fun decodeRecord(raw: String): StoredRecord? = runCatching {
         val root = JSONObject(raw)
+        val pairingScope = root.optString("pairing", "").takeIf(String::isNotBlank) ?: return null
         val paired = root.optBoolean("paired", false)
         val phase = MainChatPhase.fromWire(root.optString("phase", MainChatPhase.Unpaired.wire))
         val machine = root.optString("main_machine", "").takeIf { it.isNotEmpty() }
@@ -468,15 +544,18 @@ internal object MainChatWidgetStore {
                 }
             }
         }
-        MainChatWidgetSnapshot(
-            paired = paired,
-            phase = if (paired) phase else MainChatPhase.Unpaired,
-            mainSession = mainKey,
-            summary = root.optString("summary", ""),
-            updatedAt = root.optString("updated_at", "").takeIf { it.isNotEmpty() },
-            pendingCount = root.optInt("pending_count", 0).coerceAtLeast(0),
-            pending = pending,
-            todos = todos.take(MainChatWidgetState.MAX_TODOS),
+        StoredRecord(
+            pairingScope = pairingScope,
+            snapshot = MainChatWidgetSnapshot(
+                paired = paired,
+                phase = if (paired) phase else MainChatPhase.Unpaired,
+                mainSession = mainKey,
+                summary = root.optString("summary", ""),
+                updatedAt = root.optString("updated_at", "").takeIf { it.isNotEmpty() },
+                pendingCount = root.optInt("pending_count", 0).coerceAtLeast(0),
+                pending = pending,
+                todos = todos.take(MainChatWidgetState.MAX_TODOS),
+            ),
         )
     }.getOrNull()
 }

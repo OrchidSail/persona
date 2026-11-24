@@ -694,7 +694,7 @@ class MainChatWidgetTest {
     }
 
     @Test
-    fun snapshotStoreRoundTripsAndClearsOnUnpair() {
+    fun snapshotStoreRoundTripsAndEnforcesPairingScope() {
         val original = MainChatWidgetSnapshot(
             paired = true,
             phase = MainChatPhase.NeedsYou,
@@ -715,16 +715,34 @@ class MainChatWidgetTest {
                 MainChatTodoItem("t2", "Pack charger", DirectionTaskState.Planned.wire),
             ),
         )
-        MainChatWidgetStore.save(context, original)
-        val restored = MainChatWidgetStore.read(context)
-        assertEquals(original, restored)
+        val hubA = "hub-a/scope"
+        val hubB = "hub-b/scope"
+        val prefs = context.getSharedPreferences(MainChatWidgetStore.PREFS_NAME, Context.MODE_PRIVATE)
 
-        MainChatWidgetStore.clear(context)
-        assertNull(MainChatWidgetStore.read(context))
+        MainChatWidgetStore.save(context, hubA, original)
+        assertEquals(original, MainChatWidgetStore.read(context, hubA))
+        assertEquals(hubA, prefs.getString("pairing", null))
+
+        // Reading with a different active pairing returns null and wipes the previous hub's snapshot.
+        assertNull(MainChatWidgetStore.read(context, hubB))
+        assertTrue(prefs.all.isEmpty())
+
+        // Legacy unscoped snapshot (missing pairing key and JSON pairing field) is treated as mismatch and cleared.
+        prefs.edit().putString("snapshot", """{"paired":true,"phase":"needs_you","summary":"Legacy leak"}""").commit()
+        assertNull(MainChatWidgetStore.read(context, hubA))
+        assertTrue(prefs.all.isEmpty())
+
+        // Null/blank pairing refuses to persist and clears on read.
+        MainChatWidgetStore.save(context, null, original)
+        assertTrue(prefs.all.isEmpty())
+        MainChatWidgetStore.save(context, hubA, original)
+        assertNull(MainChatWidgetStore.read(context, null))
+        assertTrue(prefs.all.isEmpty())
     }
 
     @Test
     fun surfacesRuntimeSavesSnapshotWhenPairedAndClearsOnUnpair() = runBlocking {
+        val scope = "hub/main-chat-test"
         val pairedFlow = MutableStateFlow(true)
         val pairing = object : PairingService {
             override val isPaired = pairedFlow
@@ -738,7 +756,7 @@ class MainChatWidgetTest {
             override fun send(message: JsonObject) = true
         }
         val feed = FleetFeed(context, connection, pairing, object : FleetSource {
-            override fun pairing(): String? = if (pairedFlow.value) "hub/main-chat-test" else null
+            override fun pairing(): String? = if (pairedFlow.value) scope else null
             override suspend fun fetch() = FleetState()
         })
         val sessionsFlow = MutableStateFlow(
@@ -772,11 +790,11 @@ class MainChatWidgetTest {
         try {
             runtime.start()
             withTimeout(5_000) {
-                while (MainChatWidgetStore.read(context)?.summary != "Dinner reservation is confirmed for 7 PM.") {
+                while (MainChatWidgetStore.read(context, scope)?.summary != "Dinner reservation is confirmed for 7 PM.") {
                     delay(25)
                 }
             }
-            val saved = MainChatWidgetStore.read(context)
+            val saved = MainChatWidgetStore.read(context, scope)
             assertNotNull(saved)
             assertTrue(saved!!.paired)
             assertEquals(MainChatPhase.Idle, saved.phase)
@@ -784,11 +802,11 @@ class MainChatWidgetTest {
             // Unpairing immediately clears persisted main-chat snapshot.
             pairedFlow.value = false
             withTimeout(5_000) {
-                while (MainChatWidgetStore.read(context) != null) {
+                while (MainChatWidgetStore.read(context, scope) != null) {
                     delay(25)
                 }
             }
-            assertNull(MainChatWidgetStore.read(context))
+            assertNull(MainChatWidgetStore.read(context, scope))
         } finally {
             ReflectionHelpers.getField<CoroutineScope>(runtime, "scope").cancel()
             ReflectionHelpers.getField<CoroutineScope>(feed, "scope").cancel()
@@ -798,13 +816,14 @@ class MainChatWidgetTest {
 
     @Test
     fun surfacesRuntimePreservesPopulatedPersistedSnapshotDuringColdStart() = runBlocking {
+        val scope = "hub/cold-start"
         val persisted = MainChatWidgetSnapshot(
             paired = true,
             phase = MainChatPhase.Idle,
             mainSession = mainKey,
             summary = "Cached summary from before process restart.",
         )
-        MainChatWidgetStore.save(context, persisted)
+        MainChatWidgetStore.save(context, scope, persisted)
 
         val pairedFlow = MutableStateFlow(true)
         val pairing = object : PairingService {
@@ -819,7 +838,7 @@ class MainChatWidgetTest {
             override fun send(message: JsonObject) = true
         }
         val feed = FleetFeed(context, connection, pairing, object : FleetSource {
-            override fun pairing(): String? = if (pairedFlow.value) "hub/cold-start" else null
+            override fun pairing(): String? = if (pairedFlow.value) scope else null
             override suspend fun fetch() = FleetState()
         })
         val sessions = object : SessionsRepository {
@@ -840,9 +859,260 @@ class MainChatWidgetTest {
         val runtime = SurfacesRuntime(context, feed, sessions, assistant, interactions)
         try {
             runtime.start()
-            // Wait past the 300ms debounce window while repositories remain unpopulated.
+            // Wait past the 300ms debounce window while offline and repositories remain unpopulated.
             delay(450)
-            assertEquals(persisted, MainChatWidgetStore.read(context))
+            assertNull(runtime.mainChatLivePairing.value)
+            assertEquals(persisted, MainChatWidgetStore.read(context, scope))
+            val liveEmpty = MainChatWidgetSnapshot(paired = true, phase = MainChatPhase.Idle)
+            assertEquals(persisted, MainChatWidgetState.selectSnapshot(liveEmpty, persisted, liveSettled = false))
+        } finally {
+            ReflectionHelpers.getField<CoroutineScope>(runtime, "scope").cancel()
+            ReflectionHelpers.getField<CoroutineScope>(feed, "scope").cancel()
+            context.getSharedPreferences("fleet", Context.MODE_PRIVATE).edit().clear().apply()
+        }
+    }
+
+    @Test
+    fun surfacesRuntimeOverwritesStaleNeedsYouWhenLiveStateBecomesEmptyIdle() = runBlocking {
+        val scope = "hub/live-clear"
+        val pairedFlow = MutableStateFlow(true)
+        val pairing = object : PairingService {
+            override val isPaired = pairedFlow
+            override suspend fun pair(request: PairingRequest) = Unit
+            override suspend fun unpair() { pairedFlow.value = false }
+        }
+        val connection = object : HubConnection {
+            override val state = MutableStateFlow(ConnectionState.Online)
+            override val events = MutableSharedFlow<ServerEvent>()
+            override fun reconnect() = Unit
+            override fun send(message: JsonObject) = true
+        }
+        val feed = FleetFeed(context, connection, pairing, object : FleetSource {
+            override fun pairing(): String? = if (pairedFlow.value) scope else null
+            override suspend fun fetch() = FleetState()
+        })
+        val initialSession = Session(
+            machineId = mainKey.machineId,
+            sessionId = mainKey.sessionId,
+            assistant = true,
+            status = "blocked",
+            state = "needs_you",
+            lastText = "Approve Friday travel plan?",
+        )
+        val initialTree = DirectionTree(
+            directions = listOf(
+                Direction(
+                    id = mainKey.sessionId,
+                    name = "Persona",
+                    secretary = true,
+                    tasks = listOf(DirectionTask("t1", "Confirm itinerary", DirectionTaskState.NeedsYou)),
+                ),
+            ),
+        )
+        val sessionsFlow = MutableStateFlow(listOf(initialSession))
+        val assistantFlow = MutableStateFlow(
+            AssistantSnapshot(mainSession = mainKey, conversations = listOf(initialSession), directionTree = initialTree),
+        )
+        val interactionsFlow = MutableStateFlow(
+            listOf(
+                Interaction(
+                    id = "ix-pending-1",
+                    machineId = mainKey.machineId,
+                    sessionId = mainKey.sessionId,
+                    kind = "question",
+                    questions = listOf(Question("Approve Friday travel plan?")),
+                ),
+            ),
+        )
+        val sessions = object : SessionsRepository {
+            override val machines = MutableStateFlow<List<Machine>>(emptyList())
+            override val sessions = sessionsFlow
+            override suspend fun refresh() = Unit
+        }
+        val assistant = object : AssistantRepository {
+            override val assistant = assistantFlow
+            override suspend fun refresh() = Unit
+        }
+        val interactions = object : InteractionCenter {
+            override val pending = interactionsFlow
+            override suspend fun refresh() = Unit
+            override suspend fun resolve(id: String, resolution: Resolution) = Unit
+        }
+
+        val runtime = SurfacesRuntime(context, feed, sessions, assistant, interactions)
+        try {
+            runtime.start()
+            withTimeout(5_000) {
+                while (MainChatWidgetStore.read(context, scope)?.phase != MainChatPhase.NeedsYou) {
+                    delay(25)
+                }
+            }
+            val staleNeedsYou = requireNotNull(MainChatWidgetStore.read(context, scope))
+            assertEquals(1, staleNeedsYou.pendingCount)
+            assertEquals("ix-pending-1", staleNeedsYou.pending?.id)
+            assertEquals(1, staleNeedsYou.todos.size)
+            assertEquals(scope, runtime.mainChatLivePairing.value)
+
+            // User resolves the last pending item and clears/archives the main conversation.
+            interactionsFlow.value = emptyList()
+            sessionsFlow.value = emptyList()
+            assistantFlow.value = AssistantSnapshot()
+
+            withTimeout(5_000) {
+                while (MainChatWidgetStore.read(context, scope)?.phase != MainChatPhase.Idle) {
+                    delay(25)
+                }
+            }
+            val cleared = requireNotNull(MainChatWidgetStore.read(context, scope))
+            assertTrue(cleared.paired)
+            assertEquals(MainChatPhase.Idle, cleared.phase)
+            assertEquals(0, cleared.pendingCount)
+            assertNull(cleared.pending)
+            assertEquals("", cleared.summary)
+            assertTrue(cleared.todos.isEmpty())
+
+            // Display selection must render live idle instead of stale persisted NeedsYou once settled.
+            val settled = MainChatWidgetState.isLiveSettled(
+                paired = true,
+                activePairing = scope,
+                settledPairing = runtime.mainChatLivePairing.value,
+                assistant = AssistantSnapshot(),
+                sessions = emptyList(),
+                interactions = emptyList(),
+            )
+            assertTrue(settled)
+            assertEquals(cleared, MainChatWidgetState.selectSnapshot(cleared, staleNeedsYou, liveSettled = settled))
+        } finally {
+            ReflectionHelpers.getField<CoroutineScope>(runtime, "scope").cancel()
+            ReflectionHelpers.getField<CoroutineScope>(feed, "scope").cancel()
+            context.getSharedPreferences("fleet", Context.MODE_PRIVATE).edit().clear().apply()
+        }
+    }
+
+    @Test
+    fun surfacesRuntimeSettlesGenuinelyEmptyOnlineHubAndOverwritesStaleSnapshot() = runBlocking {
+        val scope = "hub/online-empty"
+        val staleNeedsYou = MainChatWidgetSnapshot(
+            paired = true,
+            phase = MainChatPhase.NeedsYou,
+            mainSession = mainKey,
+            summary = "Stale summary from previous process.",
+            pendingCount = 1,
+            pending = MainChatPendingItem("ix-stale", mainKey.machineId, mainKey.sessionId, true, "question", "Stale question?"),
+            todos = listOf(MainChatTodoItem("t-stale", "Stale to-do", DirectionTaskState.NeedsYou.wire)),
+        )
+        MainChatWidgetStore.save(context, scope, staleNeedsYou)
+
+        val pairedFlow = MutableStateFlow(true)
+        val pairing = object : PairingService {
+            override val isPaired = pairedFlow
+            override suspend fun pair(request: PairingRequest) = Unit
+            override suspend fun unpair() { pairedFlow.value = false }
+        }
+        val connection = object : HubConnection {
+            override val state = MutableStateFlow(ConnectionState.Online)
+            override val events = MutableSharedFlow<ServerEvent>()
+            override fun reconnect() = Unit
+            override fun send(message: JsonObject) = true
+        }
+        val feed = FleetFeed(context, connection, pairing, object : FleetSource {
+            override fun pairing(): String? = if (pairedFlow.value) scope else null
+            override suspend fun fetch() = FleetState()
+        })
+        val sessions = object : SessionsRepository {
+            override val machines = MutableStateFlow<List<Machine>>(emptyList())
+            override val sessions = MutableStateFlow<List<Session>>(emptyList())
+            override suspend fun refresh() = Unit
+        }
+        val assistant = object : AssistantRepository {
+            override val assistant = MutableStateFlow(AssistantSnapshot())
+            override suspend fun refresh() = Unit
+        }
+        val interactions = object : InteractionCenter {
+            override val pending = MutableStateFlow<List<Interaction>>(emptyList())
+            override suspend fun refresh() = Unit
+            override suspend fun resolve(id: String, resolution: Resolution) = Unit
+        }
+
+        val runtime = SurfacesRuntime(context, feed, sessions, assistant, interactions, onlineWarmupGraceMillis = 120L)
+        try {
+            runtime.start()
+            withTimeout(5_000) {
+                while (MainChatWidgetStore.read(context, scope)?.phase != MainChatPhase.Idle) {
+                    delay(25)
+                }
+            }
+            assertEquals(scope, runtime.mainChatLivePairing.value)
+            val replaced = requireNotNull(MainChatWidgetStore.read(context, scope))
+            assertEquals(MainChatPhase.Idle, replaced.phase)
+            assertEquals(0, replaced.pendingCount)
+            assertNull(replaced.pending)
+            assertEquals("", replaced.summary)
+            assertTrue(replaced.todos.isEmpty())
+        } finally {
+            ReflectionHelpers.getField<CoroutineScope>(runtime, "scope").cancel()
+            ReflectionHelpers.getField<CoroutineScope>(feed, "scope").cancel()
+            context.getSharedPreferences("fleet", Context.MODE_PRIVATE).edit().clear().apply()
+        }
+    }
+
+    @Test
+    fun surfacesRuntimeEvictsCrossPairingPersistedSnapshotOnColdStart() = runBlocking {
+        val previousScope = "hub-a/private-scope"
+        val activeScope = "hub-b/new-scope"
+        val previousHubSnapshot = MainChatWidgetSnapshot(
+            paired = true,
+            phase = MainChatPhase.NeedsYou,
+            mainSession = mainKey,
+            summary = "Confidential summary from previous hub.",
+            pendingCount = 1,
+            pending = MainChatPendingItem("ix-priv", mainKey.machineId, mainKey.sessionId, true, "permission", "Private approval"),
+        )
+        MainChatWidgetStore.save(context, previousScope, previousHubSnapshot)
+
+        val pairedFlow = MutableStateFlow(true)
+        val pairing = object : PairingService {
+            override val isPaired = pairedFlow
+            override suspend fun pair(request: PairingRequest) = Unit
+            override suspend fun unpair() { pairedFlow.value = false }
+        }
+        val connection = object : HubConnection {
+            override val state = MutableStateFlow(ConnectionState.WaitingForNetwork)
+            override val events = MutableSharedFlow<ServerEvent>()
+            override fun reconnect() = Unit
+            override fun send(message: JsonObject) = true
+        }
+        val feed = FleetFeed(context, connection, pairing, object : FleetSource {
+            override fun pairing(): String? = if (pairedFlow.value) activeScope else null
+            override suspend fun fetch() = FleetState()
+        })
+        val sessions = object : SessionsRepository {
+            override val machines = MutableStateFlow<List<Machine>>(emptyList())
+            override val sessions = MutableStateFlow<List<Session>>(emptyList())
+            override suspend fun refresh() = Unit
+        }
+        val assistant = object : AssistantRepository {
+            override val assistant = MutableStateFlow(AssistantSnapshot())
+            override suspend fun refresh() = Unit
+        }
+        val interactions = object : InteractionCenter {
+            override val pending = MutableStateFlow<List<Interaction>>(emptyList())
+            override suspend fun refresh() = Unit
+            override suspend fun resolve(id: String, resolution: Resolution) = Unit
+        }
+
+        val runtime = SurfacesRuntime(context, feed, sessions, assistant, interactions)
+        try {
+            runtime.start()
+            val prefs = context.getSharedPreferences(MainChatWidgetStore.PREFS_NAME, Context.MODE_PRIVATE)
+            withTimeout(5_000) {
+                while (prefs.all.isNotEmpty()) {
+                    delay(25)
+                }
+            }
+            assertNull(MainChatWidgetStore.read(context, activeScope))
+            assertNull(MainChatWidgetStore.read(context, previousScope))
+            assertTrue(prefs.all.isEmpty())
         } finally {
             ReflectionHelpers.getField<CoroutineScope>(runtime, "scope").cancel()
             ReflectionHelpers.getField<CoroutineScope>(feed, "scope").cancel()

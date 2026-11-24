@@ -144,6 +144,7 @@ class TileRouteApplication : Application(), GeneratedComponent, SurfacesDependen
     override fun assistant() = assistantRepository
     override fun interactions(): InteractionCenter = error("Not used by tile routing")
     override fun pairing() = restoring
+    override fun surfaces(): SurfacesRuntime = error("Not used by tile routing")
 
     fun completeRestore() {
         restoredScope = "hub/generation"
