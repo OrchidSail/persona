@@ -321,6 +321,21 @@ func (s *Service) undeliveredCount(id string) int {
 	return len(b.st[id])
 }
 
+// hasKeptUndelivered reports whether message id is currently kept in undelivered for conversation sid (conservatively
+// true if the undelivered book cannot be read, so a kept message's quiet-relay reservation is not discarded).
+func (s *Service) hasKeptUndelivered(ctx context.Context, sid, id string) bool {
+	if sid == "" || id == "" {
+		return false
+	}
+	b := &s.undelivered
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !s.undeliveredLocked(ctx) {
+		return true
+	}
+	return s.keptLocked(sid, id) != nil
+}
+
 // undeliveredAhead: the owner's message id to conversation sid would overtake kept ones (any not given up on).
 func (s *Service) undeliveredAhead(ctx context.Context, sid, id string) bool {
 	b := &s.undelivered
