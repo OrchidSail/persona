@@ -1,7 +1,7 @@
 // Popover-only pure helpers for subscription usage cards and the reset timeline (#13173, #13870, #13964).
 // Kept in a separate module so UsagePopover's lazy chunk owns them instead of the cold first screen.
 import { t as tr } from "../i18n";
-import { canonicalUsageProvider, windowKey, windowMinutes, type UsageAccount, type UsageWindow } from "./usage-windows";
+import { canonicalUsageProvider, windowMinutes, type UsageAccount, type UsageWindow } from "./usage-windows";
 
 /** The plan to write beside the name, unless the name already says it ("Codex Pro" and plan "pro"). */
 export function planNote(a: UsageAccount): string {
@@ -74,39 +74,6 @@ export const TIMELINE_TICKS_HOURS = [6, 12, 24, 72, 120, 168] as const;
 export function timelinePosition(ms: number): number {
   const h = Math.max(0, Math.min(ms, TIMELINE_CAP_MS)) / HOUR_MS;
   return h <= 24 ? (h / 24) * 0.45 : 0.45 + ((h - 24) / 144) * 0.55;
-}
-
-export interface TimelineLane {
-  key: string;
-  label: string;
-  /** A window longer than six hours (the weekly one): the blue capsule; a short one is the teal one. */
-  long: boolean;
-  /** Where the capsule ends along the axis, 0-1. */
-  end: number;
-  /** Time left, in ms (the end may be beyond the axis; `end` is then 1). */
-  remainingMs: number;
-  resetsAt: string;
-}
-export interface TimelineRow {
-  account: UsageAccount;
-  /** The plan windows with a reset time still ahead, 5h first. */
-  lanes: TimelineLane[];
-}
-
-/** The rows of one provider card's reset timeline: one per account, in the order given (the card's quota order), each
- *  with a lane per plan window that has a reset time. Accounts with no lane have no row. Pure client computation. */
-export function providerTimeline(accounts: UsageAccount[], now = Date.now()): TimelineRow[] {
-  const rows: TimelineRow[] = [];
-  for (const account of accounts) {
-    const lanes: TimelineLane[] = [];
-    for (const w of sortedWindows(account)) {
-      const at = w.resets_at ? Date.parse(w.resets_at) : NaN;
-      if (w.model || !Number.isFinite(at) || at <= now) continue;
-      lanes.push({ key: windowKey(w), label: w.label, long: windowMinutes(w) > 360, end: timelinePosition(at - now), remainingMs: at - now, resetsAt: w.resets_at as string });
-    }
-    if (lanes.length) rows.push({ account, lanes });
-  }
-  return rows;
 }
 
 /** Time left as a short label: "45m", "1.5h", "2d 3h" (each language's units). */

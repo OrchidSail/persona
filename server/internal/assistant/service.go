@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nwverse/persona/server/internal/moduleswitch"
+
 	"github.com/nwverse/persona/server/internal/apierr"
 	"github.com/nwverse/persona/server/internal/assistant/kernel"
 	"github.com/nwverse/persona/server/internal/assistant/repository"
@@ -75,12 +77,18 @@ type Options struct {
 	RecordingTimingLists map[string][]time.Duration
 	RecordingFeedNow     func() time.Time
 	RecordingFeedAfter   func(time.Duration, func()) func() bool
+	// LarkTimings and LarkTimingLists override the lark module's times by name (its timings.go): a test and tuning
+	// knob as RecordingTimings is. Unset, the module runs with its defaults.
+	LarkTimings     map[string]time.Duration
+	LarkTimingLists map[string][]time.Duration
 }
 
 // Service is the assistant. It implements Handler.
 type Service struct {
 	// modules are the feature modules loaded (modules.go); nil, none.
-	modules         *kernel.Kernel
+	modules *kernel.Kernel
+	// moduleSwitch is the same list as the provider seams read it (moduleswitch): recording's and Lark's layers.
+	moduleSwitch    moduleswitch.Set
 	modulesOff      []string // the ids the modules setting switched off at start (loadModules): built-in and client-only
 	compactRecovery compactRecoveryCache
 	// sendFanout: whom each conversation woke with conversation_send lately (conversation_fanout.go).
@@ -321,6 +329,7 @@ type Service struct {
 	chans            channelsBook      // channels.go
 	fbot             feishuBook        // feishu.go
 	tposts           threadPoster      // feishu_thread_posts.go: what a todo tells its chat thread
+	lark             larkLayer         // lark.go: the lark module's layer, the outbound channel port (s.chat())
 	tevents          todoEvents        // todo_events.go: what the extensions are told of the todos
 	tpush            todosPush         // todos.go: the {"type":"todos"} waiting for the rest of its write
 	directions       directionBook     // directions.go: the leaders' records and what the extensions were told of them
@@ -395,7 +404,7 @@ var _ Handler = (*Service)(nil)
 
 // New makes the assistant; nothing runs until the hub calls it.
 func New(o Options) *Service {
-	s := &Service{hub: o.Hub, store: o.Store, logf: o.Logf, mux: http.NewServeMux(), epoch: randomHex(8), tasks: newTasksState(), born: time.Now(),
+	s := &Service{moduleSwitch: moduleswitch.Off(o.ModulesOff...), hub: o.Hub, store: o.Store, logf: o.Logf, mux: http.NewServeMux(), epoch: randomHex(8), tasks: newTasksState(), born: time.Now(),
 		devs: o.Devices, trustSrc: o.Trust, agentDirs: o.AgentDirs, id: o.ID, build: o.Build, repositoryConfig: o.RepositoryConfig, urgentWake: make(chan struct{}, 1),
 		a2aWake: make(chan struct{}, 1), a2aLogicalWrites: make(chan struct{}, 4)}
 	s.inbox.lang = func() i18n.Lang { return s.lang(context.Background()) }
@@ -418,7 +427,8 @@ func New(o Options) *Service {
 	s.conversationSwitchRoutes()
 	s.modelPickRoutes()
 	s.agentArchiveRoutes()
-	s.agentNamingRoutes() // agent_naming_request.go
+	s.agentNamingRoutes()  // agent_naming_request.go
+	s.questionReadRoutes() // question_reads.go
 	s.alwaysRoutes()
 	s.infoAccessRoutes()
 	s.trackRoutes()
@@ -474,7 +484,8 @@ func New(o Options) *Service {
 	// The recording module's layer, before its routes (kbRoutes) and its hello capabilities (recording.go).
 	s.recOpts.timings, s.recOpts.lists = maps.Clone(o.RecordingTimings), maps.Clone(o.RecordingTimingLists)
 	s.recOpts.now, s.recOpts.after = o.RecordingFeedNow, o.RecordingFeedAfter
-	s.loadRecording(o.ModulesOff)
+	s.lark.timings, s.lark.lists = maps.Clone(o.LarkTimings), maps.Clone(o.LarkTimingLists)
+	s.loadRecording()
 	s.kbRoutes()
 	s.searchRoutes()
 	s.historyRoutes()
@@ -1135,6 +1146,8 @@ func (s *Service) turnEnded(ctx context.Context, r SessionRef, meeting bool) {
 		s.afterSettle(context.WithoutCancel(ctx), s.inboxAgentTurnSettled, r.MachineID, r.SessionID)
 		// What the turn said is tagged with its information categories (info_tag.go).
 		s.afterSettle(context.WithoutCancel(ctx), s.infoTagTurnSettled, r.MachineID, r.SessionID)
+		// A usage limit moves a conversation the owner relies on to a backup launcher (limit_fallback.go).
+		s.afterSettle(context.WithoutCancel(ctx), s.limitFallbackTurnSettled, r.MachineID, r.SessionID)
 	}
 	if !meeting {
 		s.spawnPinAfterTurn(ctx, r.MachineID, r.SessionID)
