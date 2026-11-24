@@ -10,6 +10,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -18,6 +19,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import persona.core.contracts.Item
 import persona.core.contracts.ModelPick
+import persona.core.contracts.ProtocolCompatibility
 import persona.core.contracts.SessionKey
 import persona.core.contracts.api.ChatSnapshot
 import persona.core.contracts.api.ConnectionState
@@ -915,5 +917,135 @@ class AssistOverlayControllerTest {
         controller.endSession()
         runCurrent()
         assertTrue(harness.preparedBitmaps.single().isRecycled)
+    }
+
+    @Test
+    fun stripOverlayWireTagsStripsCanonicalAndLegacyContextAndFileBlocks() {
+        val canonical = formatAssistWireMessage(
+            prompt = "Explain this chart",
+            remoteImagePath = "/tmp/assist-1.jpg",
+            contextCard = sampleContext,
+            photosOnlyPrompt = "Please look at this screenshot.",
+        )
+        val legacy = ProtocolCompatibility.messageForHub(canonical)
+        assertNotEquals(canonical, legacy)
+        assertFalse(legacy.contains("<persona-context"))
+        assertTrue(ProtocolCompatibility.hasContextTag(legacy))
+
+        val strippedCanonical = stripOverlayWireTags(canonical)
+        assertEquals(StrippedWireMessage(text = "Explain this chart", hasAttachedImage = true), strippedCanonical)
+
+        val strippedLegacy = stripOverlayWireTags(legacy)
+        assertEquals(StrippedWireMessage(text = "Explain this chart", hasAttachedImage = true), strippedLegacy)
+        assertFalse(ProtocolCompatibility.hasContextTag(strippedLegacy.text))
+
+        val screenOnlyCanonical = "${sampleContext.xml()}\n\n<attached_images>\n/tmp/assist-2.jpg\n</attached_images>"
+        val screenOnlyLegacy = ProtocolCompatibility.messageForHub(screenOnlyCanonical)
+        assertEquals(StrippedWireMessage(text = "", hasAttachedImage = true), stripOverlayWireTags(screenOnlyCanonical))
+        assertEquals(StrippedWireMessage(text = "", hasAttachedImage = true), stripOverlayWireTags(screenOnlyLegacy))
+
+        val canonicalWithFile = "${sampleContext.xml()}\n\nCheck attached notes\n\n" +
+            "<persona-file kind=\"file\" path=\"/tmp/notes.txt\" name=\"notes.txt\" size=\"42\"/>\n\n" +
+            "<attached_images>\n/tmp/assist-3.jpg\n</attached_images>"
+        val legacyWithFile = ProtocolCompatibility.messageForHub(canonicalWithFile)
+        assertFalse(legacyWithFile.contains("<persona-file"))
+        assertTrue(ProtocolCompatibility.hasFileTag(legacyWithFile))
+        assertEquals(
+            StrippedWireMessage(text = "Check attached notes", hasAttachedImage = true),
+            stripOverlayWireTags(canonicalWithFile),
+        )
+        assertEquals(
+            StrippedWireMessage(text = "Check attached notes", hasAttachedImage = true),
+            stripOverlayWireTags(legacyWithFile),
+        )
+    }
+
+    @Test
+    fun projectOverlayTurnsStripsLegacyHubRewrittenContextFromEchoedUserBubble() = runTest {
+        val harness = Harness(this)
+        val controller = harness.controller
+        controller.onHubUpdate(AssistHubSnapshot(status = AssistHubStatus.Ready, mainSession = mainKey))
+
+        controller.beginSession(supportsScreenshot = true)
+        val shot = sampleBitmap()
+        controller.onAssistContextReceived(sampleContext, isFocused = true)
+        controller.onScreenshotReceived(shot)
+        runCurrent()
+        controller.attachCurrentScreen()
+        runCurrent()
+
+        controller.updateDraftText("Explain this chart")
+        controller.send()
+        runCurrent()
+
+        val sentClientId = controller.state.value.turns.single().id.removePrefix("pending:")
+        val legacyEchoText = ProtocolCompatibility.messageForHub(
+            formatAssistWireMessage(
+                prompt = "Explain this chart",
+                remoteImagePath = "/tmp/assist-1.jpg",
+                contextCard = sampleContext,
+                photosOnlyPrompt = "Please look at this screenshot.",
+            ),
+        )
+        assertFalse(legacyEchoText.contains("<persona-context"))
+        assertTrue(ProtocolCompatibility.hasContextTag(legacyEchoText))
+
+        // Case 1: Echo arrives with matching clientMsgId.
+        controller.onHubUpdate(
+            AssistHubSnapshot(
+                status = AssistHubStatus.Ready,
+                mainSession = mainKey,
+                mainWorking = true,
+                chatSnapshot = ChatSnapshot(
+                    items = listOf(
+                        Item(
+                            id = "u-legacy-1",
+                            role = "user",
+                            kind = "text",
+                            text = legacyEchoText,
+                            clientMsgId = sentClientId,
+                        ),
+                    ),
+                    loading = false,
+                ),
+            ),
+        )
+        val withClientId = controller.state.value.turns.single()
+        assertEquals("u-legacy-1", withClientId.id)
+        assertTrue(withClientId.fromUser)
+        assertEquals("Explain this chart", withClientId.text)
+        assertFalse(ProtocolCompatibility.hasContextTag(withClientId.text))
+        assertTrue(withClientId.hasScreenAttachment)
+
+        // Case 2: Echo arrives without clientMsgId and must match via stripped display text.
+        controller.onHubUpdate(
+            AssistHubSnapshot(
+                status = AssistHubStatus.Ready,
+                mainSession = mainKey,
+                mainWorking = true,
+                chatSnapshot = ChatSnapshot(
+                    items = listOf(
+                        Item(
+                            id = "u-legacy-2",
+                            role = "user",
+                            kind = "text",
+                            text = legacyEchoText,
+                            clientMsgId = null,
+                        ),
+                    ),
+                    loading = false,
+                ),
+            ),
+        )
+        val withoutClientId = controller.state.value.turns.single()
+        assertEquals("u-legacy-2", withoutClientId.id)
+        assertTrue(withoutClientId.fromUser)
+        assertEquals("Explain this chart", withoutClientId.text)
+        assertFalse(ProtocolCompatibility.hasContextTag(withoutClientId.text))
+        assertTrue(withoutClientId.hasScreenAttachment)
+
+        shot.recycle()
+        controller.endSession()
+        runCurrent()
     }
 }

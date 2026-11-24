@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import persona.core.contracts.ModelPick
+import persona.core.contracts.ProtocolCompatibility
 import persona.core.contracts.SessionKey
 import persona.core.contracts.api.ChatSnapshot
 import persona.core.contracts.api.DeliveryState
@@ -903,13 +904,13 @@ internal data class StrippedWireMessage(
     val hasAttachedImage: Boolean,
 )
 
-private val CONTEXT_TAG_REGEX = Regex("<persona-context\\b[^>]*>[\\s\\S]*?</persona-context>\\s*")
 private val ATTACHED_IMAGES_REGEX = Regex("<attached_images>[\\s\\S]*?</attached_images>\\s*")
 
 internal fun stripOverlayWireTags(raw: String): StrippedWireMessage {
     val hasImage = ATTACHED_IMAGES_REGEX.containsMatchIn(raw)
     val cleaned = raw
-        .replace(CONTEXT_TAG_REGEX, "")
+        .replace(ProtocolCompatibility.contextBlock, "")
+        .replace(ProtocolCompatibility.fileTag, "\n")
         .replace(ATTACHED_IMAGES_REGEX, "")
         .trim()
     return StrippedWireMessage(text = cleaned, hasAttachedImage = hasImage)
