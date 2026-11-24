@@ -27,7 +27,7 @@ const (
 	// (phone.control.devices) and dispatch/cancel targeted atomic calls (phone.control.call / phone.control.cancel).
 	// Granted by name only; never covered by legacy all-scope tokens.
 	ScopePhoneControl = "phone.control"
-	ScopeNotify     = "notify"
+	ScopeNotify       = "notify"
 	// ScopePushGrading lets an extension manage its own push grading layer and preview grading decisions.
 	// It is granted by name only and does not include reading held pushes or changing the owner's base settings.
 	ScopePushGrading  = "push.grading"
