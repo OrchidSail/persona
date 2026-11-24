@@ -973,7 +973,7 @@ fun AssistantScreen(
                             }
                         }
                         val pendingAssist by persona.feature.chat.AssistDraftBus.pending.collectAsStateWithLifecycle()
-                        LaunchedEffect(pendingAssist, active, composer, composer.draftLoaded, draftReady) {
+                        LaunchedEffect(pendingAssist, active, composer, composer.draftLoaded, draftReady, assistantImageLimits) {
                             if (active != null && hasChat && !demo) return@LaunchedEffect
                             val draft = pendingAssist ?: return@LaunchedEffect
                             if (draft.target != persona.feature.chat.AssistDraftTarget.Starter || !draft.hasUnappliedContent) return@LaunchedEffect
@@ -988,8 +988,12 @@ fun AssistantScreen(
                                     if (active == null) persona.feature.chat.ForwardPlacements.home =
                                         persona.feature.chat.ForwardPlacements.home + ref
                                 },
+                                limits = assistantImageLimits,
                                 onPhotoLimit = {
-                                    val message = resources.getString(persona.feature.chat.R.string.chat_composer_photo_limit)
+                                    val message = resources.getString(
+                                        persona.feature.chat.R.string.chat_composer_photo_limit,
+                                        assistantImageLimits.perMessage,
+                                    )
                                     if (feedback?.notice(message) != true) toast.show(persona.core.designsystem.FeedbackNotice(message))
                                 },
                             )

@@ -556,9 +556,10 @@ private fun ChatPage(
         existingContextIds = { linkContexts.mapTo(mutableSetOf()) { it.id } },
         onContext = { ref -> linkContexts = linkContexts + ref },
         onPhotoLimit = {
-            val limitNotice = res.getString(R.string.chat_composer_photo_limit)
+            val limitNotice = res.getString(R.string.chat_composer_photo_limit, imageLimits.perMessage)
             if (feedback?.notice(limitNotice) != true) notice = limitNotice
         },
+        limits = imageLimits,
     )
     val pairingLoader = pageReader.pairingLoader
     val loader = pageReader.loader

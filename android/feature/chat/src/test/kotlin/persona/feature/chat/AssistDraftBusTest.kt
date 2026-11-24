@@ -7,6 +7,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import persona.core.contracts.ImageLimits
 import persona.core.contracts.SessionKey
 
 class AssistDraftBusTest {
@@ -78,10 +79,10 @@ class AssistDraftBusTest {
         assertEquals(1, composer.attachments.size)
         assertEquals(1, contexts.size)
 
-        // When media slots are full, reject cleanly instead of exceeding MAX_COMPOSER_MEDIA.
+        // When inline photo slots are full, reject cleanly instead of exceeding ImageLimits.DEFAULT_PER_MESSAGE.
         val fullComposer = ChatComposerState(
             ChatComposerDraft(
-                attachments = (1..MAX_COMPOSER_MEDIA).map { i ->
+                attachments = (1..ImageLimits.DEFAULT_PER_MESSAGE).map { i ->
                     ComposerAttachment("img-$i", "img-$i.jpg", "content://example/img-$i", image = true)
                 },
             ),
@@ -90,8 +91,31 @@ class AssistDraftBusTest {
         val capped = prefillAssistDraft(fullComposer, draft)
         assertFalse(capped.screenshotAdded)
         assertTrue(capped.screenshotRejectedForLimit)
-        assertEquals(MAX_COMPOSER_MEDIA, fullComposer.attachments.size)
+        assertEquals(ImageLimits.DEFAULT_PER_MESSAGE, fullComposer.attachments.size)
         assertEquals("keep", fullComposer.value.text)
+
+        // Custom per-agent image limits are respected, and videos do not consume inline photo slots.
+        val tightLimits = ImageLimits(perMessage = 2)
+        val withVideoAndPhoto = ChatComposerState(
+            ChatComposerDraft(
+                attachments = listOf(
+                    ComposerAttachment("vid-1", "clip.mp4", "content://example/clip.mp4", image = false, video = true),
+                    ComposerAttachment("img-1", "img-1.jpg", "content://example/img-1", image = true),
+                ),
+            ),
+        )
+        val admittedBesideVideo = prefillAssistDraft(withVideoAndPhoto, draft, limits = tightLimits)
+        assertTrue(admittedBesideVideo.screenshotAdded)
+        assertFalse(admittedBesideVideo.screenshotRejectedForLimit)
+        assertEquals(3, withVideoAndPhoto.attachments.size)
+
+        val secondScreenshotDraft = draft.copy(
+            screenshot = screenshot.copy(id = "assist-shot-2", uri = "content://com.example.persona.chat.files/assist/assist-2.jpg"),
+        )
+        val cappedByTightLimit = prefillAssistDraft(withVideoAndPhoto, secondScreenshotDraft, limits = tightLimits)
+        assertFalse(cappedByTightLimit.screenshotAdded)
+        assertTrue(cappedByTightLimit.screenshotRejectedForLimit)
+        assertEquals(3, withVideoAndPhoto.attachments.size)
     }
 
     @Test

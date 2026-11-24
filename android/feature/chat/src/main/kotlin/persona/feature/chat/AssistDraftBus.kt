@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
+import persona.core.contracts.ImageLimits
 import persona.core.contracts.SessionKey
 
 /** Destination that claimed a digital-assistant handoff: an open chat or Persona's starter page. */
@@ -189,6 +190,7 @@ fun prefillAssistDraft(
     draft: PendingAssistDraft,
     existingContextIds: Set<String> = emptySet(),
     onContext: (ChatLinkContext) -> Unit = {},
+    limits: ImageLimits = ImageLimits.Standard,
 ): AssistDraftApplyResult {
     var screenshotAdded = false
     var screenshotRejected = false
@@ -200,7 +202,7 @@ fun prefillAssistDraft(
             it.id == shot.id || (shot.uri.isNotEmpty() && it.uri == shot.uri)
         }
         if (!alreadyPresent) {
-            if (composer.attachments.count { it.media } < MAX_COMPOSER_MEDIA) {
+            if (composerPhotoRoom(composer.attachments, limits) > 0) {
                 composer.beginEdit()
                 composer.attachments = composer.attachments + shot
                 screenshotAdded = true
@@ -244,9 +246,10 @@ suspend fun applyAssistDraft(
     bus: AssistDraftQueue = AssistDraftBus,
     existingContextIds: Set<String> = emptySet(),
     onContext: (ChatLinkContext) -> Unit = {},
+    limits: ImageLimits = ImageLimits.Standard,
     onPhotoLimit: () -> Unit = {},
 ): AssistDraftApplyResult {
-    val result = prefillAssistDraft(composer, draft, existingContextIds, onContext)
+    val result = prefillAssistDraft(composer, draft, existingContextIds, onContext, limits)
     if (draft.screenshot != null && !draft.screenshotApplied) {
         bus.markScreenshotApplied(draft.id)
     }
@@ -276,9 +279,10 @@ internal fun BindPendingAssistDraft(
     existingContextIds: () -> Set<String>,
     onContext: (ChatLinkContext) -> Unit,
     onPhotoLimit: () -> Unit,
+    limits: ImageLimits = ImageLimits.Standard,
 ) {
     val pendingAssist by AssistDraftBus.pending.collectAsStateWithLifecycle()
-    LaunchedEffect(pendingAssist, composer.draftLoaded, readOnly, canSend, key) {
+    LaunchedEffect(pendingAssist, composer.draftLoaded, readOnly, canSend, key, limits) {
         val draft = pendingAssist ?: return@LaunchedEffect
         if (draft.target != AssistDraftTarget.Session(key) || !draft.hasUnappliedContent) return@LaunchedEffect
         if (!composer.draftLoaded || readOnly || !canSend) return@LaunchedEffect
@@ -289,6 +293,7 @@ internal fun BindPendingAssistDraft(
             bus = AssistDraftBus,
             existingContextIds = existingContextIds(),
             onContext = onContext,
+            limits = limits,
             onPhotoLimit = onPhotoLimit,
         )
         if (result.screenshotAdded || result.contextAdded) {
