@@ -66,6 +66,7 @@ fun renderPersonaFaceBitmap(
     // 1. Background disc gradient.
     val disc = if (dark) Mochi.discDark else Mochi.discLight
     paint.style = Paint.Style.FILL
+    paint.alpha = 255
     paint.shader = LinearGradient(0f, 0f, 0f, s, disc[0].toArgb(), disc[1].toArgb(), Shader.TileMode.CLAMP)
     canvas.drawCircle(s / 2f, s / 2f, s / 2f, paint)
     paint.shader = null
@@ -108,6 +109,8 @@ fun renderPersonaFaceBitmap(
         // Body fill and outline.
         val bodyPath = Mochi.body(s).asAndroidPath()
         paint.style = Paint.Style.FILL
+        // Reset shadow alpha before binding the gradient shader; Canvas multiplies paint.alpha into shader output.
+        paint.alpha = 255
         paint.shader = LinearGradient(
             0.4f * s, 0.3f * s, 0.5f * s, 0.82f * s,
             bodyColors[0].toArgb(), bodyColors[1].toArgb(), Shader.TileMode.CLAMP,

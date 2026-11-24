@@ -397,6 +397,20 @@ class MainChatWidgetTest {
         val clipped = MainChatText.sanitize(longEmoji, maxChars = 20)
         assertFalse(clipped, clipped.dropLast(1).last().isHighSurrogate())
 
+        // Stripping an internal ID right after an opening parenthesis must not leave a leading comma or semicolon.
+        assertEquals(
+            "Deployment ready (zero extra cost)",
+            MainChatText.sanitize("Deployment ready (todo_1234abcd, zero extra cost)"),
+        )
+        assertEquals(
+            "已启动部署（零额外费用）",
+            MainChatText.sanitize("已启动部署（todo_1234abcd，零额外费用）"),
+        )
+        assertEquals(
+            "Task queued (ready)",
+            MainChatText.sanitize("Task queued (sess_1234abcd; ready)"),
+        )
+
         // Pending title falls back to localized section 5.6 copy if raw input is purely an internal ID/path.
         val enRes = localizedContext("en").resources
         val scrubOnly = Interaction(

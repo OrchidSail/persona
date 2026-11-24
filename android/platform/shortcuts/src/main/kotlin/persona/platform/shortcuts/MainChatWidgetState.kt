@@ -270,6 +270,7 @@ object MainChatText {
     private val absolutePath = Regex("(?<![\\w/:.-])/(?:[^\\s/,;:'\"()<>]+/)+[^\\s,;:'\"()<>]*")
     private val whitespace = Regex("\\s+")
     private val spaceBeforePunct = Regex("\\s+([,.;:!?\uFF0C\u3002\uFF1B\uFF1A\uFF01\uFF1F])")
+    private val openParenLeadingPunct = Regex("([(\uFF08])(?:\\s*[,;\uFF0C\uFF1B\u3001])+\\s*")
     private val repeatedMiddleDot = Regex("(?:\\s*·\\s*){2,}")
 
     fun sanitize(raw: String?, maxChars: Int = 220): String {
@@ -313,6 +314,7 @@ object MainChatText {
         text = text.replace("|", " ")
         text = whitespace.replace(text, " ").trim()
         text = spaceBeforePunct.replace(text, "$1")
+        text = openParenLeadingPunct.replace(text, "$1")
         text = repeatedMiddleDot.replace(text, " · ")
         text = text.trim('·', ':', '-', '—', ' ')
 
