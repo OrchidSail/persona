@@ -388,10 +388,16 @@ func (n *Node) runtimeHandle(ctx context.Context, h *runtimeConn, method string,
 					mode = agyShownMode(mode, n.agyRuntimeMode(p.SessionID))
 				}
 				info["permission_mode"], info["effort"] = mode, s.Effort
-				if h.agent() == agyAgent && (s.ContextTokens > 0 || s.OutputTokens > 0) {
-					info["context_tokens"] = int(s.ContextTokens)
-					info["output_tokens"] = s.OutputTokens
-					delete(info, "usage_unknown")
+				if h.agent() == agyAgent {
+					if s.ContextTokens > 0 || s.OutputTokens > 0 {
+						info["context_tokens"] = int(s.ContextTokens)
+						info["output_tokens"] = s.OutputTokens
+						delete(info, "usage_unknown")
+					}
+					n.resolveAgyContextWindow(&s)
+					if bd := s.ContextBreakdown(); bd != nil {
+						info["context_breakdown"] = bd
+					}
 				}
 			}
 		}

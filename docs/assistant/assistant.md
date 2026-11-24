@@ -1717,7 +1717,7 @@ answer reached Persona through the Inbox alone, and none of the Inbox's routes l
   told is remembered in memory: after a manager restart, a batch not yet in an event may be told once more; one still
   queued is not, since the queued message keeps its message ids (`chat` in `assistant.relay`).
 - **Unchanged.** The Inbox's own handling of the batch (triage, the AI twin, `inbox_signals`), the connector's
-  hand-over timing, the gate and its cards. There is no setting: the window and the spacing are fixed.
+  hand-over timing, the gate and its cards. The window and the spacing are fixed. One setting, `assistant.chat_reply_relay` (`persona_settings`, owner's phone approval; **off by default**), turns the whole thing on, for every chat, not chat by chat. While it is off nothing is queued or told; turning it off drops the chat_replies still queued (one going in right then is dropped by the drain). To make the feature findable, the first conversation that wrote into a chat as the user and has others' replies there gets one hint, once ever (`chat_reply_hinted`, no one's words, no push of its own): it tells the owner in one sentence that replies are not passed on and that they can ask to turn it on.
 - **Not covered.** Task Agents that write as the user (#9763 wakes a task's Agent on follow-ups in a topic bound to the
   task; they are left out here so that one answer does not wake the same Agent twice), a single topic within a chat,
   replies to one message, and the lark-cli source, whose ledger rows name a different chat id.
@@ -2325,10 +2325,16 @@ Assistant MCP tools (`assistant/conversations.go`, descriptions `prompts/mcp/ass
   - **Queue while running**: if target is running, already queued, or the owner is talking in it, persist in hub settings `assistant.relay` (survives restart), displayed above the input like typed queues
     (session `queued`). After its turn ends (no longer working) and the owner's hold is over, hub sends one at a time, by rank ("Messages from the system wait for the owner"). Don't write into running processes: Codex merges through `turn/steer`, not queueing.
     They come after the user's own queued messages, and `queued_relayed` counts them: the apps only show and copy them.
-  - **A queued send in doubt (#10690).** The manager saves the attempt time before sending. If the answer is lost or
+  - **A queued send in doubt (#10690) and direct supervision confirmation (#12567).** The manager saves the attempt time before sending. If the answer is lost or
     the manager stops, it checks the most recent three turns for the relay before sending again. It makes up to
     three checks, each with a 15-second timeout, and waits 10 seconds between checks. A match removes the relay
     from the queue. If the last check fails or still finds no match, the manager retries with the same `once_id`.
+    Direct and queued supervision sends apply the same transcript-confirmation boundary even when `assistant.send`
+    returns success: if the rendered supervision user item is not visible or the transcript cannot be read, the
+    relay (including tried PR, decision-reply, and unhandled-inbox digests) is persisted with its exact rendered
+    payload and attempt state under the same `once_id` for bounded reconciliation and retry. Untried special digests
+    continue to restore for revalidation, and an unresolved supervision relay (tried, durable-doubt, or withdrawn)
+    keeps decision-reply interjections pending until that relay is reconciled.
     An uncertain supervision digest stays queued if rechecking its tasks would change the text or destination.
     The node keeps that id for ten minutes or until it restarts. When there is no owner to ask, a possible duplicate
     is preferable to silently losing the relay.
