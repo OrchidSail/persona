@@ -763,6 +763,12 @@ func (s *Service) deliverKept(ctx context.Context, k keptMessage) (doubt bool, e
 	if err != nil {
 		return false, err // nothing was sent
 	}
+	laterSettled := false
+	defer func() {
+		if !laterSettled {
+			laterDone(false)
+		}
+	}()
 	s.undelivered.mu.Lock()
 	revoked = s.undelivered.revoked[k.CredentialID]
 	s.undelivered.mu.Unlock()
@@ -773,6 +779,7 @@ func (s *Service) deliverKept(ctx context.Context, k keptMessage) (doubt bool, e
 	tried := time.Now()
 	err = s.call(sctx, k.Machine, DeviceSessionSend, params, nil)
 	if err == nil {
+		laterSettled = true
 		laterDone(true)
 		return false, nil
 	}
@@ -780,6 +787,7 @@ func (s *Service) deliverKept(ctx context.Context, k keptMessage) (doubt bool, e
 		return false, err
 	}
 	if s.undeliveredLandedSince(k, tried) {
+		laterSettled = true
 		laterDone(true)
 		return false, nil
 	}

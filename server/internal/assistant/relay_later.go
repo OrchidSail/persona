@@ -196,8 +196,14 @@ func (s *Service) ownerRelayLaterFor(ctx context.Context, to, clientMsgID string
 			return "", func(bool) {}, err // never carry quiet messages whose reservation was not saved
 		}
 	}
+	if carry.Text != "" {
+		s.markOwnerLaterInFlightLocked(to, clientMsgID, time.Now())
+	}
 	b.mu.Unlock()
 	return carry.Text, func(taken bool) {
+		b.mu.Lock()
+		s.clearOwnerLaterInFlightLocked(to, clientMsgID)
+		b.mu.Unlock()
 		if !taken {
 			return
 		}
@@ -287,6 +293,10 @@ func (s *Service) forgetOwnerRelayLater(ctx context.Context, sid, clientMsgID st
 	if sid == "" || once == "" {
 		return
 	}
+	b := &s.relays
+	b.mu.Lock()
+	s.clearOwnerLaterInFlightLocked(sid, clientMsgID)
+	b.mu.Unlock()
 	s.settleRelayLater(ctx, sid, relayLaterKey(sid, once), nil)
 }
 
@@ -316,6 +326,9 @@ func (s *Service) forgetUnusedOwnerRelayLater(ctx context.Context, sid, clientMs
 	if s.hasKeptUndelivered(ctx, sid, clientMsgID) {
 		return
 	}
+	b.mu.Lock()
+	s.clearOwnerLaterInFlightLocked(sid, clientMsgID)
+	b.mu.Unlock()
 	s.settleRelayLater(ctx, sid, key, nil)
 }
 
@@ -384,6 +397,50 @@ func (s *Service) withOwnerRelayLater(ctx context.Context, machine, sid, clientM
 	return done, nil
 }
 
+// markOwnerLaterInFlightLocked records that clientMsgID is actively in flight carrying Later[sid]; b.mu is held.
+func (s *Service) markOwnerLaterInFlightLocked(sid, clientMsgID string, now time.Time) {
+	b := &s.relays
+	s.hasInFlightOwnerLaterLocked(sid, now)
+	if b.ownerLaterInFlight == nil {
+		b.ownerLaterInFlight = map[string]map[string]time.Time{}
+	}
+	if b.ownerLaterInFlight[sid] == nil {
+		b.ownerLaterInFlight[sid] = map[string]time.Time{}
+	}
+	b.ownerLaterInFlight[sid][clientMsgID] = now
+}
+
+// clearOwnerLaterInFlightLocked removes clientMsgID from sid's active in-flight carry set; b.mu is held.
+func (s *Service) clearOwnerLaterInFlightLocked(sid, clientMsgID string) {
+	m := s.relays.ownerLaterInFlight[sid]
+	if m == nil {
+		return
+	}
+	delete(m, clientMsgID)
+	if len(m) == 0 {
+		delete(s.relays.ownerLaterInFlight, sid)
+	}
+}
+
+// hasInFlightOwnerLaterLocked prunes expired marks for sid and reports whether any owner send carrying Later[sid] is
+// currently in flight (used by deferred fanout wakes to avoid double-waking); b.mu is held.
+func (s *Service) hasInFlightOwnerLaterLocked(sid string, now time.Time) bool {
+	m := s.relays.ownerLaterInFlight[sid]
+	if len(m) == 0 {
+		return false
+	}
+	for id, at := range m {
+		if now.Sub(at) >= ownerLaterWait {
+			delete(m, id)
+		}
+	}
+	if len(m) == 0 {
+		delete(s.relays.ownerLaterInFlight, sid)
+		return false
+	}
+	return true
+}
+
 // pruneOwnerLaterDegradedLocked drops expired relay-read-outage marks; b.mu is held.
 func (s *Service) pruneOwnerLaterDegradedLocked(now time.Time) {
 	for k, at := range s.relays.ownerLaterDegraded {
@@ -426,6 +483,7 @@ func (s *Service) relayLaterOwnerOutcome(ctx context.Context, sid, clientMsgID s
 	}
 	b := &s.relays
 	b.mu.Lock()
+	s.clearOwnerLaterInFlightLocked(sid, clientMsgID)
 	s.pruneOwnerLaterDegradedLocked(time.Now())
 	if !delivered {
 		b.mu.Unlock()
