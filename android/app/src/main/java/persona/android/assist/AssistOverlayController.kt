@@ -101,6 +101,7 @@ internal data class AssistHubSnapshot(
     val mainModelPick: ModelPick? = null,
     val mainWorking: Boolean = false,
     val activeSession: SessionKey? = mainSession,
+    val activeTitle: String? = null,
     val activeModelPick: ModelPick? = mainModelPick,
     val activeWorking: Boolean = mainWorking,
     val conversations: List<AssistConversationOption> = emptyList(),
@@ -350,10 +351,13 @@ internal class AssistOverlayController(
             AssistTargetConversation.NewChat -> target
             is AssistTargetConversation.Existing -> {
                 val matchingOption = snapshot.conversations.firstOrNull { it.key == target.key }
-                val updatedTitle = matchingOption?.title?.takeIf(String::isNotBlank) ?: target.title
+                val updatedTitle = matchingOption?.title?.takeIf(String::isNotBlank)
+                    ?: snapshot.activeTitle?.takeIf { snapshot.activeSession == target.key && it.isNotBlank() }
+                    ?: target.title
                 val updatedPick = when {
                     snapshot.activeSession == target.key &&
-                        (snapshot.activeModelPick != null || matchingOption != null) -> snapshot.activeModelPick
+                        (snapshot.activeModelPick != null || matchingOption != null || snapshot.activeTitle != null) ->
+                        snapshot.activeModelPick
                     matchingOption != null -> matchingOption.modelPick
                     else -> target.modelPick
                 }
@@ -374,7 +378,12 @@ internal class AssistOverlayController(
             }
         }
         val projection = projectForTarget(snapshot, updatedTarget)
-        val updatedConversations = mergeAvailableConversations(snapshot.conversations, updatedTarget)
+        val updatedConversations = mergeAvailableConversations(
+            remote = snapshot.conversations,
+            target = updatedTarget,
+            activeSession = snapshot.activeSession,
+            activeWorking = snapshot.activeWorking,
+        )
         mutableState.update { current ->
             val syncedModelChoice = if (
                 updatedTarget is AssistTargetConversation.Existing &&
@@ -1073,6 +1082,8 @@ internal class AssistOverlayController(
     private fun mergeAvailableConversations(
         remote: List<AssistConversationOption>,
         target: AssistTargetConversation,
+        activeSession: SessionKey? = null,
+        activeWorking: Boolean = false,
     ): List<AssistConversationOption> {
         val existing = target as? AssistTargetConversation.Existing ?: return remote
         if (remote.any { it.key == existing.key }) return remote
@@ -1081,6 +1092,7 @@ internal class AssistOverlayController(
                 key = existing.key,
                 title = existing.title,
                 modelPick = existing.modelPick,
+                working = activeSession == existing.key && activeWorking,
             ),
         ) + remote
     }

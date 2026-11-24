@@ -177,6 +177,13 @@ internal class AssistHubBridge(
                         sessions.firstOrNull { it.key == key }
                             ?: assistant.conversations.firstOrNull { it.key == key }
                     }
+                    val activeTitle = activeKey?.let { key ->
+                        val isLeader = key.sessionId in assistant.leaders
+                        val directionName = assistant.directionNames[key.sessionId]?.takeIf(String::isNotBlank)
+                        val rowTitle = activeRow?.title?.takeIf(String::isNotBlank)
+                            ?: assistant.conversations.firstOrNull { it.key == key }?.title?.takeIf(String::isNotBlank)
+                        if (isLeader) directionName ?: rowTitle else rowTitle ?: directionName
+                    }?.trim()
                     val mainWorking = mainRow?.foldedState == AgentState.Working ||
                         mainRow?.status == "working"
                     val activeWorking = activeRow?.foldedState == AgentState.Working ||
@@ -192,6 +199,7 @@ internal class AssistHubBridge(
                         mainModelPick = mainRow?.modelPick,
                         mainWorking = mainWorking,
                         activeSession = activeKey,
+                        activeTitle = activeTitle,
                         activeModelPick = activeRow?.modelPick,
                         activeWorking = activeWorking,
                         conversations = selectOverlayConversations(assistant, sessions),
@@ -365,63 +373,131 @@ internal class AssistHubBridge(
     )
 }
 
-internal const val MAX_OVERLAY_CONVERSATIONS = 12
+internal const val MAX_OVERLAY_CONVERSATIONS = 5
+
+/** Origins of user-initiated assistant chats (matches AssistantData USER_ORIGINS without crossing feature boundaries). */
+private val OVERLAY_USER_ORIGINS = setOf("", "user", "channel")
+private const val OVERLAY_TASK_ORIGIN = "task"
+
+private data class EligibleOverlayConversation(
+    val key: SessionKey,
+    val sessionId: String,
+    val regularTitle: String,
+    val leaderTitle: String,
+    val origin: String,
+    val openedBy: String?,
+    val modelPick: ModelPick?,
+    val working: Boolean,
+    val updated: java.time.Instant?,
+)
 
 /**
- * Selects recent non-archived, sendable non-main assistant conversations for the floating overlay
- * target picker, merging live [sessions] status/model metadata and respecting saved conversation order.
+ * Selects up to [limit] active, sendable non-main assistant conversations for the floating overlay
+ * target picker:
+ * - Always excludes archived, space, read-only, main, background-supervisor, and scheduled-task
+ *   (`origin == "task"`) conversations (regardless of `recentTaskChats`, `conversationOrder`, or `leaders`).
+ * - Prioritizes active permanent directions (`assistant.leaders`, preferring `directionNames[id]`),
+ *   keeping user-promoted directions even if originally `spawned`, while skipping pure external entries.
+ * - Fills remaining slots with user-initiated ordinary chats (`origin` in `""` / `"user"` / `"channel"`
+ *   and blank `openedBy`), filtering out `inbox`, `spawned`, `lark_agent`, `extension`, `meeting`,
+ *   and any unknown automatic origins, ordered by saved `conversationOrder` then newest `updated`.
  */
 internal fun selectOverlayConversations(
     assistant: AssistantSnapshot,
     sessions: List<Session>,
     limit: Int = MAX_OVERLAY_CONVERSATIONS,
 ): List<AssistConversationOption> {
+    if (limit <= 0) return emptyList()
     val mainKey = assistant.mainSession
     val backgroundId = assistant.backgroundSupervisor?.takeIf(String::isNotBlank)
     val liveByKey = sessions.associateBy { it.key }
-    val candidates = assistant.conversations
+
+    val eligible = assistant.conversations
         .distinctBy { it.key }
         .mapNotNull { row ->
             val live = liveByKey[row.key]
             val archived = live?.archived ?: row.archived
-            val isSpace = live?.isSpace ?: row.isSpace
+            val isSpace = live?.isSpace == true || row.isSpace
             val readOnly = live?.readOnlyReason ?: row.readOnlyReason
             if (archived || isSpace || readOnly != null) return@mapNotNull null
             if (row.key == mainKey || row.sessionId.isBlank() || row.machineId.isBlank()) return@mapNotNull null
             if (backgroundId != null && row.sessionId == backgroundId) return@mapNotNull null
-            val title = (live?.title?.takeIf(String::isNotBlank)
-                ?: row.title.takeIf(String::isNotBlank)
-                ?: assistant.directionNames[row.sessionId]?.takeIf(String::isNotBlank)).orEmpty().trim()
+
+            val liveOrigin = live?.origin?.trim().orEmpty().lowercase()
+            val rowOrigin = row.origin?.trim().orEmpty().lowercase()
+            if (liveOrigin == OVERLAY_TASK_ORIGIN || rowOrigin == OVERLAY_TASK_ORIGIN) return@mapNotNull null
+            val origin = liveOrigin.ifEmpty { rowOrigin }
+            val openedBy = live?.openedBy?.trim()?.takeIf(String::isNotEmpty)
+                ?: row.openedBy?.trim()?.takeIf(String::isNotEmpty)
+
+            val directionName = assistant.directionNames[row.sessionId]?.takeIf(String::isNotBlank)
+            val rowTitle = live?.title?.takeIf(String::isNotBlank) ?: row.title.takeIf(String::isNotBlank)
+            val regularTitle = (rowTitle ?: directionName).orEmpty().trim()
+            val leaderTitle = (directionName ?: rowTitle).orEmpty().trim()
             val modelPick = live?.modelPick ?: row.modelPick
             val working = (live ?: row).let { it.foldedState == AgentState.Working || it.status == "working" }
             val updated = live?.updated ?: row.updated
-            Triple(
-                AssistConversationOption(
-                    key = row.key,
-                    title = title,
-                    modelPick = modelPick,
-                    working = working,
-                ),
-                updated,
-                row.sessionId,
+            EligibleOverlayConversation(
+                key = row.key,
+                sessionId = row.sessionId,
+                regularTitle = regularTitle,
+                leaderTitle = leaderTitle,
+                origin = origin,
+                openedBy = openedBy,
+                modelPick = modelPick,
+                working = working,
+                updated = updated,
             )
         }
+
+    val eligibleBySessionId = eligible.associateBy { it.sessionId }
+    val leaderOptions = assistant.leaders
+        .asSequence()
+        .filter(String::isNotBlank)
+        .distinct()
+        .mapNotNull { id ->
+            val entry = eligibleBySessionId[id] ?: return@mapNotNull null
+            AssistConversationOption(
+                key = entry.key,
+                title = entry.leaderTitle,
+                modelPick = entry.modelPick,
+                working = entry.working,
+            )
+        }
+        .toList()
+    val leaderKeys = leaderOptions.mapTo(HashSet()) { it.key }
+
+    val userRegular = eligible
+        .asSequence()
+        .filter { entry ->
+            entry.key !in leaderKeys &&
+                entry.origin in OVERLAY_USER_ORIGINS &&
+                entry.openedBy == null
+        }
         .sortedWith(
-            compareByDescending<Triple<AssistConversationOption, java.time.Instant?, String>> { it.second }
-                .thenBy { it.third },
+            compareByDescending<EligibleOverlayConversation> { it.updated }
+                .thenBy { it.sessionId },
         )
-        .map { it.first }
+        .map { entry ->
+            AssistConversationOption(
+                key = entry.key,
+                title = entry.regularTitle,
+                modelPick = entry.modelPick,
+                working = entry.working,
+            )
+        }
+        .toList()
 
     val savedOrder = assistant.conversationOrder
-    val ordered = if (savedOrder.isNullOrEmpty()) {
-        candidates
+    val orderedRegular = if (savedOrder.isNullOrEmpty()) {
+        userRegular
     } else {
-        val byId = candidates.associateBy { it.key.sessionId }
+        val byId = userRegular.associateBy { it.key.sessionId }
         val pinned = savedOrder.distinct().mapNotNull(byId::get)
         val seen = pinned.mapTo(HashSet()) { it.key.sessionId }
-        pinned + candidates.filter { it.key.sessionId !in seen }
+        pinned + userRegular.filter { it.key.sessionId !in seen }
     }
-    return ordered.take(limit)
+    return (leaderOptions + orderedRegular).take(limit)
 }
 
 internal fun mergeOutbox(

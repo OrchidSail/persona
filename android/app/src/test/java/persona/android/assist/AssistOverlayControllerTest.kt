@@ -1397,4 +1397,296 @@ class AssistOverlayControllerTest {
         assertEquals(fastPick, options[1].modelPick)
         assertTrue(options[1].working)
     }
+
+    @Test
+    fun selectOverlayConversationsExcludesScheduledTasksRegardlessOfFlagsOrderOrLiveSource() {
+        val taskFromRow = Session(
+            machineId = "m1",
+            sessionId = "conv-task-row",
+            title = "Nightly Report",
+            origin = "task",
+            updatedAt = "2026-11-25T01:00:00Z",
+        )
+        val taskFromLiveOnly = Session(
+            machineId = "m1",
+            sessionId = "conv-task-live",
+            title = "Live Task",
+            origin = null,
+            updatedAt = "2026-11-25T01:05:00Z",
+        )
+        val taskCaseVariant = Session(
+            machineId = "m1",
+            sessionId = "conv-task-case",
+            title = "Upper Task",
+            origin = " Task ",
+            updatedAt = "2026-11-25T01:04:00Z",
+        )
+        val taskLeader = Session(
+            machineId = "m1",
+            sessionId = "conv-task-leader",
+            title = "Task Leader",
+            origin = "task",
+            updatedAt = "2026-11-25T01:06:00Z",
+        )
+        val userChat = Session(
+            machineId = "m1",
+            sessionId = "conv-user",
+            title = "My Chat",
+            origin = "user",
+            updatedAt = "2026-11-25T00:30:00Z",
+        )
+        val snapshot = AssistantSnapshot(
+            mainSession = SessionKey("m1", "main-1"),
+            conversations = listOf(taskFromRow, taskFromLiveOnly, taskCaseVariant, taskLeader, userChat),
+            leaders = listOf("conv-task-leader"),
+            directionNames = mapOf("conv-task-leader" to "Scheduled Leader"),
+            recentTaskChats = true,
+            conversationOrder = listOf("conv-task-row", "conv-task-live", "conv-task-case", "conv-user"),
+        )
+        val liveSessions = listOf(
+            taskFromLiveOnly.copy(origin = "task"),
+        )
+
+        val options = selectOverlayConversations(snapshot, liveSessions)
+        assertEquals(listOf("conv-user"), options.map { it.key.sessionId })
+    }
+
+    @Test
+    fun selectOverlayConversationsExcludesAutomaticOriginsAndOpenedByWhileKeepingUserOrigins() {
+        val autoOrigins = listOf("inbox", "spawned", "lark_agent", "extension", "meeting", "future_bot_origin")
+        val autoSessions = autoOrigins.mapIndexed { idx, origin ->
+            Session(
+                machineId = "m1",
+                sessionId = "auto-$origin",
+                title = "Auto $origin",
+                origin = origin,
+                updatedAt = "2026-11-25T01:1$idx:00Z",
+            )
+        }
+        val openedByRow = Session(
+            machineId = "m1",
+            sessionId = "ext-opened-row",
+            title = "Ext Row",
+            origin = "user",
+            openedBy = "ext-calendar",
+            updatedAt = "2026-11-25T01:20:00Z",
+        )
+        val openedByLive = Session(
+            machineId = "m1",
+            sessionId = "ext-opened-live",
+            title = "Ext Live",
+            origin = null,
+            openedBy = null,
+            updatedAt = "2026-11-25T01:21:00Z",
+        )
+        val userNull = Session(
+            machineId = "m1",
+            sessionId = "user-null",
+            title = "Legacy User",
+            origin = null,
+            updatedAt = "2026-11-25T01:04:00Z",
+        )
+        val userBlank = Session(
+            machineId = "m1",
+            sessionId = "user-blank",
+            title = "Blank Origin",
+            origin = "  ",
+            openedBy = " ",
+            updatedAt = "2026-11-25T01:03:00Z",
+        )
+        val userExplicit = Session(
+            machineId = "m1",
+            sessionId = "user-explicit",
+            title = "App Chat",
+            origin = "user",
+            updatedAt = "2026-11-25T01:02:00Z",
+        )
+        val userChannel = Session(
+            machineId = "m1",
+            sessionId = "user-channel",
+            title = "Channel New",
+            origin = "channel",
+            updatedAt = "2026-11-25T01:01:00Z",
+        )
+
+        val snapshot = AssistantSnapshot(
+            mainSession = SessionKey("m1", "main-1"),
+            conversations = autoSessions + listOf(
+                openedByRow,
+                openedByLive,
+                userNull,
+                userBlank,
+                userExplicit,
+                userChannel,
+            ),
+        )
+        val liveSessions = listOf(
+            openedByLive.copy(openedBy = "ext-mail"),
+        )
+
+        val options = selectOverlayConversations(snapshot, liveSessions)
+        assertEquals(
+            listOf("user-null", "user-blank", "user-explicit", "user-channel"),
+            options.map { it.key.sessionId },
+        )
+    }
+
+    @Test
+    fun selectOverlayConversationsPrioritizesLeadersWithDirectionNamesAndCapsAtFive() {
+        assertEquals(5, MAX_OVERLAY_CONVERSATIONS)
+        val spawnedLeader = Session(
+            machineId = "m1",
+            sessionId = "lead-spawned",
+            title = "Raw Spawned Title",
+            origin = "spawned",
+            updatedAt = "2026-11-24T08:00:00Z",
+        )
+        val userLeader = Session(
+            machineId = "m1",
+            sessionId = "lead-user",
+            title = "Backend Architecture",
+            origin = "user",
+            updatedAt = "2026-11-24T09:00:00Z",
+        )
+        val bgSupervisor = Session(
+            machineId = "m1",
+            sessionId = "conv-bg",
+            title = "Background Supervisor",
+            origin = "user",
+            updatedAt = "2026-11-25T01:59:00Z",
+        )
+        val taskLeader = Session(
+            machineId = "m1",
+            sessionId = "lead-task",
+            title = "Scheduled Task Leader",
+            origin = "task",
+            updatedAt = "2026-11-25T01:58:00Z",
+        )
+        val archivedLeader = Session(
+            machineId = "m1",
+            sessionId = "lead-archived",
+            title = "Archived Leader",
+            origin = "user",
+            archived = true,
+            updatedAt = "2026-11-25T01:57:00Z",
+        )
+        val externalOnlyLeader = Session(
+            machineId = "",
+            sessionId = "lead-external",
+            title = "External Only",
+            origin = "user",
+            updatedAt = "2026-11-25T01:56:00Z",
+        )
+        val regularChats = (1..6).map { i ->
+            Session(
+                machineId = "m1",
+                sessionId = "reg-$i",
+                title = "Regular $i",
+                origin = "user",
+                updatedAt = "2026-11-25T01:0$i:00Z",
+            )
+        }
+
+        val snapshot = AssistantSnapshot(
+            mainSession = SessionKey("m1", "main-1"),
+            conversations = listOf(
+                spawnedLeader,
+                userLeader,
+                bgSupervisor,
+                taskLeader,
+                archivedLeader,
+                externalOnlyLeader,
+            ) + regularChats,
+            leaders = listOf(
+                "lead-spawned",
+                "lead-external",
+                "lead-missing-external",
+                "conv-bg",
+                "lead-task",
+                "lead-archived",
+                "lead-user",
+            ),
+            directionNames = mapOf(
+                "lead-spawned" to "Product Roadmap",
+                "lead-external" to "Outside Direction",
+            ),
+            backgroundSupervisor = "conv-bg",
+            conversationOrder = listOf("reg-2"),
+        )
+
+        val options = selectOverlayConversations(snapshot, emptyList())
+        assertEquals(MAX_OVERLAY_CONVERSATIONS, options.size)
+        // Leaders come first in assistant.leaders order (spawned leader kept with directionName),
+        // followed by conversationOrder pinned user chat ("reg-2"), then newest user chats ("reg-6", "reg-5").
+        assertEquals(
+            listOf("lead-spawned", "lead-user", "reg-2", "reg-6", "reg-5"),
+            options.map { it.key.sessionId },
+        )
+        assertEquals("Product Roadmap", options[0].title)
+        assertEquals("Backend Architecture", options[1].title)
+    }
+
+    @Test
+    fun newlyCreatedConversationOutsideTopFiveStaysBoundAndUpdatesTitleWithoutDisappearing() = runTest {
+        val topFive = (1..MAX_OVERLAY_CONVERSATIONS).map { i ->
+            AssistConversationOption(
+                key = SessionKey("machine-1", "top-$i"),
+                title = "Top $i",
+            )
+        }
+        val createdKey = SessionKey("machine-1", "new-outside-top5")
+        val harness = Harness(this).apply {
+            nextCreatedSession = createdKey
+        }
+        val controller = harness.controller
+        controller.onHubUpdate(
+            AssistHubSnapshot(
+                status = AssistHubStatus.Ready,
+                mainSession = mainKey,
+                conversations = topFive,
+            ),
+        )
+        controller.beginSession(supportsScreenshot = false)
+
+        controller.selectNewConversation()
+        controller.selectModel(fastChoice)
+        controller.updateDraftText("Plan weekend trip")
+        controller.send()
+        runCurrent()
+
+        // Hub emits updates whose top-5 conversations list still does not include createdKey.
+        controller.onHubUpdate(
+            AssistHubSnapshot(
+                status = AssistHubStatus.Ready,
+                mainSession = mainKey,
+                activeSession = createdKey,
+                activeTitle = "Weekend Trip",
+                activeModelPick = fastPick,
+                activeWorking = true,
+                conversations = topFive,
+            ),
+        )
+
+        val state = controller.state.value
+        assertEquals(
+            AssistTargetConversation.Existing(createdKey, "Weekend Trip", fastPick),
+            state.targetConversation,
+        )
+        assertEquals(fastPick, state.modelChoice.pick)
+        assertEquals(createdKey, state.availableConversations.first().key)
+        assertEquals("Weekend Trip", state.availableConversations.first().title)
+        assertTrue(state.availableConversations.first().working)
+        assertEquals(MAX_OVERLAY_CONVERSATIONS + 1, state.availableConversations.size)
+        assertEquals(
+            state.availableConversations.size,
+            state.availableConversations.map { it.key }.distinct().size,
+        )
+
+        // Switching back to Main restores strictly the top-5 list without the temporary prepended chip.
+        controller.selectMainConversation()
+        assertEquals(topFive, controller.state.value.availableConversations)
+
+        controller.endSession()
+        runCurrent()
+    }
 }
