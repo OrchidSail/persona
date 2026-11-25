@@ -55,7 +55,7 @@ func (n *Node) assistantCompactRuntime(ctx context.Context, id string, onlyRunni
 	params := map[string]any{"session_id": id, "text": "/compact", "assistant": true}
 	st, _ := n.state.get(id)
 	cwd := n.runtimeAssistantCwd(id, "", st)
-	if env := n.assistantEnvForRuntime(host, cwd); env != nil {
+	if env := n.assistantEnvForRuntime(host, cwd, id); env != nil {
 		params["env"] = env
 	}
 	var reply struct {

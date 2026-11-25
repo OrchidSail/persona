@@ -351,7 +351,7 @@ func TestAssistantRuntimeCompactionForwardsEnvironment(t *testing.T) {
 		t.Fatalf("runtime sends: %d", len(sends))
 	}
 	env := runtimeAssistantEnvironment(t, sends[0])
-	wantEnv := n.assistantEnvForRuntime(n.runtimes.ownerOf(id), cwd)
+	wantEnv := n.assistantEnvForRuntime(n.runtimes.ownerOf(id), cwd, id)
 	if len(env) == 0 || !maps.Equal(env, wantEnv) {
 		t.Fatalf("compact env = %v, want %v", env, wantEnv)
 	}
