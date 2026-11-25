@@ -31,10 +31,10 @@ import (
 // Untitled Antigravity conversations take a short title from their first prompt line (#14629), 218 B (264,212 B).
 // An API error agy streams as message text becomes the turn's error, kept in history and settled idle (#14628), 231 B (264,443 B).
 // Antigravity GENERIC timestamp header stripping (#13662) adds 176 B (264,619 B).
-// Preserving delivered replies across live Antigravity background wakes, in-place RUNNING->DONE updates and runtime-sdk catch-up/batch delta ordering (#14920) adds 1,013 B over main's 264,497 B (265,510 B generated, 265,538 B ceiling).
+// Preserving delivered replies across live Antigravity background wakes, in-place RUNNING->DONE updates and runtime-sdk catch-up/batch delta ordering (#14920) adds 1,034 B over main's 265,242 B (266,276 B generated, 266,304 B ceiling).
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 265_538
+	const budget = 266_304
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {
