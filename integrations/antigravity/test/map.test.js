@@ -55,6 +55,31 @@ describe('antigravity transcript and tool mapping', () => {
     assert.equal(cleanUserText(raw), 'Hello world')
   })
 
+  it('strips spurious trailing agy /compact echoes while keeping genuine /compact inputs', () => {
+    const digest = [
+      '📋 督办：你派出去的任务有 2 个要你处理',
+      '（这是 Persona 的督办消息，不是用户发的消息。）',
+      '- 任务记录提到用户曾输入 /compact 处理上下文',
+      '<persona-supervision level="triage" />',
+    ].join('\n')
+    const rawDigest = `<USER_REQUEST>\n${digest}\n/compact\n</USER_REQUEST>\n<ADDITIONAL_METADATA>clock</ADDITIONAL_METADATA>`
+    assert.equal(cleanUserText(rawDigest), digest)
+    const { items } = stepsToItems([{ step_index: 0, type: 'USER_INPUT', source: 'USER_EXPLICIT', content: rawDigest }])
+    assert.equal(items[0].text, digest)
+
+    const contextOnly = `<USER_REQUEST>\n<persona-context>memory mentions /compact</persona-context>\n\nStatus check\n/compact\n</USER_REQUEST>`
+    assert.equal(cleanUserText(contextOnly), 'Status check')
+
+    const withImages = `<USER_REQUEST>\n<persona-context>memory mentions /compact</persona-context>\nCheck screenshot\n<attached_images>/tmp/shot.png</attached_images>/compact\n</USER_REQUEST>`
+    assert.equal(cleanUserText(withImages), 'Check screenshot\n<attached_images>/tmp/shot.png</attached_images>')
+
+    const standalone = `<USER_REQUEST>\n<persona-context>memory mentions /compact</persona-context>\n\n/compact\n</USER_REQUEST>`
+    assert.equal(cleanUserText(standalone), '/compact')
+
+    const genuineTail = `<USER_REQUEST>\nRun tests then compact\n/compact\n</USER_REQUEST>`
+    assert.equal(cleanUserText(genuineTail), 'Run tests then compact\n/compact')
+  })
+
   it('projects native context resources without hiding ordinary user labels', () => {
     const user = 'Please reply OK.\nKeep this second line.'
     const label = 'Content of persona-context:///snapshot.txt:\n'

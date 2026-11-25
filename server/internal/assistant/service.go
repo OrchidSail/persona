@@ -1131,9 +1131,9 @@ func (s *Service) userSpokeText(ctx context.Context, r SessionRef, text string) 
 	s.progressMade(r.MachineID, r.SessionID, time.Now()) // told something: a new stretch (supervise_progress.go)
 	// A meeting's turn under way is the user's from here on (meeting_turns.go).
 	s.meetingTurnUserSpoke(r.MachineID, r.SessionID)
-	s.releasePushes(ctx, r.SessionID) // the user speaks: its turns are pushed as ever (supervise_digest.go)
-	s.withdrawAskUser(r.SessionID)    // a question it waits on is taken back: the user's words are not left behind its turn
-	s.askLaterSpoke(ctx, r.SessionID) // one asked without waiting stays up; that they wrote is kept (ask_later.go)
+	s.releasePushesOnUserSpoke(ctx, r.MachineID, r.SessionID) // the user speaks: its turns are pushed as ever (supervise_digest.go)
+	s.withdrawAskUser(r.SessionID)                            // a question it waits on is taken back: the user's words are not left behind its turn
+	s.askLaterSpoke(ctx, r.SessionID)                         // one asked without waiting stays up; that they wrote is kept (ask_later.go)
 	s.unarchiveOnSend(r.MachineID, r.SessionID)
 	if s.suggestDrop(r.MachineID, r.SessionID) { // a message went in: its suggestion is spent (suggest_next.go)
 		s.publishSessions(r.MachineID)

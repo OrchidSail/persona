@@ -201,10 +201,8 @@ func (s *Service) logicalCall(ctx context.Context, machine, method string, raw j
 			}
 			client, _ := p["client_msg_id"].(string)
 			if client == "" {
-				client, _ = p["once_id"].(string)
-				if client != "" {
-					client = "segment-once:" + client
-					p["client_msg_id"] = client
+				if once, _ := p["once_id"].(string); once != "" {
+					client = "segment-once:" + once
 				}
 			}
 			needsQueue := current.Switch != nil || pending
@@ -222,7 +220,9 @@ func (s *Service) logicalCall(ctx context.Context, machine, method string, raw j
 					return logicalRefusal(ctx, "message_id_required")
 				}
 				client = "segment-input:" + randomHex(16)
-				p["client_msg_id"] = client
+				// Deduplicate internal queued inputs via once_id, never client_msg_id: a line carrying
+				// client_msg_id reads as owner-authored and bypasses supervision/injected classification.
+				p["once_id"] = client
 			}
 			if client != "" {
 				body, e := marshalLogicalInput(ctx, method, p)
@@ -331,6 +331,17 @@ func cloneLogicalParams(p map[string]any, active conversationlog.Segment) map[st
 	out := make(map[string]any, len(p))
 	for k, v := range p {
 		out[k] = v
+	}
+	// Strip synthetic segment queue keys if an older queued payload stored them in client_msg_id.
+	if cid, _ := out["client_msg_id"].(string); strings.HasPrefix(cid, "segment-once:") || strings.HasPrefix(cid, "segment-input:") {
+		delete(out, "client_msg_id")
+		if once, _ := out["once_id"].(string); once == "" {
+			if raw, ok := strings.CutPrefix(cid, "segment-once:"); ok && raw != "" {
+				out["once_id"] = raw
+			} else {
+				out["once_id"] = cid
+			}
+		}
 	}
 	out["session_id"] = active.SessionID
 	return out

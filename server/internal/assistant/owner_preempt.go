@@ -141,10 +141,11 @@ func (r *roundStart) sent(s *Service, res json.RawMessage) {
 // one it shows stopped after that has ended it. A background message that waited behind the ended round may start
 // the next one. A mark never seen working is dropped after backgroundRoundStartWait.
 func (s *Service) roundsSeen(list []proto.Session) {
+	var ended []string
 	b := &s.preempt
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if len(b.rounds) == 0 {
+		b.mu.Unlock()
 		return
 	}
 	now := time.Now()
@@ -163,11 +164,33 @@ func (s *Service) roundsSeen(list []proto.Session) {
 		case status != proto.StatusDone && status != proto.StatusIdle && status != proto.StatusInterrupted:
 			// offline, unknown: nothing said about its round (a reconnect can come back to the same turn)
 		case m.running && m.next != "":
+			if m.kind == proto.SourceSupervision {
+				ended = append(ended, id)
+			}
 			b.rounds[id] = backgroundRound{kind: m.next, at: now, queued: true}
 		case m.running || now.Sub(m.at) > backgroundRoundStartWait:
+			if m.kind == proto.SourceSupervision {
+				ended = append(ended, id)
+			}
 			delete(b.rounds, id)
 		}
 	}
+	b.mu.Unlock()
+	for _, id := range ended {
+		s.clearPreemptedSupervision(id)
+	}
+}
+
+// supervisionRoundActive reports whether conversation id currently has an active supervision round tracked in memory.
+func (s *Service) supervisionRoundActive(id string) bool {
+	b := &s.preempt
+	b.mu.Lock()
+	m, ok := b.rounds[id]
+	b.mu.Unlock()
+	if !ok || m.kind != proto.SourceSupervision {
+		return false
+	}
+	return m.running || time.Since(m.at) <= backgroundRoundStartWait
 }
 
 // ownerPreempts: the owner's message is about to go to conversation id; whether the round there is one the owner did

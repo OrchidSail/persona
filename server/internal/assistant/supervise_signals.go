@@ -294,8 +294,8 @@ type superviseBook struct {
 	told             map[string]time.Time // conversation → last accepted supervision message
 	timer            *time.Timer
 	timerAt          time.Time
-	lastOutageSince  time.Time // monotonic outage-episode anchor for distinct recovery digest keys (#13158)
-	stopped          bool // set by stopSuperviseTimers under mu; stops timer callbacks and prevents re-arming
+	lastOutageSince  time.Time      // monotonic outage-episode anchor for distinct recovery digest keys (#13158)
+	stopped          bool           // set by stopSuperviseTimers under mu; stops timer callbacks and prevents re-arming
 	off              supervisionOff // the automatic-supervision switch's memory (supervise_switch.go)
 
 	resuming map[[2]string]struct{} // fingerprints of offline leader sends in flight, under dedupMu
@@ -303,9 +303,11 @@ type superviseBook struct {
 	// noMainSince is when digests started leaving signals waiting for a main conversation (zero: the last one left none
 	// waiting), noMainLogged when that was last logged (sendDigest).
 	noMainSince, noMainLogged time.Time
-	hold                      map[string]time.Time // conversation → when a supervision message went in: its turn's finish is not pushed
-	visible                   map[string]bool      // an explicit user action makes the current triage turn visible
-	sideLinks                 map[string][]string  // side conversation → task/conversation links to attach to its user-level supervision push
+	hold                      map[string]time.Time            // conversation → when a supervision message went in: its turn's finish is not pushed
+	visible                   map[string]bool                 // an explicit user action makes the current triage turn visible
+	preempted                 map[string]preemptedSupervision // in-flight supervision turn whose pushes were released by a queued owner message
+	lastUserSpoke             map[string]time.Time            // conversation → last owner message timestamp
+	sideLinks                 map[string][]string             // side conversation → task/conversation links to attach to its user-level supervision push
 	// failSeen: tasks whose failed start a supervision message carried, when, and for which conversation
 	// (start_remedy.go remedyTurnEnded)
 	failSeen map[string]failSeen
@@ -315,12 +317,25 @@ type superviseBook struct {
 	lines sync.WaitGroup
 }
 
+type preemptedSupervision struct {
+	at       time.Time
+	promoted bool
+}
+
 func (b *superviseBook) init() {
 	if b.pending == nil {
 		b.pending, b.sent, b.asks, b.hold = map[string]superviseSignal{}, map[string]string{}, map[string]string{}, map[string]time.Time{}
 		b.visible = map[string]bool{}
+		b.preempted = map[string]preemptedSupervision{}
+		b.lastUserSpoke = map[string]time.Time{}
 		b.sideLinks = map[string][]string{}
 		b.legacyBackground = map[string]bool{}
+	}
+	if b.preempted == nil {
+		b.preempted = map[string]preemptedSupervision{}
+	}
+	if b.lastUserSpoke == nil {
+		b.lastUserSpoke = map[string]time.Time{}
 	}
 	if b.sideLinks == nil {
 		b.sideLinks = map[string][]string{}

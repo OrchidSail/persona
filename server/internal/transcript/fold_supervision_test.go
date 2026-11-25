@@ -224,3 +224,38 @@ func TestStripToolResultTimestampHeaders(t *testing.T) {
 		})
 	}
 }
+
+func TestActiveSupervisionRound(t *testing.T) {
+	triage := prompts.RenderSupervise(prompts.Supervise{
+		Level:   "triage",
+		Entries: []prompts.SuperviseEntry{{ID: "t1", Title: "Build", Kind: "idle"}},
+	})
+	userLevel := prompts.RenderSupervise(prompts.Supervise{
+		Level:   "user",
+		Entries: []prompts.SuperviseEntry{{ID: "t1", Title: "Build", Kind: "needs_you"}},
+	})
+	cases := []struct {
+		name                         string
+		items                        []proto.Item
+		observed, supervise, promote bool
+	}{
+		{"empty", nil, false, false, false},
+		{"open triage supervision", []proto.Item{{Seq: 1, Role: "user", Kind: proto.KindText, Text: triage}}, true, true, false},
+		{"promoted by notify_user", []proto.Item{
+			{Seq: 1, Role: "user", Kind: proto.KindText, Text: triage},
+			{Seq: 2, Role: "assistant", Kind: proto.KindToolUse, ToolUseID: "c1", ToolName: "mcp__persona__notify_user"},
+			{Seq: 3, Role: "user", Kind: proto.KindToolResult, ToolUseID: "c1", Text: "ok"},
+		}, true, true, true},
+		{"promoted by user-level marker", []proto.Item{{Seq: 1, Role: "user", Kind: proto.KindText, Text: userLevel}}, true, true, true},
+		{"closed supervision round", []proto.Item{{Seq: 1, Role: "user", Kind: proto.KindText, Text: triage}, {Seq: 2, Kind: "turn_duration"}}, true, false, false},
+		{"normal user message", []proto.Item{{Seq: 1, Role: "user", Kind: proto.KindText, ClientMsgID: "c1", Text: triage}}, true, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			obs, sup, prom, _ := ActiveSupervisionRound(tc.items)
+			if obs != tc.observed || sup != tc.supervise || prom != tc.promote {
+				t.Fatalf("ActiveSupervisionRound = (%v, %v, %v), want (%v, %v, %v)", obs, sup, prom, tc.observed, tc.supervise, tc.promote)
+			}
+		})
+	}
+}

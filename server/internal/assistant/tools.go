@@ -171,7 +171,7 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 	case "repositories_list", "repository_get":
 		return s.toolRepositories(ctx, name, args)
 	case "supervision_finish":
-		return s.toolSupervisionFinish(ctx, self, args)
+		return s.toolSupervisionFinishOn(ctx, machine, self, args)
 	case "ask_user":
 		return s.toolAskUser(ctx, machine, self, args)
 	case "ask_user_withdraw":

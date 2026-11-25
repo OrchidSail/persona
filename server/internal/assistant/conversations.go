@@ -1011,7 +1011,9 @@ func (s *Service) relayDelivered(ctx context.Context, to string, msg relayMsg) {
 	if msg.Tool == superviseTool {
 		s.backgroundRoundDelivered(ctx, to, msg, time.Now())
 		s.askRelayDelivered(to, msg)
-		if !s.shouldHoldSupervisionPushes(ctx, to, msg) {
+		if s.shouldHoldSupervisionPushes(ctx, to, msg) {
+			s.restoreSupervisionHold(ctx, to, msg.TriedAt)
+		} else {
 			s.noteReportTurn(to)
 		}
 		return

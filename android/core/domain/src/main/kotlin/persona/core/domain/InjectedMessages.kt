@@ -13,8 +13,10 @@ import persona.core.contracts.Item
 private val noticeHead = Regex("^🔔 任务「(.+)」(做完了|在等用户|被模型服务出错打断了|没开起来)(?:（(.+)）)?$") // i18n-ignore: the injected text it reads (prompts.ParseInjected)
 private val followupHead = Regex("^⏰ (.+)（(你之前安排的跟进|定时任务(?:，每 [^）]+)?)）$") // i18n-ignore: the injected text it reads (prompts.ParseInjected)
 private val wakeHead = Regex("^⏰（Persona 叫醒你，第 \\d+ 次）你上一轮停下时说在等「(.*?)」") // i18n-ignore: the injected text it reads (prompts.ParseInjected)
+private val superviseHead = Regex("^📋 督办：你派出去的任务有 (\\d+) 个要你处理$") // i18n-ignore: the injected text it reads (prompts.ParseInjected)
 private val leadContext = ProtocolCompatibility.leadContext
 private const val NOTICE_MARKER = "这是 Persona 的任务通知" // i18n-ignore: the injected text it reads (prompts.ParseInjected)
+private const val SUPERVISE_MARKER = "这是 Persona 的督办消息" // i18n-ignore: the injected text it reads (prompts.ParseInjected)
 private const val LOST_TASKS_HEAD = "⚠️ 运行你的 node 刚重启过" // i18n-ignore: the injected text it reads (prompts.ParseInjected)
 private const val KB_HINT_HEAD = "（知识库" // i18n-ignore: the injected text it reads (prompts.ParseInjected)
 private val noticeStates = mapOf("做完了" to "done", "在等用户" to "needs", "被模型服务出错打断了" to "interrupted", "没开起来" to "failed") // i18n-ignore: the injected text it reads (prompts.ParseInjected)
@@ -48,6 +50,14 @@ fun parseInjected(raw: String): Injected? {
                 what.startsWith("定时任务，每 ") -> Injected("followup", "interval", title, line = "定时任务「$title」开始运行", detail = detail) // i18n-ignore: fallback for unmarked lines, as prompts.ParseInjected words it (spec/fixtures/injected); the hub sends Item.injected.line in the user's language
                 else -> Injected("followup", "daily", title, line = "定时任务「$title」开始运行", detail = detail) // i18n-ignore: fallback for unmarked lines, as prompts.ParseInjected words it (spec/fixtures/injected); the hub sends Item.injected.line in the user's language
             }
+        }
+        head.startsWith("📋 督办：") -> { // i18n-ignore: the injected text it reads (prompts.ParseInjected)
+            val m = superviseHead.find(head) ?: return null
+            if (SUPERVISE_MARKER !in rest) return null
+            val level = listOf("info", "triage", "user").firstOrNull {
+                "<persona-supervision level=\"$it\" />" in rest
+            } ?: "triage"
+            Injected("system", "supervise", line = "督办：${m.groupValues[1]} 个派出去的任务要处理", level = level) // i18n-ignore: fallback for unmarked lines, as prompts.ParseInjected words it; the hub sends Item.injected.line in the user's language
         }
         head.startsWith(LOST_TASKS_HEAD) -> {
             val n = rest.split('\n').count { it.startsWith("- ") }

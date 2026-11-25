@@ -75,14 +75,21 @@ func (n *Node) assistantSegment(ctx context.Context, method string, raw json.Raw
 		id, _ := p["session_id"].(string)
 		client, _ := p["client_msg_id"].(string)
 		accepted := false
-		n.echoes.mu.Lock()
-		for _, r := range n.echoes.recs[id] {
-			if r.ClientMsgID == client && r.Accepted {
-				accepted = true
-				break
-			}
+		if once, ok := strings.CutPrefix(client, "segment-once:"); ok {
+			accepted = n.sends.accepted(once)
+		} else if strings.HasPrefix(client, "segment-input:") {
+			accepted = n.sends.accepted(client)
 		}
-		n.echoes.mu.Unlock()
+		if !accepted {
+			n.echoes.mu.Lock()
+			for _, r := range n.echoes.recs[id] {
+				if r.ClientMsgID == client && r.Accepted {
+					accepted = true
+					break
+				}
+			}
+			n.echoes.mu.Unlock()
+		}
 		return map[string]bool{"accepted": accepted}, nil
 	}
 	operation, _ := p["operation_id"].(string)

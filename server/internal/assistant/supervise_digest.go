@@ -1413,6 +1413,29 @@ func (s *Service) holdPushes(ctx context.Context, id string) {
 	b.init()
 	b.hold[id] = time.Now()
 	delete(b.visible, id)
+	delete(b.preempted, id)
+	delete(b.sideLinks, id)
+	b.mu.Unlock()
+	s.publish(ctx)
+}
+
+// restoreSupervisionHold re-establishes the push hold when a supervision relay whose initial transcript confirmation
+// missed is later confirmed in the conversation transcript, unless the owner has already spoken since that try.
+func (s *Service) restoreSupervisionHold(ctx context.Context, id string, triedAt time.Time) {
+	b := &s.supervise
+	b.mu.Lock()
+	b.init()
+	if _, held := b.hold[id]; held {
+		b.mu.Unlock()
+		return
+	}
+	if spoke := b.lastUserSpoke[id]; !spoke.IsZero() && (triedAt.IsZero() || !spoke.Before(triedAt)) {
+		b.mu.Unlock()
+		return
+	}
+	b.hold[id] = time.Now()
+	delete(b.visible, id)
+	delete(b.preempted, id)
 	delete(b.sideLinks, id)
 	b.mu.Unlock()
 	s.publish(ctx)
@@ -1429,11 +1452,44 @@ func (s *Service) releasePushes(ctx context.Context, id string) {
 	_, held := b.hold[id]
 	delete(b.hold, id)
 	delete(b.visible, id)
+	delete(b.preempted, id)
 	delete(b.sideLinks, id)
 	b.mu.Unlock()
 	if held {
 		s.publish(ctx)
 	}
+}
+
+// releasePushesOnUserSpoke releases push-holding when the owner speaks, while preserving finish eligibility for a
+// supervision turn that is still actively running until that round ends.
+func (s *Service) releasePushesOnUserSpoke(ctx context.Context, machine, id string) {
+	now := time.Now()
+	active := s.supervisionRoundActive(id) || (machine != "" && s.seenWorking(machine, id))
+	b := &s.supervise
+	b.mu.Lock()
+	b.init()
+	b.lastUserSpoke[id] = now
+	heldAt, held := b.hold[id]
+	promoted := b.visible[id]
+	delete(b.hold, id)
+	delete(b.visible, id)
+	delete(b.sideLinks, id)
+	if held && active {
+		b.preempted[id] = preemptedSupervision{at: heldAt, promoted: promoted}
+	} else {
+		delete(b.preempted, id)
+	}
+	b.mu.Unlock()
+	if held {
+		s.publish(ctx)
+	}
+}
+
+func (s *Service) clearPreemptedSupervision(id string) {
+	b := &s.supervise
+	b.mu.Lock()
+	delete(b.preempted, id)
+	b.mu.Unlock()
 }
 
 // supervising: conversation id's current turn was started by a supervision message.

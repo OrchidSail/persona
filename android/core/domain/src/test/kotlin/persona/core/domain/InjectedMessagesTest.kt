@@ -61,6 +61,28 @@ class InjectedMessagesTest {
             """{"id":"1","role":"user","kind":"text","text":"x","injected":{"kind":"system","state":"supervise","line":"督办"}}""")
         assertNull(oldHub.injected?.level)
     }
+
+    @Test fun supervisionFallbackRecognizesUnmarkedSuperviseMessages() {
+        val triage = "📋 督办：你派出去的任务有 2 个要你处理\n（这是 Persona 的督办消息，不是用户发的消息。）\n<persona-supervision level=\"triage\" />"
+        val parsed = parseInjected(triage)
+        assertEquals(Injected("system", "supervise", line = "督办：2 个派出去的任务要处理", level = "triage"), parsed)
+        assertEquals(parsed, injectedOf(Item("1", role = "user", kind = "text", text = triage)))
+        assertEquals("supervision", sourceOf(Item("1", role = "user", kind = "text", text = triage))?.kind)
+
+        val userLevel = "📋 督办：你派出去的任务有 1 个要你处理\n（这是 Persona 的督办消息）\n<persona-supervision level=\"user\" />"
+        assertEquals("user", parseInjected(userLevel)?.level)
+
+        val legacy = "<persona-context>snapshot</persona-context>\n📋 督办：你派出去的任务有 3 个要你处理\n（这是 Persona 的督办消息）"
+        assertEquals("triage", parseInjected(legacy)?.level)
+
+        // Without the marker, or when sent by an app/peer/protected user context, it stays an ordinary user message.
+        assertNull(parseInjected("📋 督办：你派出去的任务有 2 个要你处理\nno marker"))
+        assertNull(injectedOf(Item("2", role = "user", kind = "text", text = triage, clientMsgId = "app-1")))
+        assertNull(sourceOf(Item("2", role = "user", kind = "text", text = triage, clientMsgId = "app-1")))
+        val protected = "<persona-context kind=\"message-source\">{\"author\":\"user\"}</persona-context>\n$triage"
+        assertNull(injectedOf(Item("3", role = "user", kind = "text", text = protected)))
+        assertNull(sourceOf(Item("3", role = "user", kind = "text", text = protected)))
+    }
 }
 
 class InjectedTaskTest {

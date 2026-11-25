@@ -461,6 +461,25 @@ func (l *sentLog) completed(id string) (*sendRecord, bool) {
 	}
 }
 
+// accepted reports whether a recent send under id completed without error.
+func (l *sentLog) accepted(id string) bool {
+	if id == "" {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	r := l.sent[id]
+	if r == nil {
+		return false
+	}
+	select {
+	case <-r.done:
+		return r.err == nil
+	default:
+		return false
+	}
+}
+
 // onceReplacing allows an echo-checked retry to supersede only the specific ambiguous attempt it checked.
 func (l *sentLog) onceReplacing(id string, previous *sendRecord, send func() error) error {
 	if id == "" {

@@ -57,6 +57,24 @@ func relayWords(s string) string {
 	return strings.TrimSpace(relayContextRe.ReplaceAllString(s, ""))
 }
 
+// relayWordsMatch checks whether a transcript line's words match want, also tolerating
+// agy CLI 1.5.17's spurious trailing "/compact" echo appended when the prompt mentions /compact.
+func relayWordsMatch(rawText, got, want string) bool {
+	if got == want {
+		return true
+	}
+	if want == "" || !strings.HasSuffix(got, "/compact") {
+		return false
+	}
+	trimmedRaw := strings.TrimSpace(rawText)
+	prefixRaw, ok := strings.CutSuffix(trimmedRaw, "/compact")
+	if !ok || !strings.Contains(prefixRaw, "/compact") {
+		return false
+	}
+	prefixGot, _ := strings.CutSuffix(got, "/compact")
+	return strings.TrimRight(prefixGot, " \t\r\n") == want
+}
+
 // relayArrived checks the latest turns for the relay's text and source since the first try that may have gone in.
 // An error means the transcript could not be read. A successful read without a match can still miss a late write.
 func (s *Service) relayArrived(machine, to string, msg relayMsg) (bool, error) {
@@ -99,7 +117,7 @@ func (s *Service) relayArrived(machine, to string, msg relayMsg) (bool, error) {
 				continue
 			}
 		}
-		if relayWords(it.Text) != want {
+		if !relayWordsMatch(it.Text, relayWords(it.Text), want) {
 			continue
 		}
 		return true, nil

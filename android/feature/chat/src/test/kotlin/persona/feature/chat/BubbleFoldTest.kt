@@ -4,13 +4,21 @@ import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -20,10 +28,12 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -38,6 +48,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import persona.core.contracts.Item
+import persona.core.contracts.SessionKey
 import persona.core.designsystem.AppStyle
 import persona.core.designsystem.LocalSelectionAbove
 import persona.core.designsystem.PersonaTheme
@@ -223,5 +234,128 @@ class BubbleFoldTest {
         rule.waitForIdle()
         rule.onNodeWithTag("bubble-fold-collapse").assertExists()
         assertTrue("Expanding passes the full text including the tail", observed.last().contains("TAIL_SENTINEL_2000"))
+    }
+
+    /**
+     * Real pointer-touch regression across Glass, Brief, and Board (including dark Brief past Compose's ~8192px
+     * asymmetric RoundRect path hit-test threshold) while the chat list hosts long-press messageMenu gestures and
+     * live streaming assistant work updates below the bubble.
+     */
+    @Test fun tallBubbleCollapseAndReExpandWorkWithRealTouchAcrossStylesAndStreaming() {
+        val tallText = linesOf(200, prefix = "Verification entry")
+        var style by mutableStateOf(AppStyle.Brief)
+        var dark by mutableStateOf(true)
+        var streamTick by mutableIntStateOf(1)
+        var scrollToBottomTick by mutableIntStateOf(0)
+        rule.setContent {
+            val menu = remember { MessageMenuState().apply { quote = {} } }
+            val actions = remember(menu) {
+                ChatRowActions(
+                    session = SessionKey("box", "s1"),
+                    fullText = { it.text.orEmpty() },
+                    openPath = null,
+                    photos = null,
+                    pictures = { emptyList() },
+                    openImages = { _, _ -> },
+                    menu = menu,
+                    retryLineId = null,
+                    onRetry = {},
+                )
+            }
+            PersonaTheme(darkTheme = dark, reduceMotion = true, style = style) {
+                CompositionLocalProvider(LocalChatRowActions provides actions) {
+                    val listState = rememberLazyListState()
+                    LaunchedEffect(scrollToBottomTick) {
+                        if (scrollToBottomTick > 0) listState.scrollToItem(1)
+                    }
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize().background(PersonaTheme.palette.background).padding(horizontal = Tokens.Space.l),
+                    ) {
+                        item(key = "user-tall") {
+                            Column(Modifier.testTag("tall-user-row")) {
+                                MergedUserBubble(
+                                    items = listOf(Item("tall-1", role = "user", kind = "text", text = tallText, clientMsgId = "c-tall", ts = "2026-11-25T10:48:00Z")),
+                                    updates = mapOf("assistant-live" to ChatTextUpdate("Checked $streamTick places...", streaming = true)),
+                                )
+                            }
+                        }
+                        item(key = "assistant-live") {
+                            Text(
+                                "Checked $streamTick places...",
+                                style = PersonaTheme.type.caption,
+                                color = PersonaTheme.palette.ink2,
+                                modifier = Modifier.padding(vertical = Tokens.Space.m),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        val minTouchPx = with(rule.density) { Tokens.MinTouch.android.toPx() }
+        for ((candidateStyle, isDark) in listOf(
+            AppStyle.Brief to true,
+            AppStyle.Brief to false,
+            AppStyle.Glass to true,
+            AppStyle.Board to true,
+        )) {
+            style = candidateStyle
+            dark = isDark
+            rule.waitForIdle()
+
+            // Expand with a real touch near the top edge of the 48dp button row (no dead zone).
+            val expandNode = rule.onNodeWithTag("bubble-fold-expand")
+            expandNode.assertIsDisplayed()
+            assertTrue(
+                "Expand row bounds must span at least 48dp in $candidateStyle",
+                expandNode.fetchSemanticsNode().boundsInRoot.height >= minTouchPx - 1f,
+            )
+            expandNode.performTouchInput { click(Offset(centerX, 4f)) }
+            rule.waitForIdle()
+            rule.onNodeWithTag("bubble-fold-collapse").assertExists()
+
+            // Verify the expanded bubble genuinely exceeds 8192px so asymmetric RoundRect path clipping is exercised.
+            // Use layout size.height (unclipped) rather than boundsInRoot.height (clipped to the LazyColumn viewport).
+            val expandedHeightPx = rule.onNodeWithTag("tall-user-row").fetchSemanticsNode().size.height
+            assertTrue(
+                "Expanded bubble height ($expandedHeightPx px) must exceed 8192px in $candidateStyle",
+                expandedHeightPx > 8192,
+            )
+
+            // Scroll the bottom Show less row into view and mutate streaming output below it.
+            scrollToBottomTick++
+            streamTick++
+            rule.waitForIdle()
+
+            val collapseNode = rule.onNodeWithTag("bubble-fold-collapse")
+            collapseNode.assertIsDisplayed()
+            assertTrue(
+                "Collapse row bounds must span at least 48dp in $candidateStyle",
+                collapseNode.fetchSemanticsNode().boundsInRoot.height >= minTouchPx - 1f,
+            )
+
+            // Tap near the bottom edge of the 48dp collapse row while streaming updates continue.
+            collapseNode.performTouchInput { click(Offset(centerX, height - 4f)) }
+            streamTick++
+            rule.waitForIdle()
+
+            rule.onNodeWithTag("bubble-fold-expand").assertIsDisplayed()
+            rule.onNodeWithTag("bubble-fold-collapse").assertDoesNotExist()
+
+            // Subsequent streaming updates keep the collapsed state stable and re-expand works via real touch.
+            streamTick++
+            rule.waitForIdle()
+            rule.onNodeWithTag("bubble-fold-expand").performTouchInput { click() }
+            rule.waitForIdle()
+            rule.onNodeWithTag("bubble-fold-collapse").assertExists()
+
+            // Reset back to folded for the next style iteration.
+            scrollToBottomTick++
+            rule.waitForIdle()
+            rule.onNodeWithTag("bubble-fold-collapse").performTouchInput { click() }
+            rule.waitForIdle()
+            rule.onNodeWithTag("bubble-fold-expand").assertIsDisplayed()
+        }
     }
 }

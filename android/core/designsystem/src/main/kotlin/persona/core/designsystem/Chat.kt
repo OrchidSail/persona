@@ -164,7 +164,9 @@ fun UserBubbleFrame(modifier: Modifier = Modifier, footer: (@Composable () -> Un
     }
     val chrome = LocalHomeChrome.current
     val bubble = { frame: Modifier ->
-        frame.clip(shape)
+        // clipDrawing keeps rounded visuals without a GraphicsLayer path clip: Compose's asymmetric RoundRect
+        // path hit-test collapses its tiny probe rect past ~8192px (tall Brief bubbles drop bottom taps).
+        frame.clipDrawing(shape)
             .then(when (style) {
                 AppStyle.Glass -> Modifier.background(if (own) homeUserFill(palette, chrome) else palette.surface)
                     .border(HomeTokens.composerStroke, palette.line, shape)
@@ -873,7 +875,7 @@ fun IncomingBubbleFrame(
                 time?.let { Spacer(Modifier.width(6.dp.dense)); Text(it, style = PersonaTheme.type.micro, color = palette.ink3, maxLines = 1) }
             }
             Column(
-                Modifier.fillMaxWidth(0.9f).wrapContentWidth(Alignment.Start).clip(shape)
+                Modifier.fillMaxWidth(0.9f).wrapContentWidth(Alignment.Start).clipDrawing(shape)
                     .then(when (style) {
                         AppStyle.Glass -> Modifier.background(palette.surfaceStrong).border(1.dp, Brush.verticalGradient(listOf(palette.strokeTop.copy(alpha = 0.7f), palette.strokeBottom)), shape)
                         AppStyle.Brief -> Modifier.background(palette.surface)

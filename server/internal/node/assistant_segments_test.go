@@ -166,3 +166,30 @@ func TestSegmentCheckKeepsRuntimeIdentitySeparateWithoutStartingItsCLI(t *testin
 		t.Fatal("checking execution identity started or sent a turn")
 	}
 }
+
+func TestSegmentInputReceiptRecognizesAcceptedOnceID(t *testing.T) {
+	n := &Node{}
+	if err := n.sends.once("relay-once-1", func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.sends.once("segment-input:queued-1", func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		id   string
+		want bool
+	}{
+		{"segment-once:relay-once-1", true},
+		{"segment-input:queued-1", true},
+		{"segment-once:missing", false},
+	} {
+		answer, err := n.assistantSegment(t.Context(), "assistant.segment.input", json.RawMessage(`{"session_id":"s1","client_msg_id":"`+tc.id+`"}`))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.id, err)
+		}
+		m, _ := answer.(map[string]bool)
+		if m["accepted"] != tc.want {
+			t.Fatalf("%s: accepted = %v, want %v", tc.id, m["accepted"], tc.want)
+		}
+	}
+}
