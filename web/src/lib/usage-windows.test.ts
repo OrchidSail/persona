@@ -413,6 +413,33 @@ describe("pinned individual usage windows (#13870)", () => {
     expect(togglePinnedUsageAccount(agyGem7d)).toEqual([agyGem7d]);
     expect(togglePinnedUsageAccount(agyGem7d)).toEqual([]);
   });
+
+  it("falls back to in-memory state without throwing when the global localStorage getter throws SecurityError", () => {
+    const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    const agyGem7d = usageWindowPinId("agy", agyGemini7d);
+    let getterCalls = 0;
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      get() {
+        getterCalls += 1;
+        throw new DOMException("Storage access is blocked", "SecurityError");
+      },
+    });
+    try {
+      // First toggle exercises both readPinnedRaw() and setPinnedUsageAccounts() against the throwing getter
+      expect(togglePinnedUsageAccount(agyGem7d)).toEqual([agyGem7d]);
+      expect(getterCalls).toBeGreaterThanOrEqual(2);
+      expect(togglePinnedUsageAccount("codex")).toEqual([agyGem7d, "codex"]);
+      expect(togglePinnedUsageAccount(agyGem7d)).toEqual(["codex"]);
+      expect(resetPinnedUsageAccounts()).toEqual([]);
+      expect(setPinnedUsageAccounts([agyGem7d])).toEqual([agyGem7d]);
+      expect(togglePinnedUsageAccount("ds")).toEqual([agyGem7d, "ds"]);
+      expect(resetPinnedUsageAccounts()).toEqual([]);
+    } finally {
+      if (originalDescriptor) Object.defineProperty(globalThis, "localStorage", originalDescriptor);
+      else Reflect.deleteProperty(globalThis, "localStorage");
+    }
+  });
 });
 
 describe("provider cards and the reset timeline (#13173)", () => {

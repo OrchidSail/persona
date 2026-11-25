@@ -319,17 +319,18 @@ export function setPinnedUsageAccounts(ids: readonly string[]): readonly string[
   const next = normalizePinnedIds(ids);
   const raw = next.length ? JSON.stringify(next) : null;
   let persisted = false;
-  const hasStorage = typeof localStorage !== "undefined";
+  let storageFailed = false;
   try {
-    if (hasStorage) {
+    if (typeof localStorage !== "undefined") {
       if (raw) localStorage.setItem(PINNED_USAGE_ACCOUNTS_KEY, raw);
       else localStorage.removeItem(PINNED_USAGE_ACCOUNTS_KEY);
       persisted = true;
     }
   } catch {
     // storage unavailable: keep in-memory state for this tab without overwriting from stale storage
+    storageFailed = true;
   }
-  pinnedVolatile = !persisted && (next.length > 0 || hasStorage);
+  pinnedVolatile = !persisted && (next.length > 0 || storageFailed);
   pinnedRaw = persisted ? raw : undefined;
   pinnedCache = next.length ? next : emptyPinned;
   notifyPinned();
