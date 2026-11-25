@@ -311,7 +311,7 @@ func (n *Node) runtimeHandle(ctx context.Context, h *runtimeConn, method string,
 				}
 				input := map[string]any{"session_id": p.SessionID, "text": p.Text, "images": p.Images, "client_msg_id": opts.ClientMsgID}
 				if h.agent() == agyAgent && !n.runtimeAssistant(p.SessionID) {
-					if mode := n.agyRuntimeMode(p.SessionID); mode != "" {
+					if mode := agySendMode(n.runtimePermissionMode(h, p.SessionID), n.agyRuntimeMode(p.SessionID)); mode != "" {
 						input["mode"] = mode
 					}
 				}
@@ -482,16 +482,43 @@ func (n *Node) agyRuntimeMode(id string) string {
 	return st.AppMode
 }
 
+// agyLiveAutoFallback reports whether a companion row is currently running under a live auto-to-bypass fallback for a
+// persisted "auto" session.
+func agyLiveAutoFallback(rowMode, savedMode string) bool {
+	return savedMode == "auto" && rowMode == proto.ModeBypass
+}
+
 // agyShownMode overlays a persisted agy permission mode onto a companion row's reported mode while preserving a live
 // auto-to-bypass fallback reported by the companion.
 func agyShownMode(rowMode, savedMode string) string {
 	if savedMode == "" {
 		return rowMode
 	}
-	if savedMode == "auto" && rowMode == proto.ModeBypass {
+	if agyLiveAutoFallback(rowMode, savedMode) {
 		return rowMode
 	}
 	return savedMode
+}
+
+// agySendMode returns the persisted agy permission mode to replay on session.send, or "" when no mode should be sent
+// (unset/external sessions, or a live auto-to-bypass fallback where replaying "auto" would re-trigger the fallback).
+func agySendMode(rowMode, savedMode string) string {
+	if savedMode == "" || agyLiveAutoFallback(rowMode, savedMode) {
+		return ""
+	}
+	return savedMode
+}
+
+func (n *Node) runtimePermissionMode(h *runtimeConn, id string) string {
+	if h == nil {
+		return ""
+	}
+	for _, s := range h.sessionsCopy() {
+		if s.SessionID == id {
+			return s.PermissionMode
+		}
+	}
+	return ""
 }
 
 func (n *Node) runtimeStatus(h *runtimeConn, id string) string {
