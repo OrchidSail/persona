@@ -154,10 +154,10 @@ type clientOpForgetter interface {
 // clientOpRetry: an inbox reply or hand-off the manager never got (assistant_offline) or that was cut off on the way
 // to it (assistant_in_doubt) keeps no receipt: the same request asked again goes to the manager, whose send id has it
 // sent once (extmgr inbox_reply.go sendInboxOnce, a hand-off's session.send_once), instead of the stored refusal
-// coming back for good. A notification choice, a conversation's start and a to-do create release only a definitely offline receipt;
-// uncertain delivery stays recorded.
+// coming back for good. A message, notification choice, conversation start, meeting call and to-do write release only
+// a definitely offline receipt (nothing reached the manager or node); uncertain delivery stays recorded.
 func clientOpRetry(kind string, body []byte) bool {
-	if kind == meetingJustMeOp || kind == meetingFollowupOp || kind == todoAnswerOp || kind == todoRouteOp || kind == todoCreateOp { // never reached the manager: the same call runs again
+	if kind == "message" || kind == meetingJustMeOp || kind == meetingFollowupOp || kind == todoAnswerOp || kind == todoRouteOp || kind == todoCreateOp { // never reached the manager: the same call runs again
 		var res struct {
 			Code string `json:"code"`
 		}

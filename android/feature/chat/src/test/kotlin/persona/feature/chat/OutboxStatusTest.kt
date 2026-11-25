@@ -96,4 +96,24 @@ class OutboxStatusTest {
         show(DeliveryState.Queued, details = true, mutableListOf())
         rule.onAllNodesWithText("丢弃").assertCountEquals(0)
     }
+
+    /** Glass, Brief, and Board all confirm and dispatch DeliveryAction.Retry identically from NeedsConfirmation. */
+    @Test fun retryFromNeedsConfirmationConfirmsAndDispatchesInEveryStyle() {
+        var style by mutableStateOf(AppStyle.Glass)
+        val actions = mutableListOf<DeliveryAction>()
+        rule.setContent {
+            PersonaTheme(darkTheme = false, reduceMotion = true, style = style) {
+                // Glass also renders NeedsConfirmation through OutboxStatus (drawsAsPendingBubble == false).
+                assertEquals(false, drawsAsPendingBubble(DeliveryState.NeedsConfirmation))
+                OutboxStatus(message, busy = false, onAction = { actions += it }, onDetails = {})
+            }
+        }
+        for (appStyle in AppStyle.entries) {
+            actions.clear()
+            rule.runOnIdle { style = appStyle }
+            rule.onNodeWithText("重试").performClick()
+            rule.onNodeWithText("仍要重发").performClick()
+            assertEquals("style=$appStyle", listOf(DeliveryAction.Retry), actions)
+        }
+    }
 }

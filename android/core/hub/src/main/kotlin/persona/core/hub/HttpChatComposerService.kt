@@ -132,7 +132,7 @@ class HttpChatComposerService internal constructor(
                     } else null
                     val state = when {
                         failure.delivered == "yes" -> DeliveryState.Sent
-                        failure.delivered == "none" -> DeliveryState.Refused
+                        failure.delivered == "none" || (failure.code == "assistant_offline" && failure.delivered == null) -> DeliveryState.Refused
                         else -> DeliveryState.Unknown
                     }
                     record(message, ComposerDelivery(state, refusal))

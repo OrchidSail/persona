@@ -1213,13 +1213,187 @@ class OutboxMessageSenderTest {
         sender.close()
     }
 
+    /** Older hubs return 503 assistant_offline without delivered="none"; Android must still retry under a fresh op id. */
+    @Test fun assistantOfflineWithoutDeliveredFieldRetriesWithFreshOperationId() = runTest {
+        val store = MemoryOutboxStore()
+        val hub = ReplayingHub()
+        val sender = OutboxMessageSender(scope, store, hub, backgroundScope)
+        runCurrent()
+        val legacyOffline = MessageTransportResult.HubError(code = "assistant_offline", delivered = null, retryable = true)
+        hub.answers += listOf(legacyOffline, MessageTransportResult.Accepted)
+
+        sender.send(session, "during blue-green switch", "offline-no-delivered")
+        runCurrent()
+        assertEquals(OutboxState.WaitingForNetwork, store.state("offline-no-delivered"))
+        assertEquals("assistant_offline", store.entries.value.single().error)
+
+        advanceTimeBy(10_000)
+        runCurrent()
+        val ops = hub.requests.map { it.headers.getValue("X-Persona-Op-Id") }
+        assertEquals(2, ops.size)
+        assertEquals("offline-no-delivered", ops[0])
+        assertTrue("retry must rotate opId to avoid replaying 202 unknown on older hubs", ops[1] != ops[0])
+        assertEquals(OutboxState.Sent, store.state("offline-no-delivered"))
+        sender.observeTranscript(session, listOf(Item("echo", 1, role = "user", kind = "text",
+            text = "during blue-green switch", clientMsgId = ops[1])))
+        assertEquals(OutboxState.Shown, store.state("offline-no-delivered"))
+        sender.close()
+    }
+
+    /**
+     * A message already in NeedsConfirmation whose hub client_ops receipt finalized as unknown (e.g. legacy 503
+     * assistant_offline, 502 delivered=unknown, or hub-restart RecoverClientOps) must rotate its op id on explicit
+     * Retry instead of looping on 202 {"state":"unknown"}.
+     */
+    @Test fun needsConfirmationRetryRecoversWhenHubFinalizedUnknownReceipt() = runTest {
+        val cases = listOf(
+            "legacy-503" to MessageEvidence.Receipt(MessageTransportResult.HubError("assistant_offline", null, "offline", false)),
+            "in-doubt-502" to MessageEvidence.Receipt(MessageTransportResult.HubError("rpc_error", "unknown", "lost", false)),
+            "recovered-null" to MessageEvidence.Receipt(MessageTransportResult.NoReceipt),
+        )
+        for ((id, receipt) in cases) {
+            val store = MemoryOutboxStore()
+            store.enqueue(OutboxEntry(id, session, "recover $id", state = OutboxState.NeedsConfirmation, createdAt = 100))
+            val hub = ReplayingHub()
+            hub.seedUnknown(id)
+            hub.evidence[id] = receipt
+            hub.answers += MessageTransportResult.Accepted
+            val sender = OutboxMessageSender(scope, store, hub, backgroundScope)
+            runCurrent()
+            // Background catch-up keeps manual review visible until the user explicitly retries.
+            assertEquals(id, OutboxState.NeedsConfirmation, store.state(id))
+            assertTrue(id, hub.requests.isEmpty())
+
+            assertTrue(id, sender.retry(id))
+            runCurrent()
+            assertEquals(id, 1, hub.requests.size)
+            val sentOp = hub.requests.single().headers.getValue("X-Persona-Op-Id")
+            assertTrue("$id must rotate off the dead unknown opId", sentOp != id)
+            assertEquals(id, OutboxState.Sent, store.state(id))
+            sender.observeTranscript(session, listOf(Item("echo-$id", 1, role = "user", kind = "text",
+                text = "recover $id", clientMsgId = sentOp)))
+            assertEquals(id, OutboxState.Shown, store.state(id))
+            sender.close()
+        }
+    }
+
+    /** Retrying a NeedsConfirmation message that the server already received must converge without sending a duplicate. */
+    @Test fun needsConfirmationRetryConvergesWithoutResendingWhenServerAlreadyReceived() = runTest {
+        val cases = listOf(
+            Triple("already-shown", MessageEvidence.Shown, OutboxState.Shown),
+            Triple("already-accepted", MessageEvidence.Receipt(MessageTransportResult.Accepted), OutboxState.Sent),
+            Triple("already-delivered-yes", MessageEvidence.Receipt(MessageTransportResult.HubError("internal", "yes")), OutboxState.Sent),
+            Triple("already-held", MessageEvidence.Receipt(MessageTransportResult.Held), OutboxState.Held),
+            Triple("already-kept", MessageEvidence.Receipt(MessageTransportResult.Kept), OutboxState.Kept),
+        )
+        for ((id, evidence, expectedState) in cases) {
+            val store = MemoryOutboxStore()
+            store.enqueue(OutboxEntry(id, session, "already there $id", state = OutboxState.NeedsConfirmation, createdAt = 100))
+            val transport = object : MessageTransport {
+                override val readyToSend = MutableStateFlow(true)
+                override val supportsClientOps = true
+                val requests = mutableListOf<MessageRequest>()
+                var evidenceReady = false
+                override suspend fun reconcile(request: MessageRequest, createdAt: Long, allowTextMatch: Boolean): MessageEvidence? {
+                    // Startup catch-up finds nothing yet; explicit retry sees the server-side delivery evidence.
+                    return if (evidenceReady) evidence else null
+                }
+                override suspend fun send(request: MessageRequest): MessageTransportResult {
+                    requests += request
+                    error("Must not resend when server already received $id")
+                }
+            }
+            val sender = OutboxMessageSender(scope, store, transport, backgroundScope)
+            runCurrent()
+            assertEquals(id, OutboxState.NeedsConfirmation, store.state(id))
+            transport.evidenceReady = true
+            assertTrue(id, sender.retry(id))
+            runCurrent()
+            assertEquals(id, expectedState, store.state(id))
+            assertTrue("$id must not POST a duplicate message", transport.requests.isEmpty())
+            sender.close()
+        }
+    }
+
+    /** When the hub has no terminal receipt (404 / pending), NeedsConfirmation retry keeps the original opId for idempotency. */
+    @Test fun needsConfirmationRetryKeepsSameOpIdWhenHubHasNoTerminalReceipt() = runTest {
+        val store = MemoryOutboxStore()
+        store.enqueue(OutboxEntry("never-arrived", session, "retry once", state = OutboxState.NeedsConfirmation, createdAt = 100))
+        val hub = ReplayingHub()
+        hub.answers += MessageTransportResult.Accepted
+        val sender = OutboxMessageSender(scope, store, hub, backgroundScope)
+        runCurrent()
+        assertEquals(OutboxState.NeedsConfirmation, store.state("never-arrived"))
+
+        assertTrue(sender.retry("never-arrived"))
+        runCurrent()
+        assertEquals(1, hub.requests.size)
+        assertEquals("never-arrived", hub.requests.single().headers.getValue("X-Persona-Op-Id"))
+        assertEquals(OutboxState.Sent, store.state("never-arrived"))
+        sender.close()
+    }
+
+    /** A NeedsConfirmation retry that fails again (explicit refusal or another drop) remains cleanly retryable. */
+    @Test fun needsConfirmationRetryThatFailsAgainRemainsRetryable() = runTest {
+        val store = MemoryOutboxStore()
+        store.enqueue(OutboxEntry("m-repeat", session, "keep trying", state = OutboxState.NeedsConfirmation, createdAt = 100))
+        val hub = ReplayingHub()
+        hub.seedUnknown("m-repeat")
+        hub.evidence["m-repeat"] = MessageEvidence.Receipt(MessageTransportResult.HubError("assistant_offline", null, "offline", false))
+        hub.answers += listOf(
+            MessageTransportResult.HubError("input_draft", "none", retryable = false),
+            MessageTransportResult.Accepted,
+        )
+        val sender = OutboxMessageSender(scope, store, hub, backgroundScope, reviewTimeoutMillis = 100)
+        runCurrent()
+
+        assertTrue(sender.retry("m-repeat"))
+        runCurrent()
+        assertEquals(OutboxState.Refused, store.state("m-repeat"))
+        assertEquals("input_draft", store.entries.value.single().error)
+
+        assertTrue(sender.retry("m-repeat"))
+        runCurrent()
+        assertEquals(OutboxState.Sent, store.state("m-repeat"))
+        val ops = hub.requests.map { it.headers.getValue("X-Persona-Op-Id") }
+        assertEquals(2, ops.size)
+        assertTrue(ops[0] != "m-repeat" && ops[1] != ops[0])
+        sender.close()
+    }
+
+    /** Manual ConfirmNotDelivered rotates the spent unknown opId so tapping Retry afterwards actually sends. */
+    @Test fun confirmNotDeliveredRotatesOperationIdSoSubsequentRetryRecovers() = runTest {
+        val store = MemoryOutboxStore()
+        store.enqueue(OutboxEntry("m-confirm", session, "checked not delivered", state = OutboxState.NeedsConfirmation, createdAt = 100))
+        val hub = ReplayingHub()
+        hub.seedUnknown("m-confirm")
+        hub.answers += MessageTransportResult.Accepted
+        val sender = OutboxMessageSender(scope, store, hub, backgroundScope)
+        runCurrent()
+
+        assertTrue(sender.confirm("m-confirm", delivered = false))
+        assertEquals(OutboxState.Refused, store.state("m-confirm"))
+        assertTrue(sender.retry("m-confirm"))
+        runCurrent()
+        assertEquals(1, hub.requests.size)
+        assertTrue(hub.requests.single().headers.getValue("X-Persona-Op-Id") != "m-confirm")
+        assertEquals(OutboxState.Sent, store.state("m-confirm"))
+        sender.close()
+    }
+
     /** Like the hub's client ops: a repeated operation id gets the first answer again (a 503 replays as unknown). */
-    private class ReplayingHub : MessageTransport {
-        override val readyToSend = MutableStateFlow(true)
+    private class ReplayingHub(online: Boolean = true) : MessageTransport {
+        override val readyToSend = MutableStateFlow(online)
         override val supportsClientOps = true
         val answers = ArrayDeque<MessageTransportResult>()
         val requests = mutableListOf<MessageRequest>()
+        val evidence = mutableMapOf<String, MessageEvidence>()
         private val first = mutableMapOf<String, MessageTransportResult>()
+        fun seedUnknown(opId: String) {
+            first[opId] = MessageTransportResult.NoReceipt
+        }
+        override suspend fun reconcile(request: MessageRequest, createdAt: Long, allowTextMatch: Boolean): MessageEvidence? =
+            evidence[request.opId]
         override suspend fun send(request: MessageRequest): MessageTransportResult {
             requests += request
             val op = request.headers.getValue("X-Persona-Op-Id")

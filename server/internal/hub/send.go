@@ -362,7 +362,7 @@ func (h *Hub) sendMessageOnce(w http.ResponseWriter, r *http.Request, m *Machine
 					return
 				}
 			}
-			writeAssistantErr(w, err)
+			writeSendAssistantErr(w, err)
 			return
 		}
 		if target, _ := p["owner_approval_handled"].(string); target != "" {

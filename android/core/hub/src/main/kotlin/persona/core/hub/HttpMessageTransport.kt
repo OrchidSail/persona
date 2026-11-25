@@ -62,7 +62,8 @@ class HttpMessageTransport(
             } catch (failure: HubFailure) {
                 if (failure.status == 404) null else throw failure
             }
-            if (receipt?.get("state")?.jsonPrimitive?.content in setOf("done", "failed", "unknown")) {
+            val state = receipt?.get("state")?.jsonPrimitive?.contentOrNull
+            if (state in setOf("done", "failed", "unknown")) {
                 val saved = receipt?.get("result") as? JsonObject
                 val status = saved?.get("status")?.jsonPrimitive?.intOrNull
                 val body = saved?.get("body")?.jsonPrimitive?.contentOrNull
@@ -80,11 +81,37 @@ class HttpMessageTransport(
                         }
                         return shown ?: MessageEvidence.Receipt(result)
                     }
-                    if (result != MessageTransportResult.Accepted) return MessageEvidence.Receipt(result)
-                    // A successful receipt still needs the transcript to replace the local bubble: an item tagged with
-                    // this id, or (older hubs; Claude Code keeps its own id for the message) one with its words.
-                    val shown = transcriptEvidence(request, createdAt, allowTextMatch)
+                    if (result == MessageTransportResult.Kept) return MessageEvidence.Receipt(result)
+                    if (result == MessageTransportResult.Accepted) {
+                        // A successful receipt still needs the transcript to replace the local bubble: an item tagged with
+                        // this id, or (older hubs; Claude Code keeps its own id for the message) one with its words.
+                        val shown = transcriptEvidence(request, createdAt, allowTextMatch)
+                        return shown ?: MessageEvidence.Receipt(result)
+                    }
+                    val notDelivered = result is MessageTransportResult.HubError &&
+                        (result.delivered == "none" || (result.code == "assistant_offline" && result.delivered == null))
+                    if (notDelivered) return MessageEvidence.Receipt(result)
+                    // An unknown/in-doubt receipt may still have reached the transcript (e.g. connection dropped after typing).
+                    val shown = try {
+                        transcriptEvidence(request, createdAt, allowTextMatch)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        null
+                    }
                     return shown ?: MessageEvidence.Receipt(result)
+                }
+                if (state == "unknown") {
+                    // Hub recovered an interrupted op with no stored HTTP body (RecoverClientOps): check the transcript
+                    // first so an already-landed message converges without being resent, otherwise report the finalized unknown op.
+                    val shown = try {
+                        transcriptEvidence(request, createdAt, allowTextMatch)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        null
+                    }
+                    return shown ?: MessageEvidence.Receipt(MessageTransportResult.NoReceipt)
                 }
             }
         }

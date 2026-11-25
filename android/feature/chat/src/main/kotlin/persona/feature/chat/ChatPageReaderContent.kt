@@ -160,8 +160,7 @@ internal fun ChatPageReaderContent(
         ) { listBottomInset ->
             val outboxBubble: @Composable (OutboxMessage) -> Unit = { message ->
                 val delivery = composerDeliveries[message.clientMessageId]
-                val deliveryState = if (message.state in setOf(DeliveryState.Refused, DeliveryState.Rejected))
-                    delivery?.state ?: message.state else message.state
+                val deliveryState = effectiveOutboxDeliveryState(message.state, delivery)
                 val busy = message.clientMessageId in deliveryActions.busyIds
                 val onAction = onDeliveryAction?.let { action -> { messageAction: DeliveryAction -> action(message, messageAction) } }
                 val failed = deliveryState == DeliveryState.Rejected || deliveryState == DeliveryState.Refused

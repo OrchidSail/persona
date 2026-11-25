@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nwverse/persona/server/internal/apierr"
 	"github.com/nwverse/persona/server/internal/assistantwire"
 	"github.com/nwverse/persona/server/internal/proto"
 	"github.com/nwverse/persona/server/internal/rpc"
@@ -279,6 +280,19 @@ func writeAssistantErr(w http.ResponseWriter, err error) {
 		}
 	}
 	callErr(w, err)
+}
+
+// writeSendAssistantErr is writeAssistantErr for a message send or session start that failed before anything reached
+// the node: 503 assistant_offline explicitly states nothing was delivered and retrying is safe.
+func writeSendAssistantErr(w http.ResponseWriter, err error) {
+	var re *rpc.Error
+	if errors.As(err, &re) && re.Code == assistantwire.CodeAssistantOffline {
+		body := apierr.CodeBody(w, http.StatusServiceUnavailable, assistantwire.CodeAssistantOffline, errAssistantOffline)
+		body["delivered"], body["retryable"] = "none", true
+		writeErrorBody(w, http.StatusServiceUnavailable, body)
+		return
+	}
+	writeAssistantErr(w, err)
 }
 
 // renameSession is POST /api/v1/sessions/{mid}/{sid}/rename ({"title", "tab_name"}): the node renames the tab and /

@@ -196,6 +196,7 @@ class ChatDeliveryStateTest {
         val cases = listOf(
             "input_draft" to R.string.chat_delivery_input_draft,
             "node_unreachable" to persona.core.designsystem.R.string.designsystem_feedback_computer_offline,
+            "assistant_offline" to persona.core.designsystem.R.string.designsystem_feedback_assistant_restarting,
             "stale_session" to persona.core.designsystem.R.string.designsystem_feedback_stale_session,
             "claude_missing" to persona.core.designsystem.R.string.designsystem_feedback_claude_missing,
             "rpc_glitch" to R.string.chat_delivery_refused,
@@ -205,6 +206,34 @@ class ChatDeliveryStateTest {
             assertEquals(code, res.getString(expected), text)
             assertFalse(code, text.contains(code))
         }
+    }
+
+    @Test fun staleUnknownComposerOverlayDoesNotHideRefusedOutboxState() {
+        assertEquals(
+            DeliveryState.Refused,
+            effectiveOutboxDeliveryState(DeliveryState.Refused, ComposerDelivery(DeliveryState.Unknown)),
+        )
+        assertEquals(
+            DeliveryState.Rejected,
+            effectiveOutboxDeliveryState(DeliveryState.Rejected, ComposerDelivery(DeliveryState.Unknown)),
+        )
+        // Active composer retry overlays still take precedence while the outbox row is Refused.
+        assertEquals(
+            DeliveryState.Sending,
+            effectiveOutboxDeliveryState(DeliveryState.Refused, ComposerDelivery(DeliveryState.Sending)),
+        )
+        assertEquals(
+            DeliveryState.Sent,
+            effectiveOutboxDeliveryState(DeliveryState.Refused, ComposerDelivery(DeliveryState.Sent)),
+        )
+        assertEquals(
+            DeliveryState.Held,
+            effectiveOutboxDeliveryState(DeliveryState.Refused, ComposerDelivery(DeliveryState.Held)),
+        )
+        assertEquals(
+            DeliveryState.NeedsConfirmation,
+            effectiveOutboxDeliveryState(DeliveryState.NeedsConfirmation, ComposerDelivery(DeliveryState.Refused)),
+        )
     }
 
     private class FakeSender : MessageSender {
