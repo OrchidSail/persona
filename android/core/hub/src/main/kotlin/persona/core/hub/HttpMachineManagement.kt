@@ -10,6 +10,7 @@ import persona.core.contracts.api.LauncherQuotaAnswer
 import persona.core.contracts.api.HerdrState
 import persona.core.contracts.api.MachineManagement
 import persona.core.contracts.api.MachineMove
+import persona.core.contracts.api.MachineRemoveResult
 import persona.core.contracts.api.NO_TERMINAL_ENGINE
 import persona.core.contracts.MachineBrowser
 import persona.core.contracts.api.DoctorReport
@@ -64,6 +65,13 @@ class HttpMachineManagement internal constructor(
     override suspend fun rename(machineId: String, name: String): String =
         (call(api("machines", machineId, "name"), "PUT", buildJsonObject { put("name", name) })["name"] as? JsonPrimitive)?.contentOrNull
             ?: throw HubFailure(HubError.Protocol, "hub answered the rename without a name", retryable = false)
+
+    override suspend fun remove(machineId: String): MachineRemoveResult {
+        require(machineId.isNotBlank())
+        val answer = call(api("machines", machineId), "DELETE")
+        val restartRequired = ((answer["restart"] as? JsonObject)?.get("required") as? JsonPrimitive)?.booleanOrNull == true
+        return MachineRemoveResult(restartRequired = restartRequired)
+    }
 
     override suspend fun herdr(machineId: String): HerdrState =
         JsonCodec.decodeFromJsonElement(call(api("machines", machineId, "herdr"), "GET"))

@@ -37,6 +37,16 @@ internal sealed interface MachineNotice {
     /** Renamed: the hub calls the computer [name] now. */
     data class Renamed(val name: String) : MachineNotice
     data class RenameFailed(val reason: UiText) : MachineNotice
+    /** Removed: the hub revoked Persona Link credentials and dropped the computer (or scheduled it for restart). */
+    data class Removed(val name: String, val restartRequired: Boolean = false) : MachineNotice
+    data class RemoveFailed(val reason: UiText) : MachineNotice
+
+    val feedbackStyle: persona.core.designsystem.FeedbackStyle get() = when (this) {
+        Connected, is Moved, is Renamed, is Removed -> persona.core.designsystem.FeedbackStyle.Success
+        is NotYet -> persona.core.designsystem.FeedbackStyle.Info
+        is ReconnectFailed, is DeployFailed, is BotmuxFailed, is MoveFailed, is RenameFailed, is RemoveFailed ->
+            persona.core.designsystem.FeedbackStyle.Error
+    }
 
     fun text(resources: Resources): String = when (this) {
         Connected -> resources.getString(R.string.machines_notice_connected)
@@ -49,6 +59,11 @@ internal sealed interface MachineNotice {
         is MoveFailed -> resources.getString(R.string.machines_notice_move_failed, reason.resolve(resources))
         is Renamed -> resources.getString(R.string.machines_notice_renamed, name)
         is RenameFailed -> resources.getString(R.string.machines_notice_rename_failed, reason.resolve(resources))
+        is Removed -> resources.getString(
+            if (restartRequired) R.string.machines_notice_removed_restart else R.string.machines_notice_removed,
+            name,
+        )
+        is RemoveFailed -> resources.getString(R.string.machines_notice_remove_failed, reason.resolve(resources))
     }
 }
 
@@ -78,6 +93,10 @@ internal data class MachineActionsState(
     val moving: Boolean = false,
     /** Rename was sent and not answered yet. */
     val renaming: Boolean = false,
+    /** Remove computer was sent and not answered yet. */
+    val removing: Boolean = false,
+    /** Last inline removal refusal shown inside the confirmation dialog; cleared on dismiss or retry. */
+    val removeError: UiText? = null,
     /** One confirmed SSH-to-Link start per computer, retained until the machine list resolves it. */
     val linkSwitches: Map<String, LinkSwitchAttempt> = emptyMap(),
 )
@@ -158,6 +177,34 @@ internal class MachineActionsViewModel(
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) { noticeChannel.trySend(MachineNotice.RenameFailed(failureReasonText(error))) }
             finally { mutable.update { it.copy(renaming = false) } }
+        }
+    }
+
+    /** Clears the inline removal error before opening or dismissing the confirmation dialog. */
+    fun clearRemoveError() {
+        if (state.value.removeError != null) mutable.update { it.copy(removeError = null) }
+    }
+
+    /**
+     * Removes a paired computer from its hub (`DELETE /api/v1/machines/{id}`): prevents re-entry while in flight,
+     * refreshes the machine list immediately on success, and invokes [onRemoved] so callers can exit the detail page
+     * and clear stale machine selections.
+     */
+    fun remove(machineId: String, name: String, onRemoved: () -> Unit = {}) {
+        if (state.value.removing) return
+        mutable.update { it.copy(removing = true, removeError = null) }
+        viewModelScope.launch {
+            try {
+                val result = management.remove(machineId)
+                noticeChannel.trySend(MachineNotice.Removed(name, result.restartRequired))
+                try { sessions.refresh() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { }
+                onRemoved()
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                val reason = failureReasonText(error)
+                mutable.update { it.copy(removeError = reason) }
+                noticeChannel.trySend(MachineNotice.RemoveFailed(reason))
+            } finally { mutable.update { it.copy(removing = false) } }
         }
     }
 

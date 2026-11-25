@@ -1258,7 +1258,8 @@ internal fun PersonaShell(session: ShellSession, openNavigation: MutableState<((
             session.metrics?.let { machinesEntries(navigator, it, session.sessions, session.machines,
                 launcherPages = services.extensions?.takeUnless { services.demo }?.available ?: kotlinx.coroutines.flow.flowOf(false),
                 extensionSections = { id -> persona.feature.settings.rememberMachineExtensionSections(services.extensionSlots, id, onOpen = navigator::navigate) },
-                computers = session.computers, operationScope = session.identity) } ?: run {
+                computers = session.computers, operationScope = session.identity,
+                onMachineRemoved = { removedId -> if (machine == removedId) machine = "" }) } ?: run {
                 entry<MachinesRoute> { UnavailablePage(stringResource(R.string.app_demo_no_machines), navigator) }
                 entry<persona.core.navigation.AddComputerRoute> { UnavailablePage(stringResource(R.string.app_demo_no_machines), navigator) }
                 entry<MachineDetailRoute> { UnavailablePage(stringResource(R.string.app_demo_no_machines), navigator) }

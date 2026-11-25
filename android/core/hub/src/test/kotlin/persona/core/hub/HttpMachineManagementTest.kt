@@ -105,6 +105,33 @@ class HttpMachineManagementTest {
         assertEquals(HubError.Protocol, (runCatching { machines.rename("desk", "x") }.exceptionOrNull() as HubFailure).kind)
     }
 
+    @Test fun removeDeletesTheComputerAndDecodesRestartRequirement() = withHub { server, machines ->
+        server.enqueue(MockResponse().setBody("""{"ok":true,"restart":{"required":false}}"""))
+        assertEquals(MachineRemoveResult(restartRequired = false), machines.remove("desk/name"))
+        server.takeRequest().let {
+            assertEquals("DELETE", it.method)
+            assertEquals("/api/v1/machines/desk%2Fname", it.path)
+        }
+        server.enqueue(MockResponse().setBody("""{"ok":true,"restart":{"required":true}}"""))
+        assertEquals(MachineRemoveResult(restartRequired = true), machines.remove("desk"))
+        server.takeRequest().let {
+            assertEquals("DELETE", it.method)
+            assertEquals("/api/v1/machines/desk", it.path)
+        }
+        server.enqueue(MockResponse().setResponseCode(403).setBody("""{"code":"forbidden","error":"Full device access required"}"""))
+        val forbidden = runCatching { machines.remove("desk") }.exceptionOrNull() as HubFailure
+        assertEquals(403 to "forbidden", forbidden.status to forbidden.code)
+        server.takeRequest()
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"code":"link_switch_in_progress","error":"Link switch running"}"""))
+        val busy = runCatching { machines.remove("desk") }.exceptionOrNull() as HubFailure
+        assertEquals(409 to "link_switch_in_progress", busy.status to busy.code)
+        server.takeRequest()
+        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"code":"not_found","error":"no such machine"}"""))
+        assertEquals(404, (runCatching { machines.remove("gone") }.exceptionOrNull() as HubFailure).status)
+        server.takeRequest()
+        assertEquals(5, server.requestCount)
+    }
+
     @Test fun anOlderHubWithoutTheBotmuxRouteHasNoSwitch() = withHub { server, machines ->
         server.enqueue(MockResponse().setResponseCode(404).setBody("404 page not found"))
         assertNull(machines.botmux("desk"))

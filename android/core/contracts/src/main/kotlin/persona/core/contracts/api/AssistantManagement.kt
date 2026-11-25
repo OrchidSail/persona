@@ -78,6 +78,13 @@ interface AssistantManagement {
     suspend fun archiveConversation(session: SessionKey): Unit = throw UnsupportedOperationException("Archive unavailable")
     /** Brings an archived conversation back into the list (POST /api/v1/assistant/conversations/{id}/unarchive). */
     suspend fun unarchiveConversation(session: SessionKey): Unit = throw UnsupportedOperationException("Unarchive unavailable")
+    /**
+     * Permanently deletes a non-main assistant conversation (`DELETE /api/v1/assistant/conversations/{id}` with
+     * `{"machine_id"}`, hub feature `assistant_conversation_delete`). Idempotent on `conversation_deleted`; refuses
+     * protected or busy conversations with [AssistantRefused].
+     */
+    suspend fun deleteConversation(session: SessionKey): Unit =
+        throw UnsupportedOperationException("Delete conversation unavailable")
     /** Replaces a conversation's user-defined labels in one write; an empty list clears them. */
     suspend fun setConversationTags(session: SessionKey, tags: List<String>): Unit =
         throw UnsupportedOperationException("Conversation tags unavailable")

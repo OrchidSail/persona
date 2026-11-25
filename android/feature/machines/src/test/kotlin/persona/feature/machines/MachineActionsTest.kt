@@ -43,6 +43,14 @@ class MachineActionsTest {
         override suspend fun rename(machineId: String, name: String): String {
             calls += "rename:$machineId:$name"; failure?.let { throw it }; return name.ifBlank { machineId }
         }
+        var removeResult = MachineRemoveResult(restartRequired = false)
+        var removeGate: CompletableDeferred<Unit>? = null
+        override suspend fun remove(machineId: String): MachineRemoveResult {
+            calls += "remove:$machineId"
+            removeGate?.await()
+            failure?.let { throw it }
+            return removeResult
+        }
         override suspend fun herdr(machineId: String): persona.core.contracts.api.HerdrState = error("unused")
         override suspend fun startHerdr(machineId: String): persona.core.contracts.api.HerdrState = error("unused")
         override suspend fun setEngine(machineId: String, engine: String) = Machine(machineId, engine = engine)
@@ -629,5 +637,63 @@ class MachineActionsTest {
 
     private fun sessionsSet(sessions: Sessions, state: MachineLinkSwitch) {
         sessions.machines.value = listOf(Machine("lab", linkSwitch = state))
+    }
+
+    @Test fun canRemoveMachineRespectsFeatureKindAndMultiHubScope() {
+        val online = Machine("desk", name = "Desk", kind = "link", online = true)
+        val offline = Machine("lab", name = "Lab", kind = "ssh", online = false)
+        val hubMember = Machine("member", name = "Member", kind = "hub", online = true)
+        val foreign = Machine("studio~g0a1b2c3d", name = "Studio", kind = "link", online = true)
+
+        assertFalse(canRemoveMachine(online, emptySet(), false))
+        assertTrue(canRemoveMachine(online, setOf(MachineRemoveFeature), false))
+        assertTrue(canRemoveMachine(offline, setOf(MachineRemoveFeature), false))
+        assertTrue(canRemoveMachine(online, emptySet(), true))
+        assertFalse(canRemoveMachine(hubMember, setOf(MachineRemoveFeature), true))
+        // A secondary hub's computer uses only that hub's feature set, never the primary hub's.
+        assertFalse(canRemoveMachine(foreign, setOf(MachineRemoveFeature), false))
+        assertTrue(canRemoveMachine(foreign, emptySet(), true))
+    }
+
+    @Test fun removePreventsReentryRefreshesAndReportsOutcomeOrInlineError() = test {
+        val sessions = Sessions(listOf(Machine("desk", name = "Desk", online = true)))
+        val gate = CompletableDeferred<Unit>()
+        val management = Management().apply { removeGate = gate }
+        val model = MachineActionsViewModel(management, sessions)
+        val removed = mutableListOf<String>()
+        try {
+            model.remove("desk", "Desk") { removed += "desk" }
+            assertTrue(model.state.value.removing)
+            // Re-entrant tap while in flight is ignored.
+            model.remove("desk", "Desk") { removed += "again" }
+            runCurrent()
+            assertEquals(listOf("remove:desk"), management.calls)
+
+            gate.complete(Unit)
+            runCurrent()
+            assertFalse(model.state.value.removing)
+            assertNull(model.state.value.removeError)
+            assertEquals(1, sessions.refreshes)
+            assertEquals(listOf("desk"), removed)
+            assertEquals(MachineNotice.Removed("Desk", restartRequired = false), model.notices.first())
+
+            // Restart-required removal keeps the restart notice.
+            management.removeGate = null
+            management.removeResult = MachineRemoveResult(restartRequired = true)
+            model.remove("desk", "Desk") { removed += "restart" }
+            runCurrent()
+            assertEquals(MachineNotice.Removed("Desk", restartRequired = true), model.notices.first())
+            assertEquals(2, sessions.refreshes)
+
+            // Refusal keeps the inline error for the open dialog and does not invoke onRemoved.
+            management.failure = HubFailure(HubError.Server, "Full device access required", 403, "forbidden")
+            model.remove("desk", "Desk") { removed += "failed" }
+            runCurrent()
+            assertFalse(model.state.value.removing)
+            assertEquals(UiText.Plain("Full device access required"), model.state.value.removeError)
+            assertEquals(listOf("desk", "restart"), removed)
+            model.clearRemoveError()
+            assertNull(model.state.value.removeError)
+        } finally { model.viewModelScope.cancel() }
     }
 }

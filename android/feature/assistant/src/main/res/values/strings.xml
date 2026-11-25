@@ -285,4 +285,11 @@
     <string name="assistant_starred_unstarred">Message unstarred</string>
     <string name="assistant_starred_undo">Undo</string>
     <string name="assistant_starred_action_failed">Couldn\'t update starred message</string>
+    <!-- Permanent conversation deletion -->
+    <string name="assistant_delete_menu">Delete…</string>
+    <string name="assistant_delete_title">Delete “%1$s”?</string>
+    <string name="assistant_delete_body">This permanently removes this chat and its messages from Persona. You cannot undo this. Linked tasks, agents, saved knowledge and transcript files on the computer are kept.</string>
+    <string name="assistant_delete_confirm">Delete chat</string>
+    <string name="assistant_deleted">Deleted</string>
+    <string name="assistant_delete_unavailable">This chat cannot be deleted while it is working or waiting for a response.</string>
 </resources>

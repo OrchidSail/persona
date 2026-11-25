@@ -46,6 +46,7 @@ internal enum class AssistantMenuItem(val icon: PhIcon, @StringRes val label: In
     ClearContext(PersonaIcons.retry, R.string.assistant_clear_context),
     NewMain(PersonaIcons.newConversation, R.string.assistant_new_main), SessionInfo(PersonaIcons.info, R.string.assistant_info_session),
     Interrupt(PersonaIcons.interrupt, R.string.assistant_interrupt),
+    Delete(PersonaIcons.delete, R.string.assistant_delete_menu),
 }
 
 /**
@@ -54,12 +55,14 @@ internal enum class AssistantMenuItem(val icon: PhIcon, @StringRes val label: In
  * and Back to main chat (off the main conversation); the copies (the directory and the info always, the
  * session ID and diagnostics with a conversation open); Compact context, the main conversation's Clear context (#5100,
  * between them as on the web) and New main chat; Session
- * info and, while it works, Interrupt. The per-conversation launcher and model are #5055's pill and panel, not menu items,
- * and the menu's heading names them ([AssistantCopyText.menuTitle]); Screen is not done: Android has no live screen. Each
- * list is one section; a rule goes above every section after the first.
+ * info and, while it works, Interrupt; and permanent Delete… as a final destructive section on eligible non-main
+ * conversations when the hub advertises `assistant_conversation_delete`. The per-conversation launcher and model are #5055's
+ * pill and panel, not menu items, and the menu's heading names them ([AssistantCopyText.menuTitle]); Screen is not done:
+ * Android has no live screen. Each list is one section; a rule goes above every section after the first.
  */
 internal fun assistantMenu(offline: Boolean, modules: List<ModuleMenuAction>, main: SessionKey?, active: SessionKey?, compact: Boolean,
-                           newMain: Boolean, working: Boolean, clear: Boolean = false, knowledge: Boolean = true): List<List<AssistantMenuEntry>> = listOf(
+                           newMain: Boolean, working: Boolean, clear: Boolean = false, knowledge: Boolean = true,
+                           delete: Boolean = false): List<List<AssistantMenuEntry>> = listOf(
     listOfNotNull(AssistantMenuItem.ConnectionDetails.takeIf { offline }, AssistantMenuItem.Knowledge.takeIf { knowledge }, AssistantMenuItem.Details) +
         modules.map(::ModuleItem) + listOfNotNull(AssistantMenuItem.BackToMain.takeIf { main != null && main != active }),
     listOfNotNull(AssistantMenuItem.CopyDirectory, AssistantMenuItem.CopyInfo,
@@ -67,6 +70,7 @@ internal fun assistantMenu(offline: Boolean, modules: List<ModuleMenuAction>, ma
     listOfNotNull(AssistantMenuItem.Compact.takeIf { compact }, AssistantMenuItem.ClearContext.takeIf { clear },
         AssistantMenuItem.NewMain.takeIf { newMain }),
     listOfNotNull(AssistantMenuItem.SessionInfo.takeIf { active != null }, AssistantMenuItem.Interrupt.takeIf { active != null && working }),
+    listOfNotNull(AssistantMenuItem.Delete.takeIf { active != null && delete && (main == null || active != main) }),
 ).filter { it.isNotEmpty() }
 
 /** The icon an entry shows on Glass: the item's own, or the module's. */
@@ -192,6 +196,8 @@ internal fun AssistantTitleMenu(
     onClear: () -> Unit,
     onNotice: (String) -> Unit,
     onConnectionDetails: () -> Unit,
+    canDelete: Boolean = false,
+    onDelete: ((Session) -> Unit)? = null,
 ) {
     val resources = androidx.compose.ui.platform.LocalResources.current
     val shown = active?.let { key -> snapshot.conversations.firstOrNull { it.key == key } }
@@ -206,7 +212,8 @@ internal fun AssistantTitleMenu(
         newMain = onMain && mainActions.newMain, working = interrupt != null && persona.core.domain.lines.isLiveStatus(shown?.status),
         clear = onMain && mainActions.clear,
         // Knowledge only while a module serves its pages (#13934, :module:knowledge-ui).
-        knowledge = persona.core.moduleapi.LocalModulePlaces.current.serves(persona.core.navigation.KnowledgeRoute::class))
+        knowledge = persona.core.moduleapi.LocalModulePlaces.current.serves(persona.core.navigation.KnowledgeRoute::class),
+        delete = canDelete && shown != null && onDelete != null)
         fun rawAction(item: AssistantMenuItem, separator: Boolean): JAction = when (item) {
             AssistantMenuItem.ConnectionDetails -> JAction(resources.getString(item.label), separatorBefore = separator,
                 onClick = onConnectionDetails)
@@ -243,6 +250,9 @@ internal fun AssistantTitleMenu(
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (_: Exception) { onNotice(resources.getString(persona.feature.chat.R.string.chat_composer_interrupt_unknown)) }
                 }
+            })
+            AssistantMenuItem.Delete -> JAction(resources.getString(item.label), destructive = true, separatorBefore = separator, onClick = {
+                if (shown != null && onDelete != null) onDelete(shown)
             })
         }
         // iOS's icon on every item: Glass draws them; Brief and Board keep their words (Back to main chat has had its house all along).

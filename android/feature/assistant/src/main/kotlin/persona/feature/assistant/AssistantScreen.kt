@@ -689,6 +689,11 @@ fun AssistantScreen(
         if (active != null && active in retired) openMain()
         sharedSidebar?.retired = emptySet()
     }
+    LaunchedEffect(active, snapshot.conversations, history.deleted) {
+        if (active != null && (active in history.deleted || snapshot.conversations.any { it.key == active && it.deleted })) {
+            openMain()
+        }
+    }
     LaunchedEffect(snapshot.mainSession, snapshot.conversations, managerChoice) {
         if (!demo && !openedMain && requestedSession == null && mainMessages.isEmpty()) {
             val initial = snapshot.mainSession
@@ -738,7 +743,10 @@ fun AssistantScreen(
             null -> Unit
         }
     }
-    val openKeys = remember(snapshot.conversations) { openKeys(snapshot.conversations) }
+    val deleteSupported = pageManagement != null && !demo && ConversationDeleteFeature in LocalHubFeatures.current
+    val openKeys = remember(snapshot.conversations, history.deleted) {
+        openKeys(snapshot.conversations.filterNot { it.deleted || it.key in history.deleted })
+    }
     fun historyFailed(error: Throwable) {
         assistantHistoryFailed(error, feedback, toast, resources)
     }
@@ -764,6 +772,8 @@ fun AssistantScreen(
             onInbox = { drawerOpen = false; onOpenInbox?.invoke() ?: navigator.navigate(InboxRoute) },
             onCopy = { copyId(it.key) },
             onArchive = if (pageManagement != null && !demo) ::archive else null,
+            onDelete = if (deleteSupported) ({ history.requestDelete(it) }) else null,
+            canDelete = { session -> conversationDeleteAllowed(session, deleteSupported, snapshot.mainSession, snapshot.backgroundSupervisor) },
             onLeader = if (pageManagement != null && !demo) ({ session ->
                 // Open the confirmation first; setLeader runs only on the second choice.
                 leaderConfirm = session
@@ -804,6 +814,11 @@ fun AssistantScreen(
         )
         ConversationHistoryDialogs(history, snapshot.conversations, scope,
             customizedTagFilters = snapshot.conversationTagFilters.customized,
+            mainSession = snapshot.mainSession,
+            builtInSupervisor = snapshot.backgroundSupervisor,
+            deleteSupported = deleteSupported,
+            onDeleted = { key -> if (active == key) openMain() },
+            showDeleteDialog = false,
             onOpen = { openFromList(it); scope.launch { drawerOpen = false } },
             notice = { message ->
                 assistantHistoryNotice(message, feedback, toast)
@@ -1131,11 +1146,13 @@ fun AssistantScreen(
         val shown = active?.let { key -> snapshot.conversations.firstOrNull { it.key == key } }
         val copyText = AssistantCopyText(shown, active, onMain, menuConfig, assistantMachine, machines)
         val interrupt = composerService.takeIf { !demo }
+        val canDeleteActive = shown != null && conversationDeleteAllowed(shown, deleteSupported, snapshot.mainSession, snapshot.backgroundSupervisor)
         val sections = assistantMenu(offline = connection != null && connection != persona.core.contracts.api.ConnectionState.Online,
             modules = moduleActions, main = snapshot.mainSession, active = active, compact = active != null && mainActions.compact,
             newMain = onMain && mainActions.newMain, working = interrupt != null && persona.core.domain.lines.isLiveStatus(shown?.status),
             clear = onMain && mainActions.clear,
-            knowledge = persona.core.moduleapi.LocalModulePlaces.current.serves(persona.core.navigation.KnowledgeRoute::class))
+            knowledge = persona.core.moduleapi.LocalModulePlaces.current.serves(persona.core.navigation.KnowledgeRoute::class),
+            delete = canDeleteActive)
         fun rawAction(item: AssistantMenuItem, separator: Boolean): JAction = when (item) {
             AssistantMenuItem.ConnectionDetails -> JAction(resources.getString(item.label), separatorBefore = separator,
                 onClick = openConnectionDetails)
@@ -1172,6 +1189,9 @@ fun AssistantScreen(
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (_: Exception) { say(resources.getString(persona.feature.chat.R.string.chat_composer_interrupt_unknown)) }
                 }
+            })
+            AssistantMenuItem.Delete -> JAction(resources.getString(item.label), destructive = true, separatorBefore = separator, onClick = {
+                shown?.let(history::requestDelete)
             })
         }
         // iOS's icon on every item: Glass draws them; Brief and Board keep their words (Back to main chat has had its house all along).
@@ -1266,6 +1286,16 @@ fun AssistantScreen(
                 AssistantInfo.Launcher -> stringResource(R.string.assistant_info_launcher_text)
             }, confirm = stringResource(R.string.assistant_got_it) to { info = null }, dismiss = null)
     }
+    ConversationDeleteDialogHost(
+        history = history,
+        conversations = snapshot.conversations,
+        scope = scope,
+        mainSession = snapshot.mainSession,
+        builtInSupervisor = snapshot.backgroundSupervisor,
+        deleteSupported = deleteSupported,
+        onDeleted = { key -> if (active == key) openMain() },
+        notice = { message -> assistantHistoryNotice(message, feedback, toast) },
+    )
 }
 
 /** What the drawer's "More" rows and the title menu explain when there is nothing to open (the demo, a missing hub). */
@@ -1430,6 +1460,10 @@ internal fun AssistantDrawer(
     onHealth: (() -> Unit)? = null,
     onCopy: (Session) -> Unit = {},
     onArchive: ((Session) -> Unit)? = null,
+    /** Permanently deletes a non-main chat (feature `assistant_conversation_delete`); null hides Delete. */
+    onDelete: ((Session) -> Unit)? = null,
+    /** Eligibility guard applied per row before offering [onDelete]. */
+    canDelete: (Session) -> Boolean = { true },
     /** Makes a chat a leader (常驻) or ends it, on the hub (#4331); null: the menu offers neither. */
     onLeader: ((Session) -> Unit)? = null,
     /** Rename… on a chat's menu (not the main one's); null: no Rename. */
@@ -1685,6 +1719,7 @@ internal fun AssistantDrawer(
                             position = position,
                             onOpen = open, onEnd = onEnd?.let { action -> { action(session) } },
                             onCopy = { onCopy(session) }, onArchive = onArchive?.let { action -> { action(session) } },
+                            onDelete = onDelete?.takeIf { canDelete(session) }?.let { action -> { action(session) } },
                             onRename = onRename?.let { action -> { action(session) } },
                             onDiagnostics = onDiagnostics?.let { action -> { action(session) } },
                             leader = true, onLeader = onLeader?.let { action -> { action(session) } },
@@ -1729,6 +1764,8 @@ internal fun AssistantDrawer(
                         onEnd = onEnd?.let { action -> { action(row.session) } },
                         onCopy = { onCopy(row.session) },
                         onArchive = onArchive?.let { action -> { action(row.session) } },
+                        onDelete = onDelete?.takeIf { row.session.sessionId != groups.background && canDelete(row.session) }
+                            ?.let { action -> { action(row.session) } },
                         onRename = onRename?.let { action -> { action(row.session) } },
                         onEditTags = if (row.session.sessionId == groups.background) null
                             else onEditTags?.let { action -> { action(row.session) } },
@@ -1770,6 +1807,7 @@ internal fun AssistantDrawer(
                         position = position,
                         onOpen = open, onEnd = onEnd?.let { action -> { action(session) } },
                         onCopy = { onCopy(session) }, onArchive = onArchive?.let { action -> { action(session) } },
+                        onDelete = onDelete?.takeIf { canDelete(session) }?.let { action -> { action(session) } },
                         onRename = onRename?.let { action -> { action(session) } },
                         onDiagnostics = onDiagnostics?.let { action -> { action(session) } },
                         leader = true, onLeader = onLeader?.let { action -> { action(session) } },
@@ -1793,6 +1831,7 @@ internal fun AssistantDrawer(
                     position = GroupPosition.of(index, groups.recent.size),
                     onOpen = { onOpen(session.key) }, onEnd = onEnd?.takeUnless { builtIn }?.let { action -> { action(session) } },
                     onCopy = { onCopy(session) }, onArchive = onArchive?.takeUnless { builtIn }?.let { action -> { action(session) } },
+                    onDelete = onDelete?.takeIf { !builtIn && canDelete(session) }?.let { action -> { action(session) } },
                     onRename = onRename?.takeUnless { builtIn }?.let { action -> { action(session) } },
                     onEditTags = onEditTags?.takeUnless { builtIn }?.let { action -> { action(session) } },
                     onDiagnostics = onDiagnostics?.let { action -> { action(session) } },
@@ -1819,6 +1858,7 @@ internal fun AssistantDrawer(
                     position = GroupPosition.of(index, groups.others.size),
                     onOpen = { onOpen(session.key) }, onEnd = onEnd?.takeUnless { builtIn }?.let { action -> { action(session) } },
                     onCopy = { onCopy(session) }, onArchive = onArchive?.takeUnless { builtIn }?.let { action -> { action(session) } },
+                    onDelete = onDelete?.takeIf { !builtIn && canDelete(session) }?.let { action -> { action(session) } },
                     onRename = onRename?.takeUnless { builtIn }?.let { action -> { action(session) } },
                     onEditTags = onEditTags?.takeUnless { builtIn }?.let { action -> { action(session) } },
                     onDiagnostics = onDiagnostics?.let { action -> { action(session) } },
@@ -1987,6 +2027,7 @@ internal fun ConversationRow(
     session: Session, selected: Boolean, onOpen: (() -> Unit)?, onEnd: (() -> Unit)?,
     modifier: Modifier = Modifier, position: GroupPosition = GroupPosition.Single,
     leader: Boolean = false, onLeader: (() -> Unit)? = null, onCopy: () -> Unit = {}, onArchive: (() -> Unit)? = null,
+    onDelete: (() -> Unit)? = null,
     onArrange: (() -> Unit)? = null,
     onRename: (() -> Unit)? = null, onEditTags: (() -> Unit)? = null, onDiagnostics: (() -> Unit)? = null,
     counts: String? = null, named: String? = null, origin: String? = session.origin,
@@ -2069,7 +2110,7 @@ internal fun ConversationRow(
         title = title, onDismiss = { menu = false },
         actions = conversationActions(androidx.compose.ui.platform.LocalResources.current, leader, session.isLive, onLeader, onCopy, onEnd,
             onArchive, onRename = onRename, onEditTags = onEditTags, onDiagnostics = onDiagnostics, onArrange = onArrange,
-            glass = PersonaTheme.style == AppStyle.Glass),
+            onDelete = onDelete, glass = PersonaTheme.style == AppStyle.Glass),
         // The long press's preview (iOS's context menu): what it last said (the row shows only the title) and when.
         preview = session.lastText?.let { persona.core.domain.plainMarkdown(it) }?.takeIf { it.isNotBlank() },
         previewCaption = historyTime(session.updated, resources),
@@ -2126,7 +2167,7 @@ internal fun conversationActions(
     resources: android.content.res.Resources, leader: Boolean, live: Boolean, onLeader: (() -> Unit)?, onCopy: () -> Unit,
     onEnd: (() -> Unit)?, onArchive: (() -> Unit)? = null, onRename: (() -> Unit)? = null,
     onEditTags: (() -> Unit)? = null, onDiagnostics: (() -> Unit)? = null, glass: Boolean = false,
-    onArrange: (() -> Unit)? = null,
+    onArrange: (() -> Unit)? = null, onDelete: (() -> Unit)? = null,
 ): List<JAction> =
     buildList {
         onLeader?.let { add(JAction(resources.getString(if (leader) R.string.assistant_end_leader else R.string.assistant_make_leader), PersonaIcons.pin, onClick = it)) }
@@ -2136,8 +2177,12 @@ internal fun conversationActions(
         onArchive?.let { add(JAction(resources.getString(R.string.assistant_archive), PersonaIcons.archive, onClick = it)) }
         add(JAction(resources.getString(R.string.assistant_copy_session_id), if (glass) PersonaIcons.id else PhIcons.Copy, onClick = onCopy))
         onDiagnostics?.let { add(JAction(resources.getString(R.string.assistant_copy_diagnostics), PersonaIcons.diagnostics, onClick = it)) }
+        onDelete?.let {
+            add(JAction(resources.getString(R.string.assistant_delete_menu), PersonaIcons.delete,
+                destructive = true, separatorBefore = true, onClick = it))
+        }
         if (onEnd != null && live) add(JAction(resources.getString(R.string.assistant_end_menu), if (glass) PersonaIcons.end else PhIcons.Stop,
-            destructive = true, separatorBefore = true, onClick = onEnd))
+            destructive = true, separatorBefore = onDelete == null, onClick = onEnd))
     }
 
 /**

@@ -55,8 +55,10 @@ internal fun rememberAssistantConversationPreparation(
     val orderedSnapshot = if (conversationArrangeUi.arranging || conversationArrangeUi.pending > 0) {
         snapshot.copy(conversationOrder = conversationArrangeUi.order)
     } else snapshot
-    val groups = remember(orderedSnapshot, query, ended, archived, words, history.titles, history.tagEdits, history.activeTag) {
-        conversationGroups(orderedSnapshot.copy(conversations = history.tagged(orderedSnapshot.conversations.filter { it.key !in archived }.map {
+    val groups = remember(orderedSnapshot, query, ended, archived, history.deleted, words, history.titles, history.tagEdits, history.activeTag) {
+        conversationGroups(orderedSnapshot.copy(conversations = history.tagged(orderedSnapshot.conversations.filter {
+            !it.deleted && it.key !in archived && it.key !in history.deleted
+        }.map {
             if (it.key in ended) it.copy(status = "offline", state = "offline") else it
         })), query, words, activeTag = history.activeTag)
     }
@@ -93,8 +95,8 @@ internal fun rememberAssistantConversationPreparation(
         }
     }
     val searchOn = pageManagement != null && !demo && AssistantSearchFeature in LocalHubFeatures.current
-    val knownChats = remember(snapshot.conversations, ended, archived, history.titles, history.tagEdits, history.archived, history.restoring) {
-        val listed = snapshot.conversations.filter { it.key !in archived }.map {
+    val knownChats = remember(snapshot.conversations, ended, archived, history.deleted, history.titles, history.tagEdits, history.archived, history.restoring) {
+        val listed = snapshot.conversations.filter { !it.deleted && it.key !in archived && it.key !in history.deleted }.map {
             if (it.key in ended) it.copy(status = "offline", state = "offline") else it
         }
         history.tagged((listed + history.shownArchived(openKeys(listed))).distinctBy { it.sessionId })

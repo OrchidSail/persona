@@ -68,7 +68,12 @@ class AssistantMenuTest {
             assistantMenu(offline = false, modules = emptyList(), main = main, active = main, compact = false, newMain = false, working = false, clear = true)[2])
         // A blank page copies what a new conversation would use, and has no session to show or stop.
         assertEquals(listOf(listOf(Knowledge, Details, BackToMain), listOf(CopyDirectory, CopyInfo)),
-            assistantMenu(offline = false, modules = emptyList(), main = main, active = null, compact = false, newMain = false, working = true))
+            assistantMenu(offline = false, modules = emptyList(), main = main, active = null, compact = false, newMain = false, working = true, delete = true))
+        // Permanent delete appears only in its own final section for an eligible non-main conversation, never on main.
+        assertEquals(listOf(Delete),
+            assistantMenu(offline = false, modules = emptyList(), main = main, active = side, compact = false, newMain = false, working = false, delete = true).last())
+        assertEquals(listOf(SessionInfo),
+            assistantMenu(offline = false, modules = emptyList(), main = main, active = main, compact = false, newMain = false, working = false, delete = true).last())
     }
 
     @Test fun copyInfoSaysWhichConversationWhereAndHowToGoOn() {
@@ -164,6 +169,7 @@ class AssistantMenuTest {
             // Clear context: the web's mark for it; the icon set has no meaning of iOS's eraser (only its pane /clear has one).
             ClearContext to PersonaIcons.retry,
             Interrupt to PersonaIcons.interrupt,
+            Delete to PersonaIcons.delete,
         )
         assertEquals(AssistantMenuItem.entries.toSet(), expected.keys)
         for ((item, icon) in expected) assertSame(item.toString(), icon, item.icon)

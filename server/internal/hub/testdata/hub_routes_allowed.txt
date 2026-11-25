@@ -12,6 +12,7 @@ DELETE /api/v1/admin/machines/{id}
 DELETE /api/v1/admin/peers/{hub_id}
 DELETE /api/v1/auth/tokens/{id}
 DELETE /api/v1/looks/uploads/{id} # the hub keeps the looks: personas/ is its own directory (look_uploads.go)
+DELETE /api/v1/machines/{id}
 DELETE /api/v1/machines/{mid}/files/entry
 DELETE /api/v1/managers/{id}
 DELETE /api/v1/sessions/{mid}/{sid}

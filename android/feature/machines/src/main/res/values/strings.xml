@@ -302,4 +302,13 @@
     <string name="machines_tokens_now">Now</string>
     <string name="machines_tokens_cache_hit_rate">Cache hit rate</string>
     <string name="machines_tokens_per_minute">%1$s/min</string>
+    <!-- Remove paired computer -->
+    <string name="machines_remove">Remove computer</string>
+    <string name="machines_removing">Removing…</string>
+    <string name="machines_remove_title">Remove “%1$s”?</string>
+    <string name="machines_remove_body">This removes %1$s from your computers and revokes its Persona Link pairing immediately. Running agents on the computer aren\'t stopped, and browser logins or app permissions on it aren\'t changed. To connect it again later, pair it as a new computer.</string>
+    <string name="machines_remove_confirm">Remove computer</string>
+    <string name="machines_notice_removed">Removed %1$s</string>
+    <string name="machines_notice_removed_restart">Removed %1$s. Restart the hub to finish removing it from the list.</string>
+    <string name="machines_notice_remove_failed">Couldn\'t remove computer: %1$s</string>
 </resources>

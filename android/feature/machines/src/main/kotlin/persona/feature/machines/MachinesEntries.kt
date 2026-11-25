@@ -42,9 +42,11 @@ fun EntryProviderScope<NavKey>.machinesEntries(
     computers: ComputerPairing? = null,
     /** Pairing generation from ShellSession: an accepted operation must never cross an unpair/re-pair boundary. */
     operationScope: String = "",
+    /** Notified when a computer is removed so shell-level machine selections can clear immediately. */
+    onMachineRemoved: (String) -> Unit = {},
 ) {
-    entry<MachinesRoute> { MachinesRouteContent(null, navigator, metrics, sessions, management, launcherPages, null, computers, operationScope) }
-    entry<MachineDetailRoute> { MachinesRouteContent(it.machineId, navigator, metrics, sessions, management, launcherPages, extensionSections, computers, operationScope) }
+    entry<MachinesRoute> { MachinesRouteContent(null, navigator, metrics, sessions, management, launcherPages, null, computers, operationScope, onMachineRemoved) }
+    entry<MachineDetailRoute> { MachinesRouteContent(it.machineId, navigator, metrics, sessions, management, launcherPages, extensionSections, computers, operationScope, onMachineRemoved) }
     entry<AddComputerRoute> { AddComputerPage(computers, sessions.machines, it.confirm, navigator::back) }
 }
 
@@ -77,6 +79,7 @@ private fun MachinesRouteContent(
     id: String?, navigator: Navigator, api: MachineMetricsApi, sessions: SessionsRepository, management: MachineManagement?,
     launcherPages: Flow<Boolean>, extensionSections: (@Composable (String) -> (LazyListScope.() -> Unit))?, computers: ComputerPairing?,
     operationScope: String,
+    onMachineRemoved: (String) -> Unit,
 ) {
     val launchers by launcherPages.collectAsState(false)
     // "Add a computer" opens its page only on a hub with machines_add; an older one keeps the help dialog.
@@ -93,11 +96,13 @@ private fun MachinesRouteContent(
         LaunchedEffect(model, lifecycle) { lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) { model.poll() } }
         val feedback = LocalAppFeedback.current
         val resources = LocalResources.current
-        LaunchedEffect(actions, feedback, resources) { actions?.notices?.collect { feedback?.notice(it.text(resources)) } }
+        LaunchedEffect(actions, feedback, resources) {
+            actions?.notices?.collect { feedback?.notice(it.text(resources), it.feedbackStyle) }
+        }
         LaunchedEffect(health, feedback, resources) { health?.notices?.collect { feedback?.notice(it.text(resources)) } }
         // "Subscription limits" on the overview, once a minute while it is in front.
         if (id == null && health != null && LocalSidebarUsage.current == null) LaunchedEffect(health, lifecycle) { lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) { health.pollUsage() } }
         val extensions = if (id != null && extensionSections != null) extensionSections(id) else null
-        MachinesScreen(id, model, navigator, actions, launcherPages = launchers, extensionSections = extensions, health = health, adds = computers != null, canAdd = canAdd)
+        MachinesScreen(id, model, navigator, actions, launcherPages = launchers, extensionSections = extensions, health = health, adds = computers != null, canAdd = canAdd, onMachineRemoved = onMachineRemoved)
     }
 }

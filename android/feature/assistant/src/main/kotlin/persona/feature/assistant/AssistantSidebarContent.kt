@@ -142,7 +142,10 @@ fun AssistantSidebarContent(
     var archived by remember(management) { mutableStateOf(emptySet<SessionKey>()) }
     // Rename… and Archived (N) (iOS `AssistantSidebar`): titles given here and the archived conversations.
     val history = rememberConversationHistory(management?.takeUnless { demo }, repository)
-    val openKeys = remember(received.conversations) { openKeys(received.conversations) }
+    val deleteSupported = management != null && !demo && ConversationDeleteFeature in LocalHubFeatures.current
+    val openKeys = remember(received.conversations, history.deleted) {
+        openKeys(received.conversations.filterNot { it.deleted || it.key in history.deleted })
+    }
     var ending by remember { mutableStateOf<Pair<Session, AssistantManagement>?>(null) }
     var busy by remember { mutableStateOf(false) }
     var leaderBusy by remember { mutableStateOf(false) }
@@ -171,8 +174,10 @@ fun AssistantSidebarContent(
     val orderedSnapshot = if (conversationArrangeUi.arranging || conversationArrangeUi.pending > 0) {
         received.copy(conversationOrder = conversationArrangeUi.order)
     } else received
-    val groups = remember(orderedSnapshot, query, ended, archived, words, history.titles, history.tagEdits, history.activeTag) {
-        conversationGroups(orderedSnapshot.copy(conversations = history.tagged(orderedSnapshot.conversations.filter { it.key !in archived }.map {
+    val groups = remember(orderedSnapshot, query, ended, archived, history.deleted, words, history.titles, history.tagEdits, history.activeTag) {
+        conversationGroups(orderedSnapshot.copy(conversations = history.tagged(orderedSnapshot.conversations.filter {
+            !it.deleted && it.key !in archived && it.key !in history.deleted
+        }.map {
             if (it.key in ended) it.copy(status = "offline", state = "offline") else it
         })), query, words, activeTag = history.activeTag)
     }
@@ -203,13 +208,13 @@ fun AssistantSidebarContent(
         }
     }
     val searchOn = management != null && !demo && AssistantSearchFeature in LocalHubFeatures.current
-    val openChats = remember(received.conversations, ended, archived, history.titles, history.tagEdits) {
-        history.tagged(received.conversations.filter { !it.archived && it.key !in archived }.map {
+    val openChats = remember(received.conversations, ended, archived, history.deleted, history.titles, history.tagEdits) {
+        history.tagged(received.conversations.filter { !it.deleted && !it.archived && it.key !in archived && it.key !in history.deleted }.map {
             if (it.key in ended) it.copy(status = "offline", state = "offline") else it
         })
     }
-    val knownChats = remember(received.conversations, ended, archived, history.titles, history.tagEdits, history.archived, history.restoring) {
-        val listed = received.conversations.filter { it.key !in archived }.map {
+    val knownChats = remember(received.conversations, ended, archived, history.deleted, history.titles, history.tagEdits, history.archived, history.restoring) {
+        val listed = received.conversations.filter { !it.deleted && it.key !in archived && it.key !in history.deleted }.map {
             if (it.key in ended) it.copy(status = "offline", state = "offline") else it
         }
         history.tagged((listed + history.shownArchived(openKeys(openChats))).distinctBy { it.sessionId })
@@ -262,6 +267,8 @@ fun AssistantSidebarContent(
                         catch (error: Exception) { archived = archived - session.key; failed(error) }
                     }
                 } },
+                onDelete = if (deleteSupported) ({ session: Session -> history.requestDelete(session) }) else null,
+                canDelete = { session -> conversationDeleteAllowed(session, deleteSupported, received.mainSession, received.backgroundSupervisor) },
                 onLeader = if (management != null && !demo) ({ session: Session ->
                     // Open the confirmation first; setLeader runs only on the second choice.
                     leaderConfirm = session
@@ -337,6 +344,10 @@ fun AssistantSidebarContent(
     }
     ConversationHistoryDialogs(history, received.conversations, operationScope, onOpen = onOpen,
         customizedTagFilters = received.conversationTagFilters.customized,
+        mainSession = received.mainSession,
+        builtInSupervisor = received.backgroundSupervisor,
+        deleteSupported = deleteSupported,
+        onDeleted = onRetired,
         notice = { feedback?.notice(it, persona.core.designsystem.FeedbackStyle.Success) }, failure = ::failed)
     ending?.let { (session, target) ->
         JDialog(onDismiss = { if (!busy) ending = null }, title = stringResource(R.string.assistant_end_title),
