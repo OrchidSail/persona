@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
-import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs'
+import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { startFakeNode } from '../../runtime-sdk/testing/fake-node.js'
-import { readTranscript, readTranscriptSteps, rememberObservedWake, stepsToItems } from '../lib/map.js'
+import { readTranscript, readTranscriptSteps, rememberObservedWake, stepsToItems, transcriptVersion } from '../lib/map.js'
 import { createAgyRuntime } from '../lib/runtime.js'
 
 function logs(t) {
@@ -315,6 +315,37 @@ test('wake receipts update cached transcripts without mutating prior snapshots a
   const switched = readTranscript(brain, true)
   assert.equal(switched.compact, false)
   assert.equal(switched.steps[1].content, 'Full reply.')
+})
+
+test('same-size wake receipt replacement invalidates cached history even with a restored mtime', (t) => {
+  const { brain, directory } = logs(t)
+  const line = (step) => JSON.stringify({ source: 'MODEL', status: 'DONE', ...step }) + '\n'
+  writeFileSync(join(directory, 'transcript_full.jsonl'),
+    line({ step_index: 0, type: 'USER_INPUT', source: 'USER_EXPLICIT', created_at: '2026-11-20T10:00:00Z', content: 'go' }) +
+    line({ step_index: 1, type: 'PLANNER_RESPONSE', created_at: '2026-11-20T10:00:01Z', content: 'Initial reply.' }) +
+    line({ step_index: 2, type: 'PLANNER_RESPONSE', created_at: '2026-11-20T10:05:00Z', content: 'Background follow-up.' }))
+  const before = readTranscript(brain, true)
+  rememberObservedWake(brain, before.steps, 2)
+  const receipt = join(brain, '.persona-observed-wakes')
+  const original = readFileSync(receipt)
+  const stamp = Math.floor(Date.now() / 1000) - 60
+  utimesSync(receipt, stamp, stamp)
+  const receiptBefore = statSync(receipt, { bigint: true })
+  const withWake = readTranscript(brain, true)
+  assert.match(withWake.revision, /:wake:/)
+  const versionBefore = transcriptVersion(brain, true)?.key
+
+  writeFileSync(receipt + '.new', Buffer.alloc(original.length, 48))
+  renameSync(receipt + '.new', receipt)
+  utimesSync(receipt, stamp, stamp)
+  const receiptAfter = statSync(receipt, { bigint: true })
+  assert.equal(receiptAfter.size, receiptBefore.size)
+  assert.equal(receiptAfter.mtimeNs, receiptBefore.mtimeNs)
+  assert.notEqual(transcriptVersion(brain, true)?.key, versionBefore,
+    'the list version must detect receipt replacement independently of the transcript cache')
+  const replaced = readTranscript(brain, true)
+  assert.equal(replaced.revision, before.revision)
+  assert.equal(stepsToItems(replaced.steps).items.some((item) => item.wake), false)
 })
 
 test('stepsToItems caches exact hits, reuses immutable prefixes on append, and invalidates on option or live mutations', (t) => {

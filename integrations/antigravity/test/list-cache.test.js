@@ -89,7 +89,24 @@ test('settled list summaries survive transcript-cache eviction without hiding ch
   const binary = join(home, 'fake-agy.mjs')
   writeFileSync(binary, `#!/usr/bin/env node
 if (process.argv.includes('models')) { console.log('test-model\\tTest Model'); process.exit(0) }
+import { createServer } from 'node:http'
+import { writeFileSync } from 'node:fs'
 import { createInterface } from 'node:readline'
+const service = createServer(async (request, response) => {
+  const chunks = []
+  for await (const chunk of request) chunks.push(chunk)
+  const params = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {}
+  if (!request.url.endsWith('GetCascadeTrajectorySteps')) return response.end('{}')
+  response.end(JSON.stringify({ steps: [{
+    step_index: params.stepOffset,
+    type: 'PLANNER_RESPONSE',
+    status: 'DONE',
+    content: 'native-completed',
+  }] }))
+})
+await new Promise((resolve) => service.listen(0, '127.0.0.1', resolve))
+const logFile = process.argv[process.argv.indexOf('--log-file') + 1]
+writeFileSync(logFile, \`Language server listening on random port at \${service.address().port} for HTTP\\n\`)
 createInterface({ input: process.stdin }).on('line', (line) => {
   const request = JSON.parse(line)
   if (request.id === undefined || request.method === 'session/prompt') return
@@ -154,17 +171,32 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     return rows?.length === 3 && rows.every((row) => row.status === 'done' && row.last_text)
   }, 15_000)
 
-  const refresh = async (title, predicate) => {
+  const refresh = async (title, predicate, timeout = 15_000) => {
     const before = node.all('runtime.sessions').length
     await node.peer.call('session.rename', { session_id: `agy-${IDS[0]}`, title })
     await until('inventory refreshed', () => node.all('runtime.sessions').length > before, 15_000)
-    if (predicate) await until('requested row state', predicate, 15_000)
+    if (predicate) await until('requested row state', predicate, timeout)
   }
 
   transcriptReads = 0
   transcriptBytes = 0
   await refresh('unchanged')
   assert.equal(transcriptBytes, 0, 'an unchanged settled list must not re-read files evicted from the 64 MiB transcript cache')
+  assert.equal(transcriptReads, 0)
+
+  setStepCounts([1, 2, 1])
+  await refresh('native-tail-before-probe', () => {
+    const row = node.last('runtime.sessions')?.sessions.find((row) => row.session_id === `agy-${IDS[1]}`)
+    return row?.status === 'done'
+  })
+  await node.peer.call('session.items', { session_id: `agy-${IDS[1]}` })
+  await refresh('negative-native-tail-primed')
+  const { readTranscript: evictOtherTranscript } = await import('../lib/map.js')
+  evictOtherTranscript(join(brain, IDS[0]), true)
+  transcriptReads = 0
+  transcriptBytes = 0
+  await refresh('negative-native-tail-unchanged')
+  assert.equal(transcriptBytes, 0, 'a completed native tail probe with no error must not disable settled list caching')
   assert.equal(transcriptReads, 0)
 
   appendFileSync(join(brain, IDS[2], '.system_generated', 'logs', 'transcript.jsonl'), line({
@@ -200,7 +232,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   await refresh('appended', () => {
     const row = node.last('runtime.sessions')?.sessions.find((row) => row.session_id === `agy-${IDS[0]}`)
     return row?.rev === 2 && row?.last_text === 'after-append' && row?.status === 'unknown'
-  })
+  }, 5_000)
   // Keep native step_count unchanged so only the transcript version can invalidate this snapshot.
 
   const { readTranscript, rememberObservedWake, transcriptVersion } = await import('../lib/map.js')
@@ -264,4 +296,84 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   const transcript = readTranscript(brainDir, true)
   rememberObservedWake(brainDir, transcript.steps, 1)
   assert.notEqual(transcriptVersion(brainDir, true)?.key, beforeWake?.key, 'wake receipts must invalidate a listed transcript')
+})
+
+test('list snapshot capacity covers every selected session', { timeout: 30_000 }, async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'agy-list-capacity-'))
+  const agyDir = join(home, 'agy')
+  const brain = join(agyDir, 'brain')
+  const count = 257
+  const ids = Array.from({ length: count }, (_, index) =>
+    `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`)
+  mkdirSync(brain, { recursive: true })
+  const db = new DatabaseSync(join(agyDir, 'conversation_summaries.db'))
+  db.exec(`CREATE TABLE conversation_summaries (
+    conversation_id TEXT PRIMARY KEY,
+    status TEXT,
+    not_fully_idle NUMERIC,
+    killed NUMERIC,
+    step_count INTEGER,
+    title TEXT,
+    workspace_uris TEXT,
+    last_modified_time TEXT
+  )`)
+  const insert = db.prepare('INSERT INTO conversation_summaries VALUES (?, ?, 0, 0, 1, ?, \'[]\', \'\')')
+  const old = new Date(Date.now() - 60_000)
+  for (const [index, id] of ids.entries()) {
+    const logs = join(brain, id, '.system_generated', 'logs')
+    mkdirSync(logs, { recursive: true })
+    const file = join(logs, 'transcript_full.jsonl')
+    writeFileSync(file, line({
+      step_index: 0,
+      type: 'PLANNER_RESPONSE',
+      status: 'DONE',
+      created_at: '2026-11-25T00:00:00.000Z',
+      content: `session-${index}`,
+    }))
+    utimesSync(file, old, old)
+    insert.run(id, 'CASCADE_RUN_STATUS_IDLE', `Session ${index}`)
+  }
+  db.close()
+  const binary = join(home, 'fake-agy.mjs')
+  writeFileSync(binary, `#!/usr/bin/env node
+if (process.argv.includes('models')) { console.log('test-model\\tTest Model'); process.exit(0) }
+import { createInterface } from 'node:readline'
+createInterface({ input: process.stdin }).on('line', (line) => {
+  const request = JSON.parse(line)
+  if (request.id !== undefined) process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} }) + '\\n')
+})
+`, { mode: 0o700 })
+
+  let transcriptReads = 0
+  const originalReadFileSync = fs.readFileSync
+  fs.readFileSync = function (path, ...args) {
+    const result = originalReadFileSync.call(this, path, ...args)
+    if (String(path).endsWith('/transcript_full.jsonl')) transcriptReads++
+    return result
+  }
+  syncBuiltinESMExports()
+  t.after(() => {
+    fs.readFileSync = originalReadFileSync
+    syncBuiltinESMExports()
+  })
+  const { createAgyRuntime } = await import('../lib/runtime.js')
+  const node = await startFakeNode(t)
+  const runtime = createAgyRuntime({ home, agyDir, agyBin: binary, socketPath: node.path, listDays: 14, maxSessions: 300, log: () => {} })
+  t.after(async () => {
+    await runtime.stop()
+    rmSync(home, { recursive: true, force: true })
+  })
+  await delay(1100)
+  runtime.start()
+  await node.ready
+  await until('all selected sessions listed', () => {
+    const rows = node.last('runtime.sessions')?.sessions
+    return rows?.length === count && rows.every((row) => row.status === 'done')
+  }, 15_000)
+
+  transcriptReads = 0
+  const before = node.all('runtime.sessions').length
+  await node.peer.call('session.rename', { session_id: `agy-${ids[0]}`, title: 'unchanged-large-list' })
+  await until('large inventory refreshed', () => node.all('runtime.sessions').length > before, 15_000)
+  assert.equal(transcriptReads, 0, 'a selected list larger than 256 entries must not thrash its snapshot LRU')
 })
