@@ -37,10 +37,10 @@ import (
 // Antigravity agent-mode MCP proxy budgeting for non-assistant leader and worker catalogs (#15822) adds 253 B (266,212 B).
 // Antigravity launchers.check honoring explicit params.model (#15905) adds 1 B (266,213 B).
 // Antigravity withoutStaleWorking coverage for send policy, fork, rewind, modes, and native error reads (#15924) adds 48 B (266,261 B).
-// Antigravity non-rewind negative cache for summary_behind GetCascadeTrajectory checks and summarizeTranscript prefix summary reuse (#13086) add 879 B (267,140 B).
+// Antigravity upgrade-safe MCP/runtime store retention (#16016) and non-rewind negative cache for summary_behind GetCascadeTrajectory checks + summarizeTranscript prefix summary reuse (#13086) add 5,245 B (271,506 B).
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 267_140
+	const budget = 271_506
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {
