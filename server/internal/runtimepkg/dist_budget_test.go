@@ -31,10 +31,10 @@ import (
 // Untitled Antigravity conversations take a short title from their first prompt line (#14629), 218 B (264,212 B).
 // An API error agy streams as message text becomes the turn's error, kept in history and settled idle (#14628), 231 B (264,443 B).
 // Antigravity GENERIC timestamp header stripping (#13662) adds 176 B (264,619 B).
-// Antigravity non-rewind negative cache for summary_behind GetCascadeTrajectory checks and summarizeTranscript prefix summary reuse (#13086), 737 B (265,356 B).
+// Antigravity restart recovery (#12952), deferred task MCP start (#15475), and non-rewind negative cache for summary_behind GetCascadeTrajectory checks + summarizeTranscript prefix summary reuse (#13086), 1,634 B (266,253 B).
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 265_356
+	const budget = 266_253
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {

@@ -15,7 +15,7 @@ import type { Item } from "../../lib/types";
 import { ENGINE_SWITCH_KIND } from "../../lib/engine-switch";
 import { planCardStep, workBlocks, type ToolStep, type WorkNode } from "../../lib/work-groups";
 import { NO_WORKFLOW_CALLS } from "../../lib/workflows";
-import { channelOf, useChannels } from "../../lib/channels";
+import { channelOf, useChannels } from "../../lib/channel-source";
 import { splitQuotes } from "../../lib/drafts";
 import { EASE } from "../../ui/atoms";
 import { ChannelMark, OriginMark } from "../../ui/ChannelMark";
@@ -35,6 +35,8 @@ import { FileCards, ReplyFiles } from "./FileCards";
 import { ReplyPorts } from "./PortChips";
 import { MessageActions } from "./MessageActions";
 import { skillEditText } from "../../lib/skill-mentions";
+import { contextXML } from "../../lib/context-xml";
+import type { ContextRef } from "../../lib/links";
 import { useIsLatestMessage } from "./latest-message-time";
 import { QuoteStack } from "./Quote";
 import { PathText } from "../../ui/PathLinks";
@@ -136,7 +138,9 @@ export function UserBubble({ msg, mid, sid, pending, sendState, starting, onDele
         ) : pending ? (
           <BubbleText text={msg.text} blocks={msg.contexts} mid={mid} sid={sid} own={own} pending />
         ) : (
-          <MessageActions text={msg.text} editText={skillEditText(msg.contexts, msg.text)} isUser ts={msg.ts} side messageId={onDelete ? undefined : msg.id} onDelete={onDelete}
+          <MessageActions text={msg.text} editText={msg.inlineTrailer
+            ? `${msg.contexts.map((c) => contextXML({ ...c, kind: c.kind as ContextRef["kind"], title: c.title ?? "", url: c.url ?? "" })).join("\n")}\n\n${msg.text}${msg.inlineTrailer}`
+            : skillEditText(msg.contexts, msg.text)} isUser ts={msg.ts} side messageId={onDelete ? undefined : msg.id} onDelete={onDelete}
             starSource={!onDelete && !sendState ? { mid, sid, item: msg.id, fingerprint: msg.rawInput?.[0]?.source_fingerprint, userInputs: msg.rawInput } : undefined}
             images={msg.images} photos={msg.photos} className="max-w-full">
             <BubbleText text={msg.text} blocks={msg.contexts} ts={msg.ts} mid={mid} sid={sid} own={own} />
