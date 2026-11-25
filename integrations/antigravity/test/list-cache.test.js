@@ -376,4 +376,19 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   await node.peer.call('session.rename', { session_id: `agy-${ids[0]}`, title: 'unchanged-large-list' })
   await until('large inventory refreshed', () => node.all('runtime.sessions').length > before, 15_000)
   assert.equal(transcriptReads, 0, 'a selected list larger than 256 entries must not thrash its snapshot LRU')
+
+  await node.peer.call('session.watch', { session_id: `agy-${ids[0]}` })
+  // The watcher can read before the next list restores every retained revision baseline.
+  const watchedItems = node.all('session.items').length
+  writeFileSync(join(brain, ids[0], '.system_generated', 'logs', 'transcript_full.jsonl'), line({
+    step_index: 0,
+    type: 'PLANNER_RESPONSE',
+    status: 'DONE',
+    created_at: '2026-11-25T00:00:00.000Z',
+    content: 'Session-0',
+  }))
+  await until('same-step rewrite delivered after revision pressure', () =>
+    node.all('session.items').slice(watchedItems).some((event) =>
+      event.items?.some((item) => item.text === 'Session-0')
+    ), 5_000)
 })
