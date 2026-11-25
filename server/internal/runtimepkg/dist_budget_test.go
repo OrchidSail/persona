@@ -37,10 +37,11 @@ import (
 // Antigravity agent-mode MCP proxy budgeting for non-assistant leader and worker catalogs (#15822) adds 253 B (266,212 B).
 // Antigravity launchers.check honoring explicit params.model (#15905) adds 1 B (266,213 B).
 // Antigravity withoutStaleWorking coverage for send policy, fork, rewind, modes, and native error reads (#15924) adds 48 B (266,261 B).
-// Antigravity silent /compact handling (#14686) adds 132 B (266,393 B).
+// Keeping Antigravity MCP tools available across upgrades (#16016) adds 4,368 B (270,629 B).
+// Antigravity silent /compact handling (#14686) adds 121 B (270,750 B).
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 266_393
+	const budget = 270_750
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {
