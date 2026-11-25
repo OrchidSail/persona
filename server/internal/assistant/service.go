@@ -998,6 +998,10 @@ func (s *Service) event(ctx context.Context, ev map[string]any) {
 			return
 		}
 	}
+	s.broadcastEvent(ctx, ev)
+}
+
+func (s *Service) broadcastEvent(ctx context.Context, ev any) {
 	raw, err := json.Marshal(ev)
 	if err != nil {
 		return
