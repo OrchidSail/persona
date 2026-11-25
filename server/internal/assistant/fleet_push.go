@@ -367,6 +367,20 @@ func (s *Service) notifyFinishedNow(machine, id string, gen int, t fleetTimings)
 			text = counts
 		}
 	}
+	if links := s.consumeSideSupervisionLinks(id); len(links) > 0 && !redact {
+		var missing []string
+		for _, link := range links {
+			if link != "" && !strings.Contains(text, link) {
+				missing = append(missing, link)
+			}
+		}
+		if len(missing) > 0 {
+			if text != "" {
+				text += "\n"
+			}
+			text += strings.Join(missing, "\n")
+		}
+	}
 	s.deliver(Notification{Kind: assistantwire.NotifyDone, DeviceID: machine, Subtitle: place, SessionID: id, Title: head,
 		Body: text, TookMS: took.Milliseconds(), LongMS: long.Milliseconds()})
 	// The same finished turn's one Feishu card (#4674); the sender re-checks the pushes switch and the conversations
@@ -377,23 +391,29 @@ func (s *Service) notifyFinishedNow(machine, id string, gen int, t fleetTimings)
 }
 
 func (s *Service) quietBackgroundReply(machine string, sess proto.Session) bool {
-	if !sess.Assistant || !assistantwire.SupervisedFinish(sess, true) || sess.AwaitsReply {
+	if !sess.Assistant || sess.AwaitsReply || strings.TrimSpace(sess.FailureReason) != "" || sess.TurnErrorKind != "" ||
+		sess.Status == proto.StatusBlocked || sess.Status == proto.StatusInterrupted || !assistantwire.NormalFinish(sess) {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	cfg := s.settings(ctx)
+	foldRelay := sess.SessionID != "" && sess.SessionID == cfg.Main && cfg.foldRoutineRelayReplies() && quietOn(cfg.MainBackgroundFolded)
+	// Only the native agents reliably distinguish an empty turn from a service failure. A different runtime
+	// can skip an alert only for an opted-in relay with an actual successful answer in its transcript.
+	knownFinish := assistantwire.SupervisedFinish(sess, true)
+	if !knownFinish && !foldRelay {
+		return false
+	}
 	var page struct {
 		Items []proto.Item `json:"items"`
 	}
 	if err := s.call(ctx, machine, DeviceSessionItems, map[string]any{
-		"session_id": sess.SessionID, "turns": 1, "lazy_images": true,
+		"session_id": sess.SessionID, "turns": 2, "lazy_images": true,
 	}, &page); err != nil {
 		return false
 	}
-	if transcript.BackgroundReplyMissing(page.Items) {
-		return true
-	}
-	return s.mainBackgroundFolded(ctx) && s.isMain(ctx, sess.SessionID) && transcript.RoutineConversationReply(page.Items)
+	return knownFinish && transcript.BackgroundReplyMissing(page.Items) || foldRelay && transcript.RoutineConversationReply(page.Items)
 }
 
 // reportSlack is how long before its turn started a scheduled run or notice may have been sent (the node starts the

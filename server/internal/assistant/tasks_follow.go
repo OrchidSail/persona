@@ -316,6 +316,9 @@ func (s *Service) rerouteOfTask(ctx context.Context, todoID, planID string) *Pla
 	}
 	for i := range p.Tasks {
 		if p.Tasks[i].TodoID == todoID {
+			if decision := p.Tasks[i].Placement; decision != nil && decision.Reroute != nil {
+				return decision.Reroute
+			}
 			return p.Tasks[i].Reroute
 		}
 	}
@@ -816,7 +819,7 @@ func (s *Service) releaseReceipt(ctx context.Context, id, machine, sid string, r
 func (s *Service) taskTurnEndedAfter(ctx context.Context, machine, sid string, at time.Time) {
 	w := s.newReceiptRecheck(ctx, machine, sid, at)
 	persisted := false
-	if w.Receipt.TodoID != "" && s.store != nil && s.store() != nil {
+	if w.Receipt.TodoID != "" && s.store() != nil {
 		pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		selected, arm, err := s.persistReceiptRecheck(pctx, w)
 		cancel()

@@ -2,6 +2,12 @@
 
 Pitfalls, unusual behavior, and the trade-offs made at the time (originally in "Lessons" in `CLAUDE.md`; see the index in `docs/lessons/README.md`). Add new lessons to the relevant section, or start a section if none fits.
 
+## Anchor trailers belong to the wire body (#15410)
+
+An inline reference's trailer ends one text item. A forward can join another item after it, and a paged transcript
+can cut it partway. Hide the trailer line in both cases. Global chat search also has to strip trailers from rows
+already in its index, before cutting snippets. Preserve the complete wire body for edit and replay.
+
 ## Inline HTML is not one Markdown node (#9420)
 
 An inline script or style can have its tags in separate raw HTML nodes and its body in ordinary text, emphasis or code-span nodes. Track the hidden element across nodes when building searchable prose, but keep literal code examples and ordinary preview formatting. Render separate source fields independently so an unclosed tag in one cannot hide text from another; test the real search index, not only the text helper.
@@ -240,6 +246,17 @@ A view that fetches once per id cannot recover when the store puts the same id b
 - Esc stops only the tool call that is running. The queue survives and starts the next turn, so "stop" and "the queued
   message" are independent; after an interrupt, look for the queued message becoming a new turn rather than assuming the
   interrupt cancelled it. The parser must not treat that later turn as a new user message typed after the stop.
+
+## Messages queued behind a turn with no tool call come back as one line (2026-11-24, #14338, Claude Code 2.1.330)
+
+- A turn that makes no more tool calls has no tool boundary left to take a queued message at. When it ends, Claude Code
+  dequeues every message queued meanwhile and writes them as **one** `user` line. Each message keeps its own blocks, in
+  the order typed: the assistant's live snapshot, interjection note, pictures and text.
+- Seen with bursts of five and six channel messages sent within seconds. The first message had its own line. The others
+  shared the next one.
+- Anything that ties a send to "its line" must let one line hold several sends. The echo now splits such a line into
+  each send's items (`docs/protocol/protocol.md`, "Matching pending messages"). Before that, a folded channel run waited
+  for messages that were never tied, and ended asking for a resend.
 
 ## A herdr started from inside a Claude session makes its panes write no transcript (measured Claude Code 2.1.2xx; re-check)
 
