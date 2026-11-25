@@ -329,6 +329,8 @@ func (h *Hub) dropClient(c *client) {
 	if desktop {
 		h.announceDesktopsLocked(false)
 	}
+	c.relayChannels = nil
+	h.failClientDeviceRelayCallsLocked(c, "", "device_disconnected", "target device disconnected mid-call")
 	phone, device := c.phone, c.pushDevice
 	h.mu.Unlock()
 	h.fsWatchRelease(c) // the folders its panels had open are no longer watched (fswatch.go)

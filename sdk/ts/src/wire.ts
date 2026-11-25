@@ -6592,6 +6592,82 @@ export interface BrowserRunResult {
   error?: string;
 }
 
+/**
+ * device.relay.devices (device.relay:<channel>): list online paired full-access devices advertising the named
+ * channel.
+ */
+export interface DeviceRelayDevicesParams {
+  channel: string;
+}
+
+/**
+ * One online paired full-access device advertising a named relay channel.
+ */
+export interface DeviceRelayDevice {
+  device_id: string;
+  credential_id?: string;
+  name: string;
+  platform: string;
+  app_version?: string;
+  online: boolean;
+  primary: boolean;
+  channel: string;
+  protocol_version: number;
+  /** Opaque channel-specific JSON object advertised by the device (<= 16 KiB). */
+  meta?: unknown;
+  connected_since?: string;
+  last_seen?: string;
+}
+
+export interface DeviceRelayDevicesResult {
+  devices: DeviceRelayDevice[];
+}
+
+/**
+ * device.relay.call (device.relay:<channel>): relay one opaque JSON payload to a specific paired device without
+ * cross-device fallback.
+ */
+export interface DeviceRelayCallParams {
+  device_id: string;
+  channel: string;
+  call_id?: string;
+  timeout_ms?: number;
+  /** Opaque JSON object relayed verbatim to the target device (<= 512 KiB). */
+  payload?: unknown;
+}
+
+/**
+ * Structured device-side error returned inside DeviceRelayCallResult when ok is false.
+ */
+export interface DeviceRelayError {
+  code: string;
+  message: string;
+}
+
+export interface DeviceRelayCallResult {
+  call_id: string;
+  device_id: string;
+  channel: string;
+  ok: boolean;
+  /** Opaque JSON payload returned by the device when ok is true (<= 4 MiB). */
+  result?: unknown;
+  error?: DeviceRelayError;
+}
+
+/**
+ * device.relay.cancel (device.relay:<channel>): cancel an in-flight relay call owned by this extension.
+ */
+export interface DeviceRelayCancelParams {
+  device_id: string;
+  channel: string;
+  call_id: string;
+  reason?: string;
+}
+
+export interface DeviceRelayCancelResult {
+  cancelled: boolean;
+}
+
 export interface StorageEmptyParams {
 }
 
@@ -7746,6 +7822,9 @@ export const CALLS: Record<string, Call> = {
   "machines.status": { from: "program", params: "MachinesStatusParams", result: "MachinesStatusResult" },
   "browser.machines": { from: "program", params: "BrowserMachinesParams", result: "BrowserMachinesResult" },
   "browser.run": { from: "program", params: "BrowserRunParams", result: "BrowserRunResult" },
+  "device.relay.devices": { from: "program", params: "DeviceRelayDevicesParams", result: "DeviceRelayDevicesResult" },
+  "device.relay.call": { from: "program", params: "DeviceRelayCallParams", result: "DeviceRelayCallResult" },
+  "device.relay.cancel": { from: "program", params: "DeviceRelayCancelParams", result: "DeviceRelayCancelResult" },
   "storage.request": { from: "program", params: "StorageEmptyParams", result: "StorageRequestResult" },
   "storage.get": { from: "program", params: "StorageKeyParams", result: "StorageEntry" },
   "storage.list": { from: "program", params: "StorageListParams", result: "StorageListResult" },

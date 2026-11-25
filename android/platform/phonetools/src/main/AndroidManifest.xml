@@ -11,6 +11,7 @@
     <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- phone_health_summary (Settings › Phone data › Health): read only, granted in Health Connect's own dialog. -->
     <uses-permission android:name="android.permission.health.READ_STEPS" />
     <uses-permission android:name="android.permission.health.READ_DISTANCE" />
@@ -56,10 +57,40 @@
         <intent>
             <action android:name="android.intent.action.DIAL" />
         </intent>
+        <!-- Query launchable apps for remote phone control without QUERY_ALL_PACKAGES. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
     </queries>
 
     <application>
         <receiver android:name=".PhoneConfirmationReceiver" android:exported="false" />
+
+        <!-- Remote phone control accessibility service (independent of CapsuleKeeperService). -->
+        <service
+            android:name=".control.PhoneControlAccessibilityService"
+            android:exported="false"
+            android:label="@string/phonetools_control_a11y_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/phonetools_accessibility_service" />
+        </service>
+
+        <!-- Notification listener for OTP auto-login; exported="true" required on Android 12+ with BIND permission. -->
+        <service
+            android:name=".control.PhoneControlNotificationListener"
+            android:exported="true"
+            android:label="@string/phonetools_control_notif_label"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
 
         <!-- Health Connect's permission dialog needs a rationale page (HealthRationaleActivity.kt): the action on
              Android 13 and older, the alias guarded by START_VIEW_PERMISSION_USAGE from 14. -->

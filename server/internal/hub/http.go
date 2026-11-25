@@ -1332,6 +1332,7 @@ type client struct {
 	phone          bool
 	phoneID        string
 	phoneToolNames map[string]bool
+	relayChannels  map[string]*deviceRelayChannel
 	activeAt       time.Time
 	sim            bool // a simulator registered as phone: only used when no real iPhone is connected
 	// runtimeCLI: the phone's DEBUG app offers its runtime CLI (runtime_cli.go); never one of the phone's tools.
@@ -1905,6 +1906,12 @@ func (h *Hub) onClientMessage(ctx context.Context, c *client, data []byte) {
 			return
 		}
 		h.toolResult(msg.CallID, proto.ToolResult{Content: msg.Content, IsError: msg.IsError})
+	case "device_relay_register":
+		h.onDeviceRelayRegister(c, data)
+	case "device_relay_unregister":
+		h.onDeviceRelayUnregister(c, data)
+	case "device_relay_result":
+		h.onDeviceRelayResult(c, data)
 	}
 }
 

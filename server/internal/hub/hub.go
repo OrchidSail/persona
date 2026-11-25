@@ -140,12 +140,16 @@ type Hub struct {
 	slot *hubedge.Slot
 	// deltas: the live text of each session's message being generated, as last relayed (machine, session -> text): a
 	// client subscribing in the middle of it gets it after the backlog instead of waiting for the next token.
-	deltas     map[[2]string]string
-	ttft       hubTTFTTracker
-	phoneTools map[string]db.PhoneToolRegistration
-	calls      map[string]chan proto.ToolResult
-	wokeAt     map[string]time.Time // device -> last silent push to wake it for a tool call
-	live       *liveActivities      // the lock screen / Dynamic Island activity (liveactivity.go)
+	deltas              map[[2]string]string
+	ttft                hubTTFTTracker
+	phoneTools          map[string]db.PhoneToolRegistration
+	calls               map[string]chan proto.ToolResult
+	deviceRelayCalls    map[string]*deviceRelayPending
+	deviceRelaySeen     map[string]bool
+	deviceRelayByExt    map[string]int
+	deviceRelayByDevice map[string]int
+	wokeAt              map[string]time.Time // device -> last silent push to wake it for a tool call
+	live                *liveActivities      // the lock screen / Dynamic Island activity (liveactivity.go)
 	// primaryPhone: the device the owner chose to take phone calls first (phone_primary.go); the zero value is
 	// Automatic. Under mu; primaryPhoneMu keeps one choice written at a time.
 	primaryPhone   phonePrimary

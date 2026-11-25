@@ -6082,6 +6082,73 @@ type BrowserRunResult struct {
 	Error string `json:"error,omitempty"`
 }
 
+// DeviceRelayDevicesParams: device.relay.devices (device.relay:<channel>): list online paired full-access devices
+// advertising the named channel.
+type DeviceRelayDevicesParams struct {
+	Channel string `json:"channel"`
+}
+
+// DeviceRelayDevice: one online paired full-access device advertising a named relay channel.
+type DeviceRelayDevice struct {
+	DeviceID        string `json:"device_id"`
+	CredentialID    string `json:"credential_id,omitempty"`
+	Name            string `json:"name"`
+	Platform        string `json:"platform"`
+	AppVersion      string `json:"app_version,omitempty"`
+	Online          bool   `json:"online"`
+	Primary         bool   `json:"primary"`
+	Channel         string `json:"channel"`
+	ProtocolVersion int    `json:"protocol_version"`
+	// Opaque channel-specific JSON object advertised by the device (<= 16 KiB).
+	Meta           json.RawMessage `json:"meta,omitempty"`
+	ConnectedSince time.Time       `json:"connected_since,omitzero"`
+	LastSeen       time.Time       `json:"last_seen,omitzero"`
+}
+
+type DeviceRelayDevicesResult struct {
+	Devices []DeviceRelayDevice `json:"devices"`
+}
+
+// DeviceRelayCallParams: device.relay.call (device.relay:<channel>): relay one opaque JSON payload to a specific
+// paired device without cross-device fallback.
+type DeviceRelayCallParams struct {
+	DeviceID  string `json:"device_id"`
+	Channel   string `json:"channel"`
+	CallID    string `json:"call_id,omitempty"`
+	TimeoutMs int    `json:"timeout_ms,omitempty"`
+	// Opaque JSON object relayed verbatim to the target device (<= 512 KiB).
+	Payload json.RawMessage `json:"payload,omitempty"`
+}
+
+// DeviceRelayError: structured device-side error returned inside DeviceRelayCallResult when ok is false.
+type DeviceRelayError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type DeviceRelayCallResult struct {
+	CallID   string `json:"call_id"`
+	DeviceID string `json:"device_id"`
+	Channel  string `json:"channel"`
+	Ok       bool   `json:"ok"`
+	// Opaque JSON payload returned by the device when ok is true (<= 4 MiB).
+	Result json.RawMessage   `json:"result,omitempty"`
+	Error  *DeviceRelayError `json:"error,omitempty"`
+}
+
+// DeviceRelayCancelParams: device.relay.cancel (device.relay:<channel>): cancel an in-flight relay call owned by this
+// extension.
+type DeviceRelayCancelParams struct {
+	DeviceID string `json:"device_id"`
+	Channel  string `json:"channel"`
+	CallID   string `json:"call_id"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+type DeviceRelayCancelResult struct {
+	Cancelled bool `json:"cancelled"`
+}
+
 type StorageEmptyParams struct {
 }
 
@@ -8221,6 +8288,14 @@ var newDef = map[string]func() any{
 	"BrowserMachinesResult":         func() any { return new(BrowserMachinesResult) },
 	"BrowserRunParams":              func() any { return new(BrowserRunParams) },
 	"BrowserRunResult":              func() any { return new(BrowserRunResult) },
+	"DeviceRelayDevicesParams":      func() any { return new(DeviceRelayDevicesParams) },
+	"DeviceRelayDevice":             func() any { return new(DeviceRelayDevice) },
+	"DeviceRelayDevicesResult":      func() any { return new(DeviceRelayDevicesResult) },
+	"DeviceRelayCallParams":         func() any { return new(DeviceRelayCallParams) },
+	"DeviceRelayError":              func() any { return new(DeviceRelayError) },
+	"DeviceRelayCallResult":         func() any { return new(DeviceRelayCallResult) },
+	"DeviceRelayCancelParams":       func() any { return new(DeviceRelayCancelParams) },
+	"DeviceRelayCancelResult":       func() any { return new(DeviceRelayCancelResult) },
 	"StorageEmptyParams":            func() any { return new(StorageEmptyParams) },
 	"StorageRequestResult":          func() any { return new(StorageRequestResult) },
 	"StorageKeyParams":              func() any { return new(StorageKeyParams) },
@@ -8386,6 +8461,9 @@ var Calls = map[string]Call{
 	"machines.status":                 {Name: "machines.status", From: "program", Params: "MachinesStatusParams", Result: "MachinesStatusResult"},
 	"browser.machines":                {Name: "browser.machines", From: "program", Params: "BrowserMachinesParams", Result: "BrowserMachinesResult"},
 	"browser.run":                     {Name: "browser.run", From: "program", Params: "BrowserRunParams", Result: "BrowserRunResult"},
+	"device.relay.devices":            {Name: "device.relay.devices", From: "program", Params: "DeviceRelayDevicesParams", Result: "DeviceRelayDevicesResult"},
+	"device.relay.call":               {Name: "device.relay.call", From: "program", Params: "DeviceRelayCallParams", Result: "DeviceRelayCallResult"},
+	"device.relay.cancel":             {Name: "device.relay.cancel", From: "program", Params: "DeviceRelayCancelParams", Result: "DeviceRelayCancelResult"},
 	"storage.request":                 {Name: "storage.request", From: "program", Params: "StorageEmptyParams", Result: "StorageRequestResult"},
 	"storage.get":                     {Name: "storage.get", From: "program", Params: "StorageKeyParams", Result: "StorageEntry"},
 	"storage.list":                    {Name: "storage.list", From: "program", Params: "StorageListParams", Result: "StorageListResult"},

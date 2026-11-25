@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "device_relay.schema.json",
+  "title": "Generic extension-to-device relay channel",
+  "description": "Discovering online paired full-access devices advertising a named channel over /api/v1/ws and relaying opaque JSON calls to a specific device without cross-device fallback. Every method requires device.relay:<channel> in permissions.hub (named grant only). Params are strict: unknown fields are invalid_params. Plugin-side: only the hub and the program speak it.",
+  "x-side": "plugin",
+  "x-methods": {
+    "device.relay.devices": {"from": "program", "params": "DeviceRelayDevicesParams", "result": "DeviceRelayDevicesResult"},
+    "device.relay.call": {"from": "program", "params": "DeviceRelayCallParams", "result": "DeviceRelayCallResult"},
+    "device.relay.cancel": {"from": "program", "params": "DeviceRelayCancelParams", "result": "DeviceRelayCancelResult"}
+  },
+  "$defs": {
+    "DeviceRelayDevicesParams": {
+      "description": "device.relay.devices (device.relay:<channel>): list online paired full-access devices advertising the named channel.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "channel": {"type": "string", "minLength": 1, "maxLength": 32, "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"}
+      },
+      "required": ["channel"]
+    },
+    "DeviceRelayDevice": {
+      "description": "One online paired full-access device advertising a named relay channel.",
+      "type": "object",
+      "properties": {
+        "device_id": {"type": "string"},
+        "credential_id": {"type": "string"},
+        "name": {"type": "string"},
+        "platform": {"type": "string"},
+        "app_version": {"type": "string"},
+        "online": {"type": "boolean"},
+        "primary": {"type": "boolean"},
+        "channel": {"type": "string"},
+        "protocol_version": {"type": "integer"},
+        "meta": {"description": "Opaque channel-specific JSON object advertised by the device (<= 16 KiB)."},
+        "connected_since": {"type": "string", "format": "date-time"},
+        "last_seen": {"type": "string", "format": "date-time"}
+      },
+      "required": ["device_id", "name", "platform", "online", "primary", "channel", "protocol_version"]
+    },
+    "DeviceRelayDevicesResult": {
+      "type": "object",
+      "properties": {
+        "devices": {"type": "array", "items": {"$ref": "#/$defs/DeviceRelayDevice"}}
+      },
+      "required": ["devices"]
+    },
+    "DeviceRelayCallParams": {
+      "description": "device.relay.call (device.relay:<channel>): relay one opaque JSON payload to a specific paired device without cross-device fallback.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "device_id": {"type": "string", "minLength": 1},
+        "channel": {"type": "string", "minLength": 1, "maxLength": 32, "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"},
+        "call_id": {"type": "string", "maxLength": 128},
+        "timeout_ms": {"type": "integer", "minimum": 0, "maximum": 60000},
+        "payload": {"description": "Opaque JSON object relayed verbatim to the target device (<= 512 KiB)."}
+      },
+      "required": ["device_id", "channel"]
+    },
+    "DeviceRelayError": {
+      "description": "Structured device-side error returned inside DeviceRelayCallResult when ok is false.",
+      "type": "object",
+      "properties": {
+        "code": {"type": "string"},
+        "message": {"type": "string"}
+      },
+      "required": ["code", "message"]
+    },
+    "DeviceRelayCallResult": {
+      "type": "object",
+      "properties": {
+        "call_id": {"type": "string"},
+        "device_id": {"type": "string"},
+        "channel": {"type": "string"},
+        "ok": {"type": "boolean"},
+        "result": {"description": "Opaque JSON payload returned by the device when ok is true (<= 4 MiB)."},
+        "error": {"$ref": "#/$defs/DeviceRelayError"}
+      },
+      "required": ["call_id", "device_id", "channel", "ok"]
+    },
+    "DeviceRelayCancelParams": {
+      "description": "device.relay.cancel (device.relay:<channel>): cancel an in-flight relay call owned by this extension.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "device_id": {"type": "string", "minLength": 1},
+        "channel": {"type": "string", "minLength": 1, "maxLength": 32, "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$"},
+        "call_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "reason": {"type": "string", "maxLength": 128}
+      },
+      "required": ["device_id", "channel", "call_id"]
+    },
+    "DeviceRelayCancelResult": {
+      "type": "object",
+      "properties": {
+        "cancelled": {"type": "boolean"}
+      },
+      "required": ["cancelled"]
+    }
+  }
+}

@@ -69,6 +69,10 @@ const (
 	ScopeMarketRefreshOwn = "market.refresh_own"
 	// ScopeCallPrefix and an extension's id: calling that extension's own HTTP (/api/v1/extensions/<id>/…).
 	ScopeCallPrefix = "extensions.call:"
+	// ScopeDeviceRelayPrefix and a channel name: discovering and calling paired full-access devices that
+	// advertised that named relay channel over /api/v1/ws. Granted by exact channel name only; never covered
+	// by legacy hub_api / InEveryScope.
+	ScopeDeviceRelayPrefix = "device.relay:"
 )
 
 // ProviderModel is one model of a provider.

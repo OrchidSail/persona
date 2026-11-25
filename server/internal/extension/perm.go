@@ -63,8 +63,8 @@ func (p Permissions) validate() error {
 	}
 	for _, s := range p.Hub {
 		if _, ok := ScopeTitle(s); !ok {
-			errs = append(errs, fmt.Errorf("permissions.hub: %q is not a scope of the hub's API (%s, %s<extension id>)", s,
-				strings.Join(HubScopes, ", "), ScopeCallPrefix))
+			errs = append(errs, fmt.Errorf("permissions.hub: %q is not a scope of the hub's API (%s, %s<extension id>, %s<channel>)", s,
+				strings.Join(HubScopes, ", "), ScopeCallPrefix, ScopeDeviceRelayPrefix))
 		}
 	}
 	if err := p.Storage.validate(); err != nil {

@@ -853,6 +853,12 @@ func (h *Hub) extAppCall(ctx context.Context, from string, p assistantwire.AppCa
 		out, err = h.hubMachinesPairLink(ctx, from, a.Extension, a.Request)
 	case extwire.HubMachinesStatus:
 		out, err = h.hubMachinesStatus(from, a.Request)
+	case extwire.HubDeviceRelayDevices:
+		out, err = h.hubDeviceRelayDevices(a.Request)
+	case extwire.HubDeviceRelayCall:
+		out, err = h.hubDeviceRelayCall(ctx, from, a.Extension, a.Request)
+	case extwire.HubDeviceRelayCancel:
+		out, err = h.hubDeviceRelayCancel(from, a.Extension, a.Request)
 	default:
 		return nil, true, errors.New("hub: no method " + p.Method)
 	}

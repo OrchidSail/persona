@@ -286,6 +286,15 @@ const (
 	// HubMachinesStatus: {extension, request} → wire.MachinesStatusResult: returns the current connection and
 	// confirmation status of a computer.
 	HubMachinesStatus = "machines.status"
+	// HubDeviceRelayDevices: {extension, request} → wire.DeviceRelayDevicesResult: lists online paired
+	// full-access devices advertising a named relay channel over /api/v1/ws.
+	HubDeviceRelayDevices = "device.relay.devices"
+	// HubDeviceRelayCall: {extension, request} → wire.DeviceRelayCallResult: relays an opaque JSON payload
+	// to one specific paired device on a named channel without cross-device fallback.
+	HubDeviceRelayCall = "device.relay.call"
+	// HubDeviceRelayCancel: {extension, request} → wire.DeviceRelayCancelResult: cancels an in-flight relay
+	// call owned by the calling extension.
+	HubDeviceRelayCancel = "device.relay.cancel"
 )
 
 // MethodAccept: {id} → {}: the hub holds a request for the manager (a relayed route): it dials the relay with the id.

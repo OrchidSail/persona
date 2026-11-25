@@ -1210,6 +1210,8 @@ func (ps *extensions) specOf(ctx context.Context, p *extension.Extension, hp *hu
 			return ps.extensionMachinesCall(ctx, id, method, params)
 		case "browser.machines", "browser.run": // browser.run (extension_browser.go)
 			return ps.extensionBrowserCall(ctx, id, method, params)
+		case "device.relay.devices", "device.relay.call", "device.relay.cancel": // device.relay:<channel> (extension_device_relay.go)
+			return ps.extensionDeviceRelayCall(ctx, id, method, params)
 		case "model.complete": // assistantwire.MethodModelComplete (extension_model_calls.go)
 			return ps.extensionModelCall(ctx, id, params)
 		case assistantwire.MethodTranscriptionStart, assistantwire.MethodTranscriptionAudio, assistantwire.MethodTranscriptionFinish,

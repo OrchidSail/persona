@@ -16,6 +16,7 @@ const (
 	ScopeAssistantAsk            = extwire.ScopeAssistantAsk
 	ScopeSpaces                  = extwire.ScopeSpaces
 	ScopeCallPrefix              = extwire.ScopeCallPrefix
+	ScopeDeviceRelayPrefix       = extwire.ScopeDeviceRelayPrefix
 	ScopeInboxRead               = extwire.ScopeInboxRead
 	ScopeInboxWrite              = extwire.ScopeInboxWrite
 	ScopeKBRead                  = extwire.ScopeKBRead
@@ -54,9 +55,13 @@ var HubScopes = []string{ScopeKBRead, ScopeKBWrite, ScopeSentRead, ScopeInboxRea
 // assistant.start_defaults (which can raise what task Agents spend), decisions.raise (which can
 // interrupt the owner with a new decision), dispatch.guard (which changes which conversations may hand work out),
 // machines.pair (which can issue one-time pairing links for new pending computers),
-// browser.run (which runs scripts in a paired computer's browser), and
+// browser.run (which runs scripts in a paired computer's browser),
+// device.relay:<channel> (which communicates with paired devices on a named channel), and
 // market.refresh_own (which spends the source marketplace's API quota).
 func InEveryScope(s string) bool {
+	if strings.HasPrefix(s, ScopeDeviceRelayPrefix) {
+		return false
+	}
 	return s != ScopeAgentsPermissionMode && s != ScopePushGrading && s != ScopeAssistantStartDefaults && s != ScopeDecisionsRaise && s != ScopeDispatchGuard && s != ScopeMachinesPair && s != ScopeBrowserRun && s != ScopeMarketRefreshOwn && s != ScopeSpaces
 }
 
@@ -108,6 +113,12 @@ func ScopeTitleIn(l i18n.Lang, s string) (string, bool) {
 		}
 		return permissionText(l, "scope_call", i18n.Args{"id": id}), true
 	}
+	if ch, ok := strings.CutPrefix(s, ScopeDeviceRelayPrefix); ok {
+		if !idPattern.MatchString(ch) {
+			return "", false
+		}
+		return permissionText(l, "scope_device_relay", i18n.Args{"channel": ch}), true
+	}
 	key, ok := scopeTitles[s]
 	if !ok {
 		return "", false
@@ -127,7 +138,7 @@ func hubLine(l i18n.Lang, title string, scopes []string) PermissionLine {
 		}
 	}
 	for _, s := range scopes {
-		if strings.HasPrefix(s, ScopeCallPrefix) {
+		if strings.HasPrefix(s, ScopeCallPrefix) || strings.HasPrefix(s, ScopeDeviceRelayPrefix) {
 			t, _ := ScopeTitleIn(l, s)
 			what = append(what, t)
 		}

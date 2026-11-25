@@ -22,8 +22,42 @@ class PhoneToolSettings(context: Context, scope: HubScope, coroutineScope: Corou
     val enabled: StateFlow<Set<PhoneSource>> = store.data.map { values ->
         PhoneSource.entries.filter { values[booleanPreferencesKey(it.name)] == true }.toSet()
     }.stateIn(coroutineScope, SharingStarted.Eagerly, emptySet())
+
+    /** Remote phone control master switch: OFF by default, scoped to this pairing. */
+    val remoteControlEnabled: StateFlow<Boolean> = store.data.map { values ->
+        values[KEY_REMOTE_CONTROL_ENABLED] == true
+    }.stateIn(coroutineScope, SharingStarted.Eagerly, false)
+
+    /** Local safety gate: allow reading notification/SMS OTP for auto-login (ON by default). */
+    val allowNotificationOtpAutoLogin: StateFlow<Boolean> = store.data.map { values ->
+        values[KEY_ALLOW_NOTIFICATION_OTP_AUTO_LOGIN] ?: true
+    }.stateIn(coroutineScope, SharingStarted.Eagerly, true)
+
+    /** Local safety gate: block real payment / fund transfer confirmations (ON by default, switchable anytime). */
+    val blockRealPayment: StateFlow<Boolean> = store.data.map { values ->
+        values[KEY_BLOCK_REAL_PAYMENT] ?: true
+    }.stateIn(coroutineScope, SharingStarted.Eagerly, true)
+
     suspend fun setEnabled(source: PhoneSource, enabled: Boolean) {
-        store.edit { it[booleanPreferencesKey(source.name)] = enabled }
+        val _ = store.edit { it[booleanPreferencesKey(source.name)] = enabled }
+    }
+
+    suspend fun setRemoteControlEnabled(enabled: Boolean) {
+        val _ = store.edit { it[KEY_REMOTE_CONTROL_ENABLED] = enabled }
+    }
+
+    suspend fun setAllowNotificationOtpAutoLogin(allowed: Boolean) {
+        val _ = store.edit { it[KEY_ALLOW_NOTIFICATION_OTP_AUTO_LOGIN] = allowed }
+    }
+
+    suspend fun setBlockRealPayment(blocked: Boolean) {
+        val _ = store.edit { it[KEY_BLOCK_REAL_PAYMENT] = blocked }
+    }
+
+    private companion object {
+        val KEY_REMOTE_CONTROL_ENABLED = booleanPreferencesKey("remote_control_enabled")
+        val KEY_ALLOW_NOTIFICATION_OTP_AUTO_LOGIN = booleanPreferencesKey("remote_control_allow_otp_auto_login")
+        val KEY_BLOCK_REAL_PAYMENT = booleanPreferencesKey("remote_control_block_real_payment")
     }
 }
 

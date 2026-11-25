@@ -247,3 +247,62 @@ func TestUpgradeAddingPushGradingNeedsConsent(t *testing.T) {
 		t.Fatal("keeping an explicitly granted push.grading scope needs no new consent")
 	}
 }
+
+// Parameterized device.relay:<channel> scopes are excluded from InEveryScope, never satisfied by legacy hub_api: true,
+// isolated per channel, and require owner consent when added or changed on upgrade.
+func TestDeviceRelayNamedChannelScopeIsolationAndConsent(t *testing.T) {
+	chA := ScopeDeviceRelayPrefix + "alpha_1"
+	chB := ScopeDeviceRelayPrefix + "beta-2"
+	if InEveryScope(chA) || InEveryScope(ScopeDeviceRelayPrefix) {
+		t.Fatal("device.relay:<channel> must never be in InEveryScope")
+	}
+	if _, ok := ScopeTitleIn(i18n.En, chA); !ok {
+		t.Fatalf("ScopeTitleIn(%q) failed", chA)
+	}
+	if _, ok := ScopeTitleIn(i18n.En, ScopeDeviceRelayPrefix+"Bad"); ok {
+		t.Fatal("invalid uppercase channel accepted by ScopeTitleIn")
+	}
+
+	r := NewRegistry(t.TempDir(), nil, nil, 1)
+	for id, grant := range map[string]Permissions{
+		"legacy": {HubAPI: true},
+		"alpha":  {Hub: []string{chA}},
+	} {
+		m := &Manifest{ID: id, Version: "1.0.0", Permissions: grant}
+		if err := r.AddBuiltin(m, t.TempDir(), true); err != nil {
+			t.Fatal(err)
+		}
+		r.mu.Lock()
+		r.extensions[id].Record.Granted = grant
+		r.mu.Unlock()
+	}
+	if r.HubScopeAllowed("legacy", chA) || r.HubScopeGranted("legacy", chA) {
+		t.Fatal("legacy hub_api must not satisfy device.relay:<channel>")
+	}
+	if !r.HubScopeGranted("alpha", chA) || r.HubScopeGranted("alpha", chB) {
+		t.Fatal("channel grant must match exact channel only")
+	}
+
+	legacy := &Manifest{ID: "example", Version: "1.0.0", Permissions: Permissions{HubAPI: true}}
+	installed := &Extension{Record: Record{Granted: legacy.Permissions, GrantedDigest: Digest(legacy)}, Manifest: legacy, Full: legacy}
+	upgradeA := &Manifest{ID: "example", Version: "1.1.0", Permissions: Permissions{Hub: []string{chA}}}
+	if !MorePermissions(installed, upgradeA) {
+		t.Fatal("upgrading from legacy hub_api to device.relay:<channel> must require consent")
+	}
+	titleA, _ := ScopeTitleIn(i18n.Default, chA)
+	if !slices.ContainsFunc(Added(legacy, upgradeA), func(l PermissionLine) bool {
+		return l.Key == "hub" && strings.Contains(l.Detail, titleA)
+	}) {
+		t.Fatalf("device.relay:<channel> not listed as added: %+v", Added(legacy, upgradeA))
+	}
+
+	// Keeping channel A needs no consent; adding channel B needs consent.
+	installedA := &Extension{Record: Record{Granted: upgradeA.Permissions, GrantedDigest: Digest(upgradeA)}, Manifest: upgradeA, Full: upgradeA}
+	if MorePermissions(installedA, upgradeA) {
+		t.Fatal("keeping explicitly granted device.relay channel should not ask again")
+	}
+	upgradeAB := &Manifest{ID: "example", Version: "1.2.0", Permissions: Permissions{Hub: []string{chA, chB}}}
+	if !MorePermissions(installedA, upgradeAB) {
+		t.Fatal("adding a second device.relay channel must require consent")
+	}
+}
