@@ -477,7 +477,7 @@ internal fun PlanCard(given: TaskPlan, host: AssistantTaskHost) {
     // The rule the plan suggests after three Starts of its kind sits under the card (#4929).
     Column(verticalArrangement = Arrangement.spacedBy(Tokens.Space.s)) {
         if (glass) GlassPlanCard(plan, host, remember, { remember = it }, plan.id in busy) { editing = true }
-        else JCard {
+        else JCard(Modifier.testTag("plan-card-${plan.id}")) {
             Column(verticalArrangement = Arrangement.spacedBy(Tokens.Space.m)) {
                 Text(if (plan.tasks.size > 1) pluralStringResource(R.plurals.chat_tasks_plan_split, plan.tasks.size, plan.tasks.size)
                     else stringResource(R.string.chat_tasks_plan_single), style = PersonaTheme.type.caption, color = PersonaTheme.palette.ink2)
@@ -942,11 +942,6 @@ internal fun MessageCard(item: FeedItem, host: AssistantTaskHost, todos: List<To
     val resources = androidx.compose.ui.platform.LocalContext.current.resources
     val busy by host.tasks.busy.collectAsStateWithLifecycle()
     var draft by remember(item.id) { mutableStateOf(item.field("draft").orEmpty()) }
-    val sent = item.sent
-    val done = sent != null
-    // Dealt with elsewhere and not sent from here (#4797): nothing left to send, so no send / later and no blank warning.
-    val filed = item.filedAt != null
-    val dismissed = item.dismissedAt != null
     val blank = if (!item.canSend) null else draftPlaceholder(draft)
     val todo = todos.firstOrNull { it.id == item.field("todo_id") }
     val send = persona.core.designsystem.JAction(stringResource(R.string.chat_tasks_send),
@@ -960,40 +955,8 @@ internal fun MessageCard(item: FeedItem, host: AssistantTaskHost, todos: List<To
                 })
         }
     }, enabled = enabled)
-    if (PersonaTheme.style == persona.core.designsystem.AppStyle.Glass) {
-        GlassMessageCard(item, host, todo, draft, { draft = it }, blank, item.id in busy, send, later, dismiss)
-        return
-    }
-    JCard {
-        Column(verticalArrangement = Arrangement.spacedBy(Tokens.Space.s)) {
-            Text(listOfNotNull(item.field("sender"), item.field("chat")).joinToString(" · "), style = PersonaTheme.type.caption,
-                color = PersonaTheme.palette.ink2, maxLines = 1)
-            Text(item.field("text").orEmpty(), style = PersonaTheme.type.body, color = PersonaTheme.palette.ink, maxLines = 4, overflow = TextOverflow.Ellipsis)
-            if (todo != null) MessageTaskRow(todo, host)
-            // A filed card is no longer a draft to send (#5095): plain well, a read-only text and a title saying so.
-            Column(Modifier.fillMaxWidth().clip(PersonaTheme.shapes.controlShape)
-                .background(if (filed || dismissed) PersonaTheme.palette.sunken else PersonaTheme.palette.statusSurface)
-                .padding(Tokens.Space.m), verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs)) {
-                Text(stringResource(when { done -> R.string.chat_tasks_message_replied; dismissed -> R.string.chat_tasks_draft_dismissed
-                    filed -> R.string.chat_tasks_message_filed_title; else -> R.string.chat_tasks_message_drafted }), style = PersonaTheme.type.caption,
-                    color = when { done -> PersonaTheme.palette.done.text; filed || dismissed -> PersonaTheme.palette.ink2; else -> PersonaTheme.palette.accent })
-                if (sent != null) Text(sent.text, style = PersonaTheme.type.body, color = PersonaTheme.palette.ink)
-                else if (filed || dismissed) Text(item.field("draft").orEmpty(), style = PersonaTheme.type.body, color = PersonaTheme.palette.ink2)
-                else BasicTextField(draft, { draft = it }, Modifier.fillMaxWidth(),
-                    textStyle = PersonaTheme.type.body.copy(color = PersonaTheme.palette.ink),
-                    cursorBrush = SolidColor(PersonaTheme.palette.accent))
-            }
-            if (blank != null) Text(stringResource(R.string.chat_tasks_message_blank, blank), style = PersonaTheme.type.caption,
-                color = PersonaTheme.palette.danger.text)
-            if (filed) Text(stringResource(R.string.chat_tasks_message_filed), style = PersonaTheme.type.caption, color = PersonaTheme.palette.ink2)
-            else if (item.canSend) persona.core.designsystem.DraftDecisionButtons(send = send, later = later, dismiss = dismiss,
-                busy = item.id in busy,
-                sendModifier = Modifier.testTag("assistant-draft-send-${item.id}"),
-                laterModifier = Modifier.testTag("assistant-draft-later-${item.id}"),
-                dismissModifier = Modifier.testTag("assistant-draft-dismiss-${item.id}"),
-            )
-        }
-    }
+    // Every style shares the read-only -> Edit -> Done draft flow so outgoing replies stay protected from accidental edits.
+    GlassMessageCard(item, host, todo, draft, { draft = it }, blank, item.id in busy, send, later, dismiss)
 }
 
 /** The task a message is about, live, in a well; a tap opens it. */
@@ -1059,10 +1022,14 @@ private fun GlassMessageCard(item: FeedItem, host: AssistantTaskHost, todo: Todo
                     Text(stringResource(heading), style = type.caption, color = tint, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 // Sent: what the hub says went out, which may have been edited on another device.
+                // Dismissed/filed: keep the hub's draft text rather than any unsaved local edit.
                 if (editing && open) BasicTextField(draft, onDraft, Modifier.fillMaxWidth().testTag("message-card-field"),
                     textStyle = type.body.copy(color = palette.ink), cursorBrush = SolidColor(palette.accent))
-                else Text(sent?.text ?: draft.ifEmpty { item.field("draft").orEmpty() }, style = type.body,
-                    color = if (filed || dismissed) palette.ink2 else palette.ink)
+                else Text(
+                    sent?.text ?: if (filed || dismissed) item.field("draft").orEmpty() else draft.ifEmpty { item.field("draft").orEmpty() },
+                    style = type.body,
+                    color = if (filed || dismissed) palette.ink2 else palette.ink,
+                )
             }
             if (blank != null) Text(stringResource(R.string.chat_tasks_message_blank, blank), style = type.caption, color = palette.danger.text)
             if (filed) Text(stringResource(R.string.chat_tasks_message_filed), style = type.caption, color = palette.ink2)

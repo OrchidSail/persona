@@ -590,7 +590,7 @@ fun ChatComposer(
                 dictate?.let { DictationStatus(it) }
                 if (state.oldVersion) Text(stringResource(R.string.chat_composer_old_version), style = PersonaTheme.type.caption,
                     color = PersonaTheme.palette.cautionText)
-                if (PersonaTheme.style == AppStyle.Glass && enabled && !sending && service != null && state.focused && clipboardImages.offered)
+                if (enabled && !sending && service != null && state.focused && clipboardImages.offered)
                     PasteImageChip(onPaste = ::pasteImages, onDismiss = clipboardImages::dismiss)
                 ComposerAttachmentPreviews(state, service, sending, enabled, onEdit = ::editPhoto)
                 if (fullToolbar && (hintChips != null || modeHint != null)) {

@@ -301,10 +301,10 @@ private fun ChatPageReaderNavigation(
     readThrough: Item?,
     deferCount: Boolean,
 ) {
-    // A plan outside the viewport (or inside a folded Glass work line, matching iOS ChatPlan.latest) stays reachable
-    // from the conversation's footer.
+    // A plan outside the viewport (or inside a folded work line, matching iOS ChatPlan.latest) stays reachable
+    // from the conversation's footer across every style.
     val anchor = remember(lines, contentPlans, renderStyle) { latestPlanLine(lines, contentPlans) }
-    val opensSheet = glass && agentChat
+    val opensSheet = agentChat
     val glassPlan = remember(items, opensSheet) { if (opensSheet) latestChatPlan(items) else null }
     val planOut by remember(anchor, glassPlan, opensSheet) { derivedStateOf {
         if (opensSheet) {

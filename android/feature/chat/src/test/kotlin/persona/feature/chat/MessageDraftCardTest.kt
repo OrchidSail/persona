@@ -171,6 +171,10 @@ class MessageDraftCardTest {
             images += output.readBytes()
         }
         images.chunked(2).forEach { assertFalse("dark/light component images must differ", it[0].contentEquals(it[1])) }
+        // Unified read-only draft card across every style: open Edit before editing text.
+        rule.onAllNodes(hasSetTextAction()).assertCountEquals(0)
+        rule.onNodeWithTag("assistant-draft-edit-draft-one").performClick()
+        rule.mainClock.advanceTimeBy(500)
         rule.onNode(hasSetTextAction()).performTextReplacement("An edited draft must not become the version token")
         rule.onNodeWithTag("assistant-draft-dismiss-draft-one").performClick()
         rule.mainClock.advanceTimeBy(500)

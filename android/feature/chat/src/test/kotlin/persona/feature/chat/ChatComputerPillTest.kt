@@ -157,14 +157,20 @@ class ChatComputerPillTest {
             rule.onNodeWithTag("computer-activity").fetchSemanticsNode().config.getOrNull(SemanticsProperties.ContentDescription))
     }
 
-    @Test fun briefAndBoardDrawNoPill() {
+    @Test fun briefDrawsThePillAndOpensTheWorkLine() {
         agentChat(AppStyle.Brief, agentItems())
-        assertTrue(pills().isEmpty())
+        assertEquals(1, pills().size)
+        val pill = rule.onNodeWithTag("computer-activity")
+        pill.performClick()
+        rule.waitUntil(20_000) { rule.onAllNodesWithText("open -a Calculator", substring = true).fetchSemanticsNodes().isNotEmpty() }
     }
 
-    @Test fun boardDrawsNoPill() {
+    @Test fun boardDrawsThePillAndOpensTheWorkLine() {
         agentChat(AppStyle.Board, agentItems())
-        assertTrue(pills().isEmpty())
+        assertEquals(1, pills().size)
+        val pill = rule.onNodeWithTag("computer-activity")
+        pill.performClick()
+        rule.waitUntil(20_000) { rule.onAllNodesWithText("open -a Calculator", substring = true).fetchSemanticsNodes().isNotEmpty() }
     }
 
     @Test fun personasConversationShowsItUnderTheEntries() {

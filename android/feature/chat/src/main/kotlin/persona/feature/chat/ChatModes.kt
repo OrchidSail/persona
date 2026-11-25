@@ -223,10 +223,13 @@ object SessionModes {
     fun showsInComposer(session: Session): Boolean = session.canChangeModes || showsInHeader(session)
 
     /**
-     * Whether `/permissions` is offered (#6513): only where the composer draws the picker it opens, Glass's mode button
-     * ([showsInComposer]) or Brief and Board's "Mode" sheet ([modeSheet]), and the mode can be changed. Elsewhere the words
-     * stay an ordinary message: never a cleared draft with nothing to open (#7996 review).
+     * Whether `/permissions` is offered (#6513): every style hosts [HeaderModeButton] in the composer ([showsInComposer])
+     * whenever the session can change permission modes.
      */
+    fun offersPermissions(session: Session?): Boolean =
+        session != null && session.canChangeModes && showsInComposer(session)
+
+    /** Legacy style-parameterized overload kept for tests verifying historical modeSheet gating. */
     fun offersPermissions(session: Session?, glass: Boolean, modeSheet: Boolean): Boolean =
         session != null && session.canChangeModes && if (glass) showsInComposer(session) else modeSheet
 

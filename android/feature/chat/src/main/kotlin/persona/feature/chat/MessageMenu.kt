@@ -180,7 +180,7 @@ internal fun MessageMenuSheet(
     rewind: RewindMenu? = null,
     /** "Delete" / "Cancel send" on a message only on this phone ([MessageTarget.pending]). */
     onDelete: ((MessageTarget) -> Unit)? = null,
-    /** Who answers here and where: on Glass "Share" opens the message's picture (iOS `MessageShareSheet`); without, it shares the text. */
+    /** Who answers here and where: "Share" opens the message's picture across every style (iOS `MessageShareSheet`); without, it shares the text. */
     share: ShareCardSource? = null,
     /** Star state for the currently opened message: null = unavailable, false = offer Star, true = offer Unstar. */
     star: Boolean? = null,
@@ -188,7 +188,7 @@ internal fun MessageMenuSheet(
     onStar: ((MessageTarget, Boolean) -> Unit)? = null,
 ) {
     var sharing by remember { mutableStateOf<MessagePicture?>(null) }
-    val pictures = share?.takeIf { PersonaTheme.style == AppStyle.Glass }
+    val pictures = share
     var rewinding by remember { mutableStateOf<MessageTarget?>(null) }
     var confirmCode by remember { mutableStateOf<MessageTarget?>(null) }
     val context = LocalContext.current

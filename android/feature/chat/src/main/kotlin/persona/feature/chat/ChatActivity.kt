@@ -48,9 +48,9 @@ import java.time.ZoneId
  * Brief and Board have the same destination in the chat menu.
  */
 internal object ChatActivity {
-    /** Glass shows them in the header of an Agent's chat; the other styles and Persona's conversations do not. */
+    /** Every style shows the activity pill in the header of an Agent's chat; Persona's conversations do not. */
     fun inHeader(style: AppStyle, topBar: Boolean, render: ChatRenderStyle): Boolean =
-        style == AppStyle.Glass && topBar && render != ChatRenderStyle.Assistant
+        topBar && render != ChatRenderStyle.Assistant
 
     /** A loop or running work earns an activity pill. The menu also serves empty and completed-only lists. */
     fun shown(session: Session?, now: Instant = Instant.now()): Boolean =

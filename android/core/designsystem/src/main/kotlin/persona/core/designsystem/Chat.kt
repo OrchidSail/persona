@@ -225,18 +225,28 @@ fun WorkGroup(
     val spoken = stringResource(R.string.designsystem_with_state, summary,
         stringResource(if (expanded || peek != null) R.string.designsystem_expanded else R.string.designsystem_collapsed))
     val header: @Composable () -> Unit = {
-        Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp.corner)).clickable(role = Role.Button, onClick = onToggle)
-                .semantics { contentDescription = spoken }
-                .padding(horizontal = if (PersonaTheme.style == AppStyle.Brief) 0.dp else 14.dp.dense, vertical = 10.dp.dense),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (running) { JSpinner(Modifier.size(15.dp), stroke = 1.8.dp); Spacer(Modifier.width(8.dp.dense)) }
-            else if (PersonaTheme.style != AppStyle.Brief) { JIcon(PhIcons.Wrench, null, size = 17.dp, tint = palette.ink2, decorative = true); Spacer(Modifier.width(8.dp.dense)) }
-            Text(summary, style = type.caption, color = palette.ink2, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = PersonaTheme.style != AppStyle.Brief))
-            trailing?.let { Spacer(Modifier.width(6.dp.dense)); CompositionLocalProvider(LocalContentColor provides palette.ink2, LocalTextStyle provides type.micro) { it() } }
-            Spacer(Modifier.width(4.dp.dense))
-            JIcon(if (expanded) PhIcons.CaretUp else PhIcons.CaretDown, null, size = 14.dp, tint = palette.ink3)
+        val toggleRow: @Composable (Modifier) -> Unit = { rowModifier ->
+            Row(
+                rowModifier.clip(RoundedCornerShape(12.dp.corner)).clickable(role = Role.Button, onClick = onToggle)
+                    .semantics { contentDescription = spoken }
+                    .padding(horizontal = if (PersonaTheme.style == AppStyle.Brief) 0.dp else 14.dp.dense, vertical = 10.dp.dense),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (running) { JSpinner(Modifier.size(15.dp), stroke = 1.8.dp); Spacer(Modifier.width(8.dp.dense)) }
+                else if (PersonaTheme.style != AppStyle.Brief) { JIcon(PhIcons.Wrench, null, size = 17.dp, tint = palette.ink2, decorative = true); Spacer(Modifier.width(8.dp.dense)) }
+                Text(summary, style = type.caption, color = palette.ink2, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = PersonaTheme.style != AppStyle.Brief))
+                trailing?.let { Spacer(Modifier.width(6.dp.dense)); CompositionLocalProvider(LocalContentColor provides palette.ink2, LocalTextStyle provides type.micro) { it() } }
+                Spacer(Modifier.width(4.dp.dense))
+                JIcon(if (expanded) PhIcons.CaretUp else PhIcons.CaretDown, null, size = 14.dp, tint = palette.ink3)
+            }
+        }
+        if (onTerminal == null) toggleRow(Modifier.fillMaxWidth())
+        else Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            toggleRow(Modifier.weight(1f))
+            Box(Modifier.clickable(role = Role.Button, onClick = onTerminal).semantics { contentDescription = terminalLabel }
+                .padding(horizontal = Tokens.Space.m, vertical = Tokens.Space.s), contentAlignment = Alignment.Center) {
+                JIcon(persona.core.designsystem.icons.PersonaIcons.terminal, null, size = Tokens.Space.l, tint = palette.ink2)
+            }
         }
     }
     // Glass as iOS's plain work line (#4339 C5): no card, the spinner while it runs, the words and the chevron after them.

@@ -210,7 +210,7 @@ internal fun AgentsScreen(
     val homeChrome = sidebar != null || LocalHomeChrome.current != null
     val isGlass = PersonaTheme.style == AppStyle.Glass
     val layout = LocalWindowLayout.current
-    val optionsInSelectedTab = homeChrome && isGlass && !layout.expanded && !layout.tabletop &&
+    val optionsInSelectedTab = homeChrome && !layout.expanded && !layout.tabletop &&
         connection == ConnectionState.Online
     val firstPageIncomplete = !page.loaded && page.list.groups.isEmpty()
     var newAgent by rememberSaveable { mutableStateOf(false) }
@@ -228,9 +228,8 @@ internal fun AgentsScreen(
         }
     }
     var allRequests by rememberSaveable { mutableStateOf(false) }
-    // On Glass the requests and their history are a page in ⋯, after Machines and Terminals where iOS keeps its pages
-    // (#4338 A1), not a row in the list; Brief and Board keep the row (decision 8).
-    val requestsInMenu = PersonaTheme.style == AppStyle.Glass
+    // Requests and their history live in ⋯ across every style, after Machines and Terminals (#4338 A1).
+    val requestsInMenu = true
     var requestDetail by remember(model) { mutableStateOf<Interaction?>(null) }
     val cardRequest by cardRequests.requests.collectAsStateWithLifecycle()
     LaunchedEffect(cardRequest, everyRequest) {
@@ -465,14 +464,12 @@ internal fun AgentsScreen(
     // "By machine" shows a herdr tab's agents as a group (#2320), as the web's sidebar; the other groupings list one agent a row
     val tabs = page.preferences.grouping == AgentGrouping.MachineSpace
     var expandedTasks by remember { mutableStateOf(emptySet<String>()) }
-    // By Repository on Glass draws iOS's tree (#4338 A7, A8): each repository a card, its header and working trees' lines in
-    // it, the agents' rows under their line and the idle ones behind one quiet line; each computer's idle repositories a row
-    // each in its Idle Repositories. Brief and Board keep their headings and "N more idle" (decision 8).
-    val repoTree = PersonaTheme.style == AppStyle.Glass && page.preferences.grouping == AgentGrouping.Repo
-    // By project on Glass, and By Machine always: fold opened idle agents again with "Hide N Idle" (iOS `collapseRow` /
-    // `machineSections`, #4338 A8 / #9319). Brief and Board keep one-way "N more idle" under By project (decision 8).
+    // By Repository draws the shared repository tree across every style (#4338 A7, A8): repository header, worktree
+    // lines, agents under their worktree, idle agents behind one quiet line, and each computer's Idle Repositories.
+    val repoTree = page.preferences.grouping == AgentGrouping.Repo
+    // By project and By Machine fold opened idle agents again with "Hide N Idle" across every style (#4338 A8 / #9319).
     val hideIdle = page.preferences.grouping == AgentGrouping.Machine ||
-        (PersonaTheme.style == AppStyle.Glass && page.preferences.grouping == AgentGrouping.MachineSpace)
+        page.preferences.grouping == AgentGrouping.MachineSpace
     val tree = remember(page.list, page.settings.machineFilter, tabs, page.preferences.foldedTabs, page.preferences.mutes, expandedTasks, repoTree, hideIdle) {
         agentTreeEntries(page.list, page.settings.machineFilter, tabs, page.preferences.foldedTabs, page.preferences.mutes, expandedTasks,
             showAll = page.settings.expandedAll.takeIf {
@@ -1033,7 +1030,6 @@ internal fun AgentsScreen(
         persona.core.designsystem.JToastHost(toast, Modifier.align(Alignment.TopCenter).statusBarsPadding())
     }
     }
-    val glassRows = PersonaTheme.style == AppStyle.Glass
     if (menu) AgentsListSettingsSheet {
         JActionSheet(buildList {
         if (homeChrome) {
@@ -1054,27 +1050,22 @@ internal fun AgentsScreen(
         if (!hideSort) AgentSort.entries.forEachIndexed { index, sort ->
             add(JAction(stringResource(R.string.agents_menu_sort, sort.label), icon = sort.icon,
                 checked = page.preferences.sort == sort, separatorBefore = index == 0, onClick = { model.sort(sort) })) }
-        if (glassRows) {
-            // iOS's ⋯ › Display: the three row styles and Compact List, one choice (#4338 A9).
-            val display = stringResource(R.string.agents_menu_display)
-            AgentListDisplay.entries.forEachIndexed { index, choice ->
-                add(JAction(choice.label, checked = page.preferences.display == choice, section = display.takeIf { index == 0 },
-                    onClick = { model.display(choice) }))
-            }
-        } else {
-            add(JAction(stringResource(R.string.agents_menu_compact), checked = page.preferences.compact, onClick = { if (!page.preferences.compact) model.compact() }))
-            add(JAction(stringResource(R.string.agents_menu_detailed), checked = !page.preferences.compact, onClick = { if (page.preferences.compact) model.compact() }))
+        // Shared across every style: iOS's ⋯ › Display with all four layouts (#4338 A9).
+        val display = stringResource(R.string.agents_menu_display)
+        AgentListDisplay.entries.forEachIndexed { index, choice ->
+            add(JAction(choice.label, checked = page.preferences.display == choice, section = display.takeIf { index == 0 },
+                onClick = { model.display(choice) }))
         }
         // Recently Used is a flat list: Collapse / Expand All have nothing to fold (iOS AgentsMenus).
         val recentFlat = page.preferences.grouping == AgentGrouping.Recent
         if (!recentFlat) {
-            add(JAction(stringResource(R.string.agents_menu_collapse_all), checked = page.list.allCollapsed, separatorBefore = glassRows, onClick = { model.foldAll(true) }))
+            add(JAction(stringResource(R.string.agents_menu_collapse_all), checked = page.list.allCollapsed, separatorBefore = true, onClick = { model.foldAll(true) }))
             add(JAction(stringResource(R.string.agents_menu_expand_all), checked = page.list.groups.isNotEmpty() && page.list.groups.none { it.folded } && page.list.machines.none { it.folded } &&
                 // under "By machine" a tab group folded by hand is not expanded either (#2792)
                 (page.preferences.grouping != AgentGrouping.MachineSpace || page.preferences.foldedTabs.isEmpty()), onClick = { model.foldAll(false) }))
         }
         add(JAction(stringResource(R.string.agents_menu_machines), icon = PhIcons.Gauge,
-            separatorBefore = recentFlat && glassRows, onClick = { navigator.navigate(MachinesRoute) }))
+            separatorBefore = recentFlat, onClick = { navigator.navigate(MachinesRoute) }))
         if (terminalPanes) add(JAction(stringResource(R.string.agents_menu_terminals), icon = PhIcons.TerminalWindow,
             onClick = { navigator.navigate(persona.core.navigation.TerminalPanesRoute) }))
         if (requestsInMenu) add(JAction(stringResource(R.string.agents_requests_history), icon = PersonaIcons.waitsForYou,
@@ -1383,10 +1374,12 @@ internal fun SlotRow(
     val session = row.session
     val source = session.source
     val glass = PersonaTheme.style == AppStyle.Glass
+    // Glass always draws RowPlace; Brief and Board use RowPlace for TwoLines / StateCards and keep inline facts for their default Avatar / Compact skins.
+    val usesPlaceLine = glass || (!compact && style != AgentRowStyle.Avatar)
     val content = row.rowContent(AgentRowContext(located = located, machine = machine.takeIf { mixesComputers }, host = showHost,
         // Under its tab's row the agent is named by its agent and whether it started the tab; the tab's row names the tab.
         pane = if (launcher || branch) AgentPane(session.agentLabel, launcher) else null, slot = slotLabel, stateSection = hideState), muted,
-        display = AgentListDisplay.of(if (glass) style else AgentRowStyle.Avatar, compact))
+        display = AgentListDisplay.of(style, compact))
     val links = androidx.compose.ui.platform.LocalUriHandler.current
     // "Lark groups" / "Terminal" under the time (#3132, #3043); a botmux session's tag opens its Feishu topic when it has one.
     val origin = session.agentSource?.takeIf { !session.assistant }?.let { kind ->
@@ -1410,9 +1403,9 @@ internal fun SlotRow(
         facts = buildList {
             // Where its closeout stands on merged and deployed (#3612), first: the facts' line is cut at its end.
             session.closeoutFacts.forEach { add(RowFact(it.text.text(), caution = it.contradicted)) }
-            // Glass says where it runs, its source, model and to-do on its third line ([place]); view only stays a fact.
-            if (glass && source?.readOnly == true) add(RowFact(stringResource(R.string.agents_row_view_only), caution = true))
-            if (!glass) {
+            // Layouts that draw RowPlace keep where it runs, its source, model and to-do on that line; view only stays a fact.
+            if (usesPlaceLine && source?.readOnly == true) add(RowFact(stringResource(R.string.agents_row_view_only), caution = true))
+            if (!usesPlaceLine) {
                 // Where a Codex thread or a runtime's session comes from, and when the phone can only read it.
                 source?.let { add(RowFact(listOfNotNull(it.label, it.agentName).joinToString(" / "))) }
                 if (source?.readOnly == true) add(RowFact(stringResource(R.string.agents_row_view_only), caution = true))
@@ -1447,8 +1440,8 @@ internal fun SlotRow(
             // Claude Code's ultracode on (#582, iOS UltracodeMark): the workflow mark right after the title.
             if (ultracodeMark(session)) add(RowFlag(stringResource(R.string.agents_row_ultracode), PersonaIcons.workflow, ai = true))
             if (pinned) add(RowFlag(stringResource(R.string.agents_row_pinned), PhIcons.PushPin))
-            // Glass rings the bell at the third line's end instead.
-            if (muted && !glass) add(RowFlag(stringResource(R.string.agents_row_muted), PhIcons.Prohibit))
+            // Layouts with RowPlace ring the bell at that line's end instead.
+            if (muted && !usesPlaceLine) add(RowFlag(stringResource(R.string.agents_row_muted), PhIcons.Prohibit))
             // Its closeout (#3612): the hub found a claim untrue (the line says which), or the turn is not finished.
             when (session.closeoutMark) {
                 CloseoutMark.Contradicted -> add(RowFlag(stringResource(R.string.agents_row_closeout_contradicted), PhIcons.Warning, caution = true))
@@ -1456,11 +1449,11 @@ internal fun SlotRow(
                 null -> Unit
             }
         },
-        // Glass says "Started it" on the third line instead of the tag after the title.
-        launcher = launcher && !glass, branch = branch, source = origin,
+        // Layouts with RowPlace say "Started it" on the third line instead of the tag after the title.
+        launcher = launcher && !usesPlaceLine, branch = branch, source = origin,
         // Which agent runs there and in which client (#6390): its mark before the state mark (Glass: in its well).
         agentMark = session.agentMark,
-        place = if (glass && content.hasPlaceLine)
+        place = if (usesPlaceLine && content.hasPlaceLine)
             RowPlace(CoreText.joined(" · ", content.place).text(), content.model, content.todo, content.muted) else null,
         waiting = row.waitsInBackground && !muted,
         style = style,

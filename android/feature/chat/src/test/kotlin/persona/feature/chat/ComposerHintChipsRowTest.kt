@@ -19,6 +19,7 @@ import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.unit.Dp
@@ -431,22 +432,20 @@ class ComposerHintChipsRowTest {
         for (targetStyle in listOf(AppStyle.Brief, AppStyle.Board)) {
             rule.runOnIdle { style = targetStyle }
             rule.waitUntil(10_000) {
-                rule.onAllNodes(hasText("Default: agy")).fetchSemanticsNodes().isNotEmpty() &&
-                    rule.onAllNodes(hasText("Full access")).fetchSemanticsNodes().isNotEmpty()
+                rule.onAllNodesWithTag("model-pill").fetchSemanticsNodes().isNotEmpty()
             }
-            val launcherBounds = rule.onNodeWithText("Default: agy").assertIsDisplayed().getBoundsInRoot()
-            val modeBounds = rule.onNodeWithText("Full access").assertIsDisplayed().getBoundsInRoot()
-            val modePillBounds = rule.onNodeWithTag("chat-composer-mode-hint").assertIsDisplayed().getBoundsInRoot()
-            assertSameHorizontalRow(launcherBounds, modeBounds, "ChatScreen $targetStyle")
-            assertEquals("ChatScreen $targetStyle: mode chip matches launcher height", launcherBounds.height.value, modePillBounds.height.value, 0.5f)
-            assertEquals("ChatScreen $targetStyle: mode chip top aligns with launcher", launcherBounds.top.value, modePillBounds.top.value, 0.5f)
-            assertEquals("ChatScreen $targetStyle: mode chip bottom aligns with launcher", launcherBounds.bottom.value, modePillBounds.bottom.value, 0.5f)
+            val pillBounds = rule.onNodeWithTag("model-pill").assertIsDisplayed().getBoundsInRoot()
+            assertEquals("ChatScreen $targetStyle: model pill keeps chip height",
+                persona.core.designsystem.JChipTokens.height.value, pillBounds.height.value, 0.5f)
+            // Redundant composer modeHint chip is removed; permission mode uses the single leading HeaderModeButton.
+            rule.onNodeWithTag("chat-composer-mode-hint").assertDoesNotExist()
+            rule.onNodeWithText("Default: agy").assertDoesNotExist()
         }
 
-        // Glass renders neither the Brief/Board launcher chip nor the modeHint chip.
+        // Glass keeps the model pill inside its composer toolbar without an accessory chip row.
         rule.runOnIdle { style = AppStyle.Glass }
         rule.waitForIdle()
+        rule.onNodeWithTag("chat-composer-mode-hint").assertDoesNotExist()
         rule.onNodeWithText("Default: agy").assertDoesNotExist()
-        rule.onNodeWithText("Full access").assertDoesNotExist()
     }
 }

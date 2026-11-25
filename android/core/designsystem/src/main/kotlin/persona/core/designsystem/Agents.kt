@@ -363,10 +363,10 @@ fun AgentSpaceHeader(
 
 /**
  * "N more idle": opens the finished sessions an active space keeps tucked away. [depth] is the space's. Once they are
- * [open] (Glass's By project, iOS `collapseRow`, #4338 A8) the row follows them as "Hide N Idle" in the accent and folds them
- * again. Closed, on Glass, it names the first of them: [tabs] (their tab names, at most six) as chips in a row of their own
- * that does not take touches and fades out toward the end of the line (iOS `IdleFoldRow`), in [compact] lists as one line of
- * words after the count (iOS `CompactFoldRow`). Brief and Board keep the count alone.
+ * [open] (By project / By Machine, iOS `collapseRow`, #4338 A8) the row follows them as "Hide N Idle" in the accent
+ * and folds them again. Closed, it names the first of them across every style: [tabs] (their tab names, at most six)
+ * as chips in a row of their own that does not take touches and fades out toward the end of the line (iOS
+ * `IdleFoldRow`), in [compact] lists as one line of words after the count (iOS `CompactFoldRow`).
  */
 @Composable
 fun AgentIdleRow(
@@ -377,7 +377,7 @@ fun AgentIdleRow(
         AgentFoldRow(persona.core.designsystem.icons.PersonaIcons.collapse, pluralStringResource(R.plurals.designsystem_idle_hide, hidden, hidden), onClick, modifier, depth)
         return
     }
-    val names = if (PersonaTheme.style == AppStyle.Glass) tabs.take(IdleTabNames) else emptyList()
+    val names = tabs.take(IdleTabNames)
     val start = Step * depth + (Caret - markSize) / 2
     Row(
         modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onClick)
@@ -520,7 +520,7 @@ fun AgentRow(
     val tone = palette.status(shown, waiting)
     val strong = !muted && (status == Status.NeedsYou || status == Status.Unread)
     val glass = PersonaTheme.style == AppStyle.Glass
-    val parts = AgentListDisplay.of(if (glass) style else AgentRowStyle.Avatar, compact).rowParts
+    val parts = AgentListDisplay.of(style, compact).rowParts
     val avatar = glass && parts.leading == AgentRowLeading.Well && agentMark != null
     val placeLine = glass && parts.placeLine && place != null
     val mark = if (avatar) AvatarWell else markSize
@@ -541,12 +541,12 @@ fun AgentRow(
             if (boardMetadata && !showPreviewWithMetadata && !preview.isNullOrBlank()) text = AnnotatedString(preview.replace('\n', ' '))
         } else if (statusText == null) Modifier.semantics { stateDescription = statusLabel } else Modifier)
     val click = Modifier.selectedRow(selected).then(press)
-    if (glass && parts.leading == AgentRowLeading.Dot) {
+    if (parts.leading == AgentRowLeading.Dot) {
         TwoLineRow(title, shown, strong, muted, waiting, depth, position, preview, time, statusText, label, launcher, flags, note, facts,
             source, agentMark, place, branch, sideUnread, subagent, onLongClick, modifier.then(click), end)
         return
     }
-    if (glass && parts.card) {
+    if (parts.card) {
         StateCardRow(title, shown, strong, muted, waiting, depth, preview, time, statusText, label, launcher, flags, note, facts, source,
             agentMark, place, selected, sideUnread, subagent, onLongClick, modifier, press, end)
         return

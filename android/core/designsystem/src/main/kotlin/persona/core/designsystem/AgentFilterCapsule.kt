@@ -92,7 +92,7 @@ fun JAgentFilterCapsule(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 items(bays.size, key = { bays[it].label }) { index ->
-                    val bay = if (index == 0 && PersonaTheme.style == AppStyle.Glass) bays[index].copy(count = null) else bays[index]
+                    val bay = if (index == 0) bays[index].copy(count = null) else bays[index]
                     CapsuleChoice(bay, selected == index, Modifier.testTag("agents-status-$index")) { onSelect(index) }
                 }
             }

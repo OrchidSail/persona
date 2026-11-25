@@ -1058,6 +1058,7 @@ fun AssistantScreen(
                     onOpen = ::openConversation, onCopy = ::copyId,
                     onEdit = if (track?.builtin == false && spacesApi != null) ({ spaceMdEditing = homeSpace }) else null)
             } else {
+                val homeNeedsYou = if (needsYou.isEmpty && shellNeedsYou.isNotEmpty()) needsYouFromLines(shellNeedsYou) else needsYou
                 NewChatPage(enabled = !sending && draftReady && composer.ready, machines = machines,
                     usageHistory = usageApi, onOpenUsage = { navigator.navigate(UsageCalendarRoute) },
                     phoneToolsAvailable = phoneToolsAvailable, contentPadding = padding, demo = demo,
@@ -1066,7 +1067,7 @@ fun AssistantScreen(
                     onSuggestion = {
                         composer.value = androidx.compose.ui.text.input.TextFieldValue(it, androidx.compose.ui.text.TextRange(it.length))
                         submit()
-                    }, needsYou = needsYou, onNeed = onOpenNeed.takeUnless { needsOverComposer },
+                    }, needsYou = homeNeedsYou, onNeed = onOpenNeed.takeUnless { needsOverComposer },
                     onMore = onOpenInbox ?: { navigator.navigate(InboxRoute) }, room = needsRoom.takeIf { shellLines.isNotEmpty() })
             }
         }
@@ -1174,15 +1175,13 @@ fun AssistantScreen(
                 }
             })
         }
-        // iOS's icon on every item: Glass draws them; Brief and Board keep their words (Back to main chat has had its house all along).
-        val glassIcons = PersonaTheme.style == AppStyle.Glass
         // A module's action (Modules.kt) carries its own words, icon and click.
         fun entryAction(item: AssistantMenuEntry, separator: Boolean): JAction = when (item) {
             is ModuleItem -> JAction(item.action.label, separatorBefore = separator, onClick = item.action.onClick)
             is AssistantMenuItem -> rawAction(item, separator)
         }
         fun action(item: AssistantMenuEntry, separator: Boolean): JAction = entryAction(item, separator)
-            .copy(icon = item.icon.takeIf { glassIcons || item == AssistantMenuItem.BackToMain })
+            .copy(icon = item.icon)
         // iOS's heading: which conversation and what it runs on ("Main chat · claude · Opus 4.5").
         JActionSheet(title = copyText.menuTitle(resources, assistantName, hubGroup), onDismiss = { menu = false },
             actions = sections.flatMapIndexed { index, items -> items.mapIndexed { i, item -> action(item, separator = index > 0 && i == 0) } })
@@ -2023,8 +2022,8 @@ internal fun ConversationRow(
     // with anything running under it (the tree's `running`, an Agent at work, #6626) spins.
     val ownStatus = session.conversationStatus()
     val leadActive = working && ownStatus != Status.NeedsYou && ownStatus != Status.Unread && ownStatus != Status.Working
-    // A hub title's day and kind ("1101 | Fix | ") in the quiet ink, so the topic is what the eye finds (iOS `titleText`); Glass.
-    val dated = if (PersonaTheme.style == AppStyle.Glass) ConversationTitle.parse(title) else null
+    // A hub title's day and kind ("1101 | Fix | ") in the quiet ink across every style, so the topic is what the eye finds.
+    val dated = ConversationTitle.parse(title)
     val resources = androidx.compose.ui.platform.LocalResources.current
     val swipe = onArchive?.takeIf { menuEnabled }?.let {
         SwipeAction(stringResource(R.string.assistant_archive), PersonaIcons.archive, Status.Working, it)
@@ -2069,7 +2068,7 @@ internal fun ConversationRow(
         title = title, onDismiss = { menu = false },
         actions = conversationActions(androidx.compose.ui.platform.LocalResources.current, leader, session.isLive, onLeader, onCopy, onEnd,
             onArchive, onRename = onRename, onEditTags = onEditTags, onDiagnostics = onDiagnostics, onArrange = onArrange,
-            glass = PersonaTheme.style == AppStyle.Glass),
+            glass = true),
         // The long press's preview (iOS's context menu): what it last said (the row shows only the title) and when.
         preview = session.lastText?.let { persona.core.domain.plainMarkdown(it) }?.takeIf { it.isNotBlank() },
         previewCaption = historyTime(session.updated, resources),
@@ -2170,7 +2169,7 @@ private fun MainConversationRow(main: Session?, selected: Boolean, hasMain: Bool
         title = title, onDismiss = { menu = false },
         actions = conversationActions(androidx.compose.ui.platform.LocalResources.current, leader = false, live = main.isLive,
             onLeader = null, onCopy = onCopy, onEnd = onEnd, onEditTags = onEditTags, onDiagnostics = onDiagnostics,
-            glass = PersonaTheme.style == AppStyle.Glass),
+            glass = true),
     )
 }
 

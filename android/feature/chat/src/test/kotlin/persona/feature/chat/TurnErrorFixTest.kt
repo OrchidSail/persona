@@ -244,8 +244,8 @@ class TurnErrorFixTest {
 
         rule.onNodeWithText("Fix it").performClick()
 
-        rule.waitUntil(10_000) { rule.onAllNodesWithText("Following messages use").fetchSemanticsNodes().isNotEmpty() }
-        assertEquals("only the launcher/model sheet opens", 1, rule.onAllNodes(isDialog()).fetchSemanticsNodes().size)
+        rule.waitUntil(10_000) { rule.onAllNodesWithText("Search models…").fetchSemanticsNodes().isNotEmpty() }
+        assertEquals("only the unified model panel opens", 1, rule.onAllNodes(isDialog()).fetchSemanticsNodes().size)
         assertEquals("no legacy Main-chat purpose navigation", emptyList<ReadinessActionId>(), fixed)
     }
 
@@ -255,8 +255,8 @@ class TurnErrorFixTest {
 
         rule.onNodeWithText("Fix it").performClick()
 
-        rule.waitUntil(10_000) { rule.onAllNodesWithText("Following messages use").fetchSemanticsNodes().isNotEmpty() }
-        assertEquals("only this chat's launcher/model sheet opens", 1, rule.onAllNodes(isDialog()).fetchSemanticsNodes().size)
+        rule.waitUntil(10_000) { rule.onAllNodesWithText("Search models…").fetchSemanticsNodes().isNotEmpty() }
+        assertEquals("only this chat's unified model panel opens", 1, rule.onAllNodes(isDialog()).fetchSemanticsNodes().size)
         assertEquals("no Main-chat purpose navigation", emptyList<ReadinessActionId>(), fixed)
     }
 

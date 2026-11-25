@@ -87,7 +87,7 @@ class AgentRowStylesShotsTest {
     @Test fun glassLight() = shoot(dark = false)
     @Test fun glassDark() = shoot(dark = true)
 
-    /** Glass offers iOS's four under Display, one checked; Brief keeps Compact and Detailed (decision 8). */
+    /** Every style offers the four row layouts under Display, one checked, through the shared list settings sheet. */
     @Test fun displayInTheListSettings() {
         val model = open()
         val out = File(System.getProperty("persona.shots") ?: "build/row-styles-shots").also { it.mkdirs() }
@@ -107,11 +107,24 @@ class AgentRowStylesShotsTest {
         rule.onNodeWithText("State cards").performClick()
         rule.waitForIdle()
         rule.waitUntil(5_000) { model.page.value.preferences.display == AgentListDisplay.Cards }
-        rule.runOnIdle { style = AppStyle.Brief }
-        rule.onNodeWithContentDescription("List settings").performClick()
-        rule.waitForIdle()
-        assertEquals(1, rule.onAllNodesWithText("Detailed list").fetchSemanticsNodes().size)
-        assertEquals(0, rule.onAllNodesWithText("State cards").fetchSemanticsNodes().size)
+        for (other in listOf(AppStyle.Brief, AppStyle.Board)) {
+            rule.runOnIdle { style = other }
+            rule.waitForIdle()
+            rule.reselectAgentsTab()
+            rule.waitForIdle()
+            for (label in listOf("Display", "Avatar", "Two lines", "State cards", "Compact list")) {
+                assertEquals("$other $label", 1, rule.onAllNodesWithText(label).fetchSemanticsNodes().size)
+            }
+            assertEquals(0, rule.onAllNodesWithText("Detailed list").fetchSemanticsNodes().size)
+            rule.onNodeWithText("Two lines").performClick()
+            rule.waitForIdle()
+            rule.waitUntil(5_000) { model.page.value.preferences.display == AgentListDisplay.TwoLines }
+            rule.reselectAgentsTab()
+            rule.waitForIdle()
+            rule.onNodeWithText("State cards").performClick()
+            rule.waitForIdle()
+            rule.waitUntil(5_000) { model.page.value.preferences.display == AgentListDisplay.Cards }
+        }
     }
 
     /** TalkBack hears each style's words: State Cards' state at the foot, Two Lines' source after its words. */

@@ -597,15 +597,6 @@ fun InboxScreen(repository: InboxRepository, navigator: Navigator, onOpenCard: (
                         groupLabel = stringResource(R.string.inbox_grouping_title),
                         groupActions = capsuleGroupings,
                     )
-                    Spacer(Modifier.height(Tokens.Space.xs))
-                    GlassInboxFilterStrip(
-                        sources = sourceOptions,
-                        activeSource = source,
-                        activeKind = kind,
-                        onSelectSource = { next -> animateChange { filter(currentFilters.copy(source = next)) } },
-                        onSelectKind = { next -> animateChange { filter(currentFilters.copy(kind = next)) } },
-                        onClearAll = { animateChange { filter(currentFilters.copy(source = "", kind = "")) } },
-                    )
                 } else {
                     // A search or a link can choose All or Done past the edge of a narrow bar: it scrolls them into sight, while
                     // Needs you stays at the start so its count is in sight from every choice (DESIGN_SYSTEM 3.4), and the edge
@@ -614,6 +605,15 @@ fun InboxScreen(repository: InboxRepository, navigator: Navigator, onOpenCard: (
                         onSelect = { landing?.picked(); moveBar(InboxBar.picked(bar, barView.choices[it].id)) }, revealSelected = true, pinFirst = true,
                         fadeCut = true)
                 }
+                Spacer(Modifier.height(Tokens.Space.xs))
+                GlassInboxFilterStrip(
+                    sources = sourceOptions,
+                    activeSource = source,
+                    activeKind = kind,
+                    onSelectSource = { next -> animateChange { filter(currentFilters.copy(source = next)) } },
+                    onSelectKind = { next -> animateChange { filter(currentFilters.copy(kind = next)) } },
+                    onClearAll = { animateChange { filter(currentFilters.copy(source = "", kind = "")) } },
+                )
                 Spacer(Modifier.height(Tokens.Space.s))
                 JSearchField(query, { filter(currentFilters.copy(query = it)) }, stringResource(R.string.inbox_search_hint))
             }
@@ -684,19 +684,13 @@ fun InboxScreen(repository: InboxRepository, navigator: Navigator, onOpenCard: (
                                     ?: navigator.selectTab(persona.core.navigation.AppTab.Agents)
                             }
                         }
-                        if (isGlass) {
-                            GlassInboxAgentRow(
-                                interaction = interaction,
-                                machineName = snapshot.machines[interaction.machineId],
-                                position = position,
-                                dimmed = selecting,
-                                onClick = openInteraction,
-                            )
-                        } else {
-                            MessageItem(sender = "Persona", title = interaction.sessionTitle.ifBlank { interaction.title },
-                                preview = interaction.summary ?: interaction.title, position = position, status = Status.NeedsYou, dimmed = selecting,
-                                onClick = openInteraction)
-                        }
+                        GlassInboxAgentRow(
+                            interaction = interaction,
+                            machineName = snapshot.machines[interaction.machineId],
+                            position = position,
+                            dimmed = selecting,
+                            onClick = openInteraction,
+                        )
                     }
                 } else records[row.id]?.let { record ->
                     val done = pending[record.item.id] ?: record.item.isDone

@@ -427,11 +427,14 @@ class ChatDetailsTest {
         assertEquals("r3", ClosedRecaps(context).closed(key))
     }
 
-    @Test fun briefAndBoardKeepTheRecapFolded() {
+    @Test fun boardOpensTheNewestRecapUntilTapped() {
         context.getSharedPreferences("closed_recaps", Context.MODE_PRIVATE).edit().clear().commit()
         page(AppStyle.Board, recapped, session())
-        val shown = waitFor("the folded recap") { texts -> texts.any { it.startsWith("离开期间回顾 · ") } }
-        assertFalse(shown.toString(), openSpoken in shown)
+        waitFor("the open recap") { openSpoken in it }
+        rule.onNodeWithContentDescription(openSpoken).performClick()
+        val after = waitFor("the folded recap") { openSpoken !in it }
+        assertTrue(after.toString(), after.any { it.startsWith("离开期间回顾 · ") })
+        assertEquals("r3", ClosedRecaps(context).closed(key))
     }
 
     private fun todo(content: String, status: String) = buildJsonObject { put("content", content); put("status", status) }
@@ -488,11 +491,12 @@ class ChatDetailsTest {
         assertTrue(found != null && found.id == "t2" && found.todos.size == 2 && found.todos[1].content == "补单测")
     }
 
-    @Test fun briefPlanPillStillScrollsBackToTheCard() {
-        page(AppStyle.Brief, planned, session(), expanded = setOf("w-u1"))
-        waitFor("the plan pill") { "回到计划：第 2 步，共 3 步" in it }
-        rule.onNodeWithContentDescription("回到计划：第 2 步，共 3 步").performClick()
-        val after = waitFor("the plan card") { "回到计划：第 2 步，共 3 步" !in it }
-        assertFalse(after.toString(), "第 2 步，共 3 步 · 改重试" in after)
+    @Test fun briefPlanPillOpensThePlanSheetAndHidesTopTaskBar() {
+        page(AppStyle.Brief, planned, session(), expanded = emptySet())
+        val shown = waitFor("the collapsed brief plan pill") { "第 2 步，共 3 步" in it }
+        assertFalse("Brief agent chat should not render the top TaskProgressBar", shown.any { "已完成" in it && "进行中" in it })
+        rule.onNodeWithContentDescription("第 2 步，共 3 步").performClick()
+        val sheet = waitFor("the plan sheet") { "计划" in it }
+        assertTrue(sheet.toString(), "第 2 步，共 3 步 · 改重试" in sheet)
     }
 }

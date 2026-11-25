@@ -92,7 +92,7 @@ internal fun FirstMessagePending(message: FirstMessage, contentPadding: PaddingV
                 bottom = contentPadding.calculateBottomPadding() + Tokens.Space.m)
             .testTag(if (message.failed) "assistant-first-failed" else "assistant-first-sending"),
             verticalArrangement = Arrangement.spacedBy(Tokens.Space.m)) {
-            if (PersonaTheme.style == AppStyle.Glass) DayLine(remember(message.at) { Instant.ofEpochMilli(message.at).atZone(ZoneId.systemDefault()).toLocalDate() },
+            DayLine(remember(message.at) { Instant.ofEpochMilli(message.at).atZone(ZoneId.systemDefault()).toLocalDate() },
                 Modifier.testTag("assistant-first-day"))
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs)) {
                 // Sessions picked with @ go in front of the words as tags; a forward keeps its card while it waits.

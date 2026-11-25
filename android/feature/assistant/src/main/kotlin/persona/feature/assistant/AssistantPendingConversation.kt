@@ -33,7 +33,6 @@ internal fun AssistantPendingConversation(
     /** The empty state's line instead of 「…连上后继续发送」 (an offline manager takes nothing: docs/assistant/managers.md). */
     emptyDetail: String? = null,
 ) {
-    val glass = PersonaTheme.style == AppStyle.Glass
     LazyColumn(modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = pagePadding, end = pagePadding,
             top = contentPadding.calculateTopPadding() + 12.dp.dense, bottom = contentPadding.calculateBottomPadding() + 16.dp.dense),
@@ -43,8 +42,8 @@ internal fun AssistantPendingConversation(
         if (messages.isEmpty()) item {
             JEmptyState(stringResource(R.string.assistant_pending_empty_title), emptyDetail ?: stringResource(R.string.assistant_pending_empty_detail))
         }
-        // Glass: the day over the first message, as the conversation will have it once it starts (iOS `DayLine` over a first message).
-        if (messages.isNotEmpty() && glass) item(key = "pending-day") {
+        // The day over the first message across every style, as the conversation will have it once it starts (iOS `DayLine`).
+        if (messages.isNotEmpty()) item(key = "pending-day") {
             DayLine(messages.mapNotNull { it.createdAt }.minOrNull()?.let { java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).toLocalDate() }
                 ?: java.time.LocalDate.now(), Modifier.testTag("assistant-pending-day"))
         }

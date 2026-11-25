@@ -286,7 +286,7 @@ internal fun rememberPhoneDrawerDrag(
     runtime.style = PersonaTheme.style
     runtime.reduceMotion = PersonaTheme.reduceMotion
     runtime.dragEnabled = dragEnabled
-    runtime.carryVelocity = runtime.style == AppStyle.Glass
+    runtime.carryVelocity = true
     runtime.haptics = rememberHaptics()
     runtime.host = LocalView.current
     val focus = LocalFocusManager.current

@@ -87,7 +87,7 @@ class ToolWordsShotsTest {
                 val context = LocalContext.current
                 val loader = remember { ImageLoader.Builder(context).build() }
                 DisposableEffect(loader) { onDispose { loader.shutdown() } }
-                CompositionLocalProvider(LocalToolNames provides names(style() == AppStyle.Glass)) {
+                CompositionLocalProvider(LocalToolNames provides names(true)) {
                     Column(Modifier.testTag("shot").width(400.dp).background(PersonaTheme.palette.background).padding(Tokens.Space.l)) {
                         run.forEachIndexed { i, step ->
                             ChatLineContent(ChatLine.Step("w", step, i == 0), SessionKey("mac", "s1"), loader, recordedDuration = null,
@@ -135,11 +135,13 @@ class ToolWordsShotsTest {
                 .use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         }
         corners.values.forEach { assertNotEquals("dark capture must differ", it[0], it[1]) }
-        // Brief and Board keep a Persona tool's words alone (the subject under them is Glass's).
-        style = AppStyle.Brief
-        Snapshot.sendApplyNotifications()
-        rule.waitForIdle()
-        rule.onAllNodesWithText("release notes", useUnmergedTree = true).assertCountEquals(0)
+        // Brief and Board show a Persona tool's subject line identically to Glass.
+        for (other in listOf(AppStyle.Brief, AppStyle.Board)) {
+            style = other
+            Snapshot.sendApplyNotifications()
+            rule.waitForIdle()
+            rule.onAllNodesWithText("release notes", useUnmergedTree = true).assertCountEquals(1)
+        }
     }
 
     @Config(qualifiers = "zh-w400dp-h1000dp-xhdpi")
@@ -206,11 +208,13 @@ class ToolWordsShotsTest {
         rule.onNodeWithTag("tool-raw", useUnmergedTree = true).performClick()
         rule.waitForIdle()
         rule.onNodeWithText("Raw input", useUnmergedTree = true).assertIsDisplayed()
-        // Brief keeps the input as code, with the reader's Raw input beside the output.
-        style = AppStyle.Brief
-        Snapshot.sendApplyNotifications()
-        rule.waitForIdle()
-        rule.onAllNodesWithTag("computer-detail", useUnmergedTree = true).assertCountEquals(0)
-        rule.onAllNodesWithText("Raw input", useUnmergedTree = true).assertCountEquals(1)
+        // Brief and Board show the same structured computer tool detail with Raw input toggle.
+        for (other in listOf(AppStyle.Brief, AppStyle.Board)) {
+            style = other
+            Snapshot.sendApplyNotifications()
+            rule.waitForIdle()
+            rule.onAllNodesWithTag("computer-detail", useUnmergedTree = true).assertCountEquals(1)
+            rule.onAllNodesWithText("Raw input", useUnmergedTree = true).assertCountEquals(1)
+        }
     }
 }

@@ -301,20 +301,20 @@ class ChatBottomChromeCompactTest {
             assertTrue("$s dark=$isDark: add button touch width >= 48dp", addTouch.width >= minTouchPx - 0.5f)
             assertTrue("$s dark=$isDark: add button touch height >= 48dp", addTouch.height >= minTouchPx - 0.5f)
             if (s != AppStyle.Glass) {
-                val launcherChip = rule.onNodeWithText("Default: agy").getUnclippedBoundsInRoot()
-                val launcherTouch = rule.onNodeWithText("Default: agy").fetchSemanticsNode().touchBoundsInRoot
-                val modeChip = rule.onNodeWithTag("chat-composer-mode-hint").getUnclippedBoundsInRoot()
-                val queueToLauncher = launcherChip.top - queueItem.bottom
-                val chipRowToFieldText = field.top - launcherChip.bottom
-                assertEquals("$s dark=$isDark: launcher chip keeps 36dp visual height", JChipTokens.height.value, launcherChip.height.value, 0.5f)
-                assertEquals("$s dark=$isDark: mode hint chip matches launcher 36dp visual height", launcherChip.height.value, modeChip.height.value, 0.5f)
-                assertTrue("$s dark=$isDark: launcher chip keeps 48dp touch height", launcherTouch.height >= minTouchPx - 0.5f)
+                val modelPillNode = rule.onNodeWithTag("model-pill")
+                val modelPill = modelPillNode.getUnclippedBoundsInRoot()
+                val modelPillTouch = modelPillNode.fetchSemanticsNode().touchBoundsInRoot
+                val queueToModelPill = modelPill.top - queueItem.bottom
+                val chipRowToFieldText = field.top - modelPill.bottom
+                assertEquals("$s dark=$isDark: model pill keeps 36dp visual height", JChipTokens.height.value, modelPill.height.value, 0.5f)
+                assertTrue("$s dark=$isDark: model pill keeps 48dp touch height", modelPillTouch.height >= minTouchPx - 0.5f)
+                // Redundant composer modeHint chip is removed; permission mode uses the single leading HeaderModeButton.
+                assertEquals("$s dark=$isDark: redundant modeHint chip absent", 0,
+                    rule.onAllNodesWithTag("chat-composer-mode-hint").fetchSemanticsNodes().size)
+                val modeButtonTouch = rule.onNodeWithTag("chat-mode").fetchSemanticsNode().touchBoundsInRoot
+                assertTrue("$s dark=$isDark: composer mode button keeps 48dp touch height", modeButtonTouch.height >= minTouchPx - 0.5f)
                 // Queue row bottom includes 2dp card bottom + 2dp strip bottom + 4dp composer top = 8dp (down from 14-16dp).
-                assertTrue("$s dark=$isDark: queue-to-launcher gap ($queueToLauncher) in 4..9dp", queueToLauncher in 4.dp..9.dp)
-                // Launcher and mode chips share one flush row with matching top/bottom visual bounds (#13661) and no 48dp box bloat.
-                assertEquals("$s dark=$isDark: launcher and mode chips align on top edge", launcherChip.top.value, modeChip.top.value, 0.5f)
-                assertEquals("$s dark=$isDark: launcher and mode chips align on bottom edge", launcherChip.bottom.value, modeChip.bottom.value, 0.5f)
-                assertTrue("$s dark=$isDark: mode chip sits beside launcher without overlap", modeChip.left >= launcherChip.right + Tokens.Space.s - 0.5.dp)
+                assertTrue("$s dark=$isDark: queue-to-model-pill gap ($queueToModelPill) in 4..9dp", queueToModelPill in 4.dp..9.dp)
                 assertTrue("$s dark=$isDark: chip row sits tight above input field ($chipRowToFieldText)", chipRowToFieldText in 4.dp..20.dp)
                 // Expanded toolbar uses 36dp vertical layout box with 4dp top/bottom breathing room and 48dp width.
                 assertEquals("$s dark=$isDark: toolbar button height is balanced 36dp", JChipTokens.height.value, add.height.value, 0.5f)
@@ -442,14 +442,14 @@ class ChatBottomChromeCompactTest {
             assertTrue("$s no-queue: input sits above toolbar without overlap", field.bottom <= add.top)
 
             if (s != AppStyle.Glass) {
-                val launcher = rule.onNodeWithText("Default: agy").getUnclippedBoundsInRoot()
-                val trayToLauncher = launcher.top - trayEntry.bottom
+                val modelPill = rule.onNodeWithTag("model-pill").getUnclippedBoundsInRoot()
+                val trayToPill = modelPill.top - trayEntry.bottom
                 // Exact surface gap: AssistantTrays bottom (2dp) + ComposerFrame top (4dp) = 6dp (down from 16dp).
-                assertTrue("$s no-queue: tray-to-launcher visible gap ($trayToLauncher) in 4..6.5dp", trayToLauncher in 4.dp..6.5.dp)
-                // Launcher chip sits directly above input (no modeHint): gap from chip bottom to field text top stays tight
+                assertTrue("$s no-queue: tray-to-model-pill visible gap ($trayToPill) in 4..6.5dp", trayToPill in 4.dp..6.5.dp)
+                // Model pill sits directly above input (no modeHint): gap from pill bottom to field text top stays tight
                 // (4dp accessory bottom + input box vertical centering ~12-14dp = <= 20dp, down from ~26dp).
-                val launcherToFieldText = field.top - launcher.bottom
-                assertTrue("$s no-queue: launcher-to-field gap ($launcherToFieldText) <= 20dp", launcherToFieldText in 4.dp..20.dp)
+                val pillToFieldText = field.top - modelPill.bottom
+                assertTrue("$s no-queue: model-pill-to-field gap ($pillToFieldText) <= 20dp", pillToFieldText in 4.dp..20.dp)
             } else {
                 // Glass has no accessory chip: tray capsule sits 6dp above the composer card, keeping tray-to-field-text <= 26dp
                 // (down from ~33dp before removing the capsule's +9dp touch-box padding) while preserving 44dp field / 4dp fieldBottom.

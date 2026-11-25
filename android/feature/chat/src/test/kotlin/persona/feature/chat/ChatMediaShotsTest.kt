@@ -104,7 +104,7 @@ class ChatMediaShotsTest {
     private fun SceneContent(scene: Scene, cardDark: Boolean) {
         when (scene) {
             Scene.Composer, Scene.Paste -> {
-                val state = remember(scene) {
+                val state = remember(scene, PersonaTheme.style) {
                     ChatComposerState().apply {
                         val text = "Where does it stall?"
                         value = TextFieldValue(text, TextRange(text.length))
@@ -157,7 +157,9 @@ class ChatMediaShotsTest {
             PersonaTheme(darkTheme = dark, reduceMotion = true, style = style) {
                 val height = when (scene) { Scene.Page -> Modifier.height(900.dp); Scene.Picture -> Modifier; Scene.Bubble -> Modifier.height(180.dp)
                     else -> Modifier.height(360.dp) }
-                Box(Modifier.testTag("shot").width(400.dp).then(height).background(PersonaTheme.palette.background)) { SceneContent(scene, cardDark) }
+                Box(Modifier.testTag("shot").width(400.dp).then(height).background(PersonaTheme.palette.background)) {
+                    androidx.compose.runtime.key(scene, style, dark) { SceneContent(scene, cardDark) }
+                }
             }
         }
         val out = File(System.getProperty("persona.shots") ?: "build/chat-media-shots").apply { mkdirs() }
@@ -169,8 +171,7 @@ class ChatMediaShotsTest {
             rule.waitForIdle()
             when (sc) {
                 Scene.Composer -> rule.onNodeWithText("screen.mov").assertExists()
-                Scene.Paste -> if (s == AppStyle.Glass) rule.onNodeWithTag("composer-paste-image").assertExists() // branch-only
-                    else rule.onNodeWithTag("composer-paste-image").assertDoesNotExist() // branch-only
+                Scene.Paste -> rule.onNodeWithTag("composer-paste-image").assertExists() // branch-only
                 Scene.Bubble -> rule.onNodeWithText("24.1 MB · 1:12").assertExists()
                 Scene.Picture, Scene.Page -> rule.onNodeWithText("persona › fix login").assertExists() // branch-only
             }

@@ -139,8 +139,8 @@ class DelegatedCardTest {
         assertEquals("Can't reach the hub. That action didn't go through.", reanswerError(res, UnsupportedOperationException()))
     }
 
-    /** Only Glass draws it, over an Agent chat's composer; Brief and Board stay as they were. */
-    @Test fun onlyGlassAgentChatsDrawTheCard() {
+    /** Every style draws DelegatedCard over an Agent chat's composer. */
+    @Test fun everyStyleAgentChatsDrawTheCard() {
         val row = Session("mac", "a", title = "Importer", status = "idle", agent = "claude", paneId = "p1")
         val chats = object : ChatRepository {
             override fun observe(session: SessionKey) = MutableStateFlow(ChatSnapshot(items = listOf(
@@ -167,9 +167,10 @@ class DelegatedCardTest {
             }
         }
         rule.waitUntil(10_000) { rule.onAllNodes(hasText("Rewriting the queries")).fetchSemanticsNodes().isNotEmpty() }
-        rule.onNodeWithText("Answered by the assistant").assertDoesNotExist()
-        style.value = AppStyle.Glass
-        rule.waitUntil(10_000) { rule.onAllNodes(hasText("Answered by the assistant")).fetchSemanticsNodes().isNotEmpty() }
-        rule.onNodeWithText("Why: Because new").assertExists()
+        for (current in AppStyle.entries) {
+            style.value = current
+            rule.waitUntil(10_000) { rule.onAllNodes(hasText("Answered by the assistant")).fetchSemanticsNodes().isNotEmpty() }
+            rule.onNodeWithText("Why: Because new").assertExists()
+        }
     }
 }

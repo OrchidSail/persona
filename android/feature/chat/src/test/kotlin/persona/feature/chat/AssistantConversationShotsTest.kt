@@ -100,9 +100,8 @@ class AssistantConversationShotsTest {
             rule.setContent {
                 PersonaTheme(darkTheme = dark, reduceMotion = true, style = style) {
                     val context = LocalContext.current
-                    // Glass draws Persona's work line as the Agent chat's, as iOS does (#4339 C13)
-                    checkedLabel = if (style == AppStyle.Glass) context.resources.getString(R.string.chat_work_tools, 2)
-                        else context.resources.getQuantityString(R.plurals.chat_assistant_checked, 2, 2)
+                    // Every style draws Persona's work line as the unified WorkGroup (#4339 C13)
+                    checkedLabel = context.resources.getString(R.string.chat_work_tools, 2)
                     val loader = remember { ImageLoader.Builder(context).build() }
                     DisposableEffect(loader) { onDispose { loader.shutdown() } }
                     val todos by store.todos.collectAsState()
@@ -110,11 +109,10 @@ class AssistantConversationShotsTest {
                         activityAt = "2026-11-15T00:20:00Z")),
                         { it }, { opened = it }, { throw it }, {}, sheet = sheet)
                     val original = ChatTimeline().lines(transcript, false, expanded).lines
-                    // Match rememberChatPageLines with the default background-round switch off: Glass keeps quiet
-                    // supervision narration as one inline fold; Brief and Board move it into the background record.
-                    val inline = style == AppStyle.Glass
+                    // Match rememberChatPageLines with the default background-round switch off: every style keeps quiet
+                    // supervision narration as one inline fold.
                     val presentation = AssistantConversation.project(original, transcript,
-                        BackgroundFolding(expanded, rounds = false), inline = inline)
+                        BackgroundFolding(expanded, rounds = false), inline = true)
                     val lines = if (simplified) AssistantTaskCards.lines(presentation.foreground, feed, mapOf(plan.id to plan), todos)
                         else AssistantLines.lines(original, feed)
                     CompositionLocalProvider(LocalAssistantTaskHost provides host) {

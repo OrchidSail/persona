@@ -106,19 +106,19 @@ class ToolArgumentsShotsTest {
                 .use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         }
         corners.values.forEach { assertNotEquals("dark capture must differ", it[0], it[1]) }
-        // Glass lists the arguments in words; the others keep the input as code.
-        style = AppStyle.Glass
-        Snapshot.sendApplyNotifications()
-        rule.waitForIdle()
-        rule.onAllNodesWithTag("tool-arguments", useUnmergedTree = true).assertCountEquals(1)
-        // Right of the rail, which runs through the middle of the icons (#5025): the details start past the icon.
-        val left = rule.onNodeWithTag("tool-arguments", useUnmergedTree = true).getBoundsInRoot().left
-        assertTrue("details at $left cross the rail", left >= Tokens.Space.l + Tokens.Space.m + Tokens.Size.iconXS)
-        rule.onNodeWithText("Milestone", useUnmergedTree = true).assertIsDisplayed()
-        rule.onNodeWithText("bug, export", useUnmergedTree = true).assertIsDisplayed()
-        style = AppStyle.Brief
-        Snapshot.sendApplyNotifications()
-        rule.waitForIdle()
-        rule.onAllNodesWithTag("tool-arguments", useUnmergedTree = true).assertCountEquals(0)
+        // Every style lists the arguments in words.
+        for (s in AppStyle.entries) {
+            style = s
+            Snapshot.sendApplyNotifications()
+            rule.waitForIdle()
+            rule.onAllNodesWithTag("tool-arguments", useUnmergedTree = true).assertCountEquals(1)
+            // Right of Glass's timeline rail, which runs through the middle of the icons (#5025).
+            if (s == AppStyle.Glass) {
+                val left = rule.onNodeWithTag("tool-arguments", useUnmergedTree = true).getBoundsInRoot().left
+                assertTrue("$s details at $left cross the rail", left >= Tokens.Space.l + Tokens.Space.m + Tokens.Size.iconXS)
+            }
+            rule.onNodeWithText("Milestone", useUnmergedTree = true).assertIsDisplayed()
+            rule.onNodeWithText("bug, export", useUnmergedTree = true).assertIsDisplayed()
+        }
     }
 }

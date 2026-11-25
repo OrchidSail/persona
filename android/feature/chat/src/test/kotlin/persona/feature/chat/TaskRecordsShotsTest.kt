@@ -104,7 +104,7 @@ class TaskRecordsShotsTest {
                 val host = AssistantTaskHost(store, "main", emptyList(), { it }, {}, { throw it }, {})
                 val original = ChatTimeline().lines(transcript, false, emptySet()).lines
                 val lines = AssistantTaskCards.lines(AssistantConversation.project(original, transcript).foreground, feed,
-                    mapOf(plan.id to plan), todos, inline = style == AppStyle.Glass)
+                    mapOf(plan.id to plan), todos, inline = true)
                 // the Assistant home destination, where Persona's words sit in their box
                 CompositionLocalProvider(LocalAssistantTaskHost provides host, LocalHomeChrome provides HomeChrome(
                     listOf(NavItem("assistant", "Assistant", persona.core.designsystem.icons.PhIcons.House)), "assistant", onSelect = {}, leading = {})) {
@@ -173,17 +173,20 @@ class TaskRecordsShotsTest {
         rule.onNodeWithText("Is the login crash fixed yet?").assertDoesNotExist()
     }
 
-    private fun keepsTheRecordsBehindTheTrays(style: AppStyle) {
+    private fun drawsInlineRecordsAndReadOnlyDraftCard(style: AppStyle) {
         show(style, mutableStateOf(false)); settle()
-        rule.onNodeWithText("Your computer is connected again; the morning brief runs as planned.").assertDoesNotExist()
-        rule.onNodeWithText("Fix the login crash is done").assertDoesNotExist()
-        rule.onNodeWithTag("exchange-header", useUnmergedTree = true).assertDoesNotExist()
-        rule.onNodeWithText("Is the login crash fixed yet?").assertDoesNotExist()
-        // the user's own word keeps its bubble and label
+        rule.onNodeWithText("Your computer is connected again; the morning brief runs as planned.").assertIsDisplayed()
+        rule.onNodeWithTag("routed-owner", useUnmergedTree = true).assertIsDisplayed()
         rule.onNodeWithText("Use the staging key for the test.").assertIsDisplayed()
+        rule.onNodeWithText("Is the login crash fixed yet?").assertIsDisplayed()
+        rule.onAllNodes(hasSetTextAction()).assertCountEquals(0)
+        rule.onNodeWithTag("assistant-draft-edit-message").assertTextEquals("Edit").performClick(); settle()
+        rule.onAllNodes(hasSetTextAction()).assertCountEquals(1)
+        rule.onNodeWithTag("assistant-draft-edit-message").assertTextEquals("Done").performClick(); settle()
+        rule.onAllNodes(hasSetTextAction()).assertCountEquals(0)
         capture("records-${style.name.lowercase()}-light")
     }
 
-    @Test fun briefKeepsTheRecordsBehindTheTrays() = keepsTheRecordsBehindTheTrays(AppStyle.Brief)
-    @Test fun boardKeepsTheRecordsBehindTheTrays() = keepsTheRecordsBehindTheTrays(AppStyle.Board)
+    @Test fun briefDrawsInlineRecordsAndReadOnlyDraftCard() = drawsInlineRecordsAndReadOnlyDraftCard(AppStyle.Brief)
+    @Test fun boardDrawsInlineRecordsAndReadOnlyDraftCard() = drawsInlineRecordsAndReadOnlyDraftCard(AppStyle.Board)
 }
