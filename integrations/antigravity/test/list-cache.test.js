@@ -33,9 +33,20 @@ test('settled list summaries survive transcript-cache eviction without hiding ch
       status: 'DONE',
       created_at: '2026-11-25T00:00:00.000Z',
       content: `session-${index}-` + content,
-    }))
+    }) + (index === 0 ? line(null) : ''))
     const old = new Date(Date.now() - 60_000)
     utimesSync(file, old, old)
+    if (index === 1) {
+      const compact = join(logs, 'transcript.jsonl')
+      writeFileSync(compact, line({
+        step_index: 0,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-25T00:00:00.000Z',
+        content: 'compact-before',
+      }))
+      utimesSync(compact, old, old)
+    }
   }
   const summaryFile = join(agyDir, 'conversation_summaries.db')
   const setStepCounts = (counts) => {
@@ -72,6 +83,9 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   let transcriptBytes = 0
   const originalReadFileSync = fs.readFileSync
   fs.readFileSync = function (path, ...args) {
+    if (String(path) === join(brain, IDS[1], '.system_generated', 'logs', 'transcript_full.jsonl')) {
+      throw new Error('injected full transcript read failure')
+    }
     const result = originalReadFileSync.call(this, path, ...args)
     if (String(path).endsWith('/transcript_full.jsonl')) {
       transcriptReads++
@@ -113,6 +127,18 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   assert.equal(transcriptBytes, 0, 'an unchanged settled list must not re-read files evicted from the 64 MiB transcript cache')
   assert.equal(transcriptReads, 0)
 
+  appendFileSync(join(brain, IDS[1], '.system_generated', 'logs', 'transcript.jsonl'), line({
+    step_index: 1,
+    type: 'PLANNER_RESPONSE',
+    status: 'DONE',
+    created_at: new Date().toISOString(),
+    content: 'compact-after',
+  }))
+  await refresh('compact-fallback-changed', () => {
+    const row = node.last('runtime.sessions')?.sessions.find((row) => row.session_id === `agy-${IDS[1]}`)
+    return row?.rev === 2 && row?.last_text === 'compact-after' && row?.status === 'unknown'
+  })
+
   setStepCounts([0, 1])
   await refresh('native-state-changed', () => {
     const row = node.last('runtime.sessions')?.sessions.find((row) => row.session_id === `agy-${IDS[0]}`)
@@ -128,7 +154,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     step_index: 1,
     type: 'PLANNER_RESPONSE',
     status: 'DONE',
-    created_at: new Date().toISOString(),
+    created_at: '2026-11-25T00:00:01.000Z',
     content: 'after-append',
   }))
   await refresh('appended', () => {
@@ -139,6 +165,47 @@ createInterface({ input: process.stdin }).on('line', (line) => {
 
   const { readTranscript, rememberObservedWake, transcriptVersion } = await import('../lib/map.js')
   const brainDir = join(brain, IDS[0])
+  const fullFile = join(brainDir, '.system_generated', 'logs', 'transcript_full.jsonl')
+  await delay(1100)
+  setStepCounts([2, 1])
+  await refresh('settled-for-revision', () => {
+    const row = node.last('runtime.sessions')?.sessions.find((row) => row.session_id === `agy-${IDS[0]}`)
+    return row?.status === 'done' && row?.rev === 2
+  })
+  const beforeRewrite = readTranscript(brainDir, true).revision
+  for (let index = 0; index < 260; index++) {
+    const other = join(home, `revision-${index}`)
+    const logs = join(other, '.system_generated', 'logs')
+    mkdirSync(logs, { recursive: true })
+    writeFileSync(join(logs, 'transcript_full.jsonl'), line({
+      step_index: 0,
+      type: 'PLANNER_RESPONSE',
+      status: 'DONE',
+      created_at: '2026-11-25T00:00:00.000Z',
+      content: `other-${index}`,
+    }))
+    readTranscript(other, true)
+  }
+  writeFileSync(fullFile, line({
+    step_index: 0,
+    type: 'PLANNER_RESPONSE',
+    status: 'DONE',
+    created_at: '2026-11-25T00:00:00.000Z',
+    content: `session-0-` + content,
+  }) + line(null) + line({
+    step_index: 1,
+    type: 'PLANNER_RESPONSE',
+    status: 'DONE',
+    created_at: '2026-11-25T00:00:01.000Z',
+    content: 'after-APPEND',
+  }))
+  await refresh('same-step-rewrite', () => {
+    const row = node.last('runtime.sessions')?.sessions.find((row) => row.session_id === `agy-${IDS[0]}`)
+    return row?.status === 'done' && row?.rev === 2 && row?.last_text === 'after-APPEND'
+  })
+  assert.notEqual(readTranscript(brainDir, true).revision, beforeRewrite,
+    'a listed cache hit must preserve the revision record needed to detect a same-step rewrite')
+
   const beforeWake = transcriptVersion(brainDir, true)
   const transcript = readTranscript(brainDir, true)
   rememberObservedWake(brainDir, transcript.steps, 1)
