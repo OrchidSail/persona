@@ -11,6 +11,7 @@ import { startFakeNode, until } from '../../runtime-sdk/testing/fake-node.js'
 const IDS = [
   '11111111-1111-4111-8111-111111111111',
   '22222222-2222-4222-8222-222222222222',
+  '33333333-3333-4333-8333-333333333333',
 ]
 
 function line(step) {
@@ -32,11 +33,28 @@ test('settled list summaries survive transcript-cache eviction without hiding ch
       type: 'PLANNER_RESPONSE',
       status: 'DONE',
       created_at: '2026-11-25T00:00:00.000Z',
-      content: `session-${index}-` + content,
+      content: index < 2 ? `session-${index}-` + content : 'unused-full',
     }) + (index === 0 ? line(null) : ''))
     const old = new Date(Date.now() - 60_000)
     utimesSync(file, old, old)
-    if (index === 1) {
+    if (index === 0) {
+      const compact = join(logs, 'transcript.jsonl')
+      writeFileSync(compact, line({
+        step_index: 0,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-25T00:00:00.000Z',
+        content: 'compact-race-base',
+      }) + line({
+        step_index: 1,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-25T00:00:01.000Z',
+        content: 'compact-race',
+      }))
+      utimesSync(compact, old, old)
+    }
+    if (index === 2) {
       const compact = join(logs, 'transcript.jsonl')
       writeFileSync(compact, line({
         step_index: 0,
@@ -67,7 +85,7 @@ test('settled list summaries survive transcript-cache eviction without hiding ch
     }
     db.close()
   }
-  setStepCounts([1, 1])
+  setStepCounts([1, 1, 1])
   const binary = join(home, 'fake-agy.mjs')
   writeFileSync(binary, `#!/usr/bin/env node
 if (process.argv.includes('models')) { console.log('test-model\\tTest Model'); process.exit(0) }
@@ -81,9 +99,14 @@ createInterface({ input: process.stdin }).on('line', (line) => {
 
   let transcriptReads = 0
   let transcriptBytes = 0
+  let raceFile = ''
+  let raceAfterStat = false
+  let raceVersion = false
   const originalReadFileSync = fs.readFileSync
+  const originalExistsSync = fs.existsSync
+  const originalStatSync = fs.statSync
   fs.readFileSync = function (path, ...args) {
-    if (String(path) === join(brain, IDS[1], '.system_generated', 'logs', 'transcript_full.jsonl')) {
+    if (String(path) === join(brain, IDS[2], '.system_generated', 'logs', 'transcript_full.jsonl')) {
       throw new Error('injected full transcript read failure')
     }
     const result = originalReadFileSync.call(this, path, ...args)
@@ -93,14 +116,31 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     }
     return result
   }
+  fs.existsSync = function (path, ...args) {
+    if (raceVersion && String(path) === raceFile) {
+      raceVersion = false
+      return false
+    }
+    return originalExistsSync.call(this, path, ...args)
+  }
+  fs.statSync = function (path, ...args) {
+    const result = originalStatSync.call(this, path, ...args)
+    if (raceAfterStat && String(path) === raceFile) {
+      raceAfterStat = false
+      raceVersion = true
+    }
+    return result
+  }
   syncBuiltinESMExports()
   t.after(() => {
     fs.readFileSync = originalReadFileSync
+    fs.existsSync = originalExistsSync
+    fs.statSync = originalStatSync
     syncBuiltinESMExports()
   })
   const { createAgyRuntime } = await import('../lib/runtime.js')
   const node = await startFakeNode(t)
-  const runtime = createAgyRuntime({ home, agyDir, agyBin: binary, socketPath: node.path, listDays: 14, maxSessions: 2, log: () => {} })
+  const runtime = createAgyRuntime({ home, agyDir, agyBin: binary, socketPath: node.path, listDays: 14, maxSessions: 3, log: () => {} })
   t.after(async () => {
     await runtime.stop()
     rmSync(home, { recursive: true, force: true })
@@ -109,9 +149,9 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   await delay(1100)
   runtime.start()
   await node.ready
-  await until('both full transcripts listed', () => {
+  await until('all transcript sources listed', () => {
     const rows = node.last('runtime.sessions')?.sessions
-    return rows?.length === 2 && rows.every((row) => row.status === 'done' && row.last_text)
+    return rows?.length === 3 && rows.every((row) => row.status === 'done' && row.last_text)
   }, 15_000)
 
   const refresh = async (title, predicate) => {
@@ -127,7 +167,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   assert.equal(transcriptBytes, 0, 'an unchanged settled list must not re-read files evicted from the 64 MiB transcript cache')
   assert.equal(transcriptReads, 0)
 
-  appendFileSync(join(brain, IDS[1], '.system_generated', 'logs', 'transcript.jsonl'), line({
+  appendFileSync(join(brain, IDS[2], '.system_generated', 'logs', 'transcript.jsonl'), line({
     step_index: 1,
     type: 'PLANNER_RESPONSE',
     status: 'DONE',
@@ -135,16 +175,16 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     content: 'compact-after',
   }))
   await refresh('compact-fallback-changed', () => {
-    const row = node.last('runtime.sessions')?.sessions.find((row) => row.session_id === `agy-${IDS[1]}`)
+    const row = node.last('runtime.sessions')?.sessions.find((row) => row.session_id === `agy-${IDS[2]}`)
     return row?.rev === 2 && row?.last_text === 'compact-after' && row?.status === 'unknown'
   })
 
-  setStepCounts([0, 1])
+  setStepCounts([0, 1, 1])
   await refresh('native-state-changed', () => {
     const row = node.last('runtime.sessions')?.sessions.find((row) => row.session_id === `agy-${IDS[0]}`)
     return row?.status === 'unknown'
   })
-  setStepCounts([1, 1])
+  setStepCounts([1, 1, 1])
   await refresh('native-state-restored', () => {
     const row = node.last('runtime.sessions')?.sessions.find((row) => row.session_id === `agy-${IDS[0]}`)
     return row?.status === 'done'
@@ -167,7 +207,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   const brainDir = join(brain, IDS[0])
   const fullFile = join(brainDir, '.system_generated', 'logs', 'transcript_full.jsonl')
   await delay(1100)
-  setStepCounts([2, 1])
+  setStepCounts([2, 1, 1])
   await refresh('settled-for-revision', () => {
     const row = node.last('runtime.sessions')?.sessions.find((row) => row.session_id === `agy-${IDS[0]}`)
     return row?.status === 'done' && row?.rev === 2
@@ -205,6 +245,20 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   })
   assert.notEqual(readTranscript(brainDir, true).revision, beforeRewrite,
     'a listed cache hit must preserve the revision record needed to detect a same-step rewrite')
+
+  raceFile = fullFile
+  raceAfterStat = true
+  await refresh('full-export-selected-during-read', () => {
+    const row = node.last('runtime.sessions')?.sessions.find((row) => row.session_id === `agy-${IDS[0]}`)
+    return row?.status === 'done' && row?.last_text === 'after-APPEND'
+  })
+  assert.equal(raceAfterStat, false, 'the fixture must reach the candidate stat before the version check')
+  assert.equal(raceVersion, false, 'the fixture must make version selection fall back before the actual full read')
+  rmSync(fullFile)
+  await refresh('full-export-removed', () => {
+    const row = node.last('runtime.sessions')?.sessions.find((row) => row.session_id === `agy-${IDS[0]}`)
+    return row?.status === 'done' && row?.rev === 2 && row?.last_text === 'compact-race'
+  })
 
   const beforeWake = transcriptVersion(brainDir, true)
   const transcript = readTranscript(brainDir, true)
