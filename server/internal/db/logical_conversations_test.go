@@ -667,3 +667,59 @@ func TestAcceptedInputKeepsOnlyDigestAndCannotReplayAfterPayloadCleanup(t *testi
 		t.Fatal("reused identity changed content")
 	}
 }
+
+func TestLogicalObserveDoesNotCollideWithWithConversationEpoch(t *testing.T) {
+	d, url := historyDB(t)
+	ctx := t.Context()
+	op := prepareLogicalSwitch(t, d)
+	if err := d.ActivateConversationSegment(ctx, "root-machine", "root-chat", op.OperationID, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.ResolveConversationSwitch(ctx, "root-machine", "root-chat", op.OperationID, "accepted", ""); err != nil {
+		t.Fatal(err)
+	}
+	other, err := Open(ctx, url, ManagerSet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	epochDone := make(chan error, 1)
+	go func() {
+		epochDone <- d.WithConversationEpoch(ctx, "root-machine", "root-chat", 2, func(*LogicalConversation) error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+
+	// Concurrent source/revision observations must succeed without returning ErrConversationSwitchBusy.
+	if err := other.ObserveConversationSource(ctx, "target-machine", "target-chat", "source-two:projected:abcd1234"); err != nil {
+		close(release)
+		t.Fatalf("ObserveConversationSource collided with WithConversationEpoch: %v", err)
+	}
+	if err := other.ObserveConversationRevision(ctx, "target-machine", "target-chat", 42); err != nil {
+		close(release)
+		t.Fatalf("ObserveConversationRevision collided with WithConversationEpoch: %v", err)
+	}
+	// A real switch mutation must still be fenced by WithConversationEpoch's FOR KEY SHARE lock.
+	nextOp := ConversationSwitch{
+		OperationID: "fenced-switch", ExpectedEpoch: 2, SourceSegment: "second",
+		Request: json.RawMessage(`{"launcher":"fake"}`),
+	}
+	if err := other.BeginConversationSwitch(ctx, "root-machine", "root-chat", nextOp); !errors.Is(err, ErrConversationSwitchBusy) {
+		close(release)
+		t.Fatalf("BeginConversationSwitch was not fenced by WithConversationEpoch: %v", err)
+	}
+	close(release)
+	if err := <-epochDone; err != nil {
+		t.Fatalf("WithConversationEpoch failed: %v", err)
+	}
+	c, err := other.LogicalConversation(ctx, "root-machine", "root-chat")
+	if err != nil || c == nil || c.Segments[1].SourceHistory != "source-two:projected:abcd1234" || c.Segments[1].SourceRevision != 42 {
+		t.Fatalf("observed metadata not persisted: %+v %v", c, err)
+	}
+}

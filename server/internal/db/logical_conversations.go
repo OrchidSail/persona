@@ -227,7 +227,9 @@ func (d *DB) withConversationEpoch(ctx context.Context, machine, session string,
 	return conversationTransaction(ctx, d, func(tx pgx.Tx) error {
 		var current int64
 		var deleted bool
-		err := tx.QueryRow(ctx, `SELECT epoch,deleted_at IS NOT NULL FROM logical_conversations WHERE machine_id=$1 AND session_id=$2 FOR SHARE`, machine, session).Scan(&current, &deleted)
+		// FOR KEY SHARE fences FOR UPDATE NOWAIT (switch activation/deletion) while allowing
+		// non-key metadata observations (FOR NO KEY UPDATE) without spurious switch-busy errors.
+		err := tx.QueryRow(ctx, `SELECT epoch,deleted_at IS NOT NULL FROM logical_conversations WHERE machine_id=$1 AND session_id=$2 FOR KEY SHARE`, machine, session).Scan(&current, &deleted)
 		if err != nil {
 			return err
 		}
@@ -572,7 +574,19 @@ func (d *DB) ObserveConversationSource(ctx context.Context, machine, session, hi
 	if history == "" {
 		return errors.New("missing source generation")
 	}
-	return conversationTransaction(ctx, d, func(tx pgx.Tx) error {
+	snapshot, err := d.LogicalConversation(ctx, machine, session)
+	if err != nil || snapshot == nil {
+		return err
+	}
+	for _, seg := range snapshot.Segments {
+		if seg.MachineID == machine && seg.SessionID == session && seg.SourceHistory == history {
+			return nil
+		}
+	}
+	return pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '3s'`); err != nil {
+			return err
+		}
 		c, err := readLogicalConversation(ctx, tx, machine, session)
 		if err != nil || c == nil {
 			return err
@@ -583,11 +597,11 @@ func (d *DB) ObserveConversationSource(ctx context.Context, machine, session, hi
 			}
 		}
 		var epoch int64
-		if err = tx.QueryRow(ctx, `SELECT epoch FROM logical_conversations WHERE machine_id=$1 AND session_id=$2 FOR UPDATE NOWAIT`, c.MachineID, c.SessionID).Scan(&epoch); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT epoch FROM logical_conversations WHERE machine_id=$1 AND session_id=$2 FOR NO KEY UPDATE`, c.MachineID, c.SessionID).Scan(&epoch); err != nil {
 			return err
 		}
 		var id, old, state string
-		if err = tx.QueryRow(ctx, `SELECT id,source_history,state FROM conversation_segments WHERE machine_id=$1 AND session_id=$2 FOR UPDATE NOWAIT`, machine, session).Scan(&id, &old, &state); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT id,source_history,state FROM conversation_segments WHERE machine_id=$1 AND session_id=$2 FOR NO KEY UPDATE`, machine, session).Scan(&id, &old, &state); err != nil {
 			return err
 		}
 		if old == history {
@@ -609,18 +623,30 @@ func (d *DB) ConversationSegmentClosed(ctx context.Context, id string) error {
 }
 
 func (d *DB) ObserveConversationRevision(ctx context.Context, machine, session string, revision int64) error {
-	return conversationTransaction(ctx, d, func(tx pgx.Tx) error {
+	snapshot, err := d.LogicalConversation(ctx, machine, session)
+	if err != nil || snapshot == nil {
+		return err
+	}
+	for _, seg := range snapshot.Segments {
+		if seg.MachineID == machine && seg.SessionID == session && seg.SourceRevision == revision {
+			return nil
+		}
+	}
+	return pgx.BeginFunc(ctx, d.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '3s'`); err != nil {
+			return err
+		}
 		c, err := readLogicalConversation(ctx, tx, machine, session)
 		if err != nil || c == nil {
 			return err
 		}
 		var epoch int64
-		if err = tx.QueryRow(ctx, `SELECT epoch FROM logical_conversations WHERE machine_id=$1 AND session_id=$2 FOR UPDATE NOWAIT`, c.MachineID, c.SessionID).Scan(&epoch); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT epoch FROM logical_conversations WHERE machine_id=$1 AND session_id=$2 FOR NO KEY UPDATE`, c.MachineID, c.SessionID).Scan(&epoch); err != nil {
 			return err
 		}
 		var old int64
 		var state string
-		if err = tx.QueryRow(ctx, `SELECT source_revision,state FROM conversation_segments WHERE machine_id=$1 AND session_id=$2`, machine, session).Scan(&old, &state); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT source_revision,state FROM conversation_segments WHERE machine_id=$1 AND session_id=$2 FOR NO KEY UPDATE`, machine, session).Scan(&old, &state); err != nil {
 			return err
 		}
 		if old == revision {
@@ -652,7 +678,7 @@ func (d *DB) EnqueueConversationInput(ctx context.Context, machine, session, id 
 	digest := sha256.Sum256(payload)
 	return conversationTransaction(ctx, d, func(tx pgx.Tx) error {
 		var current int64
-		if err := tx.QueryRow(ctx, `SELECT epoch FROM logical_conversations WHERE machine_id=$1 AND session_id=$2 AND deleted_at IS NULL FOR SHARE`, machine, session).Scan(&current); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT epoch FROM logical_conversations WHERE machine_id=$1 AND session_id=$2 AND deleted_at IS NULL FOR KEY SHARE`, machine, session).Scan(&current); err != nil {
 			return err
 		}
 		if current != epoch {

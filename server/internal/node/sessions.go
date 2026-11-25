@@ -450,6 +450,10 @@ func (n *Node) sessionListIn(ctx context.Context, refreshAgents bool, pass *code
 			seen[s.SessionID] = true
 		}
 	}
+	for _, s := range n.awaitingAssistantSessions(seen, pass) {
+		out = append(out, s)
+		seen[s.SessionID] = true
+	}
 	for _, s := range n.claudeSessions(n.liveClaudes(), seen, livePanes) { // claudes outside Persona's panes (claudebg.go)
 		out = append(out, s)
 		seen[s.SessionID] = true
@@ -819,6 +823,77 @@ func (n *Node) revsChanged(list []proto.Session) map[string]int64 {
 		}
 	}
 	n.lastRevs = next
+	return out
+}
+
+// awaitingAssistantSessions keeps prepared zero-turn assistant conversations (such as idle switched logical
+// segments that have not yet received their first turn) listed as idle after a node or runtime restart.
+func (n *Node) awaitingAssistantSessions(seen map[string]bool, pass *codexListPass) []proto.Session {
+	type candidate struct {
+		id string
+		st sessionState
+	}
+	n.state.mu.Lock()
+	var list []candidate
+	for id, st := range n.state.Sessions {
+		if seen[id] || !st.AwaitingFirstMessage || st.SegmentRetired || st.StopCause != "" || st.Cwd == "" || !identity.IsAssistantDir(st.Cwd) {
+			continue
+		}
+		list = append(list, candidate{id: id, st: st})
+	}
+	n.state.mu.Unlock()
+	if len(list) == 0 {
+		return nil
+	}
+	slices.SortFunc(list, func(a, b candidate) int { return strings.Compare(a.id, b.id) })
+	out := make([]proto.Session, 0, len(list))
+	for _, item := range list {
+		id, st := item.id, item.st
+		isRuntime := runtimeSessionID(id)
+		var agent, agentLabel string
+		if isRuntime {
+			h := n.assistantRuntime(st.Launcher)
+			if h == nil {
+				h, _, _ = n.runtimes.belongs(id)
+			}
+			if h == nil {
+				continue // do not fabricate availability when its runtime is disconnected
+			}
+			agent = h.agent()
+			agentLabel = h.label()
+		} else if st.Launcher == "codex" {
+			agent = "codex"
+		} else if m, ok := n.managedLauncher(st.Launcher); ok {
+			agent = m.AgentType()
+		}
+		updated := st.StartedAt.UTC()
+		if updated.IsZero() {
+			updated = time.Now().UTC()
+		}
+		s := proto.Session{
+			SessionID:            id,
+			Cwd:                  st.Cwd,
+			Status:               proto.StatusIdle,
+			Launcher:             st.Launcher,
+			Agent:                agent,
+			AgentLabel:           agentLabel,
+			Model:                st.Model,
+			Effort:               st.ModelEffort,
+			PermissionMode:       st.AppMode,
+			UpdatedAt:            updated,
+			Assistant:            true,
+			AwaitingFirstMessage: true,
+		}
+		if isRuntime {
+			n.decorateState(&s, false)
+			if m := n.assistantModeOf(id); m != "" {
+				s.PermissionMode = m
+			}
+		} else {
+			n.decorateIn(&s, pass)
+		}
+		out = append(out, s)
+	}
 	return out
 }
 

@@ -1,5 +1,6 @@
 package persona.core.hub
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonNull
@@ -38,23 +39,39 @@ import persona.core.contracts.generated.ExtensionViewActionInput
 import persona.core.contracts.generated.ExtensionViewChangedError
 
 private const val START_ANSWER_READ_TIMEOUT_SECONDS = 30L
+private const val TODO_REVISION_HEADER = "X-Persona-Todos-Revision"
+private const val TODO_REVISION_FEATURE = "todo_revision"
 
 /** The unified entry's routes on the active pairing (docs/protocol/protocol.md "Tasks and the chat feed"). */
 class HttpTasksApi internal constructor(
-    private val request: suspend (path: String, method: String, body: JsonElement?) -> Response,
+    private val requestWithHeaders: suspend (path: String, method: String, body: JsonElement?, headers: Map<String, String>) -> Response,
     override val features: kotlinx.coroutines.flow.StateFlow<Set<String>>? = null,
     private val slowRequest: (suspend (path: String, method: String, body: JsonElement?) -> Response)? = null,
 ) : TasksApi {
+    internal constructor(
+        request: suspend (path: String, method: String, body: JsonElement?) -> Response,
+        features: kotlinx.coroutines.flow.StateFlow<Set<String>>? = null,
+        slowRequest: (suspend (path: String, method: String, body: JsonElement?) -> Response)? = null,
+    ) : this({ path, method, body, _ -> request(path, method, body) }, features, slowRequest)
+
     /** On [connection], whose hello's features say what its cards may do. */
-    constructor(connection: OkHttpHubConnection) : this({ path, method, body ->
-        connection.request(path, method, body?.toString()?.toRequestBody("application/json".toMediaType()))
+    constructor(connection: OkHttpHubConnection) : this({ path, method, body, headers ->
+        connection.request(path, method, body?.toString()?.toRequestBody("application/json".toMediaType()), headers = headers)
     }, connection.serverFeatures, { path, method, body ->
         connection.request(path, method, body?.toString()?.toRequestBody("application/json".toMediaType()),
             readTimeoutSeconds = START_ANSWER_READ_TIMEOUT_SECONDS)
     })
 
+    private data class TodosValidatorCache(
+        val todos: List<Todo>,
+        val etag: String?,
+        val revision: String?,
+    )
+    private val todosCacheLock = Any()
+    private var todosCache: TodosValidatorCache? = null
+
     private suspend fun call(path: String, method: String = "GET", body: JsonElement? = null, slow: Boolean = false): JsonObject =
-        (if (slow) slowRequest ?: request else request)(path, method, body).use {
+        (if (slow) slowRequest ?: { p, m, b -> requestWithHeaders(p, m, b, emptyMap()) } else { p, m, b -> requestWithHeaders(p, m, b, emptyMap()) })(path, method, body).use {
             if (!it.isSuccessful) throw HubFailure.from(it)
             val text = it.body?.string().orEmpty()
             if (text.isBlank()) JsonObject(emptyMap()) else JsonCodec.parseToJsonElement(text).jsonObject
@@ -87,11 +104,53 @@ class HttpTasksApi internal constructor(
     }
 
     // The list is every manager's, each to-do with its `manager` (docs/protocol/protocol.md "Per-manager routing"): noted, so the
-    // requests for one name its manager, as an inbox item's do.
-    override suspend fun todos(): List<Todo> =
-        JsonCodec.decodeFromJsonElement<TodosResponse>(call(path("todos"))).todos.onEach {
-            AssistantManagerChoice.noteItem(listOf("todos", it.id), it.manager)
+    // requests for one name its manager, as an inbox item's do. When a hub advertises `todo_revision`, probe the cheap
+    // revision validator first, and always send `If-None-Match` with the last ETag plus `compact=1` to avoid re-downloading
+    // megabytes of unchanged or detail-only fields on every push.
+    override suspend fun todos(): List<Todo> {
+        val cached = synchronized(todosCacheLock) { todosCache }
+        if (cached != null && cached.revision != null && features?.value?.contains(TODO_REVISION_FEATURE) == true) {
+            val unchanged = try {
+                requestWithHeaders(
+                    path("todos", "revision"),
+                    "GET",
+                    null,
+                    mapOf("If-None-Match" to cached.revision),
+                ).use { response ->
+                    response.code == 304 ||
+                        (response.isSuccessful && response.header(TODO_REVISION_HEADER) == cached.revision)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                false
+            }
+            if (unchanged) return cached.todos
         }
+        val headers = cached?.etag?.let { mapOf("If-None-Match" to it) } ?: emptyMap()
+        return requestWithHeaders(path("todos", query = mapOf("compact" to "1")), "GET", null, headers).use { response ->
+            if (response.code == 304 && cached != null) {
+                val updatedRevision = response.header(TODO_REVISION_HEADER)?.takeIf(String::isNotBlank) ?: cached.revision
+                val updatedEtag = response.header("ETag")?.takeIf(String::isNotBlank) ?: cached.etag
+                synchronized(todosCacheLock) {
+                    todosCache = cached.copy(etag = updatedEtag, revision = updatedRevision)
+                }
+                return@use cached.todos
+            }
+            if (!response.isSuccessful) throw HubFailure.from(response)
+            val text = response.body?.string().orEmpty()
+            val payload = if (text.isBlank()) JsonObject(emptyMap()) else JsonCodec.parseToJsonElement(text).jsonObject
+            val list = JsonCodec.decodeFromJsonElement<TodosResponse>(payload).todos.onEach {
+                AssistantManagerChoice.noteItem(listOf("todos", it.id), it.manager)
+            }
+            val etag = response.header("ETag")?.takeIf(String::isNotBlank)
+            val revision = response.header(TODO_REVISION_HEADER)?.takeIf(String::isNotBlank)
+            synchronized(todosCacheLock) {
+                todosCache = TodosValidatorCache(list, etag, revision)
+            }
+            list
+        }
+    }
 
     // A new to-do is the current assistant's (the client names it on `POST todos`), or the one the caller named for it
     // (a RequestManager: an agent's own assistant when it is linked at once; "" the default's).

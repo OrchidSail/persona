@@ -94,6 +94,7 @@ func (d *DB) PutConversationPage(ctx context.Context, p ConversationPage) error 
 		if err := json.Unmarshal(coverage, &ranges); err != nil {
 			return err
 		}
+		nextRevision := p.Revision
 		if old != p.History {
 			if p.FromSeq != 0 && inserted.RowsAffected() == 0 {
 				return ErrConversationHistoryChanged // fetch the replacement from its beginning
@@ -105,11 +106,16 @@ func (d *DB) PutConversationPage(ctx context.Context, p ConversationPage) error 
 			if _, err := tx.Exec(ctx, `UPDATE conversation_histories SET summary='',summary_known=false WHERE machine_id=$1 AND session_id=$2`, p.MachineID, p.SessionID); err != nil {
 				return err
 			}
-		} else if p.Revision != 0 && revision != 0 && p.Revision < revision {
-			return ErrConversationHistoryChanged
-		}
-		if p.Revision != 0 && revision != p.Revision {
-			tail = nil // the old end is no proof of the new end
+		} else {
+			if p.Tail && p.Revision != 0 && revision != 0 && p.Revision < revision {
+				return ErrConversationHistoryChanged
+			}
+			if revision > nextRevision {
+				nextRevision = revision
+			}
+			if nextRevision != revision {
+				tail = nil // the old end is no proof of the new end
+			}
 		}
 		ranges = conversationlog.MergeRanges(ranges, conversationlog.Range{From: p.FromSeq, Through: p.ThroughSeq})
 		if len(ranges) > 128 {
@@ -147,7 +153,7 @@ func (d *DB) PutConversationPage(ctx context.Context, p ConversationPage) error 
 			return err
 		}
 		_, err = tx.Exec(ctx, `UPDATE conversation_histories SET history=$3,revision=$4,coverage=$5,tail_seq=$6,updated_at=now()
-			WHERE machine_id=$1 AND session_id=$2`, p.MachineID, p.SessionID, p.History, p.Revision, raw, tail)
+			WHERE machine_id=$1 AND session_id=$2`, p.MachineID, p.SessionID, p.History, nextRevision, raw, tail)
 		return err
 	})
 }

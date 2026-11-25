@@ -53,6 +53,8 @@ private fun placeTime(line: ChatLine, writtenAt: Map<String, Long>): Long? {
         is ChatLine.Row -> if (line.row.type == "user" || (line.row.type == "image" && line.row.item?.item?.role == "user"))
             line.row.item?.item?.let(::sent) else null
         is ChatLine.UserImages -> line.images.firstNotNullOfOrNull { sent(it.item) }
+        is ChatLine.Extra -> (line.payload as? TimedExtraPayload)?.anchorTime?.toEpochMilli()
+            ?.minus(MessageEcho.CLOCK_SLACK_MILLIS)
         else -> null
     }
 }

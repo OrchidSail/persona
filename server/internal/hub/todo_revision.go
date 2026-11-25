@@ -50,6 +50,7 @@ func (h *Hub) mergeTodoRevision(w http.ResponseWriter, r *http.Request) {
 	}
 	tag, complete := todoRevisionOfAnswers(answers)
 	if !complete {
+		h.todoAnswers.changedAll()
 		writeErrCode(w, http.StatusConflict, "todo_revision_unavailable", errors.New("every manager must provide a current to-do revision"))
 		return
 	}
@@ -57,10 +58,13 @@ func (h *Hub) mergeTodoRevision(w http.ResponseWriter, r *http.Request) {
 	hd.Set("Content-Type", "application/json")
 	hd.Set("ETag", tag)
 	hd.Set(assistantwire.TodoRevisionHeader, tag)
-	if lines := r.Header.Values("If-None-Match"); len(lines) > 0 && tagMatches(lines, tag) {
-		hd.Del("Content-Length")
-		w.WriteHeader(http.StatusNotModified)
-		return
+	if lines := r.Header.Values("If-None-Match"); len(lines) > 0 {
+		if tagMatches(lines, tag) {
+			hd.Del("Content-Length")
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		h.todoAnswers.changedAll()
 	}
 	bodyOut, _ := json.Marshal(struct {
 		Revision string `json:"revision"`

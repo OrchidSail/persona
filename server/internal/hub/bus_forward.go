@@ -176,16 +176,18 @@ func (h *Hub) relayHTTP(w http.ResponseWriter, r *http.Request, id string, send,
 		ctx, cancel = context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()
 	}
-	// What may change the manager's inbox: a merged list fetched while it is under way is not kept, and one kept from
-	// before it answered is not given again (inbox_answers.go).
+	// What may change the manager's inbox or todos: a merged list fetched while it is under way is not kept, and one kept from
+	// before it answered is not given again (inbox_answers.go, todo_answers.go).
 	changes := r.Method != http.MethodGet && r.Method != http.MethodHead
 	if changes {
 		h.inboxAnswers.changed(id)
+		h.todoAnswers.changed(id)
 	}
 	var res assistantwire.HTTPResponse
 	err = h.callHTTP(ctx, id, req, &res) // a large body on a stream of its own (bus_body_stream.go)
 	if changes {
 		h.inboxAnswers.changed(id)
+		h.todoAnswers.changed(id)
 	}
 	if err != nil {
 		var coded *rpc.Error

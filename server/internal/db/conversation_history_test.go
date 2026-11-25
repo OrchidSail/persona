@@ -169,6 +169,49 @@ func TestConversationHistoryTailInvalidationAndStaleRevision(t *testing.T) {
 	}
 }
 
+func TestConversationHistoryNonTailOlderRevisionMergesWithoutLosingTail(t *testing.T) {
+	d, _ := historyDB(t)
+	ctx := context.Background()
+	tailPage := ConversationPage{
+		MachineID: "box", SessionID: "chat", History: "h1", Revision: 200,
+		FromSeq: 5, ThroughSeq: 10, Tail: true,
+		Items: []proto.Item{historyItem("tail", 8, "latest")},
+	}
+	if err := d.PutConversationPage(ctx, tailPage); err != nil {
+		t.Fatal(err)
+	}
+	// Backfilling an older non-tail range in the same generation while newer turns already
+	// bumped revision must succeed, keep the newer revision, and preserve tail_seq.
+	older := ConversationPage{
+		MachineID: "box", SessionID: "chat", History: "h1", ExpectedHistory: "h1", Revision: 100,
+		FromSeq: 0, ThroughSeq: 5, Tail: false,
+		Items: []proto.Item{historyItem("old", 2, "earlier")},
+	}
+	if err := d.PutConversationPage(ctx, older); err != nil {
+		t.Fatalf("older non-tail backfill rejected: %v", err)
+	}
+	h, err := d.ConversationHistory(ctx, "box", "chat")
+	if err != nil || h == nil || h.Revision != 200 || h.TailSeq == nil || *h.TailSeq != 10 || !conversationlog.Covers(h.Coverage, 0, 10) {
+		t.Fatalf("unexpected history after non-tail backfill: %+v %v", h, err)
+	}
+	// A zero-revision non-tail write must never downgrade the stored revision or drop tail_seq.
+	older.Revision = 0
+	if err := d.PutConversationPage(ctx, older); err != nil {
+		t.Fatalf("zero-revision non-tail write rejected: %v", err)
+	}
+	h, err = d.ConversationHistory(ctx, "box", "chat")
+	if err != nil || h == nil || h.Revision != 200 || h.TailSeq == nil || *h.TailSeq != 10 {
+		t.Fatalf("zero-revision write downgraded history: %+v %v", h, err)
+	}
+	// A stale tail write in the same generation is still rejected.
+	staleTail := tailPage
+	staleTail.ExpectedHistory, staleTail.Revision, staleTail.ThroughSeq = "h1", 100, 9
+	staleTail.Items = []proto.Item{historyItem("stale", 7, "stale")}
+	if err := d.PutConversationPage(ctx, staleTail); !errors.Is(err, ErrConversationHistoryChanged) {
+		t.Fatalf("stale tail write accepted: %v", err)
+	}
+}
+
 func TestConversationHistoryKeepsJSONToolBytesIncludingNUL(t *testing.T) {
 	d, _ := historyDB(t)
 	ctx := context.Background()

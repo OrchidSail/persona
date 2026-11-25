@@ -1,5 +1,6 @@
 package persona.core.domain.tasks
 
+import java.time.Instant
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -11,6 +12,7 @@ import persona.core.contracts.stripToolResultTimestampHeaders
 import persona.core.domain.injectedOf
 import persona.core.domain.isPersonaTool
 import persona.core.domain.lines.ChatLine
+import persona.core.domain.lines.TimedExtraPayload
 import persona.core.domain.lines.isTurnInterrupt
 
 /**
@@ -68,9 +70,17 @@ data class BackgroundFolding(val open: Set<String> = emptySet(), val reveal: Str
  */
 data class BackgroundRound(
     val id: String, val source: MessageSource, val live: Boolean, val open: Boolean, val lines: List<ChatLine>,
-) {
+) : TimedExtraPayload {
     /** A quiet supervision round (Glass), drawn "Handled in the background" rather than with a source mention. */
     val supervision: Boolean get() = source.kind == BackgroundFolding.supervision.kind
+    override val anchorTime: Instant?
+        get() = lines.firstNotNullOfOrNull { line ->
+            when (line) {
+                is ChatLine.Row -> if (line.row.type == "user") line.row.start else null
+                is ChatLine.UserImages -> line.images.firstOrNull()?.time
+                else -> null
+            }
+        }
 }
 
 /** Only Persona's visibility tools, not similarly named tools of another MCP server (web `supervisionTool`). */

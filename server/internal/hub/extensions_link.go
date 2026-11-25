@@ -523,10 +523,11 @@ func (h *Hub) relayTo(w http.ResponseWriter, r *http.Request, admin bool, id str
 		rec = &keptRecorder{ResponseWriter: w, status: http.StatusOK}
 		w = rec
 	}
-	// What may change the manager's inbox, as in relayHTTP: before it goes, and when it is answered (inbox_answers.go).
+	// What may change the manager's inbox or todos, as in relayHTTP: before it goes, and when it is answered (inbox_answers.go, todo_answers.go).
 	changes := r.Method != http.MethodGet && r.Method != http.MethodHead
 	if changes {
 		h.inboxAnswers.changed(id)
+		h.todoAnswers.changed(id)
 	}
 	pool := h.relayPool(id)
 	defer pool.settle()
@@ -560,6 +561,7 @@ func (h *Hub) relayTo(w http.ResponseWriter, r *http.Request, admin bool, id str
 		ModifyResponse: func(res *http.Response) error {
 			if changes {
 				h.inboxAnswers.changed(id)
+				h.todoAnswers.changed(id)
 			}
 			if apps, _ := computerAppsRoute(r); apps {
 				res.Header.Del(computerAppsOwnerHeader)
@@ -574,6 +576,7 @@ func (h *Hub) relayTo(w http.ResponseWriter, r *http.Request, admin bool, id str
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			if changes {
 				h.inboxAnswers.changed(id)
+				h.todoAnswers.changed(id)
 			}
 			if errors.Is(err, errBusOffline) || h.busConnOf(id) == nil {
 				writeErrCode(w, http.StatusServiceUnavailable, assistantwire.CodeAssistantOffline, errAssistantOffline)

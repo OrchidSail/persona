@@ -838,6 +838,85 @@ class ChatRepositoriesTest {
         assertFalse(snapshot.replaced)
     }
 
+    @Test fun transientSyncFailuresBackOffRevisionStormsAndRecoverAfterBackoff() = runTest {
+        val connection = FakeConnection()
+        var now = 1_000L
+        var failing = true
+        var calls = 0
+        val transport = FakeChatTransport().apply {
+            list = listOf(Session(key.machineId, key.sessionId, rev = 1))
+            fetch = { query ->
+                calls++
+                if (failing) throw IllegalStateException("502 Bad Gateway")
+                ItemsResponse(listOf(item(1), item(2)), history = "h", fromSeq = query.afterSeq, toSeq = 2)
+            }
+        }
+        val cache = FakeItemsCache(CachedChat(listOf(item(1)), "h", 1, false))
+        val repository = HubChatRepository(
+            transport, connection, cache, FakeSessions(), backgroundScope,
+            clockMillis = { now },
+            syncBackoffInitialMillis = 2_000L,
+            syncBackoffMaxMillis = 15_000L,
+        )
+        var snapshot = ChatSnapshot()
+        backgroundScope.launch { repository.observe(key).collect { snapshot = it } }
+        runCurrent()
+        assertEquals(1, calls)
+
+        // Rapid RevsEvent storm during the 2s backoff window must not hammer the hub.
+        repeat(10) { i ->
+            connection.events.emit(RevsEvent(key.machineId, mapOf(key.sessionId to (i + 2L))))
+            runCurrent()
+        }
+        assertEquals(1, calls)
+
+        // Advance time to trigger the scheduled self-healing retry; hub recovers and items catch up.
+        failing = false
+        now += 2_000L
+        advanceTimeBy(2_000L)
+        runCurrent()
+        assertEquals(2, calls)
+        assertEquals(listOf(1, 2), snapshot.items.map { it.seq })
+    }
+
+    @Test fun loadOlderReloadsLatestWhenServerHistoryRotated() = runTest {
+        val queries = mutableListOf<ItemsQuery>()
+        var latestCalls = 0
+        val transport = FakeChatTransport().apply {
+            fetch = { query ->
+                queries += query
+                when {
+                    query.beforeSeq != null && latestCalls == 1 ->
+                        ItemsResponse(listOf(item(3), item(4)), hasMore = true, history = "logical:h2")
+                    query.beforeSeq != null ->
+                        ItemsResponse(listOf(item(3), item(4)), hasMore = false, history = "logical:h2")
+                    else -> {
+                        latestCalls++
+                        if (latestCalls == 1) ItemsResponse(listOf(item(5), item(6)), hasMore = true, history = "logical:h1", toSeq = 6)
+                        else ItemsResponse(listOf(item(5), item(6)), hasMore = true, history = "logical:h2", toSeq = 6)
+                    }
+                }
+            }
+        }
+        val repository = HubChatRepository(transport, FakeConnection(), FakeItemsCache(CachedChat()), FakeSessions(), backgroundScope)
+        var snapshot = ChatSnapshot()
+        backgroundScope.launch { repository.observe(key).collect { snapshot = it } }
+        runCurrent()
+        assertEquals("logical:h1", snapshot.history)
+
+        // loadOlder hits rotated history "logical:h2" and must trigger FetchLatest instead of stalling on "logical:h1".
+        repository.loadOlder(key)
+        runCurrent()
+        assertEquals("logical:h2", snapshot.history)
+        assertEquals(2, latestCalls)
+
+        // Next loadOlder now matches "logical:h2" and merges older items cleanly.
+        repository.loadOlder(key)
+        runCurrent()
+        assertEquals(listOf(3, 4, 5, 6), snapshot.items.map { it.seq })
+        assertFalse(snapshot.hasOlder)
+    }
+
     private fun JsonObject.type() = getValue("type").jsonPrimitive.content
 
     /** Records each save as it starts, then waits for [disk] when one is set. */

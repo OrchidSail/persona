@@ -120,6 +120,9 @@ class TasksStore(
     private val finishedTasks = mutableMapOf<String, Pair<TodoAsk, Todo>>()
     private val writing = Mutex()
     private val refreshingTodos = Mutex()
+    private val todosRefreshLock = Any()
+    private var todosRefreshRunning = false
+    private var todosRefreshPending = false
     private val agentLookup = TaskAgentLookup(api, scope)
     val agentSessions = agentLookup.sessions
     val agentLookupFailures = agentLookup.failures
@@ -284,47 +287,88 @@ class TasksStore(
         }
     }
 
+    /**
+     * Coalesces concurrent invalidations into one active fetch plus at most one trailing refresh, so a burst of
+     * `TodosEvent` pushes while a read is in flight never queues N back-to-back full reads.
+     */
     fun reloadTodos() {
+        synchronized(todosRefreshLock) {
+            if (todosRefreshRunning) {
+                todosRefreshPending = true
+                return
+            }
+            todosRefreshRunning = true
+        }
         scope.launch {
-            refreshingTodos.withLock {
-                try {
-                    val completionsBeforeRead = synchronized(todosLock) { finishedTasks.toMap() }
-                    val list = api.todos()
-                    _todosSupported.value = true
-                    todosLoaded = true
-                    synchronized(todosLock) {
-                        val shown = list.map { todo ->
-                            val completion = finishedTasks[todo.id]?.takeIf { it != completionsBeforeRead[todo.id] }
-                            when {
-                                completion != null && (todo.ask == null || todo.ask == completion.first) -> completion.second
-                                todo.ask?.askedAt?.let { (todo.id to it) in acceptedAsks } == true -> todo.copy(ask = null)
-                                else -> todo
-                            }
+            try {
+                while (true) {
+                    runTodosRefreshOnce()
+                    val again = synchronized(todosRefreshLock) {
+                        if (todosRefreshPending) {
+                            todosRefreshPending = false
+                            true
+                        } else {
+                            todosRefreshRunning = false
+                            false
                         }
-                        finishedTasks.keys.retainAll(shown.map { it.id }.toSet())
-                        answered = shown
-                        // The list first, then the flag, in this block: a card must not see "the list is in" while it
-                        // still holds the previous one and call a just-dispatched task gone (#5110).
-                        _todos.value = shown
+                    }
+                    if (!again) break
+                }
+            } catch (cancelled: CancellationException) {
+                synchronized(todosRefreshLock) {
+                    todosRefreshRunning = false
+                    todosRefreshPending = false
+                }
+                throw cancelled
+            } catch (error: Throwable) {
+                synchronized(todosRefreshLock) {
+                    todosRefreshRunning = false
+                    todosRefreshPending = false
+                }
+                throw error
+            }
+        }
+    }
+
+    private suspend fun runTodosRefreshOnce() {
+        refreshingTodos.withLock {
+            try {
+                val completionsBeforeRead = synchronized(todosLock) { finishedTasks.toMap() }
+                val list = api.todos()
+                _todosSupported.value = true
+                todosLoaded = true
+                synchronized(todosLock) {
+                    val shown = list.map { todo ->
+                        val completion = finishedTasks[todo.id]?.takeIf { it != completionsBeforeRead[todo.id] }
+                        when {
+                            completion != null && (todo.ask == null || todo.ask == completion.first) -> completion.second
+                            todo.ask?.askedAt?.let { (todo.id to it) in acceptedAsks } == true -> todo.copy(ask = null)
+                            else -> todo
+                        }
+                    }
+                    finishedTasks.keys.retainAll(shown.map { it.id }.toSet())
+                    answered = shown
+                    // The list first, then the flag, in this block: a card must not see "the list is in" while it
+                    // still holds the previous one and call a just-dispatched task gone (#5110).
+                    _todos.value = shown
+                    todosReady.value = true
+                }
+                dropStaleRoutes()
+                remember()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                val status = error::class.java.methods.firstOrNull { it.name == "getStatus" }?.invoke(error) as? Int
+                if (status == 404 || error.message?.contains("404") == true) {
+                    _todosSupported.value = false
+                    synchronized(todosLock) {
+                        answered = emptyList()
+                        _todos.value = emptyList()
                         todosReady.value = true
                     }
-                    dropStaleRoutes()
                     remember()
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (error: Exception) {
-                    val status = error::class.java.methods.firstOrNull { it.name == "getStatus" }?.invoke(error) as? Int
-                    if (status == 404 || error.message?.contains("404") == true) {
-                        _todosSupported.value = false
-                        synchronized(todosLock) {
-                            answered = emptyList()
-                            _todos.value = emptyList()
-                            todosReady.value = true
-                        }
-                        remember()
-                    }
-                    // Failed reads retain the last confirmed binding; a reconnect or open retries the read.
                 }
+                // Failed reads retain the last confirmed binding; a reconnect or open retries the read.
             }
         }
     }

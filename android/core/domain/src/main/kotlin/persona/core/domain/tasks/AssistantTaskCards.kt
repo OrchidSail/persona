@@ -7,6 +7,7 @@ import persona.core.contracts.FeedItem
 import persona.core.contracts.TaskPlan
 import persona.core.contracts.Todo
 import persona.core.domain.lines.ChatLine
+import persona.core.domain.lines.TimedExtraPayload
 
 /** One task's plan, current execution and retained receipts occupy the original planning slot. */
 data class MergedTaskCard(
@@ -38,8 +39,9 @@ data class DispatchedTask(
 )
 
 /** The hand-off cards under a reply that dispatched work: the tasks, in plan order. Each card opens its Agent. */
-data class DispatchHint(val tasks: List<DispatchedTask>) : AssistantExtra {
+data class DispatchHint(val tasks: List<DispatchedTask>, val at: Instant? = null) : AssistantExtra, TimedExtraPayload {
     val count: Int get() = tasks.size
+    override val anchorTime: Instant? get() = at
 }
 
 object AssistantTaskCards {
@@ -184,7 +186,13 @@ object AssistantTaskCards {
         val dispatched = cards.groupBy { it.identity.planId ?: it.identity.id }.filterValues { group ->
             group.any { it.todo != null || it.plan?.state == "started" || it.records.any { record -> record.kind == "task" } }
         }
-        val payloads = dispatched.mapValues { (_, group) ->
+        val dispatchedTimes = dispatched.mapValues { (_, group) ->
+            group.firstNotNullOfOrNull { card ->
+                sequenceOf(card.identity.at, card.plan?.createdAt, card.todo?.createdAt, card.records.firstOrNull()?.at)
+                    .firstOrNull { AssistantLines.time(it) != null }
+            } ?: group.first().identity.at
+        }
+        val payloads = dispatched.mapValues { (id, group) ->
             DispatchHint(group.sortedBy { it.identity.index ?: Int.MAX_VALUE }.map { card ->
                 val planned = card.identity.index?.let { card.plan?.tasks?.getOrNull(it) }
                 // the to-do's current title, the plan's until the to-do arrives
@@ -194,16 +202,12 @@ object AssistantTaskCards {
                     // A plan's tasks are New. A standalone task item's wake is the badge (#5110).
                     wake = if (card.identity.index == null) card.records.lastOrNull { it.kind == "task" }?.field("wake") else null,
                     key = card.identity.id)
-            })
+            }, at = AssistantLines.time(dispatchedTimes[id]))
         }
         val drawn = if (inline) drawnPlans(feed, plans, dispatched.keys) else emptySet()
         val visible = drawnFeed(feed)
-        val combined = visible.filterNot { isBackgroundEvent(it, inline) && it.id !in drawn } + dispatched.map { (id, group) ->
-            val at = group.firstNotNullOfOrNull { card ->
-                sequenceOf(card.identity.at, card.plan?.createdAt, card.todo?.createdAt, card.records.firstOrNull()?.at)
-                    .firstOrNull { AssistantLines.time(it) != null }
-            } ?: group.first().identity.at
-            FeedItem(id, at = at, kind = "unknown")
+        val combined = visible.filterNot { isBackgroundEvent(it, inline) && it.id !in drawn } + dispatched.keys.map { id ->
+            FeedItem(id, at = dispatchedTimes[id], kind = "unknown")
         }
         return AssistantLines.lines(lines, combined.sortedWith(compareBy({ AssistantLines.time(it.at) }, { it.id })),
             zone = zone, earliest = earliest).map { line ->
