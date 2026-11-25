@@ -518,6 +518,7 @@ fun ChatComposer(
     val composerPlaceholder = if (homeAssistant) stringResource(R.string.chat_composer_ask_persona, LocalPersonaName.current) else placeholder
 
     // The composer's own width, for how much of the model pill fits (the web measures its composer card the same way).
+    val modelPillInToolbar = PersonaTheme.style != AppStyle.Glass && modelPill != null
     val density = androidx.compose.ui.platform.LocalDensity.current
     var composerDp by remember { mutableFloatStateOf(0f) }
     ComposerFrame(
@@ -542,6 +543,11 @@ fun ChatComposer(
                 leading?.invoke(this)
             }
         },
+        toolbarEnd = if (modelPillInToolbar && expanded && enabled) ({
+            BoxWithConstraints(contentAlignment = Alignment.CenterEnd) {
+                ModelPillWidth.forToolbar(composerDp, maxWidth)?.let { width -> modelPill.invoke(width) }
+            }
+        }) else null,
         trailing = {
             if (expanded && compactShell) {
                 if (enabled && modelPill != null) {
@@ -554,7 +560,7 @@ fun ChatComposer(
                         }
                     }
                 } else Spacer(Modifier.weight(1f))
-            } else if (expanded && enabled) modelPill?.invoke(ModelPillWidth.of(composerDp))
+            } else if (!modelPillInToolbar && expanded && enabled) modelPill?.invoke(ModelPillWidth.of(composerDp))
             // The mic stays (iOS ShellComposerBar): more can be dictated after what is typed. Send beside it once there is
             // something to send, else a stop while the agent works; nothing else while the box is empty. On Glass the button
             // changing grows and shrinks as iOS's does (ComposerActionSlot, #4210 T3).

@@ -45,6 +45,16 @@ enum class ModelPillWidth {
             composerDp >= SMALL -> Small
             else -> Compact
         }
+
+        /** Picks the widest pill that fits inside a Brief/Board expanded toolbar slot without crowding leading controls. */
+        fun forToolbar(composerDp: Float, availableWidth: Dp): ModelPillWidth? = when {
+            composerDp >= NARROW -> of(composerDp)
+            availableWidth >= Tokens.Size.box150 -> Small
+            availableWidth >= Tokens.Size.box80 -> AgentComposer
+            availableWidth >= Tokens.MinTouch.android -> Compact
+            else -> null
+        }
+
         private const val WIDE = 600f
         private const val NARROW = 520f
         private const val SMALL = 420f
@@ -111,11 +121,12 @@ fun JModelPill(
     }
     val mark = if (small) Tokens.Size.markXS else Tokens.Size.markS
     val chevron = if (small) Tokens.Size.markXS else Tokens.Size.markS
+    val shape = if (PersonaTheme.style == AppStyle.Board) PersonaTheme.shapes.controlShape else CircleShape
     Row(
         modifier.heightIn(min = Tokens.Size.wellXS)
             .then(if (onClick != null) Modifier.minimumInteractiveComponentSize() else Modifier)
-            .clip(CircleShape)
-            .then(if (open) Modifier.background(palette.surfaceStrong).border(Tokens.Size.line, palette.line, CircleShape) else Modifier)
+            .clip(shape)
+            .then(if (open) Modifier.background(palette.surfaceStrong).border(Tokens.Size.line, palette.line, shape) else Modifier)
             .then(if (onClick != null) Modifier.clickable(enabled = enabled, role = Role.Button, onClick = onClick) else Modifier)
             .clearAndSetSemantics {
                 contentDescription = spoken

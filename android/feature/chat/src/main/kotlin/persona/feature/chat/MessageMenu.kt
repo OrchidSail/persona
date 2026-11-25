@@ -180,6 +180,8 @@ internal fun MessageMenuSheet(
     rewind: RewindMenu? = null,
     /** "Delete" / "Cancel send" on a message only on this phone ([MessageTarget.pending]). */
     onDelete: ((MessageTarget) -> Unit)? = null,
+    /** "Edit" on an unsent message only on this phone ([MessageTarget.pending]): pulls it out of the outbox into the composer. */
+    onEditPending: ((MessageTarget) -> Unit)? = null,
     /** Who answers here and where: on Glass "Share" opens the message's picture (iOS `MessageShareSheet`); without, it shares the text. */
     share: ShareCardSource? = null,
     /** Star state for the currently opened message: null = unavailable, false = offer Star, true = offer Unstar. */
@@ -196,7 +198,7 @@ internal fun MessageMenuSheet(
     val target = menu.target
     val resources = LocalResources.current
     val extras = MessageExtras(fork = onFork != null, rewind = rewind != null, rewindBlock = rewind?.block, delete = onDelete != null,
-        dontSend = PersonaTheme.style == AppStyle.Glass, star = if (onStar != null) star else null)
+        editPending = onEditPending != null, dontSend = PersonaTheme.style == AppStyle.Glass, star = if (onStar != null) star else null)
     // The modules' message actions (#13847), last, while a message's menu is open.
     val moduleActions = if (target == null) emptyList() else persona.core.moduleapi.LocalModuleActions.current.actions(
         persona.core.moduleapi.MenuSlot.MessageActions, persona.core.moduleapi.ModuleActionTarget(messageId = target.id, text = target.text))
@@ -214,7 +216,7 @@ internal fun MessageMenuSheet(
             MessageAction.Unstar -> onStar?.invoke(target, true)
             MessageAction.Forward -> onForward?.invoke(target)
             MessageAction.Context -> onContext(target.text)
-            MessageAction.Edit -> onEdit(target.editText)
+            MessageAction.Edit -> if (target.pending != null) onEditPending?.invoke(target) else onEdit(target.editText)
             MessageAction.Fork -> onFork?.invoke(target.id)
             MessageAction.Rewind -> rewinding = target
             MessageAction.Delete -> onDelete?.invoke(target)
@@ -258,6 +260,8 @@ internal enum class MessageAction(@StringRes val label: Int) {
  */
 internal data class MessageExtras(val fork: Boolean = false, val rewind: Boolean = false, val rewindBlock: String? = null,
     val delete: Boolean = false,
+    /** Editing a message still in the local outbox pulls it back into the composer instead of duplicating it. */
+    val editPending: Boolean = false,
     /** Deleting one still waiting reads "Don't send", the word of its mark's menu on Glass ([OutboxBubble], iOS); else "Cancel send". */
     val dontSend: Boolean = false,
     /** Starred messages state: null = unavailable, false = offer Star, true = offer Unstar. */
@@ -268,6 +272,7 @@ internal fun messageActions(target: MessageTarget, writes: Boolean, forward: Boo
     extras: MessageExtras = MessageExtras()): List<MessageAction> = buildList {
     target.pending?.let { state ->
         addAll(listOf(MessageAction.Copy, MessageAction.Select, MessageAction.Share))
+        if (writes && extras.editPending && state.allows(DeliveryAction.Edit, canSend = writes)) add(MessageAction.Edit)
         if (writes && extras.delete && (state.allows(DeliveryAction.Cancel) || state.allows(DeliveryAction.Delete))) add(MessageAction.Delete)
         return@buildList
     }

@@ -293,9 +293,6 @@ fun AssistantScreen(
     val starterMentions = rememberStarterMentions(managerChoice.hubId, managerChoice.shown)
     // The conversation that launcher started for a message that then failed to send: its retry goes there.
     var starterStarted by sendState.started
-    var launchers by remember(pageManagement, assistantMachine) { mutableStateOf<List<persona.core.contracts.api.AgentLauncher>?>(null) }
-    var launchersFailed by remember(pageManagement, assistantMachine) { mutableStateOf(false) }
-    var defaultLauncher by remember(pageManagement) { mutableStateOf<String?>(null) }
     val hasChat = chatContent != null || assistantChatContent != null
     // Ask Persona's cursor for the main conversation's composer, inside the shared chat page.
     val focusAsk = remember { persona.feature.chat.ComposerFocusAsk() }
@@ -622,19 +619,6 @@ fun AssistantScreen(
             assistantAttempt { followPhoneZone(pageManagement.settingsApi(), StoredTimezoneChoice(context)) }
         }
     }
-    // The chip's default and list: read when the page shows and again on each open (the default may have changed in
-    // Settings; a list that could not be read is tried again), as the web reads them each time its menu opens.
-    suspend fun loadStarterLaunchers() {
-        loadAssistantStarterLaunchers(pageManagement,
-            enabled = startConversationWith != null && !demo,
-            machine = assistantMachine,
-            onDefault = { defaultLauncher = it },
-            loaded = launchers != null,
-            onLoading = { launchersFailed = false },
-            onSuccess = { machine, result -> if (machine == assistantMachine) launchers = result },
-            onFailure = { machine -> if (machine == assistantMachine) launchersFailed = true })
-    }
-    LaunchedEffect(pageManagement, assistantMachine, startConversationWith) { loadStarterLaunchers() }
     // The health space's new-chat page lists its past chats: read each time it opens.
     LaunchedEffect(healthPage) { if (healthPage && conversationsOf != null) assistantAttempt { loadHealth() } }
     // A space's home lists its past chats: read each time it opens.
@@ -964,34 +948,24 @@ fun AssistantScreen(
                             extraContent = starterQuotes.isNotEmpty() || homeForwards.isNotEmpty(), assistantChat = true,
                             mentions = mentions, onMention = starterMentions::add,
                             onMentionOpen = { mentionOpen = it },
-                            // Glass: the model pill and its panel (#5055, the web's new-chat page): the pick is this chat's start.
-                            modelPill = if (PersonaTheme.style == AppStyle.Glass && active == null && !healthPage && !spacePage && pageManagement != null &&
+                            // The model pill and its panel (#5055, the web's new-chat page), shared across every style: the pick is this chat's start.
+                            modelPill = if (active == null && !healthPage && !spacePage && pageManagement != null &&
                                 startConversationWith != null && !demo) ({ width ->
                                 persona.feature.chat.PersonaModelPill(null, assistantMachine, pageManagement, width,
                                     pagePick = starterLauncher?.let { persona.core.contracts.ModelPick(it, starterModel, starterEffort) },
                                     onPagePick = { pick ->
                                         // Another setup does not reuse what the last one started.
-                                        if (pick?.launcher != starterLauncher || pick?.model != starterModel) starterStarted = null
+                                        if (pick?.launcher != starterLauncher || pick?.model != starterModel || pick?.effort != starterEffort) starterStarted = null
                                         starterLauncher = pick?.launcher; starterModel = pick?.model; starterEffort = pick?.effort
                                     },
                                     onNotice = { message -> if (feedback?.notice(message) != true) toast.show(persona.core.designsystem.FeedbackNotice(message)) },
                                     enabled = !sending)
                             }) else null,
-                            // A new conversation's launcher, for it alone (iOS StarterComposer, web StarterLauncherChip); Glass's is the pill.
-                            accessory = if (homeForwards.isNotEmpty() || starterQuotes.isNotEmpty() ||
-                                (active == null && !healthPage && !spacePage && pageManagement != null && startConversationWith != null && !demo)) ({
+                            accessory = if (homeForwards.isNotEmpty() || starterQuotes.isNotEmpty()) ({
                                 persona.feature.chat.ForwardComposerCards(homeForwards) { removed ->
                                     persona.feature.chat.ForwardPlacements.home = persona.feature.chat.ForwardPlacements.home - removed.toSet()
                                 }
-                                if (active == null && !healthPage && !spacePage && pageManagement != null && startConversationWith != null && !demo) {
-                                    if (mentionsHere) StarterQuoteCards(starterMentions)
-                                    if (PersonaTheme.style != AppStyle.Glass) StarterLauncherChip(starterLauncher, defaultLauncher, launchers, launchersFailed, enabled = !sending,
-                                        onOpen = { scope.launch { loadStarterLaunchers() } }) { picked ->
-                                        // Another launcher (or the default) does not reuse what the last one started.
-                                        if (picked != starterLauncher) starterStarted = null
-                                        starterLauncher = picked
-                                    }
-                                } else if (starterQuotes.isNotEmpty()) StarterQuoteCards(starterMentions)
+                                if (starterQuotes.isNotEmpty()) StarterQuoteCards(starterMentions)
                             }) else null)
                     }
                 }

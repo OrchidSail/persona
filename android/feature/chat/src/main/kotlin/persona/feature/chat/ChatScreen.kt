@@ -624,7 +624,7 @@ private fun ChatPage(
     fun send(command: String? = null, onFailed: () -> Unit = {}): Boolean = interactionController.send(command,
         draft = composer.draft, contexts = linkContexts, hasContent = composer.hasContent, ready = composer.ready,
         wireText = command ?: linkMessage(composer.message(), linkContexts, context.resources), paneId = session?.paneId,
-        conversationLauncher = conversationLauncher, conversationModel = conversationModel, glassAgent = glass && agentChat,
+        conversationLauncher = conversationLauncher, conversationModel = conversationModel, agentChat = agentChat,
         onFailed = onFailed, onCleared = { refs -> linkContexts = linkContexts.filterNot { ref -> refs.any { it.id == ref.id } } })
     // Chat content (group A): the message menu, quote and context actions.
     // A swipe to the left quotes (iOS #1058) wherever the long-press menu's "Quote" is offered.
@@ -1275,11 +1275,15 @@ private fun ChatPage(
                                                 openRequested = openPermissions, onOpenHandled = { openPermissions = false }) { modeOverlay = it }
                                         }) else null
                                         // Brief and Board: also an agent whose model the node switches itself (a Paseo
-                                        // provider's), its launcher's models listed in the sheet (#8143).
+                                        // provider's), its launcher's models listed in the sheet (#8143). When AgentModelPill
+                                        // is active for an Agent chat, `/model` opens the unified model panel rather than both.
                                         modeSheet -> ({
+                                            val modeBarTakesModel = !agentChat || switchSession == null
                                             ChatModeBar(session, controls, connection == null || connection == ConnectionState.Online,
                                                 onOverlay = { modeOverlay = it }, onPickModel = { model -> send("/model $model") },
-                                                openRequested = openModes || openPermissions, onOpenHandled = { openModes = false; openPermissions = false }, creation = chrome.worktrees)
+                                                openRequested = (modeBarTakesModel && openModes) || openPermissions,
+                                                onOpenHandled = { if (modeBarTakesModel) openModes = false; openPermissions = false },
+                                                creation = chrome.worktrees)
                                         })
                                         else -> null
                                     },
@@ -1294,8 +1298,8 @@ private fun ChatPage(
                                             conversationModel = model
                                         }
                                     }) else null,
-                                    // The model pill (#5055, the web's ModelPill): Glass's, in an Agent's chat and a Persona chat.
-                                    modelPill = if (!glass || switchSession == null) null else ({ width ->
+                                    // The model pill (#5055, the web's ModelPill): every style for Agent chats, and Glass for Persona chats.
+                                    modelPill = if (switchSession == null || (!agentChat && !glass)) null else ({ width ->
                                         val online = connection == null || connection == ConnectionState.Online
                                         if (agentChat) AgentModelPill(switchSession, controls, chrome.worktrees?.invoke(), online, width,
                                             onSwitch = { switch ->
@@ -1387,7 +1391,10 @@ private fun ChatPage(
                 onNotice = { notice = it }, onFork = onFork, rewindMenu = rewindMenu,
                 onDelete = { target -> messages.firstOrNull { it.clientMessageId == target.id }?.let { message ->
                     deliveryAction(message, if (message.state.allows(DeliveryAction.Cancel)) DeliveryAction.Cancel else DeliveryAction.Delete)
-                } }, viewerState, chatList, backgroundActions = chrome.actions,
+                } },
+                onEditPending = if (readOnly) null else ({ target -> messages.firstOrNull { it.clientMessageId == target.id }?.let { message ->
+                    deliveryAction(message, DeliveryAction.Edit)
+                } }), viewerState, chatList, backgroundActions = chrome.actions,
                 backgroundConnection = chrome.connection, backgroundFiles = chrome.files,
                 imageLimits = imageLimits, canUploadPhotos = composerService != null)
             pageTakeover?.let { CodexTakeoverDialogs(it) }

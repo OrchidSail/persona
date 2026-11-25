@@ -9,12 +9,10 @@ import persona.core.contracts.ImageLimits
 import persona.core.contracts.Session
 import persona.core.contracts.api.ChatActions
 import persona.core.contracts.api.hubCodedFailure
-import persona.core.designsystem.AppStyle
 import persona.core.designsystem.JAction
 import persona.core.designsystem.JActionSheet
 import persona.core.designsystem.LocalHubImageLimits
 import persona.core.designsystem.LocalPersonaName
-import persona.core.designsystem.PersonaTheme
 import persona.core.designsystem.rememberCopy
 import persona.core.designsystem.QueueStrip
 import persona.core.designsystem.RelayedQueueItem
@@ -89,11 +87,11 @@ private val SEND_NOW_REFUSALS = setOf("nothing_queued", "send_now_unsupported", 
     "assistant_control_failed")
 
 /**
- * Queue strip (iOS QueueStrip): what was typed while the agent works and not taken yet, right above the composer (on
- * Glass folded to its one line until tapped). Tapping a message offers "Take back to edit" (back into the box, after the
- * draft on a new line), "Copy" and "Delete"; for Claude in a terminal pane and Persona's conversations
- * ([reordersQueue]) also "Move up" / "Move down", and on Glass the line's "Send now" at one press (#7170, as the web
- * since #7154). TalkBack reads what that confirmation used to say with the button. In Persona's conversation the line
+ * Queue strip (iOS QueueStrip): what was typed while the agent works and not taken yet, right above the composer
+ * (folded to its one line until tapped in every style). Tapping a message offers "Take back to edit" (back into the
+ * box, after the draft on a new line), "Copy" and "Delete"; for Claude in a terminal pane and Persona's conversations
+ * ([reordersQueue]) also "Move up" / "Move down", and the line's "Send now" at one press (#7170, as the web since
+ * #7154). TalkBack reads what that confirmation used to say with the button. In Persona's conversation the line
  * names Persona, and the messages relayed from other conversations or the system come last ([ownQueued]), offering
  * only "Copy". Quiet relays say they arrive with the next message. Editing and moving go
  * through the node's session.queue.edit (POST …/queue {keep}): it pulls the whole queue out of the agent and puts the
@@ -176,8 +174,8 @@ internal fun ChatQueueStrip(
         ?: stringResource(R.string.chat_queue_send_now_message)
     val photoMark = stringResource(R.string.chat_composer_photo_placeholder)
     val videoMark = stringResource(R.string.chat_composer_video_placeholder)
-    // Glass says how many photos a Persona message carries under its words (iOS's "N images", from what this phone sent), not as a mark among them.
-    val photoCounts = if (persona != null && PersonaTheme.style == AppStyle.Glass) queued.take(own).mapIndexed { _, text -> composerPhotoCount(text) }
+    // Every style says how many photos a Persona message carries under its words (iOS's "N images", from what this phone sent), not as a mark among them.
+    val photoCounts = if (persona != null) queued.take(own).map { text -> composerPhotoCount(text) }
         else emptyList()
     // The owner's own rows and the ones other conversations sent in are separate: since #6394 the latter collapse to
     // one summary line inside QueueStrip instead of spreading over the composer.

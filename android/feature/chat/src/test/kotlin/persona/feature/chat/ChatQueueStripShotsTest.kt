@@ -92,15 +92,12 @@ class ChatQueueStripShotsTest {
                 rule.waitForIdle()
             }
             save("open", s, d)
-            // Glass sends at one press and draws no dialog. Brief and Board have no Send now.
-            val sendsNow = s == AppStyle.Glass
-            rule.onAllNodesWithText("Send now").assertCountEquals(if (sendsNow) 1 else 0)
-            if (sendsNow) {
-                rule.onAllNodesWithText("Send now")[0].performClick()
-                rule.waitForIdle()
-                rule.onAllNodes(isDialog()).assertCountEquals(0)
-                save("send-now", s, d)
-            }
+            // Every style sends at one press and draws no dialog.
+            rule.onAllNodesWithText("Send now").assertCountEquals(1)
+            rule.onAllNodesWithText("Send now")[0].performClick()
+            rule.waitForIdle()
+            rule.onAllNodes(isDialog()).assertCountEquals(0)
+            save("send-now", s, d)
         }
     }
 }

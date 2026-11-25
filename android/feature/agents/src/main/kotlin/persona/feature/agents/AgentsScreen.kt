@@ -863,8 +863,8 @@ internal fun AgentsScreen(
                                 onToggle = { model.fold(group) },
                                 other = group.id.endsWith("/project/other#"),
                                 machine = machineName,
-                                // iOS `compact ? CompactList…`; Board uses the denser type too.
-                                compact = page.preferences.compact || PersonaTheme.style == AppStyle.Board,
+                                // Follow the user's compact / detailed preference across every style.
+                                compact = page.preferences.compact,
                             )
                         } else if (group.id.startsWith("machine/")) {
                             // By Machine (#9319, iOS `MachineSectionHeader`): the computer's mark, online tint, state counts

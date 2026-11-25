@@ -223,14 +223,11 @@ class AssistantQueueShotsTest {
                 rule.onAllNodesWithContentDescription("queued · Persona", substring = true)[0].performClick(); settle()
             }
             shot("queue-open-$suffix")
-            // Glass sends at one press and draws no dialog. Brief and Board have no Send now.
-            val sendsNow = s == AppStyle.Glass
-            rule.onAllNodesWithText("Send now").assertCountEquals(if (sendsNow) 1 else 0)
-            if (sendsNow) {
-                rule.onAllNodesWithText("Send now")[0].performClick(); settle()
-                rule.onAllNodes(isDialog()).assertCountEquals(0)
-                shot("queue-send-now-$suffix")
-            }
+            // Every style sends at one press and draws no dialog.
+            rule.onAllNodesWithText("Send now").assertCountEquals(1)
+            rule.onAllNodesWithText("Send now")[0].performClick(); settle()
+            rule.onAllNodes(isDialog()).assertCountEquals(0)
+            shot("queue-send-now-$suffix")
         }
         // Nothing queued: the page as it was before the queue came to it.
         sessions.sessions.value = listOf(persona.copy(queued = null), web)
@@ -275,8 +272,8 @@ class AssistantQueueShotsTest {
                 rule.onAllNodesWithContentDescription("queued · Persona", substring = true)[0].performClick(); settle()
             }
             shot("queue-photos-${s.name.lowercase()}-${if (d) "dark" else "light"}")
-            rule.onAllNodesWithText("2 images").assertCountEquals(if (s == AppStyle.Glass) 1 else 0)
-            rule.onAllNodesWithText("1 image").assertCountEquals(if (s == AppStyle.Glass) 1 else 0)
+            rule.onAllNodesWithText("2 images").assertCountEquals(1)
+            rule.onAllNodesWithText("1 image").assertCountEquals(1)
             rule.onAllNodesWithContentDescription("queued · Persona", substring = true).fetchSemanticsNodes().firstOrNull()?.let {
                 rule.onAllNodesWithContentDescription("queued · Persona", substring = true)[0].performClick(); settle()
             }

@@ -629,7 +629,7 @@ internal fun rememberChatPageSession(key: SessionKey, chrome: ChatChromeBindings
     // A paged hint can describe a change the summary omits. Only a fresh complete row is evidence of a switch.
     val details = remember(key, chrome.actions, chrome.connection) { SessionDetailObservations(key) }
     val features = LocalHubFeatures.current
-    val trackSwitch = !readOnly && renderStyle == ChatRenderStyle.Agent && PersonaTheme.style == AppStyle.Glass &&
+    val trackSwitch = !readOnly && renderStyle == ChatRenderStyle.Agent &&
         (AgentModelPanel.LAUNCHER_SWITCH in features || AgentModelPanel.ENGINE_SWITCH in features)
     val exact = "sessions_lookup" in features
     val refreshDetail: suspend () -> Unit = {

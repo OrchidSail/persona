@@ -106,10 +106,10 @@ class ModelPillTest {
         rule.onNodeWithTag("model-pill").assertContentDescriptionContains("Opus", substring = true)
     }
 
-    @Test fun onlyTheUsersMessageOnGlassCarriesAWaitingSwitchOut() {
+    @Test fun agentChatsCarryAWaitingSwitchOutWhileNonAgentChatsDoNot() {
         val waiting = agent.copy(pendingSwitch = PendingSwitch("work"))
         assertTrue(switchesNext(waiting, on = true))
-        assertFalse("Brief and Board show no switch: their messages leave it waiting", switchesNext(waiting, on = false))
+        assertFalse("non-agent chats do not apply agent pendingSwitch", switchesNext(waiting, on = false))
         assertFalse("none waits", switchesNext(agent, on = true))
         assertFalse("its own launcher is no switch", switchesNext(agent.copy(pendingSwitch = PendingSwitch("example")), on = true))
         assertFalse(switchesNext(null, on = true))

@@ -173,14 +173,15 @@ class ComposerDensityTest {
         for (s in AppStyle.entries) {
             rule.runOnIdle { style = s; fontScale = 1f }
             val strip = rule.onNodeWithTag("queue").getUnclippedBoundsInRoot()
+            val header = rule.onNodeWithContentDescription("排队中 1 条 · Persona 忙完会依次处理，已展开")
+            val headerBounds = header.getUnclippedBoundsInRoot()
+            assertTrue("$s queue header touch height (${headerBounds.height}) >= 48dp", headerBounds.height >= Tokens.MinTouch.android)
             val row = rule.onNodeWithContentDescription("第 1 条：为什么这条排队消息占了这么高")
             val rowBounds = row.getUnclippedBoundsInRoot()
-            val minRow = if (s == AppStyle.Glass) JChipTokens.height else Tokens.Size.slimBar
+            val minRow = if (s == AppStyle.Glass) JChipTokens.height else Tokens.MinTouch.ios
             assertTrue("$s queue row height (${rowBounds.height}) >= $minRow", rowBounds.height >= minRow)
-            if (s != AppStyle.Glass) {
-                // Single-line PlainQueueStrip tightened from ~88dp to <= 76dp.
-                assertTrue("$s single-item queue height (${strip.height}) <= 76dp", strip.height <= 76.dp)
-            }
+            // Single-item expanded strip keeps header (48dp) + one row compact across all styles.
+            assertTrue("$s single-item expanded queue height (${strip.height}) <= 120dp", strip.height <= 120.dp)
             picked.clear()
             row.performClick()
             rule.waitForIdle()

@@ -499,6 +499,8 @@ fun ComposerFrame(
     expanded: Boolean = false,
     // The compact Agent composer uses the shell's opaque material and a tighter toolbar.
     useShellSurface: Boolean = false,
+    // Optional end-aligned toolbar controls on the expanded second row (used by Brief and Board for the model pill).
+    toolbarEnd: (@Composable RowScope.() -> Unit)? = null,
     field: @Composable BoxScope.() -> Unit,
 ) {
     val palette = PersonaTheme.palette
@@ -566,7 +568,7 @@ fun ComposerFrame(
                     start = Tokens.Space.m,
                     end = Tokens.Space.m,
                     top = Tokens.Space.xs,
-                    bottom = if (expanded && leading != null) Tokens.Space.xxs else Tokens.Space.sm,
+                bottom = if (expanded && (leading != null || toolbarEnd != null)) Tokens.Space.xxs else Tokens.Space.sm,
                 ),
         ) {
             accessory?.let { ComposerAccessorySlot(horizontal = Tokens.Space.xs, bottom = Tokens.Space.xs, content = it) }
@@ -581,9 +583,11 @@ fun ComposerFrame(
                     trailing?.let { Row { it() } }
                 }
             }
-            if (expanded && leading != null) Row(verticalAlignment = Alignment.CenterVertically) {
+            if (expanded && (leading != null || toolbarEnd != null)) Row(verticalAlignment = Alignment.CenterVertically) {
                 leading?.invoke(this)
-                Spacer(Modifier.weight(1f))
+                if (toolbarEnd != null) Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+                    Row(verticalAlignment = Alignment.CenterVertically, content = toolbarEnd)
+                } else Spacer(Modifier.weight(1f))
             }
         }
         // The board's grey under a rule, the field a white ticket on it: no white plate across the bottom.
@@ -595,7 +599,7 @@ fun ComposerFrame(
                     start = Tokens.Space.s,
                     end = Tokens.Space.s,
                     top = Tokens.Space.xs,
-                    bottom = if (expanded && leading != null) Tokens.Space.xxs else Tokens.Space.sm,
+                    bottom = if (expanded && (leading != null || toolbarEnd != null)) Tokens.Space.xxs else Tokens.Space.sm,
                 ),
         ) {
             accessory?.let { ComposerAccessorySlot(bottom = Tokens.Space.xs, content = it) }
@@ -608,9 +612,11 @@ fun ComposerFrame(
                 )
                 trailing?.let { Spacer(Modifier.width(Tokens.Space.s)); it() }
             }
-            if (expanded && leading != null) Row(verticalAlignment = Alignment.CenterVertically) {
+            if (expanded && (leading != null || toolbarEnd != null)) Row(verticalAlignment = Alignment.CenterVertically) {
                 leading?.invoke(this)
-                Spacer(Modifier.weight(1f))
+                if (toolbarEnd != null) Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+                    Row(verticalAlignment = Alignment.CenterVertically, content = toolbarEnd)
+                } else Spacer(Modifier.weight(1f))
             }
         }
     }
@@ -776,6 +782,10 @@ fun JumpToLatest(count: Int, onClick: () -> Unit, modifier: Modifier = Modifier)
     }
 }
 
+/** Progress ring fraction for [PlanPill]: completed steps over total steps, clamped to `[0, 1]` across every style. */
+internal fun planPillProgressFraction(done: Int, total: Int): Float =
+    if (total > 0) (done.toFloat() / total).coerceIn(0f, 1f) else 0f
+
 /**
  * Above the composer while the latest plan card is out of view (web `PlanPill`): a ring with how far along it is and
  * "Step N/M" (a check once all are done); a tap scrolls back to the card. Shaped like [JumpToLatest] in each style.
@@ -806,7 +816,7 @@ fun PlanPill(step: Int, total: Int, done: Int, onClick: () -> Unit, modifier: Mo
         val progressInk = if (style == AppStyle.Glass) palette.positive else ink
         if (allDone) JIcon(PhIcons.Check, null, size = 14.dp, tint = progressInk)
         else {
-            val fraction = if (total > 0) (if (style == AppStyle.Glass) done.toFloat() else step.toFloat()) / total else 0f
+            val fraction = planPillProgressFraction(done, total)
             Box(Modifier.size(16.dp).drawBehind {
                 val stroke = 2.dp.toPx()
                 val arc = androidx.compose.ui.geometry.Size(size.width - stroke, size.height - stroke)

@@ -51,12 +51,19 @@ class ChatOutboxBubbleTest {
         }
         assertNull(outboxMark(DeliveryState.Sent))
         assertTrue(drawsAsPendingBubble(DeliveryState.Sent))
-        assertEquals(listOf(DeliveryAction.RetryNow, DeliveryAction.Cancel), outboxMarkActions(OutboxMark.Waiting))
+        assertEquals(listOf(DeliveryAction.Edit, DeliveryAction.RetryNow, DeliveryAction.Cancel), outboxMarkActions(OutboxMark.Waiting))
         assertEquals(listOf(DeliveryAction.Retry, DeliveryAction.Delete), outboxMarkActions(OutboxMark.Failed))
         assertTrue(outboxMarkActions(OutboxMark.Sending).isEmpty())
+        assertEquals(listOf(DeliveryAction.Edit, DeliveryAction.RetryNow, DeliveryAction.Cancel), outboxMarkActions(DeliveryState.Queued))
+        assertEquals(listOf(DeliveryAction.Edit, DeliveryAction.RetryNow, DeliveryAction.Cancel), outboxMarkActions(DeliveryState.WaitingForNetwork))
+        assertEquals(listOf(DeliveryAction.Edit, DeliveryAction.Retry, DeliveryAction.Delete), outboxMarkActions(DeliveryState.Refused))
+        assertEquals(listOf(DeliveryAction.Retry, DeliveryAction.Delete), outboxMarkActions(DeliveryState.Rejected))
         // Every action of a mark's menu is one its state allows.
-        for (state in DeliveryState.entries) outboxMark(state)?.let { mark ->
-            outboxMarkActions(mark).forEach { assertTrue("$state $it", state.allows(it)) }
+        for (state in DeliveryState.entries) {
+            outboxMarkActions(state).forEach { assertTrue("$state $it", state.allows(it)) }
+            outboxMark(state)?.let { mark ->
+                outboxMarkActions(mark).forEach { assertTrue("$state $it", state.allows(it)) }
+            }
         }
         assertTrue(DeliveryState.Queued.allows(DeliveryAction.RetryNow))
         assertFalse(DeliveryState.Refused.allows(DeliveryAction.RetryNow))
@@ -67,12 +74,12 @@ class ChatOutboxBubbleTest {
         val waiting = MessageTarget("m1", "words", true, "words", DeliveryState.WaitingForNetwork)
         fun last(extras: MessageExtras, target: MessageTarget = waiting) =
             messageMenuActions(target, writes = true, forward = false, res, extras) {}.last().label
-        assertEquals("Don't send", last(MessageExtras(delete = true, dontSend = true)))
-        assertEquals("Cancel send", last(MessageExtras(delete = true)))
-        assertEquals("Delete", last(MessageExtras(delete = true, dontSend = true), waiting.copy(pending = DeliveryState.Refused)))
+        assertEquals("Don't send", last(MessageExtras(delete = true, editPending = true, dontSend = true)))
+        assertEquals("Cancel send", last(MessageExtras(delete = true, editPending = true)))
+        assertEquals("Delete", last(MessageExtras(delete = true, editPending = true, dontSend = true), waiting.copy(pending = DeliveryState.Refused)))
     }
 
-    /** The waiting mark's menu: Retry now, then Don't send; also TalkBack's actions on the mark. */
+    /** The waiting mark's menu: Edit, Retry now, then Don't send; also TalkBack's actions on the mark. */
     @Test fun theMarksMenuActs() {
         val done = mutableListOf<DeliveryAction>()
         rule.setContent {
@@ -82,18 +89,21 @@ class ChatOutboxBubbleTest {
         }
         rule.onNodeWithText("Sends when connected").assertExists()
         val mark = rule.onNodeWithContentDescription("Waiting for network, will send once connected")
-        assertEquals(listOf("Retry now", "Don't send"), mark.fetchSemanticsNode().config[SemanticsActions.CustomActions].map { it.label })
+        assertEquals(listOf("Edit", "Retry now", "Don't send"), mark.fetchSemanticsNode().config[SemanticsActions.CustomActions].map { it.label })
+        mark.performClick()
+        rule.onNodeWithText("Edit").performClick()
+        rule.waitForIdle()
         mark.performClick()
         rule.onNodeWithText("Retry now").performClick()
         rule.waitForIdle()
         mark.performClick()
         rule.onNodeWithText("Don't send").performClick()
         rule.waitForIdle()
-        assertEquals(listOf(DeliveryAction.RetryNow, DeliveryAction.Cancel), done)
+        assertEquals(listOf(DeliveryAction.Edit, DeliveryAction.RetryNow, DeliveryAction.Cancel), done)
     }
 
-    /** One that did not go: a red mark whose menu is Resend and Delete; a read-only chat's mark has no menu. */
-    @Test fun aFailedMarkOffersResendAndDelete() {
+    /** One that was refused: a red mark whose menu is Edit, Resend and Delete; a read-only chat's mark has no menu. */
+    @Test fun aFailedMarkOffersEditResendAndDelete() {
         val done = mutableListOf<DeliveryAction>()
         var readOnly by mutableStateOf(false)
         rule.setContent {
@@ -102,13 +112,17 @@ class ChatOutboxBubbleTest {
             }
         }
         val mark = rule.onNodeWithContentDescription("Failed to send. Resend or delete.")
+        assertEquals(listOf("Edit", "Resend", "Delete"), mark.fetchSemanticsNode().config[SemanticsActions.CustomActions].map { it.label })
+        mark.performClick()
+        rule.onNodeWithText("Edit").performClick()
+        rule.waitForIdle()
         mark.performClick()
         rule.onNodeWithText("Resend").performClick()
         rule.waitForIdle()
         mark.performClick()
         rule.onNodeWithText("Delete").performClick()
         rule.waitForIdle()
-        assertEquals(listOf(DeliveryAction.Retry, DeliveryAction.Delete), done)
+        assertEquals(listOf(DeliveryAction.Edit, DeliveryAction.Retry, DeliveryAction.Delete), done)
         readOnly = true
         rule.waitForIdle()
         assertNull(mark.fetchSemanticsNode().config.getOrNull(SemanticsActions.OnClick))

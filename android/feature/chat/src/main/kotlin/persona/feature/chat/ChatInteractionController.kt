@@ -183,14 +183,14 @@ internal class ChatInteractionController(
         paneId: String?,
         conversationLauncher: String?,
         conversationModel: String?,
-        glassAgent: Boolean,
+        agentChat: Boolean,
         onFailed: () -> Unit = {},
         onCleared: (List<ChatLinkContext>) -> Unit,
     ): Boolean {
         if (readOnly.value || !canSend.value) return false
         if (sending.value || submittedDraft.value != null) return false
         if (command == null && ((!hasContent && contexts.isEmpty()) || !ready)) return false
-        val applyingSwitch = command == null && switchesNext(switchSession, glassAgent)
+        val applyingSwitch = command == null && switchesNext(switchSession, agentChat)
         if (applyingSwitch && draft.attachments.isNotEmpty() &&
             switchSession?.let(persona.core.domain.models.AgentModelPanel::pendingEngine) != null) {
             notify(resources.getString(R.string.chat_engine_switch_text_only))
@@ -212,7 +212,7 @@ internal class ChatInteractionController(
                 val routed = command == null && tasks != null && refs.isEmpty() && draft.attachments.isEmpty() &&
                     tasks.sendRouted(key.sessionId, draft.text.trim())
                 if (!routed) {
-                    // The user's own message carries a launcher switch waiting on Glass.
+                    // The user's own message carries any waiting launcher or engine switch across every style.
                     if (applyingSwitch) {
                         sender.sendApplyingSwitch(key, wireText, id)
                         drawerSwitch.value = null
