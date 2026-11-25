@@ -36,6 +36,8 @@ export interface HubConnector {
   last_event?: string;
   capabilities?: string[];
   hosts?: string[];
+  /** Owning extension's id when this connector is hosted by an extension (connector.Info.extension_id). */
+  extension_id?: string;
   /** Switched on (absent: a hub from before the switch, always on). */
   enabled?: boolean;
   /** "Add to knowledge base" / "Add to Inbox": only there when it has an archive, an inbox. */
@@ -199,10 +201,25 @@ export function isStarting(c?: HubConnector | null): boolean {
   return !!c && isEnabled(c) && undescribed(c);
 }
 
+const EXTENSION_MANAGED_ONLY_CAPS = new Set(["status", "tools", "actions"]);
+
+/**
+ * True when this connector is hosted by an extension and only exposes status/tools/actions (no standalone sign-in,
+ * archive/inbox feeds, or connector options page), so its single management entry lives in Settings › Extensions.
+ */
+export function isExtensionManagedOnly(c: HubConnector): boolean {
+  if (!c.extension_id?.trim()) return false;
+  const caps = (c.capabilities ?? []).filter((cap) => cap.trim() !== "");
+  if (caps.length === 0) return false;
+  if (c.archive !== undefined || c.inbox !== undefined || c.options !== undefined) return false;
+  return caps.every((cap) => EXTENSION_MANAGED_ONLY_CAPS.has(cap));
+}
+
 /** The connectors that get rows of their own after "Mail" and Lark (those two keep their own groups; Lark's only shows on a
- * hub with feature `lark`, `larkGroup`, so without it a connector named lark is listed like any other). */
+ * hub with feature `lark`, `larkGroup`, so without it a connector named lark is listed like any other). Extension-hosted
+ * tools-only connectors live under Settings › Extensions instead of duplicating a row here. */
 export function otherConnectors(list: HubConnector[], larkGroup = true): HubConnector[] {
-  return list.filter((c) => c.id !== "mail" && c.id !== "larkcli" && !(larkGroup && c.id === "lark"));
+  return list.filter((c) => c.id !== "mail" && c.id !== "larkcli" && !(larkGroup && c.id === "lark") && !isExtensionManagedOnly(c));
 }
 
 // ── brand and wording, by id (connector-profiles.ts) ─────

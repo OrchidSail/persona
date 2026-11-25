@@ -70,6 +70,20 @@ object ConnectorText {
 
     /** Signed in as far as the hub knows (a rate limit is still signed in). */
     fun isSignedIn(c: HubConnector): Boolean = c.status == "ok" || c.status == "rate_limited"
+
+    private val EXTENSION_MANAGED_ONLY_CAPABILITIES = setOf("status", "tools", "actions")
+
+    /**
+     * True when this connector is owned by an extension and only exposes status/tools/actions (no standalone sign-in,
+     * inbox/archive feeds, or connector options page), so its single management entry lives in Settings › Extensions.
+     */
+    fun isExtensionManagedOnly(c: HubConnector): Boolean {
+        if (c.extensionId.isNullOrBlank()) return false
+        val caps = c.capabilities?.filter { it.isNotBlank() }.orEmpty()
+        if (caps.isEmpty()) return false
+        if (c.archive != null || c.inbox != null || c.options != null) return false
+        return caps.all { it in EXTENSION_MANAGED_ONLY_CAPABILITIES }
+    }
 }
 
 /** Signing in to a connector: the step on screen ([bind]), and who signed in once it finished (said once). */
@@ -178,11 +192,17 @@ internal sealed interface ConnectorRow {
 
 /**
  * Settings › Connectors' rows: this phone, mail, Lark while the hub has Feishu chats ([lark], `LarkFeatures.chats`), then the
- * hub's other connectors (mail and Feishu have rows of their own).
+ * hub's other connectors (mail and Feishu have rows of their own, and extension-hosted tools-only connectors live under
+ * Settings › Extensions).
  */
 internal fun connectorRows(hubConnectors: List<HubConnector>, lark: Boolean): List<ConnectorRow> =
     listOfNotNull(ConnectorRow.Phone, ConnectorRow.Mail, ConnectorRow.Lark.takeIf { lark }) +
-        hubConnectors.filter { it.id != "mail" && it.id != "lark" }.map(ConnectorRow::Hub)
+        hubConnectors.filter { it.id != "mail" && it.id != "lark" && !ConnectorText.isExtensionManagedOnly(it) }.map(ConnectorRow::Hub)
+
+/** Compatibility destination for opening a hub connector: tools-only extension connectors jump straight to their extension page. */
+internal fun connectorDestination(c: HubConnector): androidx.navigation3.runtime.NavKey =
+    if (ConnectorText.isExtensionManagedOnly(c)) persona.core.navigation.ExtensionRoute(c.extensionId!!.trim(), manager = c.manager)
+    else persona.core.navigation.ConnectorRoute(c.id, c.manager)
 
 /** A merged list can contain the same provider under independent managers; name the owner when they collide. */
 internal fun connectorTitle(connector: HubConnector, connectors: List<HubConnector>, roster: ManagerRoster?): String {

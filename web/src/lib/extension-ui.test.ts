@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { initI18n } from "../i18n";
 import { ApiError } from "./api";
 import {
-  actUI, applyBadge, askText, barSpans, blocks, chartExtent, compactNumber, edgeLabels, extensionSettingsHref, extensionTrackRoute, fieldValues, inboxItemPlace, inboxSourceItem, isHttps, isUnsupported, labelWidth, linear, niceTicks, numberProblem, outcome,
+  actUI, applyBadge, askText, barSpans, blocks, chartExtent, compactNumber, edgeLabels, extensionSettingsHref, extensionTrackRoute, fieldValues, inboxItemPlace, inboxSourceItem, isHttps, isPhoneConnectorSettingsURL, isUnsupported, labelWidth, linear, niceTicks, numberProblem, outcome,
   percent, placesOf, pointText, readView, refreshDelay, renderUI, seriesColors, stackedShare, submitValues, thinLabels, toneOf, uiContext, uiIcon, uiPlaces, UI_VERSION, type UIPlace, type UIView,
 } from "./extension-ui";
 
@@ -278,6 +279,39 @@ describe("收件箱条目（inbox_item）", () => {
     // any other persona:// link stays as it was: nothing opens, nothing is drawn again
     expect(outcome({ open_url: "persona://settings/other" })).toEqual({ view: undefined, reload: false, toast: undefined, url: undefined });
   });
+  it("whitelists only exact persona://settings/connectors/phone", () => {
+    expect(isPhoneConnectorSettingsURL("persona://settings/connectors/phone")).toBe(true);
+    for (const bad of [
+      "persona://settings/connectors/phone/",
+      "persona://settings/connectors/phone?x=1",
+      "persona://settings/connectors/phone#a",
+      "persona://settings/connectors/phone/extra",
+      "persona://settings/connectors/phone/../mail",
+      "persona://settings/connectors/mail",
+      "jarvis://settings/connectors/phone",
+      "http://settings/connectors/phone",
+      "javascript:alert(1)",
+    ]) {
+      expect(isPhoneConnectorSettingsURL(bad)).toBe(false);
+    }
+  });
+  it.each([
+    ["zh-Hans", "请在安卓手机端打开以管理本机权限与安全门禁"],
+    ["en", "Open this on your Android phone to manage local permissions and safety gates"],
+    ["ja", "本体の権限と安全ゲートを管理するには、Android端末で開いてください"],
+  ] as const)("shows localized Android-only guidance in %s for persona://settings/connectors/phone", async (lang, expected) => {
+    try {
+      await initI18n(lang);
+      expect(outcome({ open_url: "persona://settings/connectors/phone" })).toEqual({
+        view: undefined,
+        reload: false,
+        toast: expected,
+        url: undefined,
+      });
+    } finally {
+      await initI18n("zh-Hans");
+    }
+  }, 15_000);
   it("tells the hub which item, with every draw and press", async () => {
     const calls: string[] = [];
     vi.stubGlobal("localStorage", { getItem: () => "t", setItem: () => {}, removeItem: () => {} });

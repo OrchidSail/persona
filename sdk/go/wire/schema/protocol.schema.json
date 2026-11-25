@@ -166,6 +166,11 @@
       },
       "required": ["protocol", "id", "version"]
     },
+    "ViewerDeviceID": {
+      "type": "string",
+      "x-id": "ViewerDeviceID",
+      "description": "The authenticated viewing device's credential id (dev_<12hex>) when known; omitted for non-device or unidentified callers."
+    },
     "UIParams": {
       "description": "ui.render's and ui.action's parameters: what to draw, where, for whom.",
       "type": "object",
@@ -180,6 +185,7 @@
         "tz": {"type": "string"},
         "locale": {"type": "string"},
         "platform": {"$ref": "view.schema.json#/$defs/Platform"},
+        "viewer_device_id": {"$ref": "#/$defs/ViewerDeviceID"},
         "machine": {"$ref": "#/$defs/UIMachine"},
         "launcher": {"$ref": "#/$defs/UILauncher"},
         "item": {"$ref": "#/$defs/UIInboxItem"}

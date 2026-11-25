@@ -117,6 +117,8 @@ data class HubConnector(
     @SerialName("last_event") val lastEvent: String? = null,
     val capabilities: List<String>? = null,
     val hosts: List<String>? = null,
+    /** Owning extension's id when this connector is hosted by an extension (`connector.Info.extension_id`). */
+    @SerialName("extension_id") val extensionId: String? = null,
     val enabled: Boolean? = null,
     val archive: Boolean? = null,
     val inbox: Boolean? = null,

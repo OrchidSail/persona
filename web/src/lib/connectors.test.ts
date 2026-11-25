@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   canSendStep, chatHeadline, connectorBrand, connectorOpenTitle, connectorState, connectorSummary, connectorTone, deletedLine, feedsFooter, fieldInput, githubInboxFooter, githubMachineLine,
-  githubOptions, githubScopeAdvice, deleteIMessageData, imessageAIFooter, setIMessageAI, isPolledStep, isStarting, labelColor, listConnectors, logoutMessage, mediaLine, mergeNewest, mergeOlder, mutableRepo,
+  githubOptions, githubScopeAdvice, deleteIMessageData, imessageAIFooter, setIMessageAI, isExtensionManagedOnly, isPolledStep, isStarting, labelColor, listConnectors, logoutMessage, mediaLine, mergeNewest, mergeOlder, mutableRepo,
   otherConnectors, reachMessage, setGitHubAuth, signInFooter, signsInHere, startsGroup, stepView, storesData, switchFooter, switchLabel, undescribed,
   type HubConnector, type ThreadMessage, type ThreadPage,
 } from "./connectors";
@@ -41,6 +41,27 @@ describe("连接器的状态", () => {
     expect(otherConnectors(list).map((c) => c.id)).toEqual(["github", "telegram"]);
     // no Lark gateway group (a hub without lark): the gateway connector is listed with the rest, but lark-cli stays in the bot group
     expect(otherConnectors(list, false).map((c) => c.id)).toEqual(["lark", "github", "telegram"]);
+  });
+
+  it("hides extension-owned tools-only connectors while keeping login/feed/legacy connectors", () => {
+    const personaphone = conn("ok", { id: "personaphone", name: "Phone Control", extension_id: "persona-phone", capabilities: ["status", "tools", "actions"] });
+    const toolsOnly = conn("ok", { id: "toolsonly", name: "Tools Only", extension_id: "tool-ext", capabilities: ["status", "tools"] });
+    const whatsapp = conn("not_signed_in", { id: "whatsapp", name: "WhatsApp", extension_id: "whatsapp", capabilities: ["status", "tools", "actions", "login", "inbox", "archive"] });
+    const wechat = conn("ok", { id: "wechat", name: "WeChat", extension_id: "wechat", capabilities: ["status", "login"] });
+    const starting = conn("error", { id: "startingext", name: "Starting", extension_id: "starting-ext", capabilities: [] });
+    const legacyNoExtId = conn("ok", { id: "legacyphone", name: "Legacy Phone", capabilities: ["status", "tools", "actions"] });
+    const withOptions = conn("ok", { id: "extopts", name: "With Options", extension_id: "ext-opts", capabilities: ["status", "tools", "actions"], options: { k: 1 } });
+
+    expect(isExtensionManagedOnly(personaphone)).toBe(true);
+    expect(isExtensionManagedOnly(toolsOnly)).toBe(true);
+    expect(isExtensionManagedOnly(whatsapp)).toBe(false);
+    expect(isExtensionManagedOnly(wechat)).toBe(false);
+    expect(isExtensionManagedOnly(starting)).toBe(false);
+    expect(isExtensionManagedOnly(legacyNoExtId)).toBe(false);
+    expect(isExtensionManagedOnly(withOptions)).toBe(false);
+
+    const list = [personaphone, toolsOnly, whatsapp, wechat, starting, legacyNoExtId, withOptions, conn("ok")];
+    expect(otherConnectors(list).map((c) => c.id)).toEqual(["whatsapp", "wechat", "startingext", "legacyphone", "extopts", "github"]);
   });
 
   it("has a mark only for the connectors that have one; the rest draw the generic icon", () => {

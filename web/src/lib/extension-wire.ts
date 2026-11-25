@@ -1144,6 +1144,16 @@ export interface InitializeResult {
 }
 
 /**
+ * The authenticated viewing device's credential id (dev_<12hex>) when known; omitted for non-device or unidentified
+ * callers.
+ */
+export type ViewerDeviceID = string & { readonly __brand: "ViewerDeviceID" };
+/** A ViewerDeviceID from its raw string. */
+export function viewerDeviceID(raw: string): ViewerDeviceID {
+  return raw as ViewerDeviceID;
+}
+
+/**
  * ui.render's and ui.action's parameters: what to draw, where, for whom.
  */
 export interface UIParams {
@@ -1157,6 +1167,7 @@ export interface UIParams {
   tz?: string;
   locale?: string;
   platform?: Platform;
+  viewer_device_id?: ViewerDeviceID;
   machine?: UIMachine;
   launcher?: UILauncher;
   item?: UIInboxItem;

@@ -1266,7 +1266,7 @@ internal fun PersonaShell(session: ShellSession, openNavigation: MutableState<((
                 entry<persona.core.navigation.AddComputerRoute> { UnavailablePage(stringResource(R.string.app_demo_no_machines), navigator) }
                 entry<MachineDetailRoute> { UnavailablePage(stringResource(R.string.app_demo_no_machines), navigator) }
             }
-            settingsDetailEntries(navigator, services, askSubscriptions)
+            settingsDetailEntries(navigator, services, askSubscriptions, openPhoneSettings = { it.navigate(PhoneToolsRoute) })
             // Each module's pages (Modules.kt); in demo mode a module has no services and says why its pages cannot work.
             // What a module's pages use of the core (the knowledge base, the assistant, sending, sessions); none in demo mode.
             val moduleShell = session.knowledge?.let { knowledge ->
@@ -1553,7 +1553,7 @@ internal fun PersonaShell(session: ShellSession, openNavigation: MutableState<((
                       entry<PhoneToolsRoute> { session.phone?.let { PhoneToolsScreen(it, settingsNavigator) }
                           ?: UnavailablePage(stringResource(R.string.app_unavailable_phone_tools), settingsNavigator) }
                       assistantEntries(settingsNavigator)
-                      settingsDetailEntries(settingsNavigator, services, askSubscriptions)
+                      settingsDetailEntries(settingsNavigator, services, askSubscriptions, openPhoneSettings = { it.navigate(PhoneToolsRoute) })
                   }
                   // In a regular window the list of settings stays beside the page it opens, as on an open iPhone Duo
                   // (its divider is not kept: the sheet starts from the usual split each time). Elsewhere one page.

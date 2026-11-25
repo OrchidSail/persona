@@ -1606,6 +1606,16 @@ data class ExtensionInitializeResult(
 )
 
 /**
+ * The authenticated viewing device's credential id (dev_<12hex>) when known; omitted for non-device or unidentified
+ * callers. It encodes as the bare string.
+ */
+@Serializable
+@JvmInline
+value class ExtensionViewerDeviceID(val raw: String) {
+    override fun toString(): String = raw
+}
+
+/**
  * ui.render's and ui.action's parameters: what to draw, where, for whom.
  */
 @Serializable
@@ -1620,6 +1630,7 @@ data class ExtensionUIParams(
     val tz: String? = null,
     val locale: String? = null,
     val platform: String? = null,
+    @SerialName("viewer_device_id") val viewerDeviceId: ExtensionViewerDeviceID? = null,
     val machine: ExtensionUIMachine? = null,
     val launcher: ExtensionUILauncher? = null,
     val item: ExtensionUIInboxItem? = null,

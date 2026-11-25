@@ -98,8 +98,20 @@ internal object ExtensionViewText {
         return parts[0] to parts[2]
     }
 
-    /** Which `open_url` a button may bring back: https, and on the subscription pages also Set Up with …. */
-    fun opens(extension: String, url: String?): Boolean = isHttps(url) || askFrom(extension, url) != null || extension == "space-conversations" && spaceConversation(url) != null
+    /**
+     * Exact whitelist for the local "This phone" settings deep link (`persona://settings/connectors/phone`).
+     * Rejects other schemes, query parameters, fragments, user info, and any other path.
+     */
+    fun isPhoneConnectorSettings(url: String?): Boolean {
+        val uri = runCatching { java.net.URI(url ?: return false) }.getOrNull() ?: return false
+        if (uri.scheme?.lowercase() != "persona" || uri.userInfo != null || uri.rawAuthority != "settings") return false
+        if (uri.rawQuery != null || uri.rawFragment != null) return false
+        return uri.rawPath == "/connectors/phone"
+    }
+
+    /** Which `open_url` a button may bring back: https, this phone's local settings link, and on the subscription pages also Set Up with …. */
+    fun opens(extension: String, url: String?): Boolean =
+        isHttps(url) || isPhoneConnectorSettings(url) || askFrom(extension, url) != null || extension == "space-conversations" && spaceConversation(url) != null
 
     /** A query component, with `+` kept (the pages percent-encode; they do not use form encoding). */
     private fun decodeQuery(raw: String): String? =

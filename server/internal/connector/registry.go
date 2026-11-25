@@ -453,6 +453,8 @@ type Info struct {
 	LastEvent     *time.Time `json:"last_event,omitempty"`
 	Capabilities  []string   `json:"capabilities"`
 	Hosts         []string   `json:"hosts,omitempty"`
+	// ExtensionID is the owning extension's id when this connector is hosted by an extension.
+	ExtensionID string `json:"extension_id,omitempty"`
 	// Enabled: switched on (SetEnabled); off, Status is "disabled".
 	Enabled bool `json:"enabled"`
 	// Archive and Inbox: its feeds are on (SetFeed); only there when it has an archive, an inbox.

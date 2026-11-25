@@ -1,6 +1,7 @@
 // One owner-bound page on the existing authenticated app socket. No automatic write retries.
 import { credentialOwner } from "./api";
 import { appSocketReady, getState, onAppSocket, onPrivateUIStream, send } from "./store";
+import { isPhoneConnectorSettingsURL } from "./extension-ui";
 import { decodeStreamEnvelope, ExtensionUIStreamSession, NATIVE_STREAM_COMPONENTS, STREAM_LIMITS, same, type StreamPageOptions } from "./extension-ui-stream";
 import type { Action, UIStreamActionResult, UIStreamEvent, UIStreamReceipt, UIStreamRequest } from "./extension-wire";
 import type { Interaction } from "./types";
@@ -100,7 +101,7 @@ export class AppUIStreamPage {
         if (!["accepted", "ambiguous", "rejected"].includes(r.status) || r.status !== "accepted" && r.result) throw new Error("Invalid receipt status/result");
         if (r.status !== "rejected" && r.version !== event.version + 1) throw new Error("Invalid consumed-event fence");
         if (new TextEncoder().encode(JSON.stringify(r.result ?? {})).length > 64 * 1024 || new TextEncoder().encode(r.result?.push?.state ?? "").length > 16 * 1024) throw new Error("Receipt result byte limit");
-        if (r.result?.open_url) {
+        if (r.result?.open_url && !isPhoneConnectorSettingsURL(r.result.open_url)) {
           const url = new URL(r.result.open_url);
           if (url.protocol !== "https:" || url.username || url.password) throw new Error("Unsafe receipt URL");
         }

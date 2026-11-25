@@ -4,7 +4,7 @@ import type { LegacyExtensionUI } from "./ExtensionView";
 import { pageHref } from "./ExtensionView";
 import { appUIStreamPage, type AppUIStreamPage, type NativePagePermission } from "../../lib/extension-ui-app-stream";
 import { NATIVE_STREAM_COMPONENTS, type StreamPageIdentity } from "../../lib/extension-ui-stream";
-import { MAX_STACK, uiContext, type UIPush } from "../../lib/extension-ui";
+import { isPhoneConnectorSettingsURL, MAX_STACK, uiContext, type UIPush } from "../../lib/extension-ui";
 import { credentialOwner, enc, errorText } from "../../lib/api";
 import { endInteraction, getState, useStore } from "../../lib/store";
 import { apiOp } from "../../lib/ops";
@@ -97,8 +97,12 @@ function ConnectedPage(props: Props & { legacy: (props: Props) => ReactNode; onL
     setFallback(false);
     const page = appUIStreamPage({ identity, state: props.page.state ?? "", context: { ...uiContext(props.context), locale: currentLanguage(), ui_version: NATIVE_UI_VERSION, stream: { protocol: 1, components: [...NATIVE_STREAM_COMPONENTS] } } }, props.manager,
       (result) => {
-        if (result.toast) toast(result.toast, "ok");
-        if (result.open_url) openLink(result.open_url);
+        if (result.open_url && isPhoneConnectorSettingsURL(result.open_url)) {
+          toast(t("lib-extension-ui.phone_settings_android_only"), "ok");
+        } else {
+          if (result.toast) toast(result.toast, "ok");
+          if (result.open_url) openLink(result.open_url);
+        }
         if (result.push) callbacks.current.push(result.push);
         if (result.pop) callbacks.current.pop();
       },

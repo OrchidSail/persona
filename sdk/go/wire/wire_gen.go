@@ -1142,21 +1142,29 @@ type InitializeResult struct {
 	UIPageCancellation int `json:"ui_page_cancellation,omitempty"`
 }
 
+// ViewerDeviceID: the authenticated viewing device's credential id (dev_<12hex>) when known; omitted for non-device
+// or unidentified callers.
+type ViewerDeviceID string
+
+// String returns the ID as it is on the wire.
+func (v ViewerDeviceID) String() string { return string(v) }
+
 // UIParams: ui.render's and ui.action's parameters: what to draw, where, for whom.
 type UIParams struct {
-	Contribution string            `json:"contribution"`
-	State        string            `json:"state"`
-	Action       string            `json:"action,omitempty"`
-	Values       map[string]string `json:"values,omitempty"`
-	Placement    string            `json:"placement"`
-	Size         string            `json:"size"`
-	UIVersion    int               `json:"ui_version"`
-	TZ           string            `json:"tz,omitempty"`
-	Locale       string            `json:"locale,omitempty"`
-	Platform     string            `json:"platform,omitempty"`
-	Machine      *UIMachine        `json:"machine,omitempty"`
-	Launcher     *UILauncher       `json:"launcher,omitempty"`
-	Item         *UIInboxItem      `json:"item,omitempty"`
+	Contribution   string            `json:"contribution"`
+	State          string            `json:"state"`
+	Action         string            `json:"action,omitempty"`
+	Values         map[string]string `json:"values,omitempty"`
+	Placement      string            `json:"placement"`
+	Size           string            `json:"size"`
+	UIVersion      int               `json:"ui_version"`
+	TZ             string            `json:"tz,omitempty"`
+	Locale         string            `json:"locale,omitempty"`
+	Platform       string            `json:"platform,omitempty"`
+	ViewerDeviceID ViewerDeviceID    `json:"viewer_device_id,omitempty"`
+	Machine        *UIMachine        `json:"machine,omitempty"`
+	Launcher       *UILauncher       `json:"launcher,omitempty"`
+	Item           *UIInboxItem      `json:"item,omitempty"`
 }
 
 // UIImageParams: ui.image's parameters (UI version 6): the hub asks the extension for a picture it drew as a ref, for
