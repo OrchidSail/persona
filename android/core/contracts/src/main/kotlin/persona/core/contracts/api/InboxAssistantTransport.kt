@@ -139,6 +139,9 @@ interface InboxAssistantTransport {
      */
     suspend fun createConversationOf(manager: String?, main: Boolean, pick: persona.core.contracts.ModelPick): JsonObject =
         createConversationOf(manager, main, pick.launcher)
+    /** [createConversationOf] with an explicit Codex start `service_tier` (e.g. `"priority"`, feature `assistant_start_service_tier`). */
+    suspend fun createConversationOf(manager: String?, main: Boolean, pick: persona.core.contracts.ModelPick, serviceTier: String?): JsonObject =
+        createConversationOf(manager, main, pick)
     suspend fun pins(): JsonObject
     suspend fun mutes(): JsonObject
     suspend fun media(ref: String): ByteArray
@@ -226,6 +229,9 @@ interface AssistantConversations : AssistantRepository {
     suspend fun startConversation(launcher: String): SessionKey = throw UnsupportedOperationException("Picking a launcher unavailable")
     /** A new conversation on the setup picked for it on the new-chat page's model panel (#5055): its launcher, model and effort. */
     suspend fun startConversation(pick: persona.core.contracts.ModelPick): SessionKey = startConversation(pick.launcher)
+    /** A new conversation with an explicit Codex start `service_tier` (`"priority"` when Fast is enabled on the starter). */
+    suspend fun startConversation(pick: persona.core.contracts.ModelPick, serviceTier: String?): SessionKey =
+        startConversation(pick)
     /**
      * The chats of the assistant's [space] ([AssistantSpace]), read from the hub each time: they are never in [assistant]'s
      * list. Each carries [space] even from a hub that leaves it out of this list.

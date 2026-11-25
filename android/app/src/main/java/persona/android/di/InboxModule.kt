@@ -301,6 +301,8 @@ class InboxDataOwner @Inject constructor(
         override suspend fun startConversation() = use { it.assistant.startConversation() }
         override suspend fun startConversation(launcher: String) = use { it.assistant.startConversation(launcher) }
         override suspend fun startConversation(pick: persona.core.contracts.ModelPick) = use { it.assistant.startConversation(pick) }
+        override suspend fun startConversation(pick: persona.core.contracts.ModelPick, serviceTier: String?) =
+            use { it.assistant.startConversation(pick, serviceTier) }
         override suspend fun spaceConversations(space: String) = use { it.assistant.spaceConversations(space) }
         override suspend fun startConversationIn(space: String) = use { it.assistant.startConversationIn(space) }
     }

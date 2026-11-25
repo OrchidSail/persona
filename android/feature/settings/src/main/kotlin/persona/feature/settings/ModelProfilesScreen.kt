@@ -4,7 +4,9 @@ import android.content.res.Resources
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.testTag
@@ -53,16 +55,20 @@ internal fun LazyListScope.modelProfilesSection(
     }
     val totalRows = profiles.size + if (showRollback) 1 else 0
     itemsIndexed(profiles, key = { _, profile -> "model-profile-${profile.id}" }) { index, profile ->
+        val trialLine = profile.trial?.takeIf { !profile.active }?.let { t ->
+            res.getString(R.string.settings_model_profiles_trial_summary, t.days, t.dispatches, t.wouldSwitch)
+        }
         val subtitle = listOfNotNull(
             profile.description?.takeIf(String::isNotBlank),
             if (profile.changes.isEmpty()) res.getString(R.string.settings_model_profiles_no_changes)
             else res.getString(R.string.settings_model_profiles_changes, profile.changes.size),
+            trialLine,
         ).joinToString("\n")
         JGroupItem(GroupPosition.of(index, totalRows)) {
             JRow(
                 title = profile.displayName,
                 subtitle = subtitle,
-                subtitleLines = 3,
+                subtitleLines = 4,
                 value = if (profile.active) stringResource(R.string.settings_model_profiles_active) else null,
                 modifier = Modifier.testTag("model-profile-row-${profile.id}"),
                 enabled = !state.busy,
@@ -114,16 +120,37 @@ internal fun LazyListScope.modelProfilesSection(
     }
 }
 
-/** Detail page for one model profile: inspect Agent presets, purpose bindings, launcher overrides, edit or apply. */
+private fun formatCandidateSummary(
+    res: Resources,
+    candidate: ModelProfileTierCandidate,
+    providers: List<ModelProvider>,
+): String {
+    val launcherLabel = providers.firstOrNull { it.id == "launcher.${candidate.launcher}" }?.displayName ?: candidate.launcher
+    return listOfNotNull(
+        launcherLabel.takeIf(String::isNotBlank),
+        candidate.model?.takeIf(String::isNotBlank),
+        candidate.effort?.takeIf(String::isNotBlank)?.let { effortDisplayLabel(res, it) },
+        candidate.permissionMode?.takeIf(String::isNotBlank)?.let { permissionModeDisplayLabel(res, it) },
+        candidate.speed?.takeIf { it == "fast" || it == "ultrafast" }?.let { tierSpeedDisplayLabel(res, it) },
+    ).joinToString(" · ")
+}
+
+/** Detail page for one model profile: inspect Agent presets, purpose bindings, launcher overrides, capture, edit or apply. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ModelProfileDetailPage(
     profile: ModelProfile,
+    activeProfile: ModelProfile?,
     catalog: ModelCatalog?,
     busy: Boolean,
     error: ResText?,
+    conflict: Boolean,
     onBack: () -> Unit,
     onEdit: () -> Unit,
+    onCapture: () -> Unit,
     onApply: () -> Unit,
+    onCaptureActiveAndApply: () -> Unit,
+    onReload: () -> Unit,
 ) {
     val res = LocalResources.current
     val providers = catalog?.providers.orEmpty()
@@ -138,6 +165,8 @@ internal fun ModelProfileDetailPage(
         )
     }
     val launcherEntries = remember(profile.launchers) { profile.launchers.entries.sortedBy { it.key } }
+    val drift = remember(profile, activeProfile) { profileApplyDrift(profile, activeProfile) }
+    var showApplyConfirm by remember(profile.id) { mutableStateOf(false) }
 
     JListPage(
         title = profile.displayName,
@@ -157,7 +186,9 @@ internal fun ModelProfileDetailPage(
                 )
                 JButton(
                     text = stringResource(R.string.settings_model_profiles_apply),
-                    onClick = onApply,
+                    onClick = {
+                        if (drift.hasDrift) showApplyConfirm = true else onApply()
+                    },
                     modifier = Modifier.weight(1f).testTag("model-profile-apply-button"),
                     loading = busy,
                     enabled = !busy,
@@ -184,12 +215,61 @@ internal fun ModelProfileDetailPage(
                 )
             }
         }
-        if (profile.active && profile.changes.isNotEmpty()) {
-            item("profile-drift") {
-                JNotice(
-                    stringResource(R.string.settings_model_profiles_active_drift),
-                    Modifier.padding(top = Tokens.Space.s),
-                    status = Status.NeedsYou,
+        if (profile.changes.isNotEmpty()) {
+            item("profile-change-chips") {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = rowPadding, vertical = Tokens.Space.xs),
+                    horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+                    verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+                ) {
+                    profile.changes.forEach { change ->
+                        JTag(describeProfileChange(res, change, providers, catalogPurposes))
+                    }
+                }
+            }
+        }
+        profile.trial?.takeIf { !profile.active }?.let { trial ->
+            item("profile-trial") {
+                JCard(Modifier.padding(top = Tokens.Space.s).testTag("model-profile-trial-card")) {
+                    Text(
+                        text = stringResource(
+                            R.string.settings_model_profiles_trial_summary,
+                            trial.days,
+                            trial.dispatches,
+                            trial.wouldSwitch,
+                        ),
+                        style = PersonaTheme.type.bodyStrong,
+                        color = PersonaTheme.palette.ink,
+                    )
+                    Spacer(Modifier.height(Tokens.Space.xs))
+                    Text(
+                        text = stringResource(R.string.settings_model_profiles_trial_definition),
+                        style = PersonaTheme.type.caption,
+                        color = PersonaTheme.palette.ink2,
+                    )
+                }
+            }
+        }
+        item("profile-capture") {
+            val message = if (profile.active && profile.changes.isNotEmpty()) {
+                stringResource(R.string.settings_model_profiles_active_drift)
+            } else {
+                stringResource(R.string.settings_model_profiles_capture_hint)
+            }
+            JCard(
+                modifier = Modifier.padding(top = Tokens.Space.s),
+                status = if (profile.active && profile.changes.isNotEmpty()) Status.NeedsYou else null,
+            ) {
+                Text(message, style = PersonaTheme.type.callout, color = PersonaTheme.palette.ink2)
+                Spacer(Modifier.height(Tokens.Space.s))
+                JButton(
+                    text = stringResource(R.string.settings_model_profiles_capture_from_current),
+                    onClick = onCapture,
+                    modifier = Modifier.fillMaxWidth().testTag("model-profile-capture-button"),
+                    kind = JButtonKind.Secondary,
+                    size = JButtonSize.Medium,
+                    loading = busy,
+                    enabled = !busy,
                 )
             }
         }
@@ -207,17 +287,23 @@ internal fun ModelProfileDetailPage(
             }
         } else {
             itemsIndexed(tiers, key = { _, (name, _) -> "detail-tier-$name" }) { index, (name, tier) ->
-                val launcherLabel = providers.firstOrNull { it.id == "launcher.${tier.launcher}" }?.displayName ?: tier.launcher
-                val runs = listOfNotNull(
-                    launcherLabel.takeIf(String::isNotBlank),
-                    tier.model?.takeIf(String::isNotBlank),
-                    tier.effort?.takeIf(String::isNotBlank)?.let { effortDisplayLabel(res, it) },
-                    tier.permissionMode?.takeIf(String::isNotBlank)?.let { permissionModeDisplayLabel(res, it) },
-                    tier.speed?.takeIf { it == "fast" || it == "ultrafast" }?.let { tierSpeedDisplayLabel(res, it) },
-                ).joinToString(" · ")
-                val subtitle = listOfNotNull(runs.takeIf(String::isNotBlank), tier.description?.takeIf(String::isNotBlank)).joinToString("\n")
+                val candidates = tier.effectiveCandidates()
+                val aliasesLine = tier.aliases?.map(String::trim)?.filter(String::isNotEmpty)?.takeIf { it.isNotEmpty() }?.let { list ->
+                    res.getString(R.string.settings_model_profiles_tier_aliases_inline, list.joinToString(", "))
+                }
+                val candidateLines = if (candidates.size > 1) {
+                    candidates.mapIndexed { idx, cand -> "${idx + 1}. ${formatCandidateSummary(res, cand, providers)}" }
+                        .joinToString("\n")
+                } else {
+                    candidates.firstOrNull()?.let { formatCandidateSummary(res, it, providers) }.orEmpty()
+                }
+                val subtitle = listOfNotNull(
+                    aliasesLine,
+                    candidateLines.takeIf(String::isNotBlank),
+                    tier.description?.takeIf(String::isNotBlank),
+                ).joinToString("\n")
                 JGroupItem(GroupPosition.of(index, tiers.size)) {
-                    JRow(title = name, subtitle = subtitle, subtitleLines = 3, chevron = false)
+                    JRow(title = name, subtitle = subtitle, subtitleLines = 10, chevron = false)
                 }
             }
         }
@@ -285,7 +371,135 @@ internal fun ModelProfileDetailPage(
 
         error?.let { err ->
             item("profile-detail-error") {
-                JInlineStatus(err.text(), Modifier.padding(top = Tokens.Space.m), tone = InlineTone.Failed)
+                Column(Modifier.padding(top = Tokens.Space.m), verticalArrangement = Arrangement.spacedBy(Tokens.Space.s)) {
+                    JInlineStatus(err.text(), tone = InlineTone.Failed)
+                    if (conflict) {
+                        JButton(
+                            text = stringResource(R.string.settings_model_profiles_reload),
+                            onClick = onReload,
+                            modifier = Modifier.fillMaxWidth().testTag("model-profile-detail-reload-button"),
+                            kind = JButtonKind.Secondary,
+                            enabled = !busy,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    if (showApplyConfirm) {
+        val otherActive = drift.activeProfile
+        val introText = when {
+            profile.active -> stringResource(R.string.settings_model_profiles_confirm_reapply_intro, profile.displayName)
+            drift.targetChanges.isEmpty() && otherActive != null -> stringResource(
+                R.string.settings_model_profiles_confirm_switch_active_drift_only,
+                profile.displayName,
+                otherActive.displayName,
+            )
+            else -> stringResource(R.string.settings_model_profiles_confirm_apply_intro, profile.displayName)
+        }
+        JDialog(
+            onDismiss = { if (!busy) showApplyConfirm = false },
+            title = stringResource(R.string.settings_model_profiles_confirm_apply_title, profile.displayName),
+            text = introText,
+            confirm = null,
+            dismiss = stringResource(persona.core.designsystem.R.string.designsystem_cancel) to { showApplyConfirm = false },
+            dismissEnabled = !busy,
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth().testTag("model-profile-apply-confirm"),
+                verticalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+            ) {
+                if (drift.targetChanges.isNotEmpty()) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+                        verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+                    ) {
+                        drift.targetChanges.forEach { change ->
+                            JTag(describeProfileChange(res, change, providers, catalogPurposes))
+                        }
+                    }
+                }
+                if (otherActive != null) {
+                    if (drift.hasActiveDrift) {
+                        Text(
+                            text = stringResource(R.string.settings_model_profiles_confirm_active_drift, otherActive.displayName),
+                            style = PersonaTheme.type.callout,
+                            color = PersonaTheme.palette.ink2,
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+                            verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+                        ) {
+                            drift.activeDrift.forEach { change ->
+                                JTag(describeProfileChange(res, change, providers, catalogPurposes), status = Status.NeedsYou)
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = stringResource(R.string.settings_model_profiles_confirm_capture_active_hint, otherActive.displayName),
+                            style = PersonaTheme.type.caption,
+                            color = PersonaTheme.palette.ink2,
+                        )
+                    }
+                    JButton(
+                        text = stringResource(R.string.settings_model_profiles_capture_active_first, otherActive.displayName),
+                        onClick = {
+                            showApplyConfirm = false
+                            onCaptureActiveAndApply()
+                        },
+                        modifier = Modifier.fillMaxWidth().testTag("model-profile-capture-active-first-button"),
+                        kind = if (drift.hasActiveDrift) JButtonKind.Primary else JButtonKind.Secondary,
+                        size = JButtonSize.Medium,
+                        enabled = !busy,
+                    )
+                    JButton(
+                        text = stringResource(R.string.settings_model_profiles_apply_directly),
+                        onClick = {
+                            showApplyConfirm = false
+                            onApply()
+                        },
+                        modifier = Modifier.fillMaxWidth().testTag("model-profile-apply-directly-button"),
+                        kind = if (drift.hasActiveDrift) JButtonKind.Secondary else JButtonKind.Primary,
+                        size = JButtonSize.Medium,
+                        enabled = !busy,
+                    )
+                } else if (profile.active) {
+                    JButton(
+                        text = stringResource(R.string.settings_model_profiles_capture_from_current),
+                        onClick = {
+                            showApplyConfirm = false
+                            onCapture()
+                        },
+                        modifier = Modifier.fillMaxWidth().testTag("model-profile-confirm-capture-button"),
+                        kind = JButtonKind.Primary,
+                        size = JButtonSize.Medium,
+                        enabled = !busy,
+                    )
+                    JButton(
+                        text = stringResource(R.string.settings_model_profiles_apply_directly),
+                        onClick = {
+                            showApplyConfirm = false
+                            onApply()
+                        },
+                        modifier = Modifier.fillMaxWidth().testTag("model-profile-apply-directly-button"),
+                        kind = JButtonKind.Secondary,
+                        size = JButtonSize.Medium,
+                        enabled = !busy,
+                    )
+                } else {
+                    JButton(
+                        text = stringResource(R.string.settings_model_profiles_apply_directly),
+                        onClick = {
+                            showApplyConfirm = false
+                            onApply()
+                        },
+                        modifier = Modifier.fillMaxWidth().testTag("model-profile-apply-directly-button"),
+                        kind = JButtonKind.Primary,
+                        size = JButtonSize.Medium,
+                        enabled = !busy,
+                    )
+                }
             }
         }
     }
@@ -295,22 +509,27 @@ private sealed interface ProfilePicker {
     data class PurposeProvider(val purposeId: String) : ProfilePicker
     data class PurposeEffort(val purposeId: String) : ProfilePicker
     data class PurposePermissionMode(val purposeId: String) : ProfilePicker
-    data class TierLauncher(val tierKey: String) : ProfilePicker
-    data class TierEffort(val tierKey: String) : ProfilePicker
-    data class TierSpeed(val tierKey: String) : ProfilePicker
-    data class TierPermissionMode(val tierKey: String) : ProfilePicker
+    data class CandidateLauncher(val tierKey: String, val candidateKey: String) : ProfilePicker
+    data class CandidateEffort(val tierKey: String, val candidateKey: String) : ProfilePicker
+    data class CandidateSpeed(val tierKey: String, val candidateKey: String) : ProfilePicker
+    data class CandidatePermissionMode(val tierKey: String, val candidateKey: String) : ProfilePicker
 }
 
-/** Interactive editor page for a ModelProfile (name, description, purpose bindings, and Agent presets/tiers). */
+/** Interactive editor page for a ModelProfile (name, description, purpose bindings, and multi-candidate Agent presets). */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ModelProfileEditorPage(
     profile: ModelProfile,
     revision: Long,
+    syncKey: Int,
     catalog: ModelCatalog?,
+    candidatesView: ModelProfileCandidatesView?,
     busy: Boolean,
     error: ResText?,
     conflict: Boolean,
+    conflictIsCapture: Boolean,
     onSave: (ModelProfileSaveInput) -> Unit,
+    onCapture: () -> Unit,
     onReload: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -318,9 +537,9 @@ internal fun ModelProfileEditorPage(
     val providers = catalog?.providers.orEmpty()
     val catalogPurposes = catalog?.purposes.orEmpty()
     val catalogIds = remember(catalogPurposes) { catalogPurposes.map { it.id } }
-    val initialDraft = remember(profile.id, revision, catalogIds) { profileToDraft(profile, catalogIds) }
-    var draft by remember(profile.id, revision) { mutableStateOf(initialDraft) }
-    var tierCounter by remember(profile.id, revision) { mutableIntStateOf(0) }
+    val initialDraft = remember(profile.id, revision, syncKey, catalogIds) { profileToDraft(profile, catalogIds) }
+    var draft by remember(profile.id, revision, syncKey) { mutableStateOf(initialDraft) }
+    var counter by remember(profile.id, revision, syncKey) { mutableIntStateOf(0) }
     var picker by remember { mutableStateOf<ProfilePicker?>(null) }
 
     val problems = remember(draft) { profileDraftProblems(draft) }
@@ -337,6 +556,33 @@ internal fun ModelProfileEditorPage(
 
     fun updateTier(key: String, transform: (ModelProfileTierDraft) -> ModelProfileTierDraft) {
         draft = draft.copy(tiers = draft.tiers.map { if (it.key == key) transform(it) else it })
+    }
+
+    fun updateCandidate(
+        tierKey: String,
+        candidateKey: String,
+        transform: (ModelProfileCandidateDraft) -> ModelProfileCandidateDraft,
+    ) {
+        updateTier(tierKey) { tier ->
+            tier.copy(candidates = tier.candidates.map { if (it.key == candidateKey) transform(it) else it })
+        }
+    }
+
+    fun moveCandidate(tierKey: String, index: Int, delta: Int) {
+        updateTier(tierKey) { tier ->
+            val target = index + delta
+            if (target !in tier.candidates.indices) return@updateTier tier
+            val list = tier.candidates.toMutableList()
+            val moved = list.removeAt(index)
+            list.add(target, moved)
+            tier.copy(candidates = list)
+        }
+    }
+
+    fun supportsSpeed(launcher: String, currentSpeed: String): Boolean {
+        if (currentSpeed.isNotBlank() && currentSpeed != "standard") return true
+        val agent = providers.firstOrNull { it.id == "launcher.$launcher" }?.agent
+        return agent == null || agent == "claude" || agent == "codex"
     }
 
     JListPage(
@@ -359,12 +605,26 @@ internal fun ModelProfileEditorPage(
         },
     ) {
         item("editor-note") {
-            JNotice(
-                stringResource(
-                    if (profile.active) R.string.settings_model_profiles_save_note_active
-                    else R.string.settings_model_profiles_save_note_inactive
-                ),
-            )
+            JCard {
+                Text(
+                    text = stringResource(
+                        if (profile.active) R.string.settings_model_profiles_save_note_active
+                        else R.string.settings_model_profiles_save_note_inactive
+                    ),
+                    style = PersonaTheme.type.callout,
+                    color = PersonaTheme.palette.ink2,
+                )
+                Spacer(Modifier.height(Tokens.Space.s))
+                JButton(
+                    text = stringResource(R.string.settings_model_profiles_capture_from_current),
+                    onClick = onCapture,
+                    modifier = Modifier.fillMaxWidth().testTag("model-profile-editor-capture-button"),
+                    kind = JButtonKind.Secondary,
+                    size = JButtonSize.Medium,
+                    loading = busy,
+                    enabled = !busy,
+                )
+            }
         }
         item("editor-identity") {
             Column(Modifier.padding(top = Tokens.Space.m), verticalArrangement = Arrangement.spacedBy(Tokens.Space.m)) {
@@ -464,7 +724,7 @@ internal fun ModelProfileEditorPage(
             }
         }
 
-        // Agent presets (tiers)
+        // Agent presets (tiers with ordered candidates & aliases)
         item("editor-tiers-header") {
             JSectionHeader(
                 stringResource(R.string.settings_model_profiles_tiers_count, draft.tiers.size, ModelProfileRules.MAX_MODEL_TIERS),
@@ -485,14 +745,7 @@ internal fun ModelProfileEditorPage(
             }
         } else {
             itemsIndexed(draft.tiers, key = { _, tier -> "editor-tier-${tier.key}" }) { _, tier ->
-                val launcherLabel = tier.launcher.takeIf(String::isNotBlank)?.let { l ->
-                    providers.firstOrNull { it.id == "launcher.$l" }?.displayName ?: l
-                } ?: stringResource(R.string.settings_model_profiles_tier_launcher_placeholder)
-                val effortLabel = tier.effort.takeIf(String::isNotBlank)?.let { effortDisplayLabel(res, it) }
-                    ?: stringResource(R.string.settings_model_profiles_purpose_follow_default)
-                val speedLabel = tierSpeedDisplayLabel(res, tier.speed)
-                val modeLabel = tier.permissionMode.takeIf(String::isNotBlank)?.let { permissionModeDisplayLabel(res, it) }
-                    ?: stringResource(R.string.settings_model_profiles_purpose_follow_default)
+                val tierStatuses = candidatesView?.tiers?.get(tier.originalName ?: tier.name.trim())
                 Column(Modifier.padding(top = Tokens.Space.m), verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs)) {
                     JTextField(
                         value = tier.name,
@@ -503,47 +756,21 @@ internal fun ModelProfileEditorPage(
                         singleLine = true,
                         enabled = !busy,
                     )
-                    JGroupItem(GroupPosition.of(0, 4)) {
-                        JRow(
-                            title = stringResource(R.string.settings_model_profiles_tier_launcher),
-                            value = launcherLabel,
-                            enabled = !busy,
-                            onClick = { picker = ProfilePicker.TierLauncher(tier.key) },
-                        )
+                    if (tier.aliases.isNotEmpty()) {
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = rowPadding, vertical = Tokens.Space.xs)
+                                .testTag("tier-aliases-${tier.key}"),
+                            horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+                            verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+                        ) {
+                            JTag(
+                                stringResource(
+                                    R.string.settings_model_profiles_tier_aliases_inline,
+                                    tier.aliases.joinToString(", "),
+                                )
+                            )
+                        }
                     }
-                    JGroupItem(GroupPosition.of(1, 4)) {
-                        JRow(
-                            title = stringResource(R.string.settings_src_model_effort),
-                            value = effortLabel,
-                            enabled = !busy,
-                            onClick = { picker = ProfilePicker.TierEffort(tier.key) },
-                        )
-                    }
-                    JGroupItem(GroupPosition.of(2, 4)) {
-                        JRow(
-                            title = stringResource(R.string.settings_model_profiles_tier_speed),
-                            value = speedLabel,
-                            enabled = !busy,
-                            onClick = { picker = ProfilePicker.TierSpeed(tier.key) },
-                        )
-                    }
-                    JGroupItem(GroupPosition.of(3, 4)) {
-                        JRow(
-                            title = stringResource(R.string.settings_model_profiles_permission_mode),
-                            value = modeLabel,
-                            enabled = !busy,
-                            onClick = { picker = ProfilePicker.TierPermissionMode(tier.key) },
-                        )
-                    }
-                    JTextField(
-                        value = tier.model,
-                        onValueChange = { value -> updateTier(tier.key) { it.copy(model = value) } },
-                        modifier = Modifier.fillMaxWidth().padding(top = Tokens.Space.xs),
-                        label = stringResource(R.string.settings_src_model_model),
-                        placeholder = stringResource(R.string.settings_src_model_provider_default),
-                        singleLine = true,
-                        enabled = !busy,
-                    )
                     JTextField(
                         value = tier.description,
                         onValueChange = { value -> updateTier(tier.key) { it.copy(description = value) } },
@@ -553,6 +780,146 @@ internal fun ModelProfileEditorPage(
                         singleLine = true,
                         enabled = !busy,
                     )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = rowPadding, vertical = Tokens.Space.xs),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            text = stringResource(
+                                R.string.settings_model_profiles_tier_candidates_count,
+                                tier.candidates.size,
+                                ModelProfileRules.MAX_TIER_CANDIDATES,
+                            ),
+                            style = PersonaTheme.type.label,
+                            color = PersonaTheme.palette.ink2,
+                        )
+                        JButton(
+                            text = stringResource(R.string.settings_model_profiles_add_candidate),
+                            onClick = {
+                                if (tier.candidates.size < ModelProfileRules.MAX_TIER_CANDIDATES) {
+                                    val defaultLauncher = launcherProviders.firstOrNull()?.id?.removePrefix("launcher.") ?: "claude"
+                                    val key = "new-cand-${++counter}"
+                                    updateTier(tier.key) {
+                                        it.copy(candidates = it.candidates + ModelProfileCandidateDraft(key = key, launcher = defaultLauncher))
+                                    }
+                                }
+                            },
+                            modifier = Modifier.testTag("tier-add-candidate-${tier.key}"),
+                            kind = JButtonKind.Secondary,
+                            size = JButtonSize.Small,
+                            enabled = !busy && tier.candidates.size < ModelProfileRules.MAX_TIER_CANDIDATES,
+                        )
+                    }
+                    tier.candidates.forEachIndexed { candIndex, cand ->
+                        val launcherLabel = cand.launcher.takeIf(String::isNotBlank)?.let { l ->
+                            providers.firstOrNull { it.id == "launcher.$l" }?.displayName ?: l
+                        } ?: stringResource(R.string.settings_model_profiles_tier_launcher_placeholder)
+                        val effortLabel = cand.effort.takeIf(String::isNotBlank)?.let { effortDisplayLabel(res, it) }
+                            ?: stringResource(R.string.settings_model_profiles_purpose_follow_default)
+                        val speedLabel = tierSpeedDisplayLabel(res, cand.speed)
+                        val speedEnabled = supportsSpeed(cand.launcher, cand.speed)
+                        val modeLabel = cand.permissionMode.takeIf(String::isNotBlank)?.let { permissionModeDisplayLabel(res, it) }
+                            ?: stringResource(R.string.settings_model_profiles_purpose_follow_default)
+                        val matchedStatus = matchCandidateStatus(tierStatuses, cand.launcher, cand.model, candIndex)
+
+                        JCard(Modifier.testTag("tier-candidate-${tier.key}-${cand.key}")) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.settings_model_profiles_tier_candidate_index, candIndex + 1),
+                                    style = PersonaTheme.type.bodyStrong,
+                                    color = PersonaTheme.palette.ink,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                JButton(
+                                    text = stringResource(R.string.settings_model_profiles_candidate_move_up),
+                                    onClick = { moveCandidate(tier.key, candIndex, -1) },
+                                    modifier = Modifier.testTag("cand-up-${tier.key}-${cand.key}"),
+                                    kind = JButtonKind.Quiet,
+                                    size = JButtonSize.Small,
+                                    enabled = !busy && candIndex > 0,
+                                )
+                                JButton(
+                                    text = stringResource(R.string.settings_model_profiles_candidate_move_down),
+                                    onClick = { moveCandidate(tier.key, candIndex, 1) },
+                                    modifier = Modifier.testTag("cand-down-${tier.key}-${cand.key}"),
+                                    kind = JButtonKind.Quiet,
+                                    size = JButtonSize.Small,
+                                    enabled = !busy && candIndex < tier.candidates.lastIndex,
+                                )
+                                if (tier.candidates.size > 1) {
+                                    JButton(
+                                        text = stringResource(R.string.settings_model_profiles_remove),
+                                        onClick = {
+                                            updateTier(tier.key) {
+                                                it.copy(candidates = it.candidates.filterNot { item -> item.key == cand.key })
+                                            }
+                                        },
+                                        modifier = Modifier.testTag("cand-remove-${tier.key}-${cand.key}"),
+                                        kind = JButtonKind.Quiet,
+                                        size = JButtonSize.Small,
+                                        enabled = !busy,
+                                    )
+                                }
+                            }
+                            if (matchedStatus != null && candidatesView != null) {
+                                Spacer(Modifier.height(Tokens.Space.xs))
+                                Text(
+                                    text = formatCandidateStatusLine(res, candidatesView.days, matchedStatus),
+                                    style = PersonaTheme.type.caption,
+                                    color = PersonaTheme.palette.ink2,
+                                    modifier = Modifier.testTag("cand-status-${tier.key}-${cand.key}"),
+                                )
+                            }
+                            Spacer(Modifier.height(Tokens.Space.s))
+                            JGroupItem(GroupPosition.of(0, 4)) {
+                                JRow(
+                                    title = stringResource(R.string.settings_model_profiles_tier_launcher),
+                                    value = launcherLabel,
+                                    enabled = !busy,
+                                    onClick = { picker = ProfilePicker.CandidateLauncher(tier.key, cand.key) },
+                                )
+                            }
+                            JGroupItem(GroupPosition.of(1, 4)) {
+                                JRow(
+                                    title = stringResource(R.string.settings_src_model_effort),
+                                    value = effortLabel,
+                                    enabled = !busy,
+                                    onClick = { picker = ProfilePicker.CandidateEffort(tier.key, cand.key) },
+                                )
+                            }
+                            JGroupItem(GroupPosition.of(2, 4)) {
+                                JRow(
+                                    title = stringResource(R.string.settings_model_profiles_tier_speed),
+                                    value = speedLabel,
+                                    enabled = !busy && speedEnabled,
+                                    onClick = { picker = ProfilePicker.CandidateSpeed(tier.key, cand.key) },
+                                )
+                            }
+                            JGroupItem(GroupPosition.of(3, 4)) {
+                                JRow(
+                                    title = stringResource(R.string.settings_model_profiles_permission_mode),
+                                    value = modeLabel,
+                                    enabled = !busy,
+                                    onClick = { picker = ProfilePicker.CandidatePermissionMode(tier.key, cand.key) },
+                                )
+                            }
+                            Spacer(Modifier.height(Tokens.Space.s))
+                            JTextField(
+                                value = cand.model,
+                                onValueChange = { value -> updateCandidate(tier.key, cand.key) { it.copy(model = value) } },
+                                modifier = Modifier.fillMaxWidth().testTag("cand-model-${tier.key}-${cand.key}"),
+                                label = stringResource(R.string.settings_src_model_model),
+                                placeholder = stringResource(R.string.settings_src_model_provider_default),
+                                singleLine = true,
+                                enabled = !busy,
+                            )
+                        }
+                    }
                     JButton(
                         text = stringResource(R.string.settings_model_profiles_remove),
                         onClick = { draft = draft.copy(tiers = draft.tiers.filterNot { it.key == tier.key }) },
@@ -569,9 +936,13 @@ internal fun ModelProfileEditorPage(
                 onClick = {
                     if (draft.tiers.size < ModelProfileRules.MAX_MODEL_TIERS) {
                         val defaultLauncher = launcherProviders.firstOrNull()?.id?.removePrefix("launcher.") ?: "claude"
-                        val key = "new-tier-${++tierCounter}"
+                        val tierKey = "new-tier-${++counter}"
+                        val candKey = "new-cand-${++counter}"
                         draft = draft.copy(
-                            tiers = draft.tiers + ModelProfileTierDraft(key = key, launcher = defaultLauncher),
+                            tiers = draft.tiers + ModelProfileTierDraft(
+                                key = tierKey,
+                                candidates = listOf(ModelProfileCandidateDraft(key = candKey, launcher = defaultLauncher)),
+                            ),
                         )
                     }
                 },
@@ -599,7 +970,10 @@ internal fun ModelProfileEditorPage(
                     JInlineStatus(err.text(), tone = InlineTone.Failed)
                     if (conflict) {
                         JButton(
-                            text = stringResource(R.string.settings_model_profiles_reload_discard),
+                            text = stringResource(
+                                if (conflictIsCapture) R.string.settings_model_profiles_reload
+                                else R.string.settings_model_profiles_reload_discard
+                            ),
                             onClick = onReload,
                             modifier = Modifier.fillMaxWidth().testTag("model-profile-reload-button"),
                             kind = JButtonKind.Secondary,
@@ -673,9 +1047,9 @@ internal fun ModelProfileEditorPage(
             }
             JActionSheet(actions, onDismiss = { picker = null }, title = stringResource(R.string.settings_model_profiles_permission_mode))
         }
-        is ProfilePicker.TierLauncher -> {
-            val tierKey = activePicker.tierKey
-            val current = draft.tiers.firstOrNull { it.key == tierKey }
+        is ProfilePicker.CandidateLauncher -> {
+            val current = draft.tiers.firstOrNull { it.key == activePicker.tierKey }
+                ?.candidates?.firstOrNull { it.key == activePicker.candidateKey }
             val launcherNames = buildList {
                 launcherProviders.forEach { add(it.id.removePrefix("launcher.") to it.displayName) }
                 if (none { it.first == "claude" }) add("claude" to "Claude Code")
@@ -688,7 +1062,7 @@ internal fun ModelProfileEditorPage(
                     label,
                     checked = current?.launcher == id,
                     onClick = {
-                        updateTier(tierKey) {
+                        updateCandidate(activePicker.tierKey, activePicker.candidateKey) {
                             if (it.launcher == id) it else it.copy(launcher = id, model = "", effort = "", permissionMode = "")
                         }
                     },
@@ -696,50 +1070,50 @@ internal fun ModelProfileEditorPage(
             }
             JActionSheet(actions, onDismiss = { picker = null }, title = stringResource(R.string.settings_model_profiles_tier_launcher))
         }
-        is ProfilePicker.TierEffort -> {
-            val tierKey = activePicker.tierKey
-            val current = draft.tiers.firstOrNull { it.key == tierKey }
+        is ProfilePicker.CandidateEffort -> {
+            val current = draft.tiers.firstOrNull { it.key == activePicker.tierKey }
+                ?.candidates?.firstOrNull { it.key == activePicker.candidateKey }
             val actions = listOf(
                 JAction(
                     stringResource(R.string.settings_model_profiles_purpose_follow_default),
                     checked = current?.effort.isNullOrEmpty(),
-                    onClick = { updateTier(tierKey) { it.copy(effort = "") } },
+                    onClick = { updateCandidate(activePicker.tierKey, activePicker.candidateKey) { it.copy(effort = "") } },
                 )
             ) + ModelProfileRules.EFFORT_LEVELS.map { level ->
                 JAction(
                     effortDisplayLabel(res, level),
                     checked = current?.effort == level,
-                    onClick = { updateTier(tierKey) { it.copy(effort = level) } },
+                    onClick = { updateCandidate(activePicker.tierKey, activePicker.candidateKey) { it.copy(effort = level) } },
                 )
             }
             JActionSheet(actions, onDismiss = { picker = null }, title = stringResource(R.string.settings_src_model_effort))
         }
-        is ProfilePicker.TierSpeed -> {
-            val tierKey = activePicker.tierKey
-            val current = draft.tiers.firstOrNull { it.key == tierKey }
+        is ProfilePicker.CandidateSpeed -> {
+            val current = draft.tiers.firstOrNull { it.key == activePicker.tierKey }
+                ?.candidates?.firstOrNull { it.key == activePicker.candidateKey }
             val actions = ModelProfileRules.TIER_SPEEDS.map { speed ->
                 JAction(
                     tierSpeedDisplayLabel(res, speed),
                     checked = (current?.speed.orEmpty().let { if (it == "standard") "" else it }) == speed,
-                    onClick = { updateTier(tierKey) { it.copy(speed = speed) } },
+                    onClick = { updateCandidate(activePicker.tierKey, activePicker.candidateKey) { it.copy(speed = speed) } },
                 )
             }
             JActionSheet(actions, onDismiss = { picker = null }, title = stringResource(R.string.settings_model_profiles_tier_speed))
         }
-        is ProfilePicker.TierPermissionMode -> {
-            val tierKey = activePicker.tierKey
-            val current = draft.tiers.firstOrNull { it.key == tierKey }
+        is ProfilePicker.CandidatePermissionMode -> {
+            val current = draft.tiers.firstOrNull { it.key == activePicker.tierKey }
+                ?.candidates?.firstOrNull { it.key == activePicker.candidateKey }
             val actions = listOf(
                 JAction(
                     stringResource(R.string.settings_model_profiles_purpose_follow_default),
                     checked = current?.permissionMode.isNullOrEmpty(),
-                    onClick = { updateTier(tierKey) { it.copy(permissionMode = "") } },
+                    onClick = { updateCandidate(activePicker.tierKey, activePicker.candidateKey) { it.copy(permissionMode = "") } },
                 )
             ) + ModelProfileRules.PERMISSION_MODES.map { mode ->
                 JAction(
                     permissionModeDisplayLabel(res, mode),
                     checked = current?.permissionMode == mode,
-                    onClick = { updateTier(tierKey) { it.copy(permissionMode = mode) } },
+                    onClick = { updateCandidate(activePicker.tierKey, activePicker.candidateKey) { it.copy(permissionMode = mode) } },
                 )
             }
             JActionSheet(actions, onDismiss = { picker = null }, title = stringResource(R.string.settings_model_profiles_permission_mode))

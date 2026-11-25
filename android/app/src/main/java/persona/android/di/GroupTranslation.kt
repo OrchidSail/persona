@@ -363,6 +363,8 @@ internal fun AssistantManagement.inGroup(names: GroupNames): AssistantManagement
         override suspend fun deleteTask(id: String) = source.deleteTask(id)
         override suspend fun runTask(id: String) = names.key(source.runTask(id))
         override suspend fun freshTask(id: String) = source.freshTask(id).local()
+        override suspend fun previewCron(expression: String) = source.previewCron(expression)
+        override suspend fun revokeTaskStartGrant(id: String, kind: String?) = source.revokeTaskStartGrant(id, kind).local()
         override suspend fun runs() = source.runs().map { it.copy(machineId = it.machineId?.let(names::machineId)) }
         override suspend fun notes() = source.notes().let { it.copy(machineId = names.machineId(it.machineId)) }
         override suspend fun setNotes(text: String) = source.setNotes(text)
@@ -392,6 +394,21 @@ internal fun AssistantManagement.inGroup(names: GroupNames): AssistantManagement
             source.changeConversationCategories(names.raw(session), add, remove)
         override suspend fun extensionTrust() = source.extensionTrust()
         override suspend fun setExtensionTrust(id: String, trust: persona.core.contracts.api.ExtensionTrust) = source.setExtensionTrust(id, trust)
+        override suspend fun taskTrust() = source.taskTrust().map { kind ->
+            kind.copy(machine = kind.machine.takeIf { it.isNotBlank() }?.let(names::machineId).orEmpty())
+        }
+        override suspend fun revokeTaskTrust(key: String) = source.revokeTaskTrust(key)
+        override suspend fun leaders() = source.leaders()
+        override suspend fun updateDirectionNotes(id: String, notes: String, notesAt: String?) =
+            source.updateDirectionNotes(id, notes, notesAt)
+        override suspend fun repositories() = source.repositories()
+        override suspend fun repositoryProviders() = source.repositoryProviders()
+        override suspend fun previewRepository(url: String, provider: String) = source.previewRepository(url, provider)
+        override suspend fun createRepository(input: persona.core.contracts.api.RepositoryInput) = source.createRepository(input)
+        override suspend fun updateRepository(id: String, input: persona.core.contracts.api.RepositoryInput) =
+            source.updateRepository(id, input)
+        override suspend fun deleteRepository(id: String) = source.deleteRepository(id)
+        override suspend fun restoreRepository(id: String, receipt: String) = source.restoreRepository(id, receipt)
     }
 }
 
@@ -428,6 +445,8 @@ internal fun AssistantConversations.inGroup(names: GroupNames, scope: CoroutineS
         override suspend fun startConversation() = names.key(source.startConversation())
         override suspend fun startConversation(launcher: String) = names.key(source.startConversation(launcher))
         override suspend fun startConversation(pick: persona.core.contracts.ModelPick) = names.key(source.startConversation(pick))
+        override suspend fun startConversation(pick: persona.core.contracts.ModelPick, serviceTier: String?) =
+            names.key(source.startConversation(pick, serviceTier))
         // another manager's main conversation (docs/assistant/managers.md step 4), in this group's merged ids
         override suspend fun mainConversationOf(manager: String) = names.key(source.mainConversationOf(manager))
         override suspend fun spaceConversations(space: String) = source.spaceConversations(space).map(names::session)

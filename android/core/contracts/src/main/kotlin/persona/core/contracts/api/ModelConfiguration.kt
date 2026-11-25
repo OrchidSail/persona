@@ -34,6 +34,7 @@ interface ModelConfiguration {
             override suspend fun providerModels(provider: String, refresh: Boolean, machine: String?) =
                 kotlinx.coroutines.withContext(owner) { source.providerModels(provider, refresh, machine) }
             override suspend fun profiles() = kotlinx.coroutines.withContext(owner) { source.profiles() }
+            override suspend fun profileCandidates(id: String) = kotlinx.coroutines.withContext(owner) { source.profileCandidates(id) }
             override suspend fun applyProfile(id: String) = kotlinx.coroutines.withContext(owner) { source.applyProfile(id) }
             override suspend fun rollbackProfile() = kotlinx.coroutines.withContext(owner) { source.rollbackProfile() }
             override suspend fun saveProfile(id: String, input: ModelProfileSaveInput) =
@@ -60,6 +61,9 @@ interface ModelConfiguration {
 
     /** `GET /api/v1/model-profiles`; null when an older hub does not expose model profiles (404). */
     suspend fun profiles(): ModelProfilesView? = null
+
+    /** `GET /api/v1/model-profiles/{id}/candidates`; null when an older hub does not expose candidate stats (404). */
+    suspend fun profileCandidates(id: String): ModelProfileCandidatesView? = null
 
     /** `POST /api/v1/model-profiles/{id}/apply`: switches to profile [id] atomically. */
     suspend fun applyProfile(id: String): ModelProfilesView = throw ModelConfigurationUnsupported()

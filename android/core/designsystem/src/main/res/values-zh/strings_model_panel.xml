@@ -25,4 +25,8 @@
     <string name="designsystem_modelpanel_use_typed">使用「%1$s」</string>
     <string name="designsystem_modelpanel_use_typed_note">列表里没有，按输入的 ID 使用</string>
     <string name="designsystem_modelpanel_configure">配置模型</string>
+    <string name="designsystem_modelpanel_speed">速度</string>
+    <string name="designsystem_modelpanel_speed_standard">标准</string>
+    <string name="designsystem_modelpanel_fast_short">Fast</string>
+    <string name="designsystem_modelpanel_fast">Fast · 插队加速 · 用量更多</string>
 </resources>

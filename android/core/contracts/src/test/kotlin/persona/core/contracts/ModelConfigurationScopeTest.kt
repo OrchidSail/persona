@@ -61,6 +61,7 @@ class ModelConfigurationScopeTest {
             override suspend fun save(purpose: ModelPurpose, draft: ModelConfigurationDraft) = ModelPurposeSave.Conflict
             override suspend fun providerModels(provider: String, refresh: Boolean, machine: String?): ProviderModels? = null
             override suspend fun profiles(): ModelProfilesView { record("profiles"); return emptyView }
+            override suspend fun profileCandidates(id: String): ModelProfileCandidatesView? { record("candidates:$id"); return ModelProfileCandidatesView() }
             override suspend fun applyProfile(id: String): ModelProfilesView { record("apply:$id"); return emptyView }
             override suspend fun rollbackProfile(): ModelProfilesView { record("rollback"); return emptyView }
             override suspend fun saveProfile(id: String, input: ModelProfileSaveInput): ModelProfileSave {
@@ -69,13 +70,67 @@ class ModelConfigurationScopeTest {
         }
         val scoped = source.forManager("work")
         scoped.profiles()
+        scoped.profileCandidates("economy")
         scoped.applyProfile("economy")
         scoped.rollbackProfile()
         scoped.saveProfile("performance", ModelProfileSaveInput(revision = 2, name = "Performance"))
         assertEquals(
-            listOf("profiles" to "work", "apply:economy" to "work", "rollback" to "work", "save:performance" to "work"),
+            listOf("profiles" to "work", "candidates:economy" to "work", "apply:economy" to "work", "rollback" to "work", "save:performance" to "work"),
             calls,
         )
+    }
+
+    @Test fun profileTierCandidatesAliasesTrialAndCaptureRoundTrip() {
+        val raw = """
+            {
+              "revision": 7,
+              "active": "performance",
+              "rollbacks": [
+                {"id": "rb-1", "to": "economy", "at": "2026-11-25T00:00:00Z", "changes": ["assistant"], "redo": true}
+              ],
+              "profiles": [
+                {
+                  "id": "economy",
+                  "name": "Economy",
+                  "description": "Balanced",
+                  "active": false,
+                  "changes": ["assistant"],
+                  "trial": {"days": 7, "dispatches": 18, "would_switch": 5},
+                  "tiers": {
+                    "core": {
+                      "launcher": "claude",
+                      "model": "opus",
+                      "effort": "high",
+                      "speed": "fast",
+                      "aliases": ["strong"],
+                      "candidates": [
+                        {"launcher": "claude", "model": "opus", "effort": "high", "speed": "fast"},
+                        {"launcher": "codex", "model": "gpt-5", "effort": "medium", "speed": "standard"}
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+        val view = JsonCodec.decodeFromString<ModelProfilesView>(raw)
+        assertEquals(1, view.rollbacks.size)
+        assertEquals("rb-1", view.rollbacks.single().id)
+        assertTrue(view.rollbacks.single().redo)
+        val profile = view.profiles.single()
+        assertEquals(ModelProfileTrial(days = 7, dispatches = 18, wouldSwitch = 5), profile.trial)
+        val tier = profile.tiers.getValue("core")
+        assertEquals(listOf("strong"), tier.aliases)
+        assertEquals(2, tier.candidates?.size)
+        val serializedTier = tier.toJson().toString()
+        assertTrue(serializedTier.contains("\"candidates\""))
+        assertTrue(serializedTier.contains("\"aliases\":[\"strong\"]"))
+        assertFalse("standard speed must be omitted for older hub compat", serializedTier.contains("\"standard\""))
+
+        val capture = ModelProfileSaveInput.capture(profile.copy(description = ""), revision = 7).toJson().toString()
+        assertTrue(capture.contains("\"capture\":true"))
+        assertFalse("empty description omitted on capture", capture.contains("\"description\""))
+        assertFalse("tiers omitted on capture so server preserves them", capture.contains("\"tiers\""))
     }
 
     @Test fun profileSaveInputAndDraftPermissionModeSerializeCleanly() {

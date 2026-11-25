@@ -142,7 +142,7 @@ internal fun isCurrentAssistantPath(url: HttpUrl, method: String = "GET"): Boole
     if (isAssistantPath(url)) return true
     val api = apiSegments(url) ?: return false
     return when (api.firstOrNull()) {
-        "kb", "kb-search" -> true
+        "kb", "kb-search", "task-trust" -> true
         "todos" -> api.size == 1 && method.equals("POST", ignoreCase = true)
         else -> false
     }

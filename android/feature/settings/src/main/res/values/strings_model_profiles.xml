@@ -39,7 +39,7 @@
     <string name="settings_model_profiles_add_tier">Add preset</string>
     <string name="settings_model_profiles_remove">Remove</string>
     <string name="settings_model_profiles_tier_name">Preset name</string>
-    <string name="settings_model_profiles_tier_name_placeholder">e.g. strong, standard, fast</string>
+    <string name="settings_model_profiles_tier_name_placeholder">e.g. dev, core, deploy</string>
     <string name="settings_model_profiles_tier_launcher">Launcher</string>
     <string name="settings_model_profiles_tier_launcher_placeholder">Select launcher</string>
     <string name="settings_model_profiles_tier_speed">Start speed</string>
@@ -84,4 +84,38 @@
     <string name="settings_model_profiles_field_haiku_model">Haiku model</string>
     <string name="settings_model_profiles_field_fable_model">Fable model</string>
     <string name="settings_model_profiles_field_effort">Thinking effort</string>
+    <string name="settings_model_profiles_reload">Reload</string>
+    <string name="settings_model_profiles_capture_from_current">Update from current configuration</string>
+    <string name="settings_model_profiles_capture_hint">Replace this profile\'s purpose bindings and launcher overrides with your current configuration. Agent presets stay unchanged.</string>
+    <string name="settings_model_profiles_captured">Profile updated from current configuration</string>
+    <string name="settings_model_profiles_conflict_capture">Profiles were changed elsewhere. Reload to get the latest version before capturing.</string>
+    <string name="settings_model_profiles_confirm_apply_title">Apply %1$s?</string>
+    <string name="settings_model_profiles_confirm_apply_intro">Applying %1$s will update these fields in your current configuration:</string>
+    <string name="settings_model_profiles_confirm_reapply_intro">Applying %1$s again will overwrite your current live changes for these fields:</string>
+    <string name="settings_model_profiles_confirm_switch_active_drift_only">Switching to %1$s matches your current settings, but %2$s still has unsaved changes:</string>
+    <string name="settings_model_profiles_confirm_active_drift">Your current configuration differs from the active profile (%1$s). Capture it first so switching back does not overwrite these fields:</string>
+    <string name="settings_model_profiles_confirm_capture_active_hint">You can also capture the current configuration into %1$s before switching.</string>
+    <string name="settings_model_profiles_capture_active_first">Capture current into %1$s first</string>
+    <string name="settings_model_profiles_apply_directly">Apply directly</string>
+    <string name="settings_model_profiles_captured_and_applied">Captured current into %1$s and applied %2$s</string>
+    <string name="settings_model_profiles_apply_failed_after_capture">Saved current configuration into %1$s, but applying failed: %2$s</string>
+    <string name="settings_model_profiles_tier_aliases_inline">Aliases: %1$s</string>
+    <string name="settings_model_profiles_tier_candidates_count">Candidates (%1$d/%2$d)</string>
+    <string name="settings_model_profiles_add_candidate">Add candidate</string>
+    <string name="settings_model_profiles_tier_candidate_index">Candidate #%1$d</string>
+    <string name="settings_model_profiles_tier_candidate_where">%1$s #%2$d</string>
+    <string name="settings_model_profiles_candidate_move_up">Up</string>
+    <string name="settings_model_profiles_candidate_move_down">Down</string>
+    <string name="settings_model_profiles_candidate_headroom">Headroom %1$d%%</string>
+    <string name="settings_model_profiles_candidate_headroom_unknown">Headroom unknown</string>
+    <string name="settings_model_profiles_candidate_stale">Stale</string>
+    <string name="settings_model_profiles_candidate_stats">Last %1$dd: %2$sm p50 · %3$d%% first-pass · n=%4$d</string>
+    <string name="settings_model_profiles_candidate_no_data">No data yet</string>
+    <string name="settings_model_profiles_trial_summary">Last %1$d days: %2$d dispatched, %3$d would have switched</string>
+    <string name="settings_model_profiles_trial_definition">Counts dispatches where this inactive profile would have picked a different launcher or model than the active one.</string>
+    <string name="settings_model_profiles_err_tier_candidates_empty">Preset \"%1$s\" needs at least one candidate.</string>
+    <string name="settings_model_profiles_err_tier_candidates_limit">Preset \"%1$s\" allows at most %2$d candidates.</string>
+    <string name="settings_model_profiles_err_tier_candidate_launcher">Preset \"%1$s\" candidate #%2$d requires a launcher.</string>
+    <string name="settings_model_profiles_err_tier_candidate_model">Invalid model ID \"%3$s\" for preset \"%1$s\" candidate #%2$d.</string>
+    <string name="settings_model_profiles_err_tier_candidate_speed">Unsupported speed \"%3$s\" for preset \"%1$s\" candidate #%2$d.</string>
 </resources>

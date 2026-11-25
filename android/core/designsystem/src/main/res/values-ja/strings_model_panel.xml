@@ -25,4 +25,8 @@
     <string name="designsystem_modelpanel_use_typed">「%1$s」を使用</string>
     <string name="designsystem_modelpanel_use_typed_note">リストにないため、入力した ID をそのまま使います</string>
     <string name="designsystem_modelpanel_configure">モデルを設定</string>
+    <string name="designsystem_modelpanel_speed">速度</string>
+    <string name="designsystem_modelpanel_speed_standard">標準</string>
+    <string name="designsystem_modelpanel_fast_short">Fast</string>
+    <string name="designsystem_modelpanel_fast">Fast · 優先処理で高速 · 使用量が増えます</string>
 </resources>

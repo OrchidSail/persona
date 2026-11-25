@@ -182,10 +182,10 @@ internal fun ProactiveScreen(
                         ProactivePage.Overview -> OverviewPage(state, machines, now, zone,
                             if (persona.core.designsystem.LocalIsSidebarRoot.current) null else ::pop, actions)
                         is ProactivePage.EditRoutine -> TaskEditorPage(page.id, null, state, store, now, zone, ::pop, onOpenConversation,
-                            onAllRuns = { push(ProactivePage.RunList(it)) }, onRunNow = runTask, onModelConfiguration = onModelConfiguration)
+                            onAllRuns = { push(ProactivePage.RunList(it)) }, onRunNow = runTask, onModelConfiguration = onModelConfiguration, machines = machines)
                         is ProactivePage.AddRoutine -> TaskEditorPage(null, RoutineTemplates.getOrNull(page.template)?.draft(say) ?: BlankTask,
                             state, store, now, zone, ::pop, onOpenConversation, onAllRuns = { push(ProactivePage.RunList(it)) }, onRunNow = runTask,
-                            onModelConfiguration = onModelConfiguration)
+                            onModelConfiguration = onModelConfiguration, machines = machines)
                         ProactivePage.FollowupList -> FollowupsPage(state, machines, now, zone, ::pop, actions)
                         is ProactivePage.RunList -> RunsPage(state, page.ref, now, zone, ::pop, actions)
                     }

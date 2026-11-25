@@ -53,6 +53,12 @@ class HttpModelConfiguration internal constructor(
         if (failure.status == 404) null else throw failure
     }
 
+    override suspend fun profileCandidates(id: String): ModelProfileCandidatesView? = try {
+        JsonCodec.decodeFromString(call(profilePath(id, "candidates"), "GET"))
+    } catch (failure: HubFailure) {
+        if (failure.status == 404) null else throw failure
+    }
+
     override suspend fun applyProfile(id: String): ModelProfilesView =
         JsonCodec.decodeFromString(call(profilePath(id, "apply"), "POST", emptyBody = true))
 

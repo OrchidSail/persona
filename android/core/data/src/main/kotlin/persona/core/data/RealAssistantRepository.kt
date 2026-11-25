@@ -344,11 +344,14 @@ class RealAssistantRepository(
         }
     }
 
-    override suspend fun startConversation(): SessionKey = start(null)
+    override suspend fun startConversation(): SessionKey = start(null, null)
 
-    override suspend fun startConversation(launcher: String): SessionKey = start(persona.core.contracts.ModelPick(launcher))
+    override suspend fun startConversation(launcher: String): SessionKey = start(persona.core.contracts.ModelPick(launcher), null)
 
-    override suspend fun startConversation(pick: persona.core.contracts.ModelPick): SessionKey = start(pick)
+    override suspend fun startConversation(pick: persona.core.contracts.ModelPick): SessionKey = start(pick, null)
+
+    override suspend fun startConversation(pick: persona.core.contracts.ModelPick, serviceTier: String?): SessionKey =
+        start(pick, serviceTier?.takeIf(String::isNotBlank))
 
     override suspend fun mainConversationOf(manager: String): SessionKey {
         val captured = request()
@@ -383,20 +386,29 @@ class RealAssistantRepository(
         return session.key
     }
 
-    private suspend fun start(pick: persona.core.contracts.ModelPick?): SessionKey {
+    private suspend fun start(pick: persona.core.contracts.ModelPick?, serviceTier: String?): SessionKey {
         // Capture identity before waiting behind another creation.
         val request = request()
         return creationLock.withLock {
             val config = request.transport.assistantOf(request.owner)
             check(connection.current.value === request.transport) { CoreText.of(Key.ConnectionSwitched).shown }
-            create(request, config.string("main").isEmpty(), pick, config)
+            create(request, config.string("main").isEmpty(), pick, config, serviceTier)
         }
     }
 
-    private suspend fun create(request: Request, isMain: Boolean, pick: persona.core.contracts.ModelPick?, config: JsonObject): SessionKey {
-        // A model or an effort goes with the launcher only (the new-chat page's panel); a launcher alone as before.
-        val result = if (pick != null && (pick.model != null || pick.effort != null)) request.transport.createConversationOf(request.owner, isMain, pick)
-            else request.transport.createConversationOf(request.owner, isMain, pick?.launcher)
+    private suspend fun create(
+        request: Request,
+        isMain: Boolean,
+        pick: persona.core.contracts.ModelPick?,
+        config: JsonObject,
+        serviceTier: String? = null,
+    ): SessionKey {
+        // A model, effort or Codex start service_tier goes with the launcher pick; a launcher alone as before.
+        val result = when {
+            pick != null && !serviceTier.isNullOrBlank() -> request.transport.createConversationOf(request.owner, isMain, pick, serviceTier)
+            pick != null && (pick.model != null || pick.effort != null) -> request.transport.createConversationOf(request.owner, isMain, pick)
+            else -> request.transport.createConversationOf(request.owner, isMain, pick?.launcher)
+        }
         val session = JsonCodec.decodeFromJsonElement<Session>(result.getValue("session"))
         check(connection.current.value === request.transport) { CoreText.of(Key.ConnectionSwitched).shown }
         noteConversation(session.sessionId, request)

@@ -39,7 +39,7 @@
     <string name="settings_model_profiles_add_tier">添加预设</string>
     <string name="settings_model_profiles_remove">移除</string>
     <string name="settings_model_profiles_tier_name">预设名称</string>
-    <string name="settings_model_profiles_tier_name_placeholder">如 strong、standard、fast</string>
+    <string name="settings_model_profiles_tier_name_placeholder">例如：dev、core、deploy</string>
     <string name="settings_model_profiles_tier_launcher">启动器</string>
     <string name="settings_model_profiles_tier_launcher_placeholder">选择启动器</string>
     <string name="settings_model_profiles_tier_speed">启动速度</string>
@@ -84,4 +84,38 @@
     <string name="settings_model_profiles_field_haiku_model">Haiku 模型</string>
     <string name="settings_model_profiles_field_fable_model">Fable 模型</string>
     <string name="settings_model_profiles_field_effort">思考档位</string>
+    <string name="settings_model_profiles_reload">重新加载</string>
+    <string name="settings_model_profiles_capture_from_current">从当前配置更新此档位</string>
+    <string name="settings_model_profiles_capture_hint">用当前的用途绑定和启动器设置覆盖此档位，保留现有 Agent 预设。</string>
+    <string name="settings_model_profiles_captured">已用当前配置更新档位</string>
+    <string name="settings_model_profiles_conflict_capture">档位已在别处修改。请重新加载获取最新版本后再更新。</string>
+    <string name="settings_model_profiles_confirm_apply_title">应用「%1$s」？</string>
+    <string name="settings_model_profiles_confirm_apply_intro">应用「%1$s」将修改当前配置中的以下字段：</string>
+    <string name="settings_model_profiles_confirm_reapply_intro">再次应用「%1$s」将用已保存的快照覆盖以下当前配置改动：</string>
+    <string name="settings_model_profiles_confirm_switch_active_drift_only">切换到「%1$s」与当前设置一致，但「%2$s」仍有未保存的配置改动：</string>
+    <string name="settings_model_profiles_confirm_active_drift">当前配置与使用中的档位（%1$s）存在差异。建议先捕获当前配置，避免日后切回时覆盖以下字段：</string>
+    <string name="settings_model_profiles_confirm_capture_active_hint">也可以在切换前先将当前配置捕获到「%1$s」。</string>
+    <string name="settings_model_profiles_capture_active_first">先捕获当前配置到「%1$s」并应用</string>
+    <string name="settings_model_profiles_apply_directly">直接应用</string>
+    <string name="settings_model_profiles_captured_and_applied">已将当前配置捕获到「%1$s」并应用「%2$s」</string>
+    <string name="settings_model_profiles_apply_failed_after_capture">已将当前配置保存到「%1$s」，但应用失败：%2$s</string>
+    <string name="settings_model_profiles_tier_aliases_inline">别名：%1$s</string>
+    <string name="settings_model_profiles_tier_candidates_count">候选顺序（%1$d/%2$d）</string>
+    <string name="settings_model_profiles_add_candidate">添加候选</string>
+    <string name="settings_model_profiles_tier_candidate_index">候选 #%1$d</string>
+    <string name="settings_model_profiles_tier_candidate_where">%1$s 第 %2$d 项</string>
+    <string name="settings_model_profiles_candidate_move_up">上移</string>
+    <string name="settings_model_profiles_candidate_move_down">下移</string>
+    <string name="settings_model_profiles_candidate_headroom">余量 %1$d%%</string>
+    <string name="settings_model_profiles_candidate_headroom_unknown">余量未知</string>
+    <string name="settings_model_profiles_candidate_stale">已过期</string>
+    <string name="settings_model_profiles_candidate_stats">近 %1$d 天：用时 p50 %2$s 分 · 一次过 %3$d%% · n=%4$d</string>
+    <string name="settings_model_profiles_candidate_no_data">暂无数据</string>
+    <string name="settings_model_profiles_trial_summary">近 %1$d 天派活 %2$d 件，%3$d 件会换渠道</string>
+    <string name="settings_model_profiles_trial_definition">统计口径：同一次派活里，按此未启用档位试算选出的启动器或模型与实际派出的不同。</string>
+    <string name="settings_model_profiles_err_tier_candidates_empty">预设「%1$s」至少需要 1 个候选。</string>
+    <string name="settings_model_profiles_err_tier_candidates_limit">预设「%1$s」最多允许 %2$d 个候选。</string>
+    <string name="settings_model_profiles_err_tier_candidate_launcher">预设「%1$s」第 %2$d 个候选必须选择启动器。</string>
+    <string name="settings_model_profiles_err_tier_candidate_model">预设「%1$s」第 %2$d 个候选的模型 ID「%3$s」格式无效。</string>
+    <string name="settings_model_profiles_err_tier_candidate_speed">预设「%1$s」第 %2$d 个候选不支持速度「%3$s」。</string>
 </resources>

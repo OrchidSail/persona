@@ -20,8 +20,20 @@ class ModelProfilesStateTest {
             "gateway" to ModelProfileLauncherModels(model = "glm-5", smallModel = ""),
         ),
         tiers = mapOf(
-            "strong" to ModelProfileTier(launcher = "claude", model = "opus", effort = "high", speed = "fast", permissionMode = "acceptEdits", description = "Hard tasks"),
-            "standard" to ModelProfileTier(launcher = "claude", model = "sonnet", effort = "medium", description = "Everyday tasks"),
+            "core" to ModelProfileTier(
+                launcher = "claude",
+                model = "opus",
+                effort = "high",
+                speed = "fast",
+                permissionMode = "acceptEdits",
+                description = "Hard tasks",
+                aliases = listOf("strong"),
+                candidates = listOf(
+                    ModelProfileTierCandidate(launcher = "claude", model = "opus", effort = "high", speed = "fast", permissionMode = "acceptEdits"),
+                    ModelProfileTierCandidate(launcher = "codex", model = "gpt-5", effort = "medium"),
+                ),
+            ),
+            "dev" to ModelProfileTier(launcher = "claude", model = "sonnet", effort = "medium", description = "Everyday tasks", aliases = listOf("standard")),
         ),
         active = true,
         changes = emptyList(),
@@ -33,12 +45,19 @@ class ModelProfilesStateTest {
         rollback = ModelProfileUndo(to = "economy", changes = listOf("assistant")),
         profiles = listOf(
             sampleProfile,
-            ModelProfile(id = "economy", name = "Economy", active = false, changes = listOf("assistant")),
+            ModelProfile(
+                id = "economy",
+                name = "Economy",
+                active = false,
+                changes = listOf("assistant"),
+                trial = ModelProfileTrial(days = 7, dispatches = 12, wouldSwitch = 4),
+            ),
         ),
     )
 
     private fun fakeApi(
         onProfiles: suspend () -> ModelProfilesView? = { sampleView },
+        onCandidates: suspend (String) -> ModelProfileCandidatesView? = { null },
         onApply: suspend (String) -> ModelProfilesView = { sampleView.copy(active = it) },
         onRollback: suspend () -> ModelProfilesView = { sampleView.copy(active = "economy", rollback = null) },
         onSave: suspend (String, ModelProfileSaveInput) -> ModelProfileSave = { _, input ->
@@ -50,48 +69,43 @@ class ModelProfilesStateTest {
         override suspend fun save(purpose: ModelPurpose, draft: ModelConfigurationDraft) = ModelPurposeSave.Conflict
         override suspend fun providerModels(provider: String, refresh: Boolean, machine: String?): ProviderModels? = null
         override suspend fun profiles() = onProfiles()
+        override suspend fun profileCandidates(id: String) = onCandidates(id)
         override suspend fun applyProfile(id: String) = onApply(id)
         override suspend fun rollbackProfile() = onRollback()
         override suspend fun saveProfile(id: String, input: ModelProfileSaveInput) = onSave(id, input)
     }
 
     @Test fun modelProfilesLoadApplyRollbackSaveAndHandleErrors() = runBlocking {
-        // Load success
         val model = ModelProfilesModel(fakeApi())
         assertNotNull(model.load())
         assertEquals(3L, model.state.value.view?.revision)
         assertFalse(model.state.value.unsupported)
         assertNull(model.state.value.error)
 
-        // Apply profile
         assertTrue(model.apply("economy"))
         assertEquals("economy", model.state.value.view?.active)
         assertNull(model.state.value.actionError)
 
-        // Rollback
         assertTrue(model.rollback())
         assertNull(model.state.value.view?.rollback)
 
-        // Save success
         val input = ModelProfileSaveInput(revision = 3, name = "Performance")
         assertTrue(model.save("performance", input))
         assertEquals(4L, model.state.value.view?.revision)
         assertFalse(model.state.value.conflict)
 
-        // Older hub (404 -> null) marks unsupported cleanly without error
         val oldHub = ModelProfilesModel(fakeApi(onProfiles = { null }))
         assertNull(oldHub.load())
         assertTrue(oldHub.state.value.unsupported)
         assertNull(oldHub.state.value.error)
 
-        // 409 Conflict sets conflict flag and message
         val conflictModel = ModelProfilesModel(fakeApi(onSave = { _, _ -> ModelProfileSave.Conflict }))
         conflictModel.load()
         assertFalse(conflictModel.save("performance", input))
         assertTrue(conflictModel.state.value.conflict)
+        assertFalse(conflictModel.state.value.conflictIsCapture)
         assertNotNull(conflictModel.state.value.actionError)
 
-        // Network/server errors surface cleanly
         val broken = ModelProfilesModel(
             fakeApi(
                 onProfiles = { throw HubFailure(HubError.NoNetwork, "offline") },
@@ -113,55 +127,167 @@ class ModelProfilesStateTest {
         assertNotNull(broken.state.value.actionError)
     }
 
-    @Test fun draftRoundTripAndDirtyDetection() {
-        val draft = profileToDraft(sampleProfile, listOf("assistant", "agent.new", "kb", "inbox.triage"))
-        assertEquals("Performance", draft.name)
-        assertTrue(draft.purposes.getValue("assistant").included)
-        assertFalse(draft.purposes.getValue("agent.new").included)
-        assertEquals(2, draft.tiers.size)
-        assertEquals(listOf("standard", "strong"), draft.tiers.map { it.name })
-        assertFalse(isProfileDraftDirty(draft, draft))
+    @Test fun captureAndCaptureActiveAndApplyHandleSuccessConflictAndPartialFailure() = runBlocking {
+        val events = mutableListOf<String>()
+        val model = ModelProfilesModel(
+            fakeApi(
+                onSave = { id, input ->
+                    events += "save:$id:capture=${input.capture}:rev=${input.revision}"
+                    ModelProfileSave.Saved(sampleView.copy(revision = input.revision + 1))
+                },
+                onApply = { id ->
+                    events += "apply:$id"
+                    sampleView.copy(revision = 4, active = id)
+                },
+            )
+        )
+        model.load()
+        assertTrue(model.capture(sampleProfile, 3))
+        assertEquals(listOf("save:performance:capture=true:rev=3"), events)
 
-        val edited = draft.copy(description = "Updated description")
-        assertTrue(isProfileDraftDirty(edited, draft))
-        val payload = draftToProfileInput(edited, revision = 3)
-        assertEquals(3L, payload.revision)
-        assertEquals("Updated description", payload.description)
-        assertEquals(setOf("assistant", "kb"), payload.purposes?.keys)
-        assertEquals("", payload.launchers?.get("gateway")?.smallModel)
-        assertEquals(setOf("standard", "strong"), payload.tiers?.keys)
+        events.clear()
+        val target = sampleView.profiles.last()
+        assertEquals(CaptureApplyResult.CapturedAndApplied, model.captureActiveAndApply(sampleProfile, target, 4))
+        assertEquals(listOf("save:performance:capture=true:rev=4", "apply:economy"), events)
+
+        // Capture conflict aborts before apply
+        val conflictEvents = mutableListOf<String>()
+        val conflictModel = ModelProfilesModel(
+            fakeApi(
+                onSave = { _, _ -> conflictEvents += "save"; ModelProfileSave.Conflict },
+                onApply = { conflictEvents += "apply"; sampleView },
+            )
+        )
+        assertEquals(CaptureApplyResult.CaptureConflict, conflictModel.captureActiveAndApply(sampleProfile, target, 3))
+        assertEquals(listOf("save"), conflictEvents)
+        assertTrue(conflictModel.state.value.conflict)
+        assertTrue(conflictModel.state.value.conflictIsCapture)
+
+        // Partial failure: capture succeeds, apply throws
+        val partialModel = ModelProfilesModel(
+            fakeApi(
+                onSave = { _, input -> ModelProfileSave.Saved(sampleView.copy(revision = input.revision + 1)) },
+                onApply = { throw HubFailure(HubError.Server, "boom", 500) },
+            )
+        )
+        val partial = partialModel.captureActiveAndApply(sampleProfile, target, 3)
+        assertTrue(partial is CaptureApplyResult.ApplyFailedAfterCapture)
+        assertEquals(4L, partialModel.state.value.view?.revision)
+        assertNotNull(partialModel.state.value.actionError)
     }
 
-    @Test fun draftValidationCatchesInvalidFieldsAndAllowsLegacyTierModel() {
+    @Test fun multiCandidateRoundTripPreservesOrderAliasesAndListedTierTrimming() {
+        val draft = profileToDraft(sampleProfile, listOf("assistant", "agent.new", "kb", "inbox.triage"))
+        assertEquals("Performance", draft.name)
+        assertEquals(setOf("core"), draft.listedTierNames)
+        assertEquals(listOf("core", "dev"), draft.tiers.map { it.name })
+        assertEquals(2, draft.tiers.first().candidates.size)
+        assertEquals(listOf("strong"), draft.tiers.first().aliases)
+        assertEquals(listOf("standard"), draft.tiers.last().aliases)
+        assertFalse(isProfileDraftDirty(draft, draft))
+
+        // Reordering candidates marks draft dirty and mirrors new candidates[0] into flat fields
+        val core = draft.tiers.first()
+        val reordered = draft.copy(
+            tiers = listOf(core.copy(candidates = core.candidates.reversed())) + draft.tiers.drop(1)
+        )
+        assertTrue(isProfileDraftDirty(reordered, draft))
+        val reorderedInput = draftToProfileInput(reordered, revision = 3)
+        val reorderedCore = reorderedInput.tiers!!.getValue("core")
+        assertEquals("codex", reorderedCore.launcher)
+        assertEquals("gpt-5", reorderedCore.model)
+        assertEquals(2, reorderedCore.candidates?.size)
+        assertEquals("codex", reorderedCore.candidates?.get(0)?.launcher)
+        assertEquals("claude", reorderedCore.candidates?.get(1)?.launcher)
+        assertEquals(listOf("strong"), reorderedCore.aliases)
+
+        // Trimming a previously multi-candidate tier ("core") down to 1 candidate MUST still emit 1-element candidates list
+        val trimmed = draft.copy(
+            tiers = listOf(core.copy(candidates = listOf(core.candidates.first()))) + draft.tiers.drop(1)
+        )
+        val trimmedInput = draftToProfileInput(trimmed, revision = 3)
+        val trimmedCore = trimmedInput.tiers!!.getValue("core")
+        assertEquals(1, trimmedCore.candidates?.size)
+        assertTrue(trimmedCore.toJson().toString().contains("\"candidates\""))
+
+        // Single-candidate tier never listed before omits `candidates` on wire for older-hub compat
+        val devWire = trimmedInput.tiers!!.getValue("dev")
+        assertNull(devWire.candidates)
+        assertEquals(listOf("standard"), devWire.aliases)
+    }
+
+    @Test fun draftValidationChecksMultiCandidateBoundsAndLegacyModelBypass() {
         val validDraft = profileToDraft(sampleProfile)
         assertTrue(profileDraftProblems(validDraft).isEmpty())
 
-        // Empty name & too-long description
         val badIdentity = validDraft.copy(name = "   ", description = "a".repeat(301))
         assertEquals(2, profileDraftProblems(badIdentity).size)
 
-        // Invalid tier name, duplicate tier name, missing launcher, bad speed, bad model ID
         val badTiers = validDraft.copy(
             tiers = listOf(
-                ModelProfileTierDraft(key = "1", name = "BadName", launcher = "", model = "bad model", effort = "ultra", speed = "warp", permissionMode = "invalid", description = "line1\nline2"),
-                ModelProfileTierDraft(key = "2", name = "ok_tier", launcher = "claude"),
-                ModelProfileTierDraft(key = "3", name = "ok_tier", launcher = "claude"),
+                ModelProfileTierDraft(
+                    key = "1",
+                    name = "BadName",
+                    description = "line1\nline2",
+                    candidates = listOf(
+                        ModelProfileCandidateDraft(
+                            key = "c1",
+                            launcher = "",
+                            model = "bad model",
+                            effort = "ultra",
+                            speed = "warp",
+                            permissionMode = "invalid",
+                        ),
+                    ),
+                ),
+                ModelProfileTierDraft(key = "2", name = "ok_tier", candidates = emptyList()),
+                ModelProfileTierDraft(
+                    key = "3",
+                    name = "ok_tier",
+                    candidates = List(7) { ModelProfileCandidateDraft(key = "k$it", launcher = "claude") },
+                ),
             )
         )
         val problems = profileDraftProblems(badTiers)
-        assertTrue("expected multiple validation problems, got $problems", problems.size >= 7)
+        assertTrue("expected multiple validation problems, got $problems", problems.size >= 9)
 
-        // Unchanged legacy model ID on existing tier is preserved without blocking save
+        // Unchanged legacy model ID on existing tier candidate is preserved without blocking save
         val legacyTier = ModelProfileTierDraft(
             key = "legacy",
             originalName = "legacy",
-            originalModel = "legacy model id with spaces?",
             name = "legacy",
-            launcher = "claude",
-            model = "legacy/custom:1",
+            candidates = listOf(
+                ModelProfileCandidateDraft(
+                    key = "c0",
+                    originalModel = "legacy/custom:1",
+                    launcher = "claude",
+                    model = "legacy/custom:1",
+                ),
+            ),
         )
-        val legacyDraft = validDraft.copy(tiers = listOf(legacyTier.copy(originalModel = "legacy/custom:1")))
-        assertTrue(profileDraftProblems(legacyDraft).isEmpty())
+        assertTrue(profileDraftProblems(validDraft.copy(tiers = listOf(legacyTier))).isEmpty())
+    }
+
+    @Test fun parseProfileChangeDriftAndCandidateStatusMatchingWork() {
+        assertEquals(ParsedProfileChange.Purpose("assistant"), parseProfileChange("assistant"))
+        assertEquals(ParsedProfileChange.Launcher("gateway", "small_model"), parseProfileChange("gateway.small_model"))
+        assertEquals(ParsedProfileChange.Other("custom.unknown"), parseProfileChange("custom.unknown"))
+
+        val activeDrifted = sampleProfile.copy(changes = listOf("gateway.model"))
+        val targetClean = ModelProfile(id = "economy", name = "Economy", active = false, changes = emptyList())
+        val drift = profileApplyDrift(targetClean, activeDrifted)
+        assertTrue(drift.hasDrift)
+        assertTrue(drift.hasActiveDrift)
+        assertTrue(drift.canCaptureActiveFirst)
+
+        val statuses = listOf(
+            ModelProfileCandidateStatus(index = 0, launcher = "claude", model = "opus"),
+            ModelProfileCandidateStatus(index = 1, launcher = "codex", model = "gpt-5"),
+        )
+        assertEquals(1, matchCandidateStatus(statuses, "codex", "gpt-5", index = 0)?.index)
+        assertEquals(0, matchCandidateStatus(statuses, "other", "m", index = 0)?.index)
+        assertEquals("4", formatMinutesP50(4.0))
+        assertEquals("4.3", formatMinutesP50(4.26))
     }
 
     @Test fun showsEffortSupportsChatEffortMarkedProviders() {

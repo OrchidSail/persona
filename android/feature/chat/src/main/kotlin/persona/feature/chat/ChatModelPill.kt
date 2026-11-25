@@ -259,12 +259,13 @@ internal fun pillContent(view: PillView, pending: PillSetup?, ultracode: Boolean
     val handoff = pending != null && pending.engine != view.setup.engine
     val provider = if (handoff) mark.name else shown.provider
     val content = ModelPillContent(provider, model, mark, shown.effort?.let { pillEffort(it, res) },
+        fast = shown.fast && pending == null,
         ultracode = ultracode && pending == null, pending = pending != null, pendingEngine = handoff,
         loading = res.getString(R.string.chat_modelpill_loading).takeIf { view.loading && pending == null },
         failed = view.failed && pending == null)
     val effort = shown.effort?.let { SessionModes.effortLabel(it, res) ?: it }
     val loading = content.loading
-    val spoken = when {
+    val baseSpoken = when {
         loading != null -> loading
         content.failed -> res.getString(R.string.chat_modelpill_failed)
         pending != null -> if (effort != null) res.getString(R.string.chat_modelpill_spoken_pending_effort, provider, model.orEmpty(), effort)
@@ -272,6 +273,9 @@ internal fun pillContent(view: PillView, pending: PillSetup?, ultracode: Boolean
         effort != null -> res.getString(R.string.chat_modelpill_spoken_effort, model ?: shown.provider, effort)
         else -> res.getString(R.string.chat_modelpill_spoken, model ?: shown.provider)
     }
+    val spoken = if (content.fast && loading == null && !content.failed) {
+        "$baseSpoken · ${res.getString(DesignR.string.designsystem_modelpanel_fast_short)}"
+    } else baseSpoken
     return content to spoken
 }
 
@@ -305,6 +309,7 @@ internal fun AgentModelPill(
     openRequested: Boolean = false,
     onOpenHandled: () -> Unit = {},
     onConfigure: (() -> Unit)? = null,
+    onFastChanged: () -> Unit = {},
 ) {
     val res = LocalResources.current
     val features = LocalHubFeatures.current
@@ -314,6 +319,7 @@ internal fun AgentModelPill(
     val own = AgentModelPanel.launcher(session)
     var open by remember { mutableStateOf(false) }
     var picking by remember { mutableStateOf(false) }
+    var fastBusy by remember(session.key) { mutableStateOf(false) }
     var prefs by rememberPanelPrefs(PanelScope.Agent)
     val context = LocalContext.current.applicationContext
     val panelSettings = remember(context) { PanelPrefsStore(context, PanelScope.Agent) }
@@ -394,7 +400,7 @@ internal fun AgentModelPill(
                 }
             }
         },
-        onDismiss = { open = false }, picking = picking,
+        onDismiss = { open = false }, picking = picking, fastBusy = fastBusy,
         header = {
             if (pending != null && pending.engine != view.setup.engine) {
                 JTextButton(stringResource(R.string.chat_engine_switch_cancel_pending),
@@ -415,6 +421,15 @@ internal fun AgentModelPill(
             }
         },
         onApplyCurrent = if (effort && editable) ({ e -> state.run(session, ChatAction.Modes(effort = e)) }) else null,
+        onApplyCurrentFast = if (AgentModelPanel.hasFast(session) && editable) ({ fast ->
+            if (!fastBusy) {
+                fastBusy = true
+                state.run(session, ChatAction.Modes(serviceTier = if (fast) "priority" else "default")) { ok ->
+                    fastBusy = false
+                    if (ok) onFastChanged()
+                }
+            }
+        }) else null,
         currentExtra = if (Ultracode.offered(session, features)) ({
             UltracodeSwitchRow(session, ultracodeAsk, editable) { on ->
                 ultracodeAsk = Ultracode.Ask(on)
@@ -500,6 +515,13 @@ fun PersonaModelPill(
     leaderConversations: Set<String> = emptySet(),
     /** Called after a confirmed cross-engine conversation switch so the page can refresh authoritative state. */
     onSwitched: () -> Unit = {},
+    /** Starter Fast speed state on the new-chat page (null session only). */
+    pageFast: Boolean = false,
+    onPageFast: ((Boolean) -> Unit)? = null,
+    /** Whether starting a new Codex conversation with `service_tier="priority"` is allowed here (default manager + feature). */
+    startFastSupported: Boolean = false,
+    /** Toggles `service_tier` (`"priority"` or `"default"`) on a live Codex assistant session; invokes callback on finish. */
+    onServiceTier: ((String, (Boolean) -> Unit) -> Unit)? = null,
 ) {
     val res = LocalResources.current
     val features = LocalHubFeatures.current
@@ -517,6 +539,7 @@ fun PersonaModelPill(
     var switchError by remember(session?.key) { mutableStateOf<String?>(null) }
     var switching by remember(session?.key) { mutableStateOf(false) }
     var switchUncertain by remember(session?.key) { mutableStateOf(false) }
+    var fastBusy by remember(session?.key) { mutableStateOf(false) }
     LaunchedEffect(open) { onOverlay(open) }
     LaunchedEffect(openRequested) {
         if (openRequested) { open = true; onOpenHandled() }
@@ -576,8 +599,10 @@ fun PersonaModelPill(
         }
     }
     val shownSession = session?.let { s -> drawn?.takeIf { it.rev == s.rev }?.let { s.copy(modelPick = it.pick) } ?: s }
+    val starterFastAllowed = shownSession == null && startFastSupported && PersonaModelPanel.START_SERVICE_TIER in features
     val chat = PersonaModelPanel.Chat(shownSession, isMain = isMain, kept = kept,
-        config = config?.launcher, pagePick = pagePick, followsDefault = followsDefault)
+        config = config?.launcher, pagePick = pagePick, followsDefault = followsDefault,
+        pageFast = pageFast, startFastSupported = starterFastAllowed)
     val catalog = lists.assistantCatalog(machineId, main = isMain)
     val info = (catalog as? JLoadable.Loaded)?.value
     val setup = PersonaModelPanel.setup(chat, info)
@@ -618,6 +643,8 @@ fun PersonaModelPill(
         running = running,
         switching = canSwitch && kept && session != null,
         supervision = supervisionRequired,
+        session = shownSession,
+        startFastSupported = starterFastAllowed,
     )
     val named = listOfNotNull(info?.launchers?.firstOrNull { it.name == setup.provider }?.title ?: setup.provider,
         panel.providers.firstOrNull { it.id == setup.provider }?.models?.firstOrNull { it.id == panel.state.current?.model }?.name ?: view.setup.model)
@@ -685,8 +712,16 @@ fun PersonaModelPill(
     }
     JModelPanel(panel.providers, panel.state, prefs, { prefs = it }, remember(res) { panelWords(res) },
         onPick = { picked ->
-            val pick = PersonaModelPanel.pickOf(picked, lists.list(machineId, picked.provider).list, panel.state.current)
-            if (pick == null) { open = false; return@JModelPanel }
+            val targetList = lists.list(machineId, picked.provider).list
+            val pick = PersonaModelPanel.pickOf(picked, targetList, panel.state.current)
+            if (pick == null) {
+                if (shownSession == null && onPageFast != null) {
+                    val row = targetList?.models?.firstOrNull { it.id == picked.model }
+                    onPageFast(if (PersonaModelPanel.modelSupportsFast(row)) picked.fast == true else false)
+                }
+                open = false
+                return@JModelPanel
+            }
             if (needsExplicitSwitch(pick)) {
                 switchPick = pick
                 switchConfig = picked
@@ -697,6 +732,10 @@ fun PersonaModelPill(
             }
             prefs = prefs.pushRecent(picked)
             keep(pick)
+            if (shownSession == null && onPageFast != null) {
+                val row = targetList?.models?.firstOrNull { it.id == picked.model }
+                onPageFast(if (PersonaModelPanel.modelSupportsFast(row)) picked.fast == true else false)
+            }
             // an older hub keeps the effort on the session (what the effort chip did)
             if ((!kept || session == null) && pick.effort != null && pick.effort != session?.effort) onEffort?.invoke(pick.effort!!)
             open = false
@@ -708,7 +747,13 @@ fun PersonaModelPill(
             }
         },
         picking = switching,
-        header = { PickStrip(chat, setup, named) { keep(null) } },
+        fastBusy = fastBusy,
+        header = {
+            PickStrip(chat, setup, named) {
+                keep(null)
+                if (shownSession == null) onPageFast?.invoke(false)
+            }
+        },
         onApplyCurrent = panel.state.current?.let { now -> { effort: String ->
             PersonaModelPanel.pickOf(now.copy(effort = effort), lists.list(machineId, now.provider).list, null)?.let { pick ->
                 if (needsExplicitSwitch(pick)) {
@@ -724,6 +769,24 @@ fun PersonaModelPill(
                 }
             }
         } },
+        onApplyCurrentFast = when {
+            shownSession != null && PersonaModelPanel.hasFast(shownSession) && enabled && onServiceTier != null -> ({ fast: Boolean ->
+                if (!fastBusy) {
+                    fastBusy = true
+                    onServiceTier(if (fast) "priority" else "default") { fastBusy = false }
+                }
+            })
+            shownSession == null && starterFastAllowed && onPageFast != null -> ({ fast: Boolean ->
+                // Enabling Fast on a new-chat draft pins the chosen launcher/model/effort so a cleared main cannot hijack it.
+                if (fast && pagePick == null) {
+                    panel.state.current?.let { now ->
+                        PersonaModelPanel.pickOf(now, lists.list(machineId, now.provider).list, null)?.let(onPagePick)
+                    }
+                }
+                onPageFast(fast)
+            })
+            else -> null
+        },
         onReload = { readModels(it, again = true) },
         onConfigure = onConfigure,
         catalog = when {

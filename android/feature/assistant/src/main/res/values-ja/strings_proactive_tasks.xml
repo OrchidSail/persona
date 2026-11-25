@@ -66,4 +66,22 @@
     <string name="assistant_proactive_inbox_every_note">実行のたびに受信箱へ1行追加するので、フォローしやすくなります。開くとそのチャットが表示されます。</string>
     <string name="assistant_proactive_inbox_worthy_mark">受信箱：見る価値があれば</string>
     <string name="assistant_proactive_inbox_every_mark">受信箱：毎回</string>
+    <string name="assistant_proactive_repeat_cron">Cron</string>
+    <string name="assistant_proactive_cron_label">cron 式</string>
+    <string name="assistant_proactive_cron_rule">Cron %1$s</string>
+    <string name="assistant_proactive_cron_rule_text">%1$s · %2$s</string>
+    <string name="assistant_proactive_cron_empty">0 9 * * 1-5 のような cron 式を入力してください</string>
+    <string name="assistant_proactive_cron_checking">確認中…</string>
+    <string name="assistant_proactive_cron_next">次回以降の実行（%1$s）</string>
+    <string name="assistant_proactive_cron_hint">分・時・日・月・曜日の順で、%1$sで計算します。日と曜日の両方を指定すると、どちらかに当てはまる日に実行します。</string>
+    <string name="assistant_proactive_cron_hint_named">分・時・日・月・曜日の順で、%1$sのタイムゾーンで計算します。日と曜日の両方を指定すると、どちらかに当てはまる日に実行します。</string>
+    <string name="assistant_proactive_cron_hint_zone">あなたのタイムゾーン</string>
+    <string name="assistant_proactive_cron_example_workhours">勤務時間に 30 分ごと</string>
+    <string name="assistant_proactive_cron_example_weekdays">平日 9:00</string>
+    <string name="assistant_proactive_cron_example_monthly">毎月 1 日 10:00</string>
+    <string name="assistant_proactive_start_grant_title">確認なしで開始</string>
+    <string name="assistant_proactive_start_grant_readonly">読み取り専用</string>
+    <string name="assistant_proactive_start_grant_edit">ファイル編集可</string>
+    <string name="assistant_proactive_start_grant_remove">削除</string>
+    <string name="assistant_proactive_start_grant_note">この定期タスクが出すこれらの種類のタスクは確認なしで開始します。ただし、その回でメール・受信箱・Web ページを読んだ場合は除きます。指示や実行場所を変更するとこの一覧はクリアされます。</string>
 </resources>

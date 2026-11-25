@@ -134,6 +134,11 @@ interface AssistantManagement {
     suspend fun runTask(id: String): SessionKey
     /** "New conversation next time": the next run starts a conversation of its own (POST tasks/{id}/fresh). */
     suspend fun freshTask(id: String): ScheduledTask
+    /** Validates and previews a 5-field cron expression or alias (`GET /api/v1/assistant/tasks/cron?cron=…`). */
+    suspend fun previewCron(expression: String): CronPreview = throw UnsupportedOperationException("Cron preview unavailable")
+    /** Revokes one [kind] (or all when null/blank) from a scheduled task's start grant (`DELETE …/tasks/{id}/start-grant`). */
+    suspend fun revokeTaskStartGrant(id: String, kind: String? = null): ScheduledTask =
+        throw UnsupportedOperationException("Start grant unavailable")
     suspend fun runs(): List<Run>
     suspend fun notes(): AssistantNotes
     suspend fun setNotes(text: String)
@@ -209,6 +214,39 @@ interface AssistantManagement {
     /** Sets what extension [id] may read (PUT …/extension-trust/{id}); answers it as the hub kept it. */
     suspend fun setExtensionTrust(id: String, trust: ExtensionTrust): ExtensionTrust =
         throw UnsupportedOperationException("Extension trust unavailable")
+
+    // High-frequency governance & repository catalog routes (W-E02).
+    /** Remembered task-start approval kinds (GET /api/v1/task-trust). */
+    suspend fun taskTrust(): List<TaskTrustKind> = throw UnsupportedOperationException("Task trust unavailable")
+    /** Forgets one remembered task-start approval kind (DELETE /api/v1/task-trust?key=...). */
+    suspend fun revokeTaskTrust(key: String): Unit = throw UnsupportedOperationException("Task trust unavailable")
+    /** Directions / leader conversations and their owner notes (GET /api/v1/assistant/leaders). */
+    suspend fun leaders(): List<DirectionLeader> = throw UnsupportedOperationException("Leaders unavailable")
+    /**
+     * Writes owner notes for direction [id] (PUT /api/v1/assistant/directions/{id}/notes).
+     * Throws [DirectionNotesConflictException] on 409 `notes_changed` with the hub's current notes & timestamp.
+     */
+    suspend fun updateDirectionNotes(id: String, notes: String, notesAt: String?): DirectionNotesResult =
+        throw UnsupportedOperationException("Direction notes unavailable")
+    /** Bound repositories for this assistant (GET /api/v1/assistant/repositories). */
+    suspend fun repositories(): RepositoryCatalog = throw UnsupportedOperationException("Repositories unavailable")
+    /** Available repository providers (GET /api/v1/assistant/repositories/providers); 404 falls back to built-ins. */
+    suspend fun repositoryProviders(): List<RepositoryProvider> = DefaultRepositoryProviders
+    /** Previews and normalizes a repository URL before saving (POST /api/v1/assistant/repositories/preview). */
+    suspend fun previewRepository(url: String, provider: String = ""): RepositoryPreview =
+        throw UnsupportedOperationException("Repositories unavailable")
+    /** Binds a new repository (POST /api/v1/assistant/repositories). */
+    suspend fun createRepository(input: RepositoryInput): RepositoryBinding =
+        throw UnsupportedOperationException("Repositories unavailable")
+    /** Updates a bound repository (PUT /api/v1/assistant/repositories/{id}). */
+    suspend fun updateRepository(id: String, input: RepositoryInput): RepositoryBinding =
+        throw UnsupportedOperationException("Repositories unavailable")
+    /** Removes a bound repository and returns a short-lived undo receipt (DELETE /api/v1/assistant/repositories/{id}). */
+    suspend fun deleteRepository(id: String): RepositoryRemoval =
+        throw UnsupportedOperationException("Repositories unavailable")
+    /** Restores a recently removed repository using its undo receipt (POST /api/v1/assistant/repositories/{id}/restore). */
+    suspend fun restoreRepository(id: String, receipt: String): RepositoryBinding =
+        throw UnsupportedOperationException("Repositories unavailable")
 }
 
 /** One message a chat was found by (`docs/protocol/protocol.md` "Assistant chat search"). `ranges` are UTF-16 `[start, end)` in [snippet]. */
@@ -256,6 +294,23 @@ data class AlwaysGrant(
     @SerialName("created_at") val createdAt: String? = null,
 )
 
+/** Pre-authorized task kinds a scheduled task may start without asking (`ScheduledTask.startGrant`). */
+@Serializable
+data class TaskStartGrant(
+    val kinds: List<String> = emptyList(),
+    val basis: String = "",
+    @SerialName("granted_at") val grantedAt: String? = null,
+)
+
+/** Preview of a cron expression returned by `GET /api/v1/assistant/tasks/cron`. */
+@Serializable
+data class CronPreview(
+    val cron: String = "",
+    val text: String = "",
+    val timezone: String = "",
+    @SerialName("next_runs") val nextRuns: List<String> = emptyList(),
+)
+
 /**
  * One scheduled task (docs/protocol/protocol.md `Task`). Read in full from the hub; [editable] is what the app writes back, so the
  * hub's own fields (last / next run, its own conversation, who made it) are never sent.
@@ -265,7 +320,7 @@ data class ScheduledTask(
     val id: String = "",
     val title: String = "",
     val prompt: String = "",
-    /** [ONCE] / [DAILY] / [INTERVAL]. */
+    /** [ONCE] / [DAILY] / [INTERVAL] / [CRON]. */
     @SerialName("repeat") val repeats: String = ONCE,
     /** once: when; interval: the next run. */
     val at: String? = null,
@@ -274,6 +329,14 @@ data class ScheduledTask(
     /** daily: 1 = Monday … 7 = Sunday; empty = every day. */
     val weekdays: List<Int> = emptyList(),
     @SerialName("every_minutes") val everyMinutes: Int = 0,
+    /** cron: 5-field expression or alias evaluated in the assistant's hub time zone. */
+    val cron: String? = null,
+    /** Server-computed localized summary of [cron]; view-only, never sent on POST/PUT. */
+    @SerialName("cron_text") val cronText: String? = null,
+    /** Server-computed upcoming runs for enabled cron tasks; view-only, never sent on POST/PUT. */
+    @SerialName("next_runs") val nextRuns: List<String> = emptyList(),
+    /** Pre-authorized task kinds this routine may start without asking; read-only on POST/PUT. */
+    @SerialName("start_grant") val startGrant: TaskStartGrant? = null,
     val enabled: Boolean = false,
     /** The conversation it came from (on [machineId]): runs go into it. Empty = the task's own conversation. */
     @SerialName("machine_id") val machineId: String? = null,
@@ -305,8 +368,9 @@ data class ScheduledTask(
     val pushesOnlyAsked: Boolean get() = push == PUSH_ASKED
 
     /**
-     * The fields `PUT /api/v1/assistant/tasks/{id}` saves; "" = the default. `push` and `inbox` go only when the task has one,
-     * so a hub without them is never sent them and unchanged values stay as they are.
+     * The fields `PUT /api/v1/assistant/tasks/{id}` saves; "" = the default. `cron` is always emitted (as "" for
+     * non-cron tasks) so the hub's `keepLegacyCronRule` does not preserve an old cron schedule when switching repeat
+     * modes. `push` and `inbox` go only when the task has one, so a hub without them is never sent them.
      */
     fun editable(): JsonObject = buildJsonObject {
         if (id.isNotBlank()) put("id", id)
@@ -317,6 +381,7 @@ data class ScheduledTask(
         put("time", time.orEmpty())
         put("weekdays", JsonArray(weekdays.map(::JsonPrimitive)))
         put("every_minutes", everyMinutes)
+        put("cron", if (repeats == CRON) cron.orEmpty().trim() else "")
         put("enabled", enabled)
         put("session_id", sessionId.orEmpty())
         put("permission_mode", permissionMode.orEmpty())
@@ -328,6 +393,9 @@ data class ScheduledTask(
         const val ONCE = "once"
         const val DAILY = "daily"
         const val INTERVAL = "interval"
+        const val CRON = "cron"
+        /** The hello feature of a hub that supports cron schedules and `/assistant/tasks/cron`. */
+        const val CRON_FEATURE = "task_cron"
         /** "Only when it asks to" (docs/assistant/assistant.md "Push after running"). */
         const val PUSH_ASKED = "asked"
         /** The hello feature of a hub that reads and writes [push]. */

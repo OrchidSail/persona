@@ -632,10 +632,10 @@ internal fun rememberChatPageSession(key: SessionKey, chrome: ChatChromeBindings
     val trackSwitch = !readOnly && renderStyle == ChatRenderStyle.Agent && PersonaTheme.style == AppStyle.Glass &&
         (AgentModelPanel.LAUNCHER_SWITCH in features || AgentModelPanel.ENGINE_SWITCH in features)
     val exact = "sessions_lookup" in features
+    val readCompleteDetail = !readOnly && exact && (trackSwitch || row?.waiting != null)
     val refreshDetail: suspend () -> Unit = {
         val actions = chrome.actions
-        if (actions != null && row != null && exact &&
-            (trackSwitch || renderStyle == ChatRenderStyle.Assistant && row.waiting != null)) {
+        if (actions != null && row != null && readCompleteDetail) {
             details.read(row, actions, trackSwitch)
         }
     }
@@ -650,8 +650,8 @@ internal fun rememberChatPageSession(key: SessionKey, chrome: ChatChromeBindings
         catch (_: Exception) { /* Until a complete read arrives, keep what the chat last saw. */ }
     }
     val connection = chrome.connection
-    LaunchedEffect(details, connection, key, trackSwitch, exact) {
-        if (!trackSwitch || connection == null) return@LaunchedEffect
+    LaunchedEffect(details, connection, key, trackSwitch, readCompleteDetail, exact) {
+        if ((!trackSwitch && !readCompleteDetail) || connection == null) return@LaunchedEffect
         coroutineScope {
             val reads = Channel<Unit>(Channel.CONFLATED)
             launch {

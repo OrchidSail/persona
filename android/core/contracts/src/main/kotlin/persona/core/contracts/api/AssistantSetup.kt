@@ -85,9 +85,34 @@ data class AssistantConfig(
      * absent is off too. The switch shows only on a hub that says [AssistantPagesFeature].
      */
     val dashboards: Boolean? = null,
+    // High-frequency governance settings (all nullable: omitted by older hubs, hidden when null).
+    @SerialName("readonly_mode") val readonlyMode: String? = null,
+    @SerialName("start_requested_tasks") val startRequestedTasks: Boolean? = null,
+    @SerialName("delivery_gate") val deliveryGate: String? = null,
+    @SerialName("done_needs_delivery") val doneNeedsDelivery: Boolean? = null,
+    @SerialName("auto_supervision_messages") val autoSupervisionMessages: Boolean? = null,
+    @SerialName("task_lessons") val taskLessons: Boolean? = null,
+    @SerialName("agent_auto_naming") val agentAutoNaming: Boolean? = null,
+    @SerialName("agent_auto_naming_max") val agentAutoNamingMax: Int? = null,
+    @SerialName("agent_auto_naming_interval_hours") val agentAutoNamingIntervalHours: Int? = null,
+    @SerialName("cache_keepalive") val cacheKeepalive: Boolean? = null,
+    @SerialName("cache_keepalive_minutes") val cacheKeepaliveMinutes: Int? = null,
+    @SerialName("cache_keepalive_max") val cacheKeepaliveMax: Int? = null,
+    @SerialName("task_workspace_preference") val taskWorkspacePreference: String? = null,
+    @SerialName("fold_routine_relay_replies") val foldRoutineRelayReplies: Boolean? = null,
+    @SerialName("agent_tasks") val agentTasks: Boolean? = null,
+    @SerialName("inbox_signals") val inboxSignals: Boolean? = null,
+    @SerialName("inbox_todo_forward") val inboxTodoForward: Boolean? = null,
+    @SerialName("idle_close_hours") val idleCloseHours: Int? = null,
+    @SerialName("archive_closed_days") val archiveClosedDays: Int? = null,
+    @SerialName("claude_interactive") val claudeInteractive: Boolean? = null,
 ) {
     /** Whether the main conversation folds its background rounds: on unless turned off, also on a hub that omits it. */
     val backgroundFolded: Boolean get() = mainBackgroundFolded ?: true
+
+    /** Delivery gate ("off", "merged", "live"), falling back to legacy `done_needs_delivery` when present. */
+    val effectiveDeliveryGate: String?
+        get() = deliveryGate?.takeIf(String::isNotBlank) ?: doneNeedsDelivery?.let { if (it) "live" else "off" }
 }
 
 /**
@@ -132,6 +157,25 @@ data class AssistantConfigUpdate(
     @SerialName("conversation_order") val conversationOrder: List<String>? = null,
     /** Dashboards on or off (#15017); the hub takes it from a full-role device only. */
     val dashboards: Boolean? = null,
+    @SerialName("readonly_mode") val readonlyMode: String? = null,
+    @SerialName("start_requested_tasks") val startRequestedTasks: Boolean? = null,
+    @SerialName("delivery_gate") val deliveryGate: String? = null,
+    @SerialName("auto_supervision_messages") val autoSupervisionMessages: Boolean? = null,
+    @SerialName("task_lessons") val taskLessons: Boolean? = null,
+    @SerialName("agent_auto_naming") val agentAutoNaming: Boolean? = null,
+    @SerialName("agent_auto_naming_max") val agentAutoNamingMax: Int? = null,
+    @SerialName("agent_auto_naming_interval_hours") val agentAutoNamingIntervalHours: Int? = null,
+    @SerialName("cache_keepalive") val cacheKeepalive: Boolean? = null,
+    @SerialName("cache_keepalive_minutes") val cacheKeepaliveMinutes: Int? = null,
+    @SerialName("cache_keepalive_max") val cacheKeepaliveMax: Int? = null,
+    @SerialName("task_workspace_preference") val taskWorkspacePreference: String? = null,
+    @SerialName("fold_routine_relay_replies") val foldRoutineRelayReplies: Boolean? = null,
+    @SerialName("agent_tasks") val agentTasks: Boolean? = null,
+    @SerialName("inbox_signals") val inboxSignals: Boolean? = null,
+    @SerialName("inbox_todo_forward") val inboxTodoForward: Boolean? = null,
+    @SerialName("idle_close_hours") val idleCloseHours: Int? = null,
+    @SerialName("archive_closed_days") val archiveClosedDays: Int? = null,
+    @SerialName("claude_interactive") val claudeInteractive: Boolean? = null,
 ) {
     companion object {
         const val CLEAR_MAIN = "-"

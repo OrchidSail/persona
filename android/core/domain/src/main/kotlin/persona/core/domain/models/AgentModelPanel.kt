@@ -8,7 +8,9 @@ import persona.core.contracts.api.AgentModel
 import persona.core.contracts.api.LauncherModels
 import persona.core.domain.sort.canChangeEffortOnly
 import persona.core.domain.sort.canChangeModes
+import persona.core.domain.sort.canChangeServiceTier
 import persona.core.domain.sort.canSend
+import persona.core.domain.sort.hasFastServiceTier
 import persona.core.domain.sort.hasSource
 
 /** One launcher's model list as read: [read] once an answer came ([list] null from an older hub without lists). */
@@ -30,6 +32,7 @@ data class PillSetup(
     /** The model's name; null while not known. */
     val model: String? = null,
     val effort: String? = null,
+    val fast: Boolean = false,
 )
 
 /** What the pill says: what runs ([setup]), and while the list is read the first time ([loading]) or that failed ([failed]). */
@@ -104,8 +107,12 @@ object AgentModelPanel {
         return s.capabilities?.model ?: (!s.hasSource && s.isClaude)
     }
 
-    /** What the pill and the panel can change now: its model, its effort. Neither: the pill is a label. */
-    fun switches(s: Session): Pair<Boolean, Boolean> = canSwitchModel(s) to (s.isLive && (s.canChangeModes || s.canChangeEffortOnly))
+    /** Live Codex session advertising `"priority"` in `service_tiers`. */
+    fun hasFast(s: Session): Boolean = s.hasFastServiceTier
+
+    /** What the pill and the panel can change now: its model, its effort/speed. Neither: the pill is a label. */
+    fun switches(s: Session): Pair<Boolean, Boolean> =
+        canSwitchModel(s) to (s.isLive && (s.canChangeModes || s.canChangeEffortOnly || s.canChangeServiceTier))
 
     /** Why the model can't be switched right now: the agent works or waits on the user (the node refuses then too). */
     fun busy(s: Session): PanelReason? = PanelReason.Busy.takeIf { s.agentState == AgentState.Working || s.agentState == AgentState.NeedsYou }
@@ -164,6 +171,7 @@ object AgentModelPanel {
             else -> emptyList()
         },
         defaultEffort = m.defaultEffort?.takeIf(String::isNotBlank), custom = m.custom, providerDefault = m.isDefault,
+        fast = current && engine == "codex" && hasFast(s),
     )
 
     /** A typed id reaches the agent: Claude Code or Codex, and a launcher that doesn't pass its own `--model`. */
@@ -217,7 +225,9 @@ object AgentModelPanel {
         val model = row?.id ?: s.model
         val ps = s.pendingSwitch?.takeIf { it.launcher.isNotEmpty() && it.launcher != own }
         val state = PanelState(
-            current = model?.takeIf(String::isNotEmpty)?.let { PanelConfig(own, it, s.effort).clean() },
+            current = model?.takeIf(String::isNotEmpty)?.let {
+                PanelConfig(own, it, s.effort, fast = if (hasFast(s) && s.serviceTier == "priority") true else null).clean()
+            },
             pending = ps?.let { PanelConfig(it.launcher, it.model?.takeIf(String::isNotEmpty) ?: defaultModel(listFor(it.launcher).list?.models.orEmpty())?.id.orEmpty(), it.effort).clean() },
             // the models that switch at once: the session's own launcher's
             recommended = if (modelSwitch) listOf(own) else emptyList(),
@@ -279,7 +289,7 @@ object AgentModelPanel {
     fun pill(s: Session, own: ModelList, launchers: List<AgentLauncher>?): PillView {
         val row = currentModelRow(own.list?.models.orEmpty(), s.model)
         val model = row?.label ?: s.model?.takeIf(String::isNotEmpty)?.let(::modelLabel)
-        return PillView(PillSetup(engine(s), providerName(launcher(s), launchers.orEmpty()), model, s.effort?.takeIf(String::isNotEmpty)),
+        return PillView(PillSetup(engine(s), providerName(launcher(s), launchers.orEmpty()), model, s.effort?.takeIf(String::isNotEmpty), fast = s.serviceTier == "priority"),
             loading = !own.read && own.loading && model == null, failed = !own.read && own.error != null && model == null)
     }
 

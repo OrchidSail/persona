@@ -172,6 +172,8 @@ data class AgentModel(
     /** The thinking efforts it takes, weakest first; empty: no effort setting. */
     val efforts: List<String> = emptyList(),
     @SerialName("default_effort") val defaultEffort: String? = null,
+    /** Advertised Codex service tiers (e.g. `priority`); empty when the model has no speed toggle. */
+    @SerialName("service_tiers") val serviceTiers: List<persona.core.contracts.ServiceTier> = emptyList(),
     /** An id the user typed for this launcher before (feature `typed_models`, #1644): listed after its own models. */
     val custom: Boolean = false,
 ) {

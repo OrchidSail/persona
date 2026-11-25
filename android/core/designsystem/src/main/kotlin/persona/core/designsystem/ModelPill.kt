@@ -28,7 +28,11 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import persona.core.designsystem.icons.PhIcon
 import persona.core.designsystem.icons.PhIcons
+
+/** Shared lightning badge icon for Codex Fast (`service_tier = "priority"`) surfaces. */
+val FastModeIcon: PhIcon get() = PhIcons.Lightning
 
 /**
  * How much of the model pill the composer has room for (the web's container rules on the composer card, #5032): from 600
@@ -61,6 +65,7 @@ data class ModelPillContent(
     val model: String? = null,
     val engine: AgentMarkSpec? = null,
     val effort: String? = null,
+    val fast: Boolean = false,
     val ultracode: Boolean = false,
     val pending: Boolean = false,
     /** The words for a list being read with no model known yet ("Loading model…"); null: not loading. */
@@ -151,6 +156,7 @@ fun JModelPill(
                 }
                 if (!agentComposer || content.pendingEngine) content.engine?.let { JAgentMark(it, size = Tokens.Size.markXS) }
                 content.effort?.let { Text(it, style = text, color = if (agentComposer) palette.ink2 else palette.ink, maxLines = 1, softWrap = false) }
+                if (content.fast) JIcon(PhIcons.Lightning, null, size = Tokens.Size.markXS, tint = palette.ink2, selected = true)
                 if (content.ultracode) JIcon(PhIcons.Stack, null, size = Tokens.Size.markXS, tint = palette.ink2)
             }
         }

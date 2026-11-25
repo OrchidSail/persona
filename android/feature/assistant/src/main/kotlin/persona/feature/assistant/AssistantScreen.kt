@@ -105,6 +105,8 @@ internal class AssistantSendState {
     /** The model and effort picked with it in the model panel (Glass, #5055); null: the launcher's defaults. */
     val model = mutableStateOf<String?>(null)
     val effort = mutableStateOf<String?>(null)
+    /** Codex Fast start speed (`service_tier = "priority"`) on the default manager when supported. */
+    val fast = mutableStateOf(false)
     val started = mutableStateOf<StarterStart?>(null)
     /** A new conversation's first message while it starts, or kept after its start failed (#4339 C18). */
     val first = mutableStateOf<FirstMessage?>(null)
@@ -181,6 +183,8 @@ fun AssistantScreen(
     /** A new conversation on the launcher, model and effort picked in the model panel (Glass, #5055, `{launcher, model, effort}`). */
     startConversationPicked: (suspend (persona.core.contracts.ModelPick) -> SessionKey)? =
         (repository as? persona.core.contracts.api.AssistantConversations)?.let { conversations -> { pick -> conversations.startConversation(pick) } },
+    startConversationWithSpeed: (suspend (persona.core.contracts.ModelPick, String?) -> SessionKey)? =
+        (repository as? persona.core.contracts.api.AssistantConversations)?.let { conversations -> { pick, tier -> conversations.startConversation(pick, tier) } },
     /** The hub's link: while it is not up, the title menu offers Connection details (iOS); null: never. */
     connection: persona.core.contracts.api.ConnectionState? = null,
     /** The sessions New chat's @ lists (every computer's, iOS `StarterComposer`); null: no @ on New chat's page. */
@@ -289,6 +293,11 @@ fun AssistantScreen(
     var starterLauncher by sendState.launcher
     var starterModel by sendState.model
     var starterEffort by sendState.effort
+    var starterFast by sendState.fast
+    val startFastSupported = persona.core.domain.models.PersonaModelPanel.START_SERVICE_TIER in persona.core.designsystem.LocalHubFeatures.current &&
+        managerChoice.manager == null
+    LaunchedEffect(startFastSupported) { if (!startFastSupported) starterFast = false }
+    var starterFastAvailable by remember(pageManagement, assistantMachine) { mutableStateOf(false) }
     // The sessions picked in New chat's @ list, to go in front of its first message (iOS `StarterDraft.quotes`).
     val starterMentions = rememberStarterMentions(managerChoice.hubId, managerChoice.shown)
     // The conversation that launcher started for a message that then failed to send: its retry goes there.
@@ -580,15 +589,19 @@ fun AssistantScreen(
         val operationId = requireNotNull(pendingClientId)
         val submittedChoice = managerChoice
         val inDomainSpace = startsOne && fresh?.space.let { it != null && it != persona.core.contracts.api.AssistantSpace.HEALTH }
+        val startTier = "priority".takeIf {
+            resend == null && active == null && newChat?.space == null && starterFast && startFastSupported
+        }
         scope.launch {
             sendAssistantPrepared(AssistantPreparedSend(submitted, operationId, active, fresh, launcher, startsOne,
                 forwards, sentDraft, sentQuotes, forManager, submittedManager, submittedChoice,
-                shownSnapshot, page, starterModel, starterEffort),
+                shownSnapshot, page, starterModel, starterEffort, starterServiceTier = startTier),
                 repository, conversationsOf, mainConversationSender, messageSender, sendState,
                 composer, draftEditor, starterMentions, failedStarts, resources, feedback, toast,
                 newChatState, viewingMainQueueState, healthKeysState,
                 startConversation, startConversationWith, startConversationPicked,
-                onStartFailure = if (inDomainSpace) ::spaceStartRefused else ::newChatRefused, onOpenConversation = ::openConversation, spaceKeys = spaceKeysState)
+                onStartFailure = if (inDomainSpace) ::spaceStartRefused else ::newChatRefused, onOpenConversation = ::openConversation,
+                spaceKeys = spaceKeysState, startConversationWithSpeed = startConversationWithSpeed)
         }
     }
     // Delete on a failed first message: gone, with Undo putting it back (as a chat's Delete, #4645).
@@ -635,6 +648,21 @@ fun AssistantScreen(
             onFailure = { machine -> if (machine == assistantMachine) launchersFailed = true })
     }
     LaunchedEffect(pageManagement, assistantMachine, startConversationWith) { loadStarterLaunchers() }
+    val effectiveStarterLauncher = starterLauncher ?: defaultLauncher
+    LaunchedEffect(pageManagement, assistantMachine, effectiveStarterLauncher, starterModel, startFastSupported, active, demo) {
+        if (!startFastSupported || active != null || demo || pageManagement == null ||
+            assistantMachine.isBlank() || effectiveStarterLauncher.isNullOrBlank()) {
+            starterFastAvailable = false
+            return@LaunchedEffect
+        }
+        val list = try { pageManagement.launcherModels(assistantMachine, effectiveStarterLauncher) }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { null }
+        val row = persona.core.domain.models.AgentModelPanel.currentModelRow(list?.models.orEmpty(), starterModel)
+        val supports = persona.core.domain.models.PersonaModelPanel.modelSupportsFast(row)
+        starterFastAvailable = supports
+        if (!supports) starterFast = false
+    }
     // The health space's new-chat page lists its past chats: read each time it opens.
     LaunchedEffect(healthPage) { if (healthPage && conversationsOf != null) assistantAttempt { loadHealth() } }
     // A space's home lists its past chats: read each time it opens.
@@ -975,7 +1003,13 @@ fun AssistantScreen(
                                         starterLauncher = pick?.launcher; starterModel = pick?.model; starterEffort = pick?.effort
                                     },
                                     onNotice = { message -> if (feedback?.notice(message) != true) toast.show(persona.core.designsystem.FeedbackNotice(message)) },
-                                    enabled = !sending)
+                                    enabled = !sending,
+                                    pageFast = starterFast,
+                                    onPageFast = { enabled ->
+                                        if (enabled != starterFast) starterStarted = null
+                                        starterFast = enabled
+                                    },
+                                    startFastSupported = startFastSupported)
                             }) else null,
                             // A new conversation's launcher, for it alone (iOS StarterComposer, web StarterLauncherChip); Glass's is the pill.
                             accessory = if (homeForwards.isNotEmpty() || starterQuotes.isNotEmpty() ||
@@ -985,11 +1019,36 @@ fun AssistantScreen(
                                 }
                                 if (active == null && !healthPage && !spacePage && pageManagement != null && startConversationWith != null && !demo) {
                                     if (mentionsHere) StarterQuoteCards(starterMentions)
-                                    if (PersonaTheme.style != AppStyle.Glass) StarterLauncherChip(starterLauncher, defaultLauncher, launchers, launchersFailed, enabled = !sending,
-                                        onOpen = { scope.launch { loadStarterLaunchers() } }) { picked ->
-                                        // Another launcher (or the default) does not reuse what the last one started.
-                                        if (picked != starterLauncher) starterStarted = null
-                                        starterLauncher = picked
+                                    if (PersonaTheme.style != AppStyle.Glass) {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            StarterLauncherChip(starterLauncher, defaultLauncher, launchers, launchersFailed, enabled = !sending,
+                                                onOpen = { scope.launch { loadStarterLaunchers() } }) { picked ->
+                                                // Another launcher (or the default) does not reuse what the last one started.
+                                                if (picked != starterLauncher) {
+                                                    starterStarted = null
+                                                    starterFast = false
+                                                }
+                                                starterLauncher = picked
+                                            }
+                                            if (startFastSupported && starterFastAvailable && !effectiveStarterLauncher.isNullOrBlank()) {
+                                                JChip(
+                                                    text = stringResource(persona.core.designsystem.R.string.designsystem_modelpanel_fast_short),
+                                                    modifier = Modifier.testTag("starter-fast-chip"),
+                                                    selected = starterFast,
+                                                    onClick = if (!sending) ({
+                                                        val next = !starterFast
+                                                        starterStarted = null
+                                                        if (next && starterLauncher == null) starterLauncher = effectiveStarterLauncher
+                                                        starterFast = next
+                                                    }) else null,
+                                                    icon = persona.core.designsystem.icons.PhIcons.Lightning,
+                                                    accent = starterFast,
+                                                )
+                                            }
+                                        }
                                     }
                                 } else if (starterQuotes.isNotEmpty()) StarterQuoteCards(starterMentions)
                             }) else null)

@@ -56,6 +56,7 @@ import persona.core.domain.sort.READ_ONLY
 import persona.core.domain.sort.canApprove
 import persona.core.domain.sort.canChangeEffortOnly
 import persona.core.domain.sort.canChangeModes
+import persona.core.domain.sort.canChangeServiceTier
 import persona.core.domain.sort.canContinueCodex
 import persona.core.domain.sort.canSwitchListedModes
 import persona.core.domain.sort.canInterrupt
@@ -1239,7 +1240,8 @@ private fun ChatPage(
                                 // Brief and Board's "Mode" sheet: a permission mode, an effort or a model to change (a
                                 // listed model needs the computer's launcher lists), or the modes a provider lists (#8261).
                                 val modeSheet = session != null && (session.canChangeModes || session.canChangeEffortOnly ||
-                                    session.canSwitchListedModes || (chrome.worktrees != null && SessionModes.listsModels(session)))
+                                    session.canSwitchListedModes || session.canChangeServiceTier ||
+                                    (chrome.worktrees != null && SessionModes.listsModels(session)))
                                 // Persona's queue: its own messages, then those relayed from elsewhere, under its entries and right
                                 // above the composer, as iOS's footer has it (every style: it is behaviour; each draws its own strip, #4339 C6).
                                 if (renderStyle == ChatRenderStyle.Assistant && SlashCommand.mainSuggestions(composer.value.text,
@@ -1279,7 +1281,9 @@ private fun ChatPage(
                                         modeSheet -> ({
                                             ChatModeBar(session, controls, connection == null || connection == ConnectionState.Online,
                                                 onOverlay = { modeOverlay = it }, onPickModel = { model -> send("/model $model") },
-                                                openRequested = openModes || openPermissions, onOpenHandled = { openModes = false; openPermissions = false }, creation = chrome.worktrees)
+                                                openRequested = openModes || openPermissions, onOpenHandled = { openModes = false; openPermissions = false },
+                                                creation = chrome.worktrees,
+                                                onFastChanged = { scope.launch { try { pageSession.refreshDetail() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { } } })
                                         })
                                         else -> null
                                     },
@@ -1309,13 +1313,24 @@ private fun ChatPage(
                                             }, onOverlay = { pillOverlay = it },
                                             switchObservation = pageSession.switchObservation,
                                             openRequested = openModes, onOpenHandled = { openModes = false },
-                                            onConfigure = chrome.onFixModel?.let { fix -> { fix(persona.core.designsystem.ReadinessActionId.EditProvider, null, switchSession.manager) } })
+                                            onConfigure = chrome.onFixModel?.let { fix -> { fix(persona.core.designsystem.ReadinessActionId.EditProvider, null, switchSession.manager) } },
+                                            onFastChanged = { scope.launch { try { pageSession.refreshDetail() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { } } })
                                         else PersonaModelPill(switchSession, key.machineId, chrome.assistantManagement, width,
                                             pagePick = conversationLauncher?.let { persona.core.contracts.ModelPick(it, conversationModel) },
                                             onPagePick = { pick -> conversationLauncher = pick?.launcher; conversationModel = pick?.model },
                                             onNotice = { notice = it }, enabled = online, onOverlay = { pillOverlay = it },
                                             onConfigure = chrome.onFixModel?.let { fix -> { fix(persona.core.designsystem.ReadinessActionId.EditProvider, null, switchSession.manager) } },
                                             onEffort = { effort -> controls.run(switchSession, ChatAction.Modes(effort = effort)) },
+                                            onServiceTier = { tier, done ->
+                                                controls.run(switchSession, ChatAction.Modes(serviceTier = tier)) { ok ->
+                                                    done(ok)
+                                                    if (ok) scope.launch {
+                                                        try { pageSession.refreshDetail() }
+                                                        catch (cancelled: CancellationException) { throw cancelled }
+                                                        catch (_: Exception) { }
+                                                    }
+                                                }
+                                            },
                                             openRequested = openModes || openModelRoutePicker,
                                             onOpenHandled = { openModes = false; openModelRoutePicker = false },
                                             clearRequested = clearModelPick, onClearHandled = { clearModelPick = false },

@@ -28,6 +28,13 @@ interface TasksApi {
     suspend fun todos(): List<Todo>
     /** A new to-do (`POST /api/v1/todos`), due at [due] when given (`due_at` or `due_date`: the calendar's tap, #4200). */
     suspend fun createTodo(title: String, notes: String = "", due: persona.core.contracts.TodoDue? = null): Todo = error("createTodo not implemented")
+    /** A new to-do with optional bound repositories (`repository_bindings`). */
+    suspend fun createTodo(
+        title: String,
+        notes: String = "",
+        due: persona.core.contracts.TodoDue? = null,
+        repositoryBindings: CreateRepositoryBindings? = null,
+    ): Todo = createTodo(title, notes, due)
     suspend fun patchTodo(id: String, title: String? = null, notes: String? = null, done: Boolean? = null): Todo = error("patchTodo not implemented")
     /** Files a Just finished to-do under Done, or removes only that seen mark for Undo (`PUT` / `DELETE …/{id}/seen`). */
     suspend fun setTodoSeen(id: String, seen: Boolean): Todo = error("setTodoSeen not implemented")
@@ -47,6 +54,24 @@ interface TasksApi {
     /** Records a decision by hand; with [supersedesId], one that revises that earlier decision. A blank reason is not sent. */
     suspend fun addTodoDecision(todoId: String, question: String, choice: String, reason: String = "", supersedesId: String = ""):
         persona.core.contracts.TodoDecision = error("addTodoDecision not implemented")
+    /** Bound repositories and Issue/PR links (`GET /api/v1/todos/{id}/repositories`); null when an older hub lacks the route. */
+    suspend fun todoRepositories(todoId: String): TaskRepositorySet? = null
+    /** Replaces bound repositories and links using dual CAS (`PUT /api/v1/todos/{id}/repositories`). */
+    suspend fun setTodoRepositories(
+        todoId: String,
+        expectedRevision: Long,
+        expectedCatalogRevision: Long,
+        repositories: List<TaskRepositoryInput>,
+    ): TaskRepositorySet = throw UnsupportedOperationException("Todo repositories unavailable")
+    /** Replaces Issue/PR links on one bound repository (`PUT /api/v1/todos/{id}/repositories/{repoId}/links`). */
+    suspend fun setTodoRepositoryLinks(
+        todoId: String,
+        repoId: String,
+        expectedRevision: Long,
+        links: List<RepositoryLinkInput>,
+    ): TaskRepositorySet = throw UnsupportedOperationException("Todo repository links unavailable")
+    /** Repository catalog for the request's manager (`GET /api/v1/assistant/repositories`); null on older hubs. */
+    suspend fun assistantRepositories(): RepositoryCatalog? = null
 
     /** A conversation's feed after [since] (an ISO time; null: all of it), with the plans its `plan` items name. */
     suspend fun feed(conversation: String, since: String?): FeedResponse

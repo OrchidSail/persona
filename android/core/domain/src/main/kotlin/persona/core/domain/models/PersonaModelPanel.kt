@@ -27,12 +27,20 @@ object PersonaModelPanel {
     const val TYPED_MODELS = "typed_models"
     /** The hub supports explicit cross-engine / runtime conversation switching (`…/segments` and `…/switch`). */
     const val SEGMENTS = "assistant_segments"
+    /** The hub supports starting a new Codex assistant conversation with `service_tier = "priority"`. */
+    const val START_SERVICE_TIER = "assistant_start_service_tier"
 
     /** Where a chat's setup comes from: its own pick; the default (the main chat, the new-chat page); or what it started with. */
     enum class Source { Pick, Default, Own }
 
     /** What the chat's next message runs on: [model] null is the launcher's default entry, [effort] null the default's. */
-    data class Setup(val provider: String, val model: String? = null, val effort: String? = null, val source: Source)
+    data class Setup(
+        val provider: String,
+        val model: String? = null,
+        val effort: String? = null,
+        val source: Source,
+        val fast: Boolean = false,
+    )
 
     /**
      * A Persona chat as its pill sees it: [session] null on the new-chat page; [kept] the hub has [MODEL_PICK];
@@ -45,7 +53,15 @@ object PersonaModelPanel {
         val config: String? = null,
         val pagePick: ModelPick? = null,
         val followsDefault: Boolean = isMain,
+        val pageFast: Boolean = false,
+        val startFastSupported: Boolean = false,
     )
+
+    /** Whether a live assistant session advertises Codex Fast (`priority`). */
+    fun hasFast(session: Session?): Boolean = session?.serviceTiers?.any { it.id == "priority" } == true
+
+    /** Whether a catalog model advertises Codex Fast (`priority`). */
+    fun modelSupportsFast(model: AgentModel?): Boolean = model?.serviceTiers?.any { it.id == "priority" } == true
 
     /** The chat's own pick: `model_pick` on a hub that keeps it, else this page's (an older hub, the new-chat page). */
     fun pick(chat: Chat): ModelPick? {
@@ -140,28 +156,30 @@ object PersonaModelPanel {
     /** The setup the chat's next message runs on, as the hub decides it (assistant/start.go `sendModel`). */
     fun setup(chat: Chat, info: AssistantLaunchers?): Setup {
         val s = chat.session
-        pick(chat)?.let { return Setup(it.launcher, it.model?.takeIf(String::isNotEmpty), it.effort?.takeIf(String::isNotEmpty) ?: s?.effort, Source.Pick) }
+        val fast = if (s != null) s.serviceTier == "priority" && hasFast(s) else chat.startFastSupported && chat.pageFast
+        pick(chat)?.let { return Setup(it.launcher, it.model?.takeIf(String::isNotEmpty), it.effort?.takeIf(String::isNotEmpty) ?: s?.effort, Source.Pick, fast = fast) }
         if (s != null && mainChatAgentMismatch(chat, info)) {
-            return Setup(s.launcher.orEmpty(), s.model, s.effort, Source.Own)
+            return Setup(s.launcher.orEmpty(), s.model, s.effort, Source.Own, fast = fast)
         }
         val def = info?.default
         if (s == null || chat.followsDefault) {
             val provider = def?.provider?.takeIf(String::isNotEmpty) ?: chat.config?.takeIf(String::isNotEmpty) ?: s?.launcher?.takeIf(String::isNotEmpty) ?: "claude"
             return Setup(provider, def?.model?.takeIf(String::isNotEmpty) ?: s?.model?.takeIf { s.launcher == provider },
-                (if (chat.isMain) def?.effort?.takeIf(String::isNotEmpty) ?: s?.effort else s?.effort ?: def?.effort?.takeIf(String::isNotEmpty)), Source.Default)
+                (if (chat.isMain) def?.effort?.takeIf(String::isNotEmpty) ?: s?.effort else s?.effort ?: def?.effort?.takeIf(String::isNotEmpty)), Source.Default, fast = fast)
         }
         // a launcher the list no longer offers is not what the next message runs on: the hub moves the chat to the assistant's
         val own = s.launcher?.takeIf { l -> l.isNotEmpty() && (info == null || info.launchers.any { it.name == l }) }
-        return Setup(own ?: chat.config?.takeIf(String::isNotEmpty) ?: "claude", if (own != null) s.model else null, s.effort, Source.Own)
+        return Setup(own ?: chat.config?.takeIf(String::isNotEmpty) ?: "claude", if (own != null) s.model else null, s.effort, Source.Own, fast = fast)
     }
 
     private fun engineOf(l: AgentLauncher) = canonicalEngine(AgentModelPanel.launcherEngine(l.name, l.agentType))
 
-    private fun panelModel(m: AgentModel, engine: String) = PanelModel(
+    private fun panelModel(m: AgentModel, engine: String, fast: Boolean = false) = PanelModel(
         id = m.id, name = m.label, description = m.description?.takeIf(String::isNotBlank), resolved = m.resolved?.takeIf(String::isNotBlank),
         aliases = m.aliases,
         efforts = m.efforts.ifEmpty { if (m.custom && engine == "claude") AgentModelPanel.CLAUDE_EFFORTS else emptyList() },
         defaultEffort = m.defaultEffort?.takeIf(String::isNotBlank), custom = m.custom, providerDefault = m.isDefault,
+        fast = fast,
     )
 
     /**
@@ -179,21 +197,35 @@ object PersonaModelPanel {
         running: Boolean = false,
         switching: Boolean = false,
         supervision: Boolean = false,
+        session: Session? = null,
+        startFastSupported: Boolean = false,
     ): PanelData {
         val runs = canonicalEngine(engine)
         val launchers = info?.launchers.orEmpty()
+        val liveFast = hasFast(session)
+        val ownRow = AgentModelPanel.currentModelRow(listFor(setup.provider).list?.models.orEmpty(), setup.model)
         val providers = launchers.map { l ->
             val kind = engineOf(l)
             val e = listFor(l.name)
             val configuredModel = launcherExplicitModel(l)
             var models: List<PanelModel>? = null
             if (e.read) {
-                var list = e.list?.models.orEmpty().map { panelModel(it, kind) }
+                var list = e.list?.models.orEmpty().map { m ->
+                    val isCurrent = l.name == setup.provider && m == ownRow
+                    val fastSupported = when {
+                        session != null -> isCurrent && liveFast
+                        startFastSupported -> modelSupportsFast(m)
+                        else -> false
+                    }
+                    panelModel(m, kind, fast = fastSupported)
+                }
                 // a launcher that fixes its own --model takes no model with a pick: what it runs by default, only
                 if (e.list?.locked != null) list = list.filter { it.id == AgentModelPanel.defaultModel(e.list.models)?.id }
                 // no list to read (a direct API the computer can't ask, an older hub): the model it is set up with
                 if (list.isEmpty() && configuredModel != null)
-                    list = listOf(PanelModel(configuredModel, AgentModelPanel.modelLabel(configuredModel), efforts = if (kind == "claude") AgentModelPanel.CLAUDE_EFFORTS else emptyList()))
+                    list = listOf(PanelModel(configuredModel, AgentModelPanel.modelLabel(configuredModel),
+                        efforts = if (kind == "claude") AgentModelPanel.CLAUDE_EFFORTS else emptyList(),
+                        fast = session != null && l.name == setup.provider && liveFast))
                 models = list
             }
             // the provider it runs on stays as it is, whatever its kind: it is what the panel says the chat runs
@@ -215,9 +247,12 @@ object PersonaModelPanel {
             val claude = setup.provider == "claude"
             val e = listFor(setup.provider)
             val models = when {
-                e.read -> e.list?.models.orEmpty().map { panelModel(it, runs) }
+                e.read -> e.list?.models.orEmpty().map { m ->
+                    val fastSupported = if (session != null) (m == ownRow && liveFast) else (startFastSupported && modelSupportsFast(m))
+                    panelModel(m, runs, fast = fastSupported)
+                }
                 claude -> null
-                else -> listOfNotNull(setup.model?.let { PanelModel(it, AgentModelPanel.modelLabel(it)) })
+                else -> listOfNotNull(setup.model?.let { PanelModel(it, AgentModelPanel.modelLabel(it), fast = session != null && liveFast) })
             }
             providers.add(0, PanelProvider(setup.provider, setup.provider, runs, models,
                 loading = claude && !e.read && (e.loading || e.error == null),
@@ -226,8 +261,11 @@ object PersonaModelPanel {
         val own = providers.firstOrNull { it.id == setup.provider }
         val row = if (own?.models != null) AgentModelPanel.currentModelRow(listFor(setup.provider).list?.models.orEmpty(), setup.model) else null
         val model = row?.id ?: setup.model ?: launchers.firstOrNull { it.name == setup.provider }?.let(::launcherExplicitModel)
+        val currentSupportsFast = if (session != null) liveFast else (startFastSupported && modelSupportsFast(row))
         val state = PanelState(
-            current = model?.takeIf(String::isNotEmpty)?.let { PanelConfig(setup.provider, it, setup.effort).clean() },
+            current = model?.takeIf(String::isNotEmpty)?.let {
+                PanelConfig(setup.provider, it, setup.effort, fast = if (currentSupportsFast && setup.fast) true else null).clean()
+            },
             recommended = if (own != null && own.unavailable == null) listOf(setup.provider) else emptyList(),
             starting = false,
         )
@@ -252,7 +290,8 @@ object PersonaModelPanel {
         val id = setup.model ?: launcher?.let(::launcherExplicitModel)
         val model = row?.label ?: id?.takeIf(String::isNotEmpty)?.let(AgentModelPanel::modelLabel)
         val engine = launcher?.let(::engineOf) ?: chat.session?.let(AgentModelPanel::engine) ?: "claude"
-        return PillView(PillSetup(engine, launcher?.title ?: setup.provider, model, setup.effort),
+        val fast = if (chat.session != null) setup.fast else (setup.fast && modelSupportsFast(row))
+        return PillView(PillSetup(engine, launcher?.title ?: setup.provider, model, setup.effort, fast = fast),
             loading = !own.read && own.loading && model == null, failed = !own.read && own.error != null && model == null)
     }
 }
