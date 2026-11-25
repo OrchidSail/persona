@@ -34,10 +34,11 @@ import (
 // Subsequent runtime fixes on main (#15269, #15275, #13312, #12952, #15475) bring the total to 265,362 B.
 // Antigravity shared ACP exit cleanup (#15756) and always-allow permission choices (#15785) bring the total to 265,686 B.
 // Antigravity permission mode persistence across companion restarts and resume re-application (#15807) add 273 B (265,959 B).
-// Preserving delivered replies across live Antigravity background wakes, in-place RUNNING->DONE updates and runtime-sdk catch-up/batch delta ordering (#14920) adds 1,023 B (266,982 B).
+// Antigravity agent-mode MCP proxy budgeting for non-assistant leader and worker catalogs (#15822) adds 253 B (266,212 B).
+// Preserving delivered replies across live Antigravity background wakes, in-place RUNNING->DONE updates and runtime-sdk catch-up/batch delta ordering (#14920) adds 1,021 B (267,233 B).
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 266_982
+	const budget = 267_233
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {
