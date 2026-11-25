@@ -33,10 +33,11 @@ import (
 // Antigravity GENERIC timestamp header stripping (#13662) adds 176 B (264,619 B).
 // Subsequent runtime fixes on main (#15269, #15275, #13312, #12952, #15475) bring the total to 265,362 B.
 // Antigravity shared ACP exit cleanup (#15756) and always-allow permission choices (#15785) bring the total to 265,686 B.
-// Antigravity non-rewind negative cache for summary_behind GetCascadeTrajectory checks and summarizeTranscript prefix summary reuse (#13086) add 901 B (266,587 B).
+// Antigravity permission mode persistence across companion restarts and resume re-application (#15807) add 273 B (265,959 B).
+// Antigravity non-rewind negative cache for summary_behind GetCascadeTrajectory checks and summarizeTranscript prefix summary reuse (#13086) add 886 B (266,845 B).
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 266_587
+	const budget = 266_845
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {
