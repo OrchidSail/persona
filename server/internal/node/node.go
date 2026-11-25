@@ -224,6 +224,7 @@ type Node struct {
 	engLists            sync.WaitGroup                    // new engines' session lists being built in the background (useEngine)
 	lostFirst           lostPrompts                       // session id -> why its first message did not go in (firstprompt.go)
 	workSent            workSent                          // Cursor / agy pane -> when a message last went in (worksent.go)
+	agyQueues           agyQueues                         // busy agy pane -> queued follow-up prompts and screen previews (agyqueue.go)
 	events              *herdrEvents                      // herdr's event stream (herdrevents.go)
 	hostSig             map[string]*watcherSignals        // change signals of the registered watcher hosts, by host kind (herdrevents.go)
 	cdirs               *claudeDirs                       // Claude Code config directories in use (claudedirs.go)
@@ -959,6 +960,7 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 		Turns                   int           `json:"turns"`
 		LazyImages              bool          `json:"lazy_images"`
 		UserInputs              bool          `json:"user_inputs"`
+		MetaOnly                bool          `json:"meta_only"`
 		StrictRead              bool          `json:"strict_read"`
 		FoldWork                bool          `json:"fold_work"`
 		FromSeq                 int           `json:"from_seq"`
@@ -1053,7 +1055,7 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 	if method == "session.a2a.send" {
 		// This path is called by the manager's delivery queue. The separate
 		// method prevents older nodes from ignoring the idle-only guard.
-		id := n.resolveAlias(p.SessionID)
+		id := n.resolveSessionAlias("session.send", p.SessionID)
 		if !n.a2aIdleSession(ctx, id, p.A2AWakeOnSend, true) {
 			return nil, a2aBusy()
 		}
@@ -1136,7 +1138,7 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 	}
 	if strings.HasPrefix(method, "session.") {
 		rewrite := map[string]string{}
-		if id := n.resolveAlias(p.SessionID); p.SessionID != "" && id != p.SessionID { // a fallback row the pane named (pifamily.go)
+		if id := n.resolveSessionAlias(method, p.SessionID); p.SessionID != "" && id != p.SessionID { // a fallback row the pane named (pifamily.go, agyaliases.go)
 			p.SessionID = id
 			rewrite["session_id"] = id
 		}
@@ -1238,6 +1240,8 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 		cause := proto.StopUser
 		if a.Retire && a.StopCause.AllowsSupervisorResume() {
 			cause = a.StopCause
+		} else if !a.Retire && a.StopCause == proto.StopTimeout {
+			cause = proto.StopTimeout
 		}
 		stopped, err := n.stopWithCause(ctx, p.SessionID, a.Retire, cause)
 		return map[string]any{"stopped": stopped}, err
@@ -2485,6 +2489,8 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 			}{it, true, len(it.Text)}, nil
 		}
 		return it, nil
+	case proto.MethodSessionInputPreviews, proto.MethodSessionItemsWindow:
+		return n.transcriptNavigation(ctx, p.SessionID, method, params)
 	case "session.items":
 		read := n.file
 		if p.StrictRead {
@@ -2510,6 +2516,10 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 			if err := n.refreshExport(p.SessionID, f); err != nil {
 				return nil, err
 			}
+		} else if p.UserInputs && p.MetaOnly {
+			if err := n.refreshForPage(p.SessionID, f); err != nil {
+				return nil, err
+			}
 		} else if p.UserInputs {
 			if err := n.refresh(p.SessionID, f); err != nil {
 				return nil, err
@@ -2518,6 +2528,9 @@ func (n *Node) handleMethod(ctx context.Context, method string, params json.RawM
 			_ = n.refreshForPage(p.SessionID, f) // not behind a catch-up's pushes (#13677)
 		}
 		if p.UserInputs {
+			if p.MetaOnly {
+				return f.CompactUserInputs(ctx, p.BeforeSeq)
+			}
 			return f.UserInputs(ctx, p.BeforeSeq)
 		}
 		// Items are kept without their image data; a caller that did not ask for lazy images (an older hub) gets it.
