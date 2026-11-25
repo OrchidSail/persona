@@ -80,6 +80,8 @@ fun JSheet(
     /** Marks an intentional blank-tap focus clear, distinct from a presentation-driven focus transfer. */
     onClearFocus: () -> Unit = {},
     showDragHandle: Boolean = true,
+    /** False disables downward drag dismissal while keeping button, scrim and system Back dismissal intact. */
+    sheetGesturesEnabled: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val palette = PersonaTheme.palette
@@ -101,6 +103,7 @@ fun JSheet(
     ModalBottomSheet(
         onDismissRequest = { if (canDismiss) onDismiss() }, modifier = modifier,
         sheetState = sheetState,
+        sheetGesturesEnabled = sheetGesturesEnabled,
         shape = PersonaTheme.shapes.sheetShape, containerColor = container, contentColor = palette.ink,
         scrimColor = if (clearScrim) palette.scrim.copy(alpha = 0f) else palette.scrim, tonalElevation = 0.dp,
         dragHandle = if (!showDragHandle) null else ({ Box(Modifier.padding(top = 10.dp.dense, bottom = 6.dp.dense).size(36.dp, 4.dp).clip(CircleShape).background(palette.ink3.copy(alpha = 0.5f))) }),

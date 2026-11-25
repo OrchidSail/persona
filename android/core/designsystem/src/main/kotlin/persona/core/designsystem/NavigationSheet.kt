@@ -15,7 +15,10 @@ import androidx.compose.ui.unit.dp
 
 internal val LocalFlatPageSurface = staticCompositionLocalOf { false }
 
-/** A settings navigation stack presented above its originating home, with iPhone-style grouped surfaces. */
+/**
+ * A settings navigation stack presented above its originating home, with iPhone-style grouped surfaces.
+ * Downward drag dismissal is disabled so scrolling at the top of Settings lists cannot accidentally close it.
+ */
 @Composable
 fun JSettingsSheet(onDismiss: () -> Unit, content: @Composable () -> Unit) {
     val base = PersonaTheme.palette
@@ -51,6 +54,7 @@ fun JSettingsSheet(onDismiss: () -> Unit, content: @Composable () -> Unit) {
             clearScrim = presentation == SettingsPresentation.PageSized,
             onClearFocus = { restoration.clearFocus() },
             showDragHandle = false,
+            sheetGesturesEnabled = false,
         ) {
             JSettingsPresentationFrame(presentation, onDismiss, restoration) { settingsContent() }
         }
