@@ -87,6 +87,7 @@ class SurfacesRuntime internal constructor(
             var warmupJob: Job? = null
             var warmupPairing: String? = null
             var observedPairing: String? = null
+            var repoReadiness = MainChatWidgetState.MainChatRepoReadiness()
 
             val repoFlow = combine(assistant.assistant, sessions.sessions, interactions.pending) { snapshot, list, pending ->
                 Triple(snapshot, list, pending)
@@ -114,6 +115,7 @@ class SurfacesRuntime internal constructor(
                         warmupJob = null
                         warmupPairing = null
                         observedPairing = null
+                        repoReadiness = MainChatWidgetState.MainChatRepoReadiness()
                         mutableMainChatLivePairing.value = null
                         MainChatWidgetStore.clear(context)
                         return@onEach
@@ -125,6 +127,7 @@ class SurfacesRuntime internal constructor(
                         warmupJob = null
                         warmupPairing = null
                         observedPairing = activePairing
+                        repoReadiness = MainChatWidgetState.MainChatRepoReadiness()
                         if (mutableMainChatLivePairing.value != activePairing) {
                             mutableMainChatLivePairing.value = null
                         }
@@ -132,12 +135,13 @@ class SurfacesRuntime internal constructor(
                         MainChatWidgetStore.read(context, activePairing)
                     }
 
-                    val hasLiveData = MainChatWidgetState.hasLiveRepositoryData(
-                        obs.assistant,
-                        obs.sessions,
-                        obs.interactions,
+                    repoReadiness = MainChatWidgetState.repositoryReadiness(
+                        assistant = obs.assistant,
+                        sessions = obs.sessions,
+                        interactions = obs.interactions,
+                        previous = repoReadiness,
                     )
-                    if (activePairing != null && hasLiveData) {
+                    if (activePairing != null && repoReadiness.allReady) {
                         warmupJob?.cancel()
                         warmupJob = null
                         warmupPairing = null

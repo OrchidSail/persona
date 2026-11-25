@@ -8,11 +8,13 @@ import org.json.JSONObject
 import persona.core.contracts.AgentState
 import persona.core.contracts.DirectionTask
 import persona.core.contracts.DirectionTaskState
+import persona.core.contracts.GroupKeys
 import persona.core.contracts.Interaction
 import persona.core.contracts.ProtocolCompatibility
 import persona.core.contracts.Session
 import persona.core.contracts.SessionKey
 import persona.core.contracts.api.AssistantSnapshot
+import persona.core.contracts.api.ManagerRoster
 import persona.core.contracts.clipped
 import persona.core.contracts.parseTime
 import persona.core.designsystem.LocalizedFormats
@@ -106,6 +108,20 @@ object MainChatWidgetState {
         }
 
         val tree = assistant.directionTree
+        val hasSelectedGroupAnchor = mainKey != null ||
+            assistant.conversations.isNotEmpty() ||
+            tree?.directions?.any { direction -> direction.tasks.any { task -> task.agents.isNotEmpty() } } == true
+        val selectedNamespace: String? = when {
+            mainKey != null -> GroupKeys.namespaceOf(mainKey.machineId)
+            assistant.conversations.isNotEmpty() -> GroupKeys.namespaceOf(assistant.conversations.first().machineId)
+            else -> tree?.directions.orEmpty()
+                .asSequence()
+                .flatMap { it.tasks.asSequence() }
+                .flatMap { it.agents.asSequence() }
+                .map { GroupKeys.namespaceOf(it.machineId) }
+                .firstOrNull()
+        }
+
         val leaderAgentKeys = tree?.leaders.orEmpty()
             .flatMap { direction -> direction.tasks }
             .flatMap { task -> task.agents }
@@ -124,9 +140,16 @@ object MainChatWidgetState {
                 val _ = mainOwnedKeys.add(agent.key)
                 val _ = mainOwnedKeys.add(agent.openKey)
             }
-        sessions.forEach { session ->
-            if (session.startedByPersona && session.key !in leaderAgentKeys) {
-                val _ = mainOwnedKeys.add(session.key)
+        if (hasSelectedGroupAnchor) {
+            sessions.forEach { session ->
+                if (session.startedByPersona &&
+                    !session.isSpace &&
+                    session.key !in leaderAgentKeys &&
+                    GroupKeys.namespaceOf(session.machineId) == selectedNamespace &&
+                    ownsManager(assistant, session.manager)
+                ) {
+                    val _ = mainOwnedKeys.add(session.key)
+                }
             }
         }
 
@@ -134,7 +157,21 @@ object MainChatWidgetState {
             .asSequence()
             .filterNot { it.isDelegating }
             .filter { ix ->
-                ix.sessionId.isNotBlank() && (ix.sessionKey in mainOwnedKeys || ix.homeKey in mainOwnedKeys)
+                if (ix.sessionId.isBlank() || !hasSelectedGroupAnchor) return@filter false
+                if (GroupKeys.namespaceOf(ix.machineId) != selectedNamespace) return@filter false
+                if (ix.sessionKey !in mainOwnedKeys && ix.homeKey !in mainOwnedKeys) return@filter false
+                val ixManager = ix.manager?.takeIf(String::isNotBlank)
+                if (ixManager != null) {
+                    ownsManager(assistant, ixManager)
+                } else {
+                    val isMainChat = mainKey != null && (ix.sessionKey == mainKey || ix.homeKey == mainKey)
+                    val ownerSession = liveByKey[ix.sessionKey] ?: liveByKey[ix.homeKey] ?: mainSession?.takeIf { isMainChat }
+                    if (isMainChat) {
+                        ownerSession?.manager?.takeIf(String::isNotBlank)?.let { ownsManager(assistant, it) } ?: true
+                    } else {
+                        ownsManager(assistant, ownerSession?.manager)
+                    }
+                }
             }
             .distinctBy { it.id }
             .sortedWith(
@@ -223,17 +260,42 @@ object MainChatWidgetState {
         DirectionTaskState.Planned -> 4
     }
 
-    /** True when any live repository carries state beyond its initial empty cold-start placeholder. */
-    internal fun hasLiveRepositoryData(
+    private fun ownsManager(assistant: AssistantSnapshot, stamp: String?): Boolean {
+        val normalizedStamp = stamp?.takeIf(String::isNotBlank)
+        val selectedManager = assistant.manager?.takeIf(String::isNotBlank)
+        val selectedOwner = selectedManager ?: assistant.managerId.ifBlank { ManagerRoster.ASSISTANT_MANAGER }
+        return if (normalizedStamp == null) {
+            selectedManager == null || selectedOwner == ManagerRoster.ASSISTANT_MANAGER
+        } else {
+            normalizedStamp == selectedOwner
+        }
+    }
+
+    /** Per-repository initialization/restoration readiness tracked independently for the active pairing. */
+    internal data class MainChatRepoReadiness(
+        val assistant: Boolean = false,
+        val sessions: Boolean = false,
+        val interactions: Boolean = false,
+    ) {
+        val allReady: Boolean get() = assistant && sessions && interactions
+    }
+
+    /** Updates per-repository readiness monotonically for the active pairing. */
+    internal fun repositoryReadiness(
         assistant: AssistantSnapshot,
         sessions: List<Session>,
         interactions: List<Interaction>,
-    ): Boolean = assistant != AssistantSnapshot() || sessions.isNotEmpty() || interactions.isNotEmpty()
+        previous: MainChatRepoReadiness = MainChatRepoReadiness(),
+    ): MainChatRepoReadiness = MainChatRepoReadiness(
+        assistant = previous.assistant || assistant != AssistantSnapshot(),
+        sessions = previous.sessions || sessions.isNotEmpty(),
+        interactions = previous.interactions || interactions.isNotEmpty(),
+    )
 
     /**
      * True once live repositories are authoritative for [activePairing] — either because [SurfacesRuntime]
-     * explicitly settled this pairing (via a prior live emission or online warmup completion) or because
-     * the live flows already carry non-placeholder repository state.
+     * explicitly settled this pairing (once all three repositories initialized or after the bounded online
+     * warmup window) or because all three live flows already carry non-placeholder repository state.
      */
     internal fun isLiveSettled(
         paired: Boolean,
@@ -246,7 +308,7 @@ object MainChatWidgetState {
         if (!paired) return true
         val scope = activePairing?.takeIf(String::isNotBlank) ?: return false
         if (settledPairing == scope) return true
-        return hasLiveRepositoryData(assistant, sessions, interactions)
+        return repositoryReadiness(assistant, sessions, interactions).allReady
     }
 
     /**

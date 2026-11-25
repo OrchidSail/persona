@@ -1,6 +1,7 @@
 package persona.platform.shortcuts
 
 import android.appwidget.AppWidgetManager
+import android.appwidget.AppWidgetProviderInfo
 import android.content.ComponentName
 import android.content.Context
 import android.content.res.Configuration
@@ -10,6 +11,7 @@ import android.widget.TextView
 import androidx.glance.color.DayNightColorProvider
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.xmlpull.v1.XmlPullParser
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -354,6 +356,111 @@ class MainChatWidgetTest {
         assertEquals(2, snapshot.todos.size)
         assertEquals("Book Kyoto train tickets", snapshot.todos[0].title)
         assertEquals(DirectionTaskState.NeedsYou, snapshot.todos[0].taskState)
+    }
+
+    @Test
+    fun pendingInteractionsExcludeOtherHubGroupsAndOtherManagers() {
+        val enRes = localizedContext("en").resources
+        val otherGroup = "g1a2b3c4d"
+        val thirdGroup = "g9f8e7d6c"
+
+        // 1. Primary hub selected: Persona-started sessions and pending cards from another hub group must be excluded.
+        val primaryMain = Session(mainKey.machineId, mainKey.sessionId, assistant = true, status = "idle", state = "idle", lastText = "Primary hub idle.")
+        val primaryOwnAgent = Session("mac", "agent-primary", assistant = false, startedByPersona = true, status = "idle", state = "idle")
+        val otherHubAgent = Session("mac~$otherGroup", "agent-other-hub", assistant = false, startedByPersona = true, status = "blocked", state = "needs_you")
+        val otherManagerAgent = Session("mac", "agent-other-mgr", assistant = false, startedByPersona = true, manager = "ops", status = "blocked", state = "needs_you")
+
+        val otherHubInteraction = Interaction(
+            id = "ix-other-hub",
+            machineId = "mac~$otherGroup",
+            sessionId = "agent-other-hub",
+            kind = "permission",
+            summary = "Secret action on secondary hub",
+        )
+        val otherManagerInteraction = Interaction(
+            id = "ix-other-mgr",
+            machineId = "mac",
+            sessionId = "agent-other-mgr",
+            kind = "question",
+            manager = "ops",
+            questions = listOf(Question("Secret ops manager question?")),
+        )
+
+        val primarySnapshot = MainChatWidgetState.build(
+            paired = true,
+            assistant = AssistantSnapshot(mainSession = mainKey, conversations = listOf(primaryMain)),
+            sessions = listOf(primaryMain, primaryOwnAgent, otherHubAgent, otherManagerAgent),
+            interactions = listOf(otherHubInteraction, otherManagerInteraction),
+            resources = enRes,
+        )
+        assertEquals(MainChatPhase.Idle, primarySnapshot.phase)
+        assertEquals(0, primarySnapshot.pendingCount)
+        assertNull(primarySnapshot.pending)
+        assertEquals("Primary hub idle.", primarySnapshot.summary)
+
+        // 2. Secondary hub selected: primary and third hubs' Persona-started sessions are excluded, while secondary hub's own stays included.
+        val secondaryMainKey = SessionKey("hub~$otherGroup", "main-chat")
+        val secondaryMain = Session(secondaryMainKey.machineId, secondaryMainKey.sessionId, assistant = true, status = "idle", state = "idle")
+        val primaryHubBlockedAgent = Session("mac", "agent-primary-blocked", assistant = false, startedByPersona = true, status = "blocked", state = "needs_you")
+        val thirdHubBlockedAgent = Session("mac~$thirdGroup", "agent-third-blocked", assistant = false, startedByPersona = true, status = "blocked", state = "needs_you")
+        val primaryHubInteraction = Interaction(
+            id = "ix-primary-hub",
+            machineId = "mac",
+            sessionId = "agent-primary-blocked",
+            kind = "question",
+            questions = listOf(Question("Primary hub private question?")),
+        )
+        val thirdHubInteraction = Interaction(
+            id = "ix-third-hub",
+            machineId = "mac~$thirdGroup",
+            sessionId = "agent-third-blocked",
+            kind = "permission",
+            summary = "Third hub private approval",
+        )
+        val secondarySnapshot = MainChatWidgetState.build(
+            paired = true,
+            assistant = AssistantSnapshot(mainSession = secondaryMainKey, conversations = listOf(secondaryMain)),
+            sessions = listOf(secondaryMain, otherHubAgent, primaryHubBlockedAgent, thirdHubBlockedAgent),
+            interactions = listOf(primaryHubInteraction, thirdHubInteraction, otherHubInteraction),
+            resources = enRes,
+        )
+        assertEquals(MainChatPhase.NeedsYou, secondarySnapshot.phase)
+        assertEquals(1, secondarySnapshot.pendingCount)
+        assertEquals("ix-other-hub", secondarySnapshot.pending?.id)
+
+        // 3. Non-default manager selected: unstamped default-manager sessions/cards are excluded, while own manager's stay included.
+        val opsMainKey = SessionKey("hub", "ops-main")
+        val opsMain = Session("hub", "ops-main", assistant = true, manager = "ops", status = "idle", state = "idle")
+        val defaultManagerAgent = Session("mac", "agent-default-mgr", assistant = false, startedByPersona = true, manager = null, status = "blocked", state = "needs_you")
+        val defaultManagerInteraction = Interaction(
+            id = "ix-default-mgr",
+            machineId = "mac",
+            sessionId = "agent-default-mgr",
+            kind = "question",
+            questions = listOf(Question("Default manager question?")),
+        )
+        val opsSnapshot = MainChatWidgetState.build(
+            paired = true,
+            assistant = AssistantSnapshot(mainSession = opsMainKey, conversations = listOf(opsMain), manager = "ops", managerId = "ops"),
+            sessions = listOf(opsMain, defaultManagerAgent, otherManagerAgent),
+            interactions = listOf(defaultManagerInteraction, otherManagerInteraction),
+            resources = enRes,
+        )
+        assertEquals(MainChatPhase.NeedsYou, opsSnapshot.phase)
+        assertEquals(1, opsSnapshot.pendingCount)
+        assertEquals("ix-other-mgr", opsSnapshot.pending?.id)
+
+        // 4. Empty selected assistant snapshot must never absorb Persona-started sessions from other hubs.
+        val emptyAnchorSnapshot = MainChatWidgetState.build(
+            paired = true,
+            assistant = AssistantSnapshot(),
+            sessions = listOf(otherHubAgent, primaryHubBlockedAgent),
+            interactions = listOf(otherHubInteraction, primaryHubInteraction),
+            resources = enRes,
+        )
+        assertEquals(MainChatPhase.Idle, emptyAnchorSnapshot.phase)
+        assertEquals(0, emptyAnchorSnapshot.pendingCount)
+        assertNull(emptyAnchorSnapshot.pending)
     }
 
     @Test
@@ -750,7 +857,7 @@ class MainChatWidgetTest {
             override suspend fun unpair() { pairedFlow.value = false }
         }
         val connection = object : HubConnection {
-            override val state = MutableStateFlow(ConnectionState.WaitingForNetwork)
+            override val state = MutableStateFlow(ConnectionState.Online)
             override val events = MutableSharedFlow<ServerEvent>()
             override fun reconnect() = Unit
             override fun send(message: JsonObject) = true
@@ -786,7 +893,7 @@ class MainChatWidgetTest {
             override suspend fun resolve(id: String, resolution: Resolution) = Unit
         }
 
-        val runtime = SurfacesRuntime(context, feed, sessions, assistant, interactions)
+        val runtime = SurfacesRuntime(context, feed, sessions, assistant, interactions, onlineWarmupGraceMillis = 120L)
         try {
             runtime.start()
             withTimeout(5_000) {
@@ -1121,6 +1228,114 @@ class MainChatWidgetTest {
     }
 
     @Test
+    fun surfacesRuntimeWaitsForAllThreeRepositoriesBeforeOverwritingPersistedSnapshot() = runBlocking {
+        val scope = "hub/partial-restore"
+        val persisted = MainChatWidgetSnapshot(
+            paired = true,
+            phase = MainChatPhase.NeedsYou,
+            mainSession = mainKey,
+            summary = "Complete persisted summary from previous run.",
+            pendingCount = 1,
+            pending = MainChatPendingItem("ix-persisted", mainKey.machineId, mainKey.sessionId, true, "question", "Persisted prompt?"),
+            todos = listOf(MainChatTodoItem("t1", "Persisted to-do", DirectionTaskState.NeedsYou.wire)),
+        )
+        MainChatWidgetStore.save(context, scope, persisted)
+
+        val pairedFlow = MutableStateFlow(true)
+        val pairing = object : PairingService {
+            override val isPaired = pairedFlow
+            override suspend fun pair(request: PairingRequest) = Unit
+            override suspend fun unpair() { pairedFlow.value = false }
+        }
+        val connection = object : HubConnection {
+            override val state = MutableStateFlow(ConnectionState.WaitingForNetwork)
+            override val events = MutableSharedFlow<ServerEvent>()
+            override fun reconnect() = Unit
+            override fun send(message: JsonObject) = true
+        }
+        val feed = FleetFeed(context, connection, pairing, object : FleetSource {
+            override fun pairing(): String? = if (pairedFlow.value) scope else null
+            override suspend fun fetch() = FleetState()
+        })
+        val sessionsFlow = MutableStateFlow<List<Session>>(emptyList())
+        val assistantFlow = MutableStateFlow(AssistantSnapshot())
+        val interactionsFlow = MutableStateFlow<List<Interaction>>(emptyList())
+        val sessions = object : SessionsRepository {
+            override val machines = MutableStateFlow<List<Machine>>(emptyList())
+            override val sessions = sessionsFlow
+            override suspend fun refresh() = Unit
+        }
+        val assistant = object : AssistantRepository {
+            override val assistant = assistantFlow
+            override suspend fun refresh() = Unit
+        }
+        val interactions = object : InteractionCenter {
+            override val pending = interactionsFlow
+            override suspend fun refresh() = Unit
+            override suspend fun resolve(id: String, resolution: Resolution) = Unit
+        }
+
+        val runtime = SurfacesRuntime(context, feed, sessions, assistant, interactions)
+        try {
+            runtime.start()
+
+            // 1. Only interactions restores first: assistant and sessions are still placeholders.
+            val restoredInteraction = Interaction(
+                id = "ix-live-1",
+                machineId = mainKey.machineId,
+                sessionId = mainKey.sessionId,
+                kind = "question",
+                questions = listOf(Question("Live restored question?")),
+            )
+            interactionsFlow.value = listOf(restoredInteraction)
+            delay(450)
+            assertNull("Must not settle when only interactions restored", runtime.mainChatLivePairing.value)
+            assertEquals(persisted, MainChatWidgetStore.read(context, scope))
+            assertFalse(
+                MainChatWidgetState.isLiveSettled(
+                    paired = true,
+                    activePairing = scope,
+                    settledPairing = runtime.mainChatLivePairing.value,
+                    assistant = assistantFlow.value,
+                    sessions = sessionsFlow.value,
+                    interactions = interactionsFlow.value,
+                ),
+            )
+
+            // 2. Sessions restores next, while assistant is still a placeholder: still must not overwrite disk.
+            val liveSession = Session(
+                machineId = mainKey.machineId,
+                sessionId = mainKey.sessionId,
+                assistant = true,
+                status = "blocked",
+                state = "needs_you",
+                lastText = "Updated live summary after full restore.",
+            )
+            sessionsFlow.value = listOf(liveSession)
+            delay(450)
+            assertNull("Must not settle while assistant is still uninitialized", runtime.mainChatLivePairing.value)
+            assertEquals(persisted, MainChatWidgetStore.read(context, scope))
+
+            // 3. Once assistant also restores (all 3 repos ready), live settles and persists the complete rebuilt snapshot.
+            assistantFlow.value = AssistantSnapshot(mainSession = mainKey, conversations = listOf(liveSession))
+            withTimeout(5_000) {
+                while (MainChatWidgetStore.read(context, scope)?.summary != "Updated live summary after full restore.") {
+                    delay(25)
+                }
+            }
+            assertEquals(scope, runtime.mainChatLivePairing.value)
+            val saved = requireNotNull(MainChatWidgetStore.read(context, scope))
+            assertEquals(MainChatPhase.NeedsYou, saved.phase)
+            assertEquals("ix-live-1", saved.pending?.id)
+            assertEquals("Live restored question?", saved.pending?.title)
+        } finally {
+            ReflectionHelpers.getField<CoroutineScope>(runtime, "scope").cancel()
+            ReflectionHelpers.getField<CoroutineScope>(feed, "scope").cancel()
+            context.getSharedPreferences("fleet", Context.MODE_PRIVATE).edit().clear().apply()
+        }
+    }
+
+    @Test
     fun manifestRegistersMainChatWidgetAlongsideExistingPersonaWidget() {
         val pm = context.packageManager
         val mainReceiver = pm.getReceiverInfo(ComponentName(context, MainChatWidgetReceiver::class.java), 0)
@@ -1130,6 +1345,24 @@ class MainChatWidgetTest {
         val existingReceiver = pm.getReceiverInfo(ComponentName(context, PersonaWidgetReceiver::class.java), 0)
         assertNotNull(existingReceiver)
         assertTrue(existingReceiver.exported)
+
+        // MainChatWidget carries private conversation/approval/to-do text and must be restricted to home_screen (never keyguard).
+        var widgetCategory = 0
+        context.resources.getXml(R.xml.main_chat_widget_info).use { parser ->
+            while (parser.eventType != XmlPullParser.END_DOCUMENT) {
+                if (parser.eventType == XmlPullParser.START_TAG && parser.name == "appwidget-provider") {
+                    widgetCategory = parser.getAttributeIntValue(
+                        "http://schemas.android.com/apk/res/android",
+                        "widgetCategory",
+                        0,
+                    )
+                    break
+                }
+                parser.next()
+            }
+        }
+        assertEquals(AppWidgetProviderInfo.WIDGET_CATEGORY_HOME_SCREEN, widgetCategory)
+        assertEquals(0, widgetCategory and AppWidgetProviderInfo.WIDGET_CATEGORY_KEYGUARD)
 
         // Verify quick-action routes remain canonical.
         assertEquals(AskPersonaLink, SurfaceLinks.ask(context).dataString)
