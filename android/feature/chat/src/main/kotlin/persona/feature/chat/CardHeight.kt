@@ -15,11 +15,14 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -80,6 +83,13 @@ internal class CardHeightStore(
         liveId = null
         liveHeight = null
         set(chosen)
+    }
+
+    /** Clears an in-flight drag without overwriting the persisted share when a gesture is cancelled. */
+    fun cancel(id: String) {
+        if (liveId != id) return
+        liveId = null
+        liveHeight = null
     }
 
     /** Tap on the grabber: switch to tallest room, or back to default from tallest. */
@@ -147,33 +157,52 @@ internal fun CardGrabber(resize: CardResize, modifier: Modifier = Modifier) {
     val toggleLabel = stringResource(R.string.chat_card_height_toggle)
     val tallerLabel = stringResource(R.string.chat_card_height_taller)
     val shorterLabel = stringResource(R.string.chat_card_height_shorter)
+    val latestResize by rememberUpdatedState(resize)
+    var coordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
     Box(
         modifier
             .fillMaxWidth()
             .height(Tokens.Space.l)
-            .pointerInput(resize.id, resize.range, resize.store) {
+            .onGloballyPositioned { coordinates = it }
+            .pointerInput(resize.id, resize.store) {
                 var startHeight = Tokens.Space.flush
+                var startRootY: Float? = null
                 var dragPx = 0f
                 detectVerticalDragGestures(
-                    onDragStart = {
-                        startHeight = resize.height()
+                    onDragStart = { downOffset ->
+                        val active = latestResize
+                        startHeight = active.height()
+                        startRootY = coordinates?.takeIf { it.isAttached }?.localToRoot(downOffset)?.y
                         dragPx = 0f
                         haptics(Haptic.Selection)
                     },
                     onVerticalDrag = { change, dragAmount ->
                         change.consume()
-                        dragPx += dragAmount
-                        val next = with(density) { startHeight - dragPx.toDp() }
-                        resize.store.drag(resize.id, next)
+                        val active = latestResize
+                        val currentRootY = coordinates?.takeIf { it.isAttached }?.localToRoot(change.position)?.y
+                        val totalDragPx = if (startRootY != null && currentRootY != null) {
+                            currentRootY - startRootY!!
+                        } else {
+                            dragPx += dragAmount
+                            dragPx
+                        }
+                        val next = with(density) { startHeight - totalDragPx.toDp() }
+                        active.store.drag(active.id, next)
                     },
-                    onDragEnd = { resize.store.end(resize.id, resize.range) },
-                    onDragCancel = { resize.store.end(resize.id, resize.range) },
+                    onDragEnd = {
+                        val active = latestResize
+                        active.store.end(active.id, active.range)
+                    },
+                    onDragCancel = {
+                        val active = latestResize
+                        active.store.cancel(active.id)
+                    },
                 )
             }
             .pointerInput(resize.id, resize.store) {
                 detectTapGestures {
                     haptics(Haptic.Tap)
-                    resize.store.toggle()
+                    latestResize.store.toggle()
                 }
             }
             .semantics {

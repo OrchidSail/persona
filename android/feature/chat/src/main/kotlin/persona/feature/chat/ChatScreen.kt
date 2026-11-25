@@ -1005,14 +1005,16 @@ private fun ChatPage(
                             }
                         }
                     }
-                    val resize = if (canResize && lone != null && resizeRange != null) {
-                        CardResize(
-                            id = lone.id,
-                            height = { with(density) { (if (task) taskHeight else stackHeight).toDp() } },
-                            range = resizeRange!!,
-                            store = cardHeight,
-                        )
-                    } else null
+                    val resize = remember(canResize, lone?.id, resizeRange, cardHeight, task, density) {
+                        if (canResize && lone != null && resizeRange != null) {
+                            CardResize(
+                                id = lone.id,
+                                height = { with(density) { (if (task) taskHeight else stackHeight).toDp() } },
+                                range = resizeRange!!,
+                                store = cardHeight,
+                            )
+                        } else null
+                    }
                     // The window's height is a key too: it stands in for the page's until the page is measured, and the
                     // lambda this derived state keeps must see the window's current one after a resize.
                     val cap by remember(keyboard, density, above, task, otherShown, windowHeightPx, resize, cardHeight) {

@@ -156,6 +156,34 @@ class DecisionSemanticsTest {
         }
     }
 
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Test fun dockExpandedHeaderKeepsLongToolHeadlineReadableAcrossAllStyles() {
+        val headline = "请求使用 device_relay_run_task"
+        var style by mutableStateOf(AppStyle.Glass)
+        rule.setContent {
+            PersonaTheme(darkTheme = true, reduceMotion = true, style = style) {
+                Box(Modifier.width(360.dp)) {
+                    DecisionDock(
+                        kind = DecisionKind.Tool,
+                        headline = headline,
+                        kicker = "在等你批准",
+                        expires = "12 分钟后过期",
+                        collapsed = false,
+                        onCollapsedChange = {},
+                        onExpand = {},
+                    ) {
+                        Text("正文内容")
+                    }
+                }
+            }
+        }
+        for (current in AppStyle.entries) {
+            style = current
+            rule.waitForIdle()
+            assertFalse("$current truncated long tool headline", overflows(headline))
+        }
+    }
+
     private fun overflows(text: String): Boolean {
         val layouts = mutableListOf<TextLayoutResult>()
         val _ = rule.onNodeWithText(text, useUnmergedTree = true).fetchSemanticsNode().config[SemanticsActions.GetTextLayoutResult].action!!(layouts)

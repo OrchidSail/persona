@@ -70,6 +70,15 @@ class CardHeightTest {
         assertEquals(0.5f, persisted!!, 0.001f)
         assertEquals(350.dp, store.cap(default = 300.dp, range = range, id = "q1"))
 
+        // Cancelled drag clears live state without overwriting the persisted share
+        store.drag("q1", 150.dp)
+        assertEquals(150.dp, store.cap(default = 300.dp, range = range, id = "q1"))
+        store.cancel("q1")
+        assertNull(store.liveId)
+        assertEquals(0.5f, store.share!!, 0.001f)
+        assertEquals(0.5f, persisted!!, 0.001f)
+        assertEquals(350.dp, store.cap(default = 300.dp, range = range, id = "q1"))
+
         // Toggle switches to tallest (1.0f), then back to default (null)
         store.toggle()
         assertEquals(1f, store.share!!, 0.001f)
@@ -99,12 +108,12 @@ class CardHeightTest {
 
     @Test fun pendingStackResizeRangeLeavesConversationSliverAndSiblingRoom() {
         assertNull(PendingStack.resizeRange(760.dp, rest = 0.dp, header = 100.dp, floor = 24.dp))
-        // 760 - 100 - 120 - 24 = 516dp tallest, 150dp shortest
+        // 760 - 100 - 120 - 24 = 516dp tallest, 280dp shortest (fits header + readable body + full 48dp buttons)
         val lone = PendingStack.resizeRange(760.dp, rest = 120.dp, header = 100.dp, floor = 24.dp)
-        assertEquals(Tokens.Size.box150..516.dp, lone)
+        assertEquals(PendingStack.MINIMUM_RESIZE_HEIGHT..516.dp, lone)
         // Sibling folded at 64dp leaves 452dp to the task question
         val withFoldedSibling = PendingStack.resizeRange(760.dp, rest = 120.dp, header = 100.dp, floor = 24.dp, other = 64.dp)
-        assertEquals(Tokens.Size.box150..452.dp, withFoldedSibling)
+        assertEquals(PendingStack.MINIMUM_RESIZE_HEIGHT..452.dp, withFoldedSibling)
         // Very short screen clamps bottom to top
         val shortScreen = PendingStack.resizeRange(320.dp, rest = 120.dp, header = 80.dp, floor = 24.dp)
         assertEquals(96.dp..96.dp, shortScreen)
