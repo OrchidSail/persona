@@ -37,12 +37,11 @@ const (
 	mainAutoCompactRatioDen = 4
 
 	// Fallback thresholds when ContextTokens is missing or frozen across turns.
-	mainAutoCompactItemsProbeMinSteps   = 20         // rev delta before probing session.items for bytes/boundary
 	mainAutoCompactFallbackSteps        = 160        // incremental transcript steps since last compaction
 	mainAutoCompactFallbackBytes        = 512 * 1024 // 512 KiB of uncompacted item content since last compaction
 	mainAutoCompactFallbackOutputTokens = 80_000     // cumulative generated output tokens since last compaction
 	mainAutoCompactItemsLimit           = 200        // bounded session.items read for fallback volume/boundary scan
-	mainAutoCompactOutputHistoryMax     = 32         // recent (rev, output_tokens) samples kept for boundary attribution
+	mainAutoCompactOutputHistoryMax     = 32         // recent output samples kept for compaction-boundary attribution
 
 	// Timing guards (overridable on mainAutoCompactBook for deterministic tests).
 	defaultMainAutoCompactCooldown        = 15 * time.Minute
@@ -70,24 +69,43 @@ type mainAutoCompactBook struct {
 	callTimeout     time.Duration
 }
 
-type mainCompactOutputSample struct {
-	rev    int64
+type mainCompactSeqOutput struct {
+	seq    int64
+	output int
+}
+
+type mainCompactTimeOutput struct {
+	at     time.Time
 	output int
 }
 
 type mainAutoCompactState struct {
-	baselineRev          int64
-	baselineOutputTokens int
-	baselineKnown        bool
+	// Transcript Item.Seq watermarks (strictly from session.items probes; never mixed with Session.Rev).
+	baselineSeq        int64
+	baselineKnown      bool
+	lastProbedSeq      int64
+	lastTokenChangeSeq int64
+	lastAttemptSeq     int64
 
+	// Cumulative output-token watermarks and unit-separated attribution histories.
+	baselineOutputTokens int
+	lastOutputTokens     int
+	seqOutputHistory     []mainCompactSeqOutput
+	timeOutputHistory    []mainCompactTimeOutput
+
+	// Opaque Session.Rev watermarks (change detection and attempt deduplication only; never subtracted as steps).
+	observed           bool
 	lastRev            int64
-	lastTokens         int
-	lastContextWindow  int
-	lastOutputTokens   int
+	probedOnce         bool
+	lastProbeRev       int64
 	lastTokenChangeRev int64
-	peakTokens         int
-	seenCompactionAt   time.Time
-	outputHistory      []mainCompactOutputSample
+	lastTokenChangeAt  time.Time
+
+	lastTokens               int
+	lastContextWindow        int
+	peakTokens               int
+	tokensValidSinceBaseline bool
+	seenCompactionAt         time.Time
 
 	sawWork             bool
 	pendingDelayedCheck bool
@@ -280,12 +298,21 @@ func (s *Service) mainAutoCompactDelayedSettled(ctx context.Context, machine, si
 	s.mainAutoCompactTurnSettled(ctx, machine, sid)
 }
 
+func sessionSampleTime(row proto.Session, now time.Time) time.Time {
+	if !row.UpdatedAt.IsZero() {
+		return row.UpdatedAt
+	}
+	return now
+}
+
 func (b *mainAutoCompactBook) observeLocked(st *mainAutoCompactState, row proto.Session, now time.Time) {
-	if !st.baselineKnown && st.lastRev == 0 && st.lastOutputTokens == 0 {
+	sampleAt := sessionSampleTime(row, now)
+	if !st.baselineKnown && !st.observed {
 		// Initialize output-token baseline on first observation so a hub restart mid-session
 		// does not treat historical cumulative output tokens as fresh post-compaction growth.
 		st.baselineOutputTokens = row.OutputTokens
 	}
+	st.observed = true
 	if row.Status == proto.StatusWorking {
 		st.sawWork = true
 		st.pendingDelayedCheck = false
@@ -331,9 +358,12 @@ func (b *mainAutoCompactBook) observeLocked(st *mainAutoCompactState, row proto.
 		} else if tokens > st.peakTokens {
 			st.peakTokens = tokens
 		}
-		if tokens != st.lastTokens {
+		if tokens != st.lastTokens || !st.tokensValidSinceBaseline {
 			st.lastTokens = tokens
+			st.tokensValidSinceBaseline = true
 			st.lastTokenChangeRev = row.Rev
+			st.lastTokenChangeAt = sampleAt
+			st.lastTokenChangeSeq = 0
 		}
 	}
 	if row.Rev > st.lastRev {
@@ -342,57 +372,115 @@ func (b *mainAutoCompactBook) observeLocked(st *mainAutoCompactState, row proto.
 	if row.OutputTokens > st.lastOutputTokens {
 		st.lastOutputTokens = row.OutputTokens
 	}
-	st.recordOutputSample(row.Rev, row.OutputTokens)
+	st.recordTimeOutputSample(sampleAt, row.OutputTokens)
 }
 
-func (st *mainAutoCompactState) recordOutputSample(rev int64, output int) {
-	if rev <= 0 || (output <= 0 && len(st.outputHistory) > 0) {
+func (st *mainAutoCompactState) recordSeqOutputSample(seq int64, output int) {
+	if seq <= 0 || (output <= 0 && len(st.seqOutputHistory) > 0) {
 		return
 	}
-	for len(st.outputHistory) > 0 && st.outputHistory[len(st.outputHistory)-1].rev > rev {
-		st.outputHistory = st.outputHistory[:len(st.outputHistory)-1]
+	for len(st.seqOutputHistory) > 0 && st.seqOutputHistory[len(st.seqOutputHistory)-1].seq > seq {
+		st.seqOutputHistory = st.seqOutputHistory[:len(st.seqOutputHistory)-1]
 	}
-	if n := len(st.outputHistory); n > 0 && st.outputHistory[n-1].rev == rev {
-		if output > st.outputHistory[n-1].output {
-			st.outputHistory[n-1].output = output
+	if n := len(st.seqOutputHistory); n > 0 && st.seqOutputHistory[n-1].seq == seq {
+		if output > st.seqOutputHistory[n-1].output {
+			st.seqOutputHistory[n-1].output = output
 		}
 		return
 	}
-	st.outputHistory = append(st.outputHistory, mainCompactOutputSample{rev: rev, output: output})
-	if len(st.outputHistory) > mainAutoCompactOutputHistoryMax {
-		copy(st.outputHistory, st.outputHistory[len(st.outputHistory)-mainAutoCompactOutputHistoryMax:])
-		st.outputHistory = st.outputHistory[:mainAutoCompactOutputHistoryMax]
+	st.seqOutputHistory = append(st.seqOutputHistory, mainCompactSeqOutput{seq: seq, output: output})
+	if len(st.seqOutputHistory) > mainAutoCompactOutputHistoryMax {
+		copy(st.seqOutputHistory, st.seqOutputHistory[len(st.seqOutputHistory)-mainAutoCompactOutputHistoryMax:])
+		st.seqOutputHistory = st.seqOutputHistory[:mainAutoCompactOutputHistoryMax]
 	}
 }
 
-func (st *mainAutoCompactState) outputAtOrBefore(seq int64) (int, bool) {
-	for i := len(st.outputHistory) - 1; i >= 0; i-- {
-		if st.outputHistory[i].rev <= seq {
-			return st.outputHistory[i].output, true
+func (st *mainAutoCompactState) recordTimeOutputSample(at time.Time, output int) {
+	if at.IsZero() || (output <= 0 && len(st.timeOutputHistory) > 0) {
+		return
+	}
+	for len(st.timeOutputHistory) > 0 && st.timeOutputHistory[len(st.timeOutputHistory)-1].at.After(at) {
+		st.timeOutputHistory = st.timeOutputHistory[:len(st.timeOutputHistory)-1]
+	}
+	if n := len(st.timeOutputHistory); n > 0 && st.timeOutputHistory[n-1].at.Equal(at) {
+		if output > st.timeOutputHistory[n-1].output {
+			st.timeOutputHistory[n-1].output = output
+		}
+		return
+	}
+	st.timeOutputHistory = append(st.timeOutputHistory, mainCompactTimeOutput{at: at, output: output})
+	if len(st.timeOutputHistory) > mainAutoCompactOutputHistoryMax {
+		copy(st.timeOutputHistory, st.timeOutputHistory[len(st.timeOutputHistory)-mainAutoCompactOutputHistoryMax:])
+		st.timeOutputHistory = st.timeOutputHistory[:mainAutoCompactOutputHistoryMax]
+	}
+}
+
+func (st *mainAutoCompactState) outputAtOrBefore(seq int64, at time.Time) (int, bool) {
+	if seq > 0 {
+		for i := len(st.seqOutputHistory) - 1; i >= 0; i-- {
+			if st.seqOutputHistory[i].seq <= seq {
+				return st.seqOutputHistory[i].output, true
+			}
+		}
+	}
+	if !at.IsZero() {
+		for i := len(st.timeOutputHistory) - 1; i >= 0; i-- {
+			if !st.timeOutputHistory[i].at.After(at) {
+				return st.timeOutputHistory[i].output, true
+			}
 		}
 	}
 	return 0, false
 }
 
+func (st *mainAutoCompactState) tokenChangedAfterBoundaryLocked(compactSeq int64, compactTS time.Time) bool {
+	if st.lastTokenChangeSeq > 0 && st.lastTokenChangeSeq > compactSeq {
+		return true
+	}
+	if !st.lastTokenChangeAt.IsZero() && !compactTS.IsZero() && st.lastTokenChangeAt.After(compactTS) {
+		return true
+	}
+	return false
+}
+
 func (b *mainAutoCompactBook) resetCompactionBaselineLocked(st *mainAutoCompactState, row proto.Session, now time.Time, setCooldown bool) {
+	sampleAt := sessionSampleTime(row, now)
 	tokens := int(row.ContextTokens)
-	if !plausibleMainContext(tokens, int(row.ContextWindow)) {
+	if !plausibleMainContext(tokens, effectiveMainContextWindow(st, row)) {
 		tokens = 0
 	}
-	st.baselineRev = row.Rev
+	st.baselineSeq = st.lastProbedSeq
 	st.baselineOutputTokens = row.OutputTokens
 	st.baselineKnown = true
 	st.peakTokens = tokens
 	st.lastTokens = tokens
-	st.lastTokenChangeRev = row.Rev
+	st.tokensValidSinceBaseline = tokens > 0
+	if tokens > 0 {
+		st.lastTokenChangeRev = row.Rev
+		st.lastTokenChangeAt = sampleAt
+		st.lastTokenChangeSeq = st.lastProbedSeq
+	} else {
+		st.lastTokenChangeRev = 0
+		st.lastTokenChangeAt = time.Time{}
+		st.lastTokenChangeSeq = st.lastProbedSeq
+	}
+	st.lastRev = row.Rev
+	st.probedOnce = false
+	st.lastProbeRev = 0
 	st.pendingDelayedCheck = false
 	st.hasAttempted = false
 	st.lastAttemptRev = 0
+	st.lastAttemptSeq = 0
 	st.lastAttemptTokens = 0
-	if row.Rev > 0 {
-		st.outputHistory = []mainCompactOutputSample{{rev: row.Rev, output: row.OutputTokens}}
+	if st.lastProbedSeq > 0 {
+		st.seqOutputHistory = []mainCompactSeqOutput{{seq: st.lastProbedSeq, output: row.OutputTokens}}
 	} else {
-		st.outputHistory = nil
+		st.seqOutputHistory = nil
+	}
+	if !sampleAt.IsZero() {
+		st.timeOutputHistory = []mainCompactTimeOutput{{at: sampleAt, output: row.OutputTokens}}
+	} else {
+		st.timeOutputHistory = nil
 	}
 	if setCooldown {
 		if until := now.Add(b.cooldownPeriod()); until.After(st.cooldownUntil) {
@@ -424,7 +512,7 @@ func (s *Service) mainAutoCompactTurnSettled(ctx context.Context, machine, sid s
 		return
 	}
 
-	reason, needProbe, probeFloor, tokensStale := evaluateMainCompactLoad(cfg, st, sess)
+	reason, needProbe, tokensStale := evaluateMainCompactLoad(cfg, st, sess)
 	b.mu.Unlock()
 
 	if reason == "" && needProbe {
@@ -434,55 +522,79 @@ func (s *Service) mainAutoCompactTurnSettled(ctx context.Context, machine, sid s
 		st = b.stateLocked(ref)
 		window := effectiveMainContextWindow(st, sess)
 		plausible := int(sess.ContextTokens) > 0 && plausibleMainContext(int(sess.ContextTokens), window)
+		effectiveFloor := st.baselineSeq
+		if tokensStale && st.lastTokenChangeSeq > effectiveFloor {
+			effectiveFloor = st.lastTokenChangeSeq
+		}
 		var m postCompactMetrics
-		if probeErr == nil && len(pageItems) > 0 {
-			m = measurePostCompactItems(pageItems, probeFloor)
-			if m.compactSeq > st.baselineRev {
-				st.baselineRev = m.compactSeq
-				st.baselineKnown = true
-				switch {
-				case m.steps == 0:
-					if sess.OutputTokens > 0 {
-						st.baselineOutputTokens = sess.OutputTokens
-					}
-				case m.outputTokens > 0:
-					// Reconstruct cumulative output at the compaction boundary instead of folding post-boundary output into baseline.
-					if sess.OutputTokens > 0 {
-						st.baselineOutputTokens = max(sess.OutputTokens-int(m.outputTokens), 0)
-					}
-				case m.hasItemUsage:
-					if sess.OutputTokens > 0 {
-						st.baselineOutputTokens = sess.OutputTokens
-					}
-				default:
-					// Items omit per-item usage: advance baseline only to output observed at or before the boundary.
-					if preOut, ok := st.outputAtOrBefore(m.compactSeq); ok && preOut > st.baselineOutputTokens {
-						st.baselineOutputTokens = preOut
+		if probeErr == nil {
+			st.probedOnce = true
+			st.lastProbeRev = sess.Rev
+			if len(pageItems) > 0 {
+				if tokensStale && st.lastTokenChangeSeq == 0 && !st.lastTokenChangeAt.IsZero() {
+					if inferred := lastSeqAtOrBefore(pageItems, st.lastTokenChangeAt); inferred > 0 {
+						st.lastTokenChangeSeq = inferred
+						if inferred > effectiveFloor {
+							effectiveFloor = inferred
+						}
 					}
 				}
-				if !plausible && m.compactSeq >= st.lastTokenChangeRev {
-					st.lastTokens = 0
-					st.peakTokens = 0
-					st.lastTokenChangeRev = m.compactSeq
+				m = measurePostCompactItems(pageItems, effectiveFloor)
+				if m.maxSeq > st.lastProbedSeq {
+					st.lastProbedSeq = m.maxSeq
 				}
-				if m.compactSeq > st.lastAttemptRev {
-					st.hasAttempted = false
-					st.lastAttemptRev = 0
-					st.lastAttemptTokens = 0
+				if m.compactSeq > st.baselineSeq {
+					st.baselineSeq = m.compactSeq
+					st.baselineKnown = true
+					if st.baselineSeq > effectiveFloor {
+						effectiveFloor = st.baselineSeq
+					}
+					switch {
+					case m.steps == 0:
+						if sess.OutputTokens > 0 {
+							st.baselineOutputTokens = sess.OutputTokens
+						}
+					case m.outputTokens > 0:
+						// Reconstruct cumulative output at the compaction boundary instead of folding post-boundary output into baseline.
+						if sess.OutputTokens > 0 {
+							st.baselineOutputTokens = max(sess.OutputTokens-int(m.outputTokens), 0)
+						}
+					case m.hasItemUsage:
+						if sess.OutputTokens > 0 {
+							st.baselineOutputTokens = sess.OutputTokens
+						}
+					default:
+						// Items omit per-item usage: advance baseline only to output observed at or before the boundary
+						// using strictly matching Item.Seq or timestamp histories.
+						if preOut, ok := st.outputAtOrBefore(m.compactSeq, m.compactTS); ok && preOut > st.baselineOutputTokens {
+							st.baselineOutputTokens = preOut
+						}
+					}
+					if !plausible && !st.tokenChangedAfterBoundaryLocked(m.compactSeq, m.compactTS) {
+						st.lastTokens = 0
+						st.peakTokens = 0
+						st.tokensValidSinceBaseline = false
+						st.lastTokenChangeRev = 0
+						st.lastTokenChangeSeq = m.compactSeq
+						st.lastTokenChangeAt = time.Time{}
+					}
+					if st.hasAttempted && (st.lastAttemptSeq == 0 || m.compactSeq > st.lastAttemptSeq) {
+						st.hasAttempted = false
+						st.lastAttemptRev = 0
+						st.lastAttemptSeq = 0
+						st.lastAttemptTokens = 0
+					}
+				}
+				if m.maxSeq > 0 {
+					st.recordSeqOutputSample(m.maxSeq, sess.OutputTokens)
 				}
 			}
 		}
-		effectiveBase := st.baselineRev
-		if tokensStale && st.lastTokenChangeRev > effectiveBase {
-			effectiveBase = st.lastTokenChangeRev
-		}
-		revSteps := int(max(sess.Rev-effectiveBase, 0))
-		effectiveSteps := max(m.steps, revSteps)
 		deltaOutput := max(sess.OutputTokens-st.baselineOutputTokens, 0)
 		if int(m.outputTokens) > deltaOutput {
 			deltaOutput = int(m.outputTokens)
 		}
-		if !plausible && probeErr == nil && st.lastTokens > 0 && st.lastTokenChangeRev >= st.baselineRev {
+		if !plausible && probeErr == nil && st.tokensValidSinceBaseline && st.lastTokens > 0 {
 			if threshold := mainAutoCompactTokenThreshold(cfg, window); threshold > 0 && st.lastTokens >= threshold {
 				reason = fmt.Sprintf("context %d/%d tokens (threshold %d)", st.lastTokens, window, threshold)
 			}
@@ -490,9 +602,9 @@ func (s *Service) mainAutoCompactTurnSettled(ctx context.Context, machine, sid s
 		if reason == "" {
 			switch {
 			case m.bytes >= mainAutoCompactFallbackBytes:
-				reason = fmt.Sprintf("incremental volume %d bytes since seq %d", m.bytes, effectiveBase)
-			case effectiveSteps >= mainAutoCompactFallbackSteps:
-				reason = fmt.Sprintf("incremental steps %d since seq %d", effectiveSteps, effectiveBase)
+				reason = fmt.Sprintf("incremental volume %d bytes since seq %d", m.bytes, effectiveFloor)
+			case m.steps >= mainAutoCompactFallbackSteps:
+				reason = fmt.Sprintf("incremental steps %d since seq %d", m.steps, effectiveFloor)
 			case deltaOutput >= mainAutoCompactFallbackOutputTokens:
 				reason = fmt.Sprintf("incremental output %d tokens", deltaOutput)
 			}
@@ -524,6 +636,7 @@ func (s *Service) mainAutoCompactTurnSettled(ctx context.Context, machine, sid s
 	st.pendingDelayedCheck = false
 	st.hasAttempted = true
 	st.lastAttemptRev = sess.Rev
+	st.lastAttemptSeq = st.lastProbedSeq
 	st.lastAttemptTokens = effectiveMainContextTokens(st, sess)
 	b.mu.Unlock()
 
@@ -554,7 +667,7 @@ func (s *Service) mainAutoCompactTurnSettled(ctx context.Context, machine, sid s
 		st.cooldownUntil = doneAt.Add(b.busyCooldownPeriod())
 		// Allow the next turn end to retry once the active turn or compaction finishes.
 		st.hasAttempted = false
-		st.lastAttemptRev, st.lastAttemptTokens = 0, 0
+		st.lastAttemptRev, st.lastAttemptSeq, st.lastAttemptTokens = 0, 0, 0
 	default:
 		st.cooldownUntil = doneAt.Add(b.failureCooldownPeriod())
 	}
@@ -685,33 +798,31 @@ func effectiveMainContextTokens(st *mainAutoCompactState, sess proto.Session) in
 	return st.lastTokens
 }
 
-func evaluateMainCompactLoad(cfg Settings, st *mainAutoCompactState, sess proto.Session) (reason string, needProbe bool, probeFloor int64, tokensStale bool) {
+func evaluateMainCompactLoad(cfg Settings, st *mainAutoCompactState, sess proto.Session) (reason string, needProbe bool, tokensStale bool) {
 	window := effectiveMainContextWindow(st, sess)
 	tokens := int(sess.ContextTokens)
 	plausible := tokens > 0 && plausibleMainContext(tokens, window)
 	if plausible {
 		if threshold := mainAutoCompactTokenThreshold(cfg, window); threshold > 0 && tokens >= threshold {
-			return fmt.Sprintf("context %d/%d tokens (threshold %d)", tokens, window, threshold), false, 0, false
+			return fmt.Sprintf("context %d/%d tokens (threshold %d)", tokens, window, threshold), false, false
 		}
 	}
 	tokensUnavailable := !plausible
-	tokensStale = plausible && st.lastTokenChangeRev > 0 && sess.Rev-st.lastTokenChangeRev >= mainAutoCompactItemsProbeMinSteps
+	// Session.Rev is an opaque revision marker (file byte size on native Claude/Codex, timestamp on Codex app-server,
+	// step counter on some runtimes): use it only for change detection, never as a step count or Item.Seq floor.
+	tokensStale = plausible && st.tokensValidSinceBaseline && sess.Rev != st.lastTokenChangeRev
 	if !tokensUnavailable && !tokensStale {
-		return "", false, 0, false
+		return "", false, false
 	}
-	probeFloor = st.baselineRev
-	if tokensStale && st.lastTokenChangeRev > probeFloor {
-		probeFloor = st.lastTokenChangeRev
-	}
-	if tokensUnavailable && st.lastTokens > 0 && st.lastTokenChangeRev >= st.baselineRev {
+	if tokensUnavailable && st.tokensValidSinceBaseline && st.lastTokens > 0 {
 		if threshold := mainAutoCompactTokenThreshold(cfg, window); threshold > 0 && st.lastTokens >= threshold {
-			return "", true, probeFloor, false
+			return "", true, false
 		}
 	}
-	deltaRev := max(sess.Rev-probeFloor, 0)
+	revChanged := !st.probedOnce || sess.Rev != st.lastProbeRev
 	deltaOutput := max(sess.OutputTokens-st.baselineOutputTokens, 0)
-	needProbe = deltaRev >= mainAutoCompactItemsProbeMinSteps || deltaOutput >= mainAutoCompactFallbackOutputTokens
-	return "", needProbe, probeFloor, tokensStale
+	needProbe = revChanged || deltaOutput >= mainAutoCompactFallbackOutputTokens
+	return "", needProbe, tokensStale
 }
 
 func (s *Service) probeMainAutoCompactItems(ctx context.Context, machine, sid string) ([]proto.Item, error) {
@@ -729,6 +840,8 @@ func (s *Service) probeMainAutoCompactItems(ctx context.Context, machine, sid st
 
 type postCompactMetrics struct {
 	compactSeq   int64
+	compactTS    time.Time
+	maxSeq       int64
 	steps        int
 	bytes        int64
 	outputTokens int64
@@ -740,11 +853,45 @@ type mainCompactUsageKey struct {
 	model string
 }
 
+func itemEndSeq(it proto.Item) int64 {
+	end := int64(it.Seq)
+	if it.Fold != nil && int64(it.Fold.ThroughSeq) > end {
+		end = int64(it.Fold.ThroughSeq)
+	}
+	return end
+}
+
+func lastSeqAtOrBefore(items []proto.Item, at time.Time) int64 {
+	if at.IsZero() {
+		return 0
+	}
+	var best int64
+	for i := range items {
+		it := items[i]
+		ts := it.TS
+		if it.Fold != nil && !it.Fold.Until.IsZero() {
+			ts = it.Fold.Until
+		}
+		if ts.IsZero() || ts.After(at) {
+			continue
+		}
+		if end := itemEndSeq(it); end > best {
+			best = end
+		}
+	}
+	return best
+}
+
 // measurePostCompactItems scans items from newest to oldest until floorSeq or the latest compaction notice,
-// returning the compaction notice sequence (0 if none was seen), distinct step count, uncompacted byte volume,
-// and post-boundary output tokens reported on items.
+// returning the compaction notice sequence/timestamp (0 if none was seen), highest item sequence on the page,
+// distinct step count (including collapsed fold items), uncompacted byte volume, and post-boundary item output tokens.
 func measurePostCompactItems(items []proto.Item, floorSeq int64) postCompactMetrics {
 	var m postCompactMetrics
+	for i := range items {
+		if end := itemEndSeq(items[i]); end > m.maxSeq {
+			m.maxSeq = end
+		}
+	}
 	prevSeq := -1
 	var seenUsage map[mainCompactUsageKey]struct{}
 	addUsage := func(list []proto.TokenUsage) {
@@ -772,11 +919,13 @@ func measurePostCompactItems(items []proto.Item, floorSeq int64) postCompactMetr
 	stopIdx := -1
 	for i := len(items) - 1; i >= 0; i-- {
 		it := items[i]
-		if floorSeq > 0 && int64(it.Seq) <= floorSeq {
+		endSeq := itemEndSeq(it)
+		if floorSeq > 0 && endSeq <= floorSeq {
 			break
 		}
 		if isCompactionNoticeItem(it) {
-			m.compactSeq = int64(it.Seq)
+			m.compactSeq = endSeq
+			m.compactTS = it.TS
 			stopIdx = i
 			break
 		}
@@ -785,7 +934,19 @@ func measurePostCompactItems(items []proto.Item, floorSeq int64) postCompactMetr
 		if it.Fold != nil {
 			addUsage(it.Fold.Usage)
 		}
-		if it.Seq != prevSeq {
+		if it.Fold != nil && it.Fold.Items > 1 {
+			foldSteps := it.Fold.Items
+			if floorSeq > 0 && int64(it.Seq) <= floorSeq {
+				if tail := int(endSeq - floorSeq); tail < foldSteps {
+					foldSteps = max(tail, 1)
+				}
+				m.steps += foldSteps
+				prevSeq = it.Seq
+				break
+			}
+			m.steps += foldSteps
+			prevSeq = it.Seq
+		} else if it.Seq != prevSeq {
 			m.steps++
 			prevSeq = it.Seq
 		}

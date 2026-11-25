@@ -38,6 +38,27 @@ func newMainAutoCompactTestFixture(t *testing.T, mainID string) (*Service, *fake
 	return s, f, &now, advance
 }
 
+func makeMainAutoCompactStepItems(fromSeq, toSeq int, ts time.Time) []proto.Item {
+	if toSeq < fromSeq {
+		return nil
+	}
+	items := make([]proto.Item, 0, toSeq-fromSeq+1)
+	for seq := fromSeq; seq <= toSeq; seq++ {
+		role := "assistant"
+		if seq%2 == 1 {
+			role = "user"
+		}
+		items = append(items, proto.Item{
+			Seq:  seq,
+			TS:   ts,
+			Role: role,
+			Kind: proto.KindText,
+			Text: "step",
+		})
+	}
+	return items
+}
+
 func TestMainAutoCompactTokenThresholdMath(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -234,10 +255,7 @@ func TestMainAutoCompactFallbackStepsBytesAndCompactionBoundary(t *testing.T) {
 			compacts.Add(1)
 			return map[string]any{"ok": true}, nil
 		})
-		f.setItems(
-			proto.Item{Seq: 1, Role: "user", Kind: proto.KindText, Text: "Start"},
-			proto.Item{Seq: 170, Role: "assistant", Kind: proto.KindText, Text: "Latest"},
-		)
+		f.setItems(makeMainAutoCompactStepItems(1, 170, time.Time{})...)
 		f.setSessions("server", proto.Session{
 			SessionID: mainID, Assistant: true, Agent: "agy", Launcher: "agy",
 			Status: proto.StatusDone, Rev: 170, ContextTokens: 0,
@@ -272,10 +290,10 @@ func TestMainAutoCompactFallbackStepsBytesAndCompactionBoundary(t *testing.T) {
 			t.Fatalf("fresh below-threshold tokens falsely triggered fallback: %d", compacts.Load())
 		}
 
-		// Now tokens stay frozen at 120k while Rev grows by 170 more steps -> stale fallback triggers.
+		// Now tokens stay frozen at 120k while 170 real transcript steps accumulate -> stale fallback triggers.
 		row.Rev = 350
 		f.setSessions("server", row)
-		f.setItems(proto.Item{Seq: 350, Role: "assistant", Kind: proto.KindText, Text: "Still frozen tokens"})
+		f.setItems(makeMainAutoCompactStepItems(181, 350, time.Time{})...)
 		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
 		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
 		if compacts.Load() != 1 {
@@ -552,7 +570,7 @@ func TestMainAutoCompactReentrancyCooldownAndRecovery(t *testing.T) {
 func TestMainAutoCompactOmittedTokensPreserveBaseline(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("omitted context_tokens keeps lastTokens/peakTokens/baselineRev intact for primary threshold", func(t *testing.T) {
+	t.Run("omitted context_tokens keeps lastTokens/peakTokens/baselineSeq intact for primary threshold", func(t *testing.T) {
 		mainID := "agy-91111111-2222-3333-4444-555555555555"
 		s, f, _, _ := newMainAutoCompactTestFixture(t, mainID)
 		var compacts atomic.Int32
@@ -580,10 +598,10 @@ func TestMainAutoCompactOmittedTokensPreserveBaseline(t *testing.T) {
 		ref := SessionRef{MachineID: "server", SessionID: mainID}
 		s.mainAutoCompact.mu.Lock()
 		st := s.mainAutoCompact.bySession[ref]
-		gotBase, gotLast, gotPeak, gotChange := st.baselineRev, st.lastTokens, st.peakTokens, st.lastTokenChangeRev
+		gotBase, gotLast, gotPeak, gotChange := st.baselineSeq, st.lastTokens, st.peakTokens, st.lastTokenChangeRev
 		s.mainAutoCompact.mu.Unlock()
 		if gotBase != 0 || gotLast != 220_000 || gotPeak != 220_000 || gotChange != 20 {
-			t.Fatalf("omitted snapshot clobbered state: baselineRev=%d lastTokens=%d peakTokens=%d lastTokenChangeRev=%d",
+			t.Fatalf("omitted snapshot clobbered state: baselineSeq=%d lastTokens=%d peakTokens=%d lastTokenChangeRev=%d",
 				gotBase, gotLast, gotPeak, gotChange)
 		}
 
@@ -646,7 +664,7 @@ func TestMainAutoCompactOmittedTokensPreserveBaseline(t *testing.T) {
 		}
 	})
 
-	t.Run("repeated omitted snapshots never advance baselineRev to mask fallback step growth", func(t *testing.T) {
+	t.Run("repeated omitted snapshots never advance baselineSeq to mask fallback step growth", func(t *testing.T) {
 		mainID := "agy-94444444-2222-3333-4444-555555555555"
 		s, f, _, _ := newMainAutoCompactTestFixture(t, mainID)
 		var compacts atomic.Int32
@@ -669,7 +687,7 @@ func TestMainAutoCompactOmittedTokensPreserveBaseline(t *testing.T) {
 		final.Rev = 170
 		final.ContextTokens = 0
 		f.setSessions("server", final)
-		f.setItems(proto.Item{Seq: 170, Role: "assistant", Kind: proto.KindText, Text: "Many steps without usage"})
+		f.setItems(makeMainAutoCompactStepItems(1, 170, time.Time{})...)
 		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
 		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
 		if compacts.Load() != 1 {
@@ -764,7 +782,101 @@ func TestMainAutoCompactCompactionNoticePreservesPostBoundaryOutput(t *testing.T
 	})
 
 	t.Run("without per-item usage, boundary discovery subtracts only output observed before the boundary", func(t *testing.T) {
-		mainID := "agy-97777777-2222-3333-4444-555555555555"
+		// Case A: timestamp attribution works even when Session.Rev is byte-sized (4096 -> 9000 -> 140000).
+		mainID := "claude-97777777-2222-3333-4444-555555555555"
+		s, f, _, _ := newMainAutoCompactTestFixture(t, mainID)
+		var compacts atomic.Int32
+		f.answerNode(DeviceAssistantCompact, func(string, json.RawMessage) (any, error) {
+			compacts.Add(1)
+			return map[string]any{"ok": true}, nil
+		})
+		t0 := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+		for _, snap := range []proto.Session{
+			{SessionID: mainID, Assistant: true, Agent: "claude", Launcher: "claude", Status: proto.StatusDone, Rev: 4096, UpdatedAt: t0, OutputTokens: 20_000},
+			{SessionID: mainID, Assistant: true, Agent: "claude", Launcher: "claude", Status: proto.StatusDone, Rev: 9000, UpdatedAt: t0.Add(5 * time.Minute), OutputTokens: 30_000},
+		} {
+			s.SessionsChanged(ctx, DeviceSessions{MachineID: "server", Sessions: []proto.Session{snap}})
+		}
+
+		// Compaction notice lands at seq 26 (t0+6m); 75k post-boundary output (105k total) stays below 80k threshold.
+		f.setItems(
+			proto.Item{Seq: 26, TS: t0.Add(6 * time.Minute), Role: "system", Kind: proto.KindNotice, Text: transcript.CompactedNotice},
+			proto.Item{Seq: 27, TS: t0.Add(10 * time.Minute), Role: "assistant", Kind: proto.KindText, Text: "Reply A"},
+		)
+		f.setSessions("server", proto.Session{
+			SessionID: mainID, Assistant: true, Agent: "claude", Launcher: "claude",
+			Status: proto.StatusDone, Rev: 120_000, UpdatedAt: t0.Add(10 * time.Minute), ContextTokens: 0, OutputTokens: 105_000,
+		})
+		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
+		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
+		if compacts.Load() != 0 {
+			t.Fatalf("compacts = %d, want 0 at 75k post-boundary output", compacts.Load())
+		}
+		ref := SessionRef{MachineID: "server", SessionID: mainID}
+		s.mainAutoCompact.mu.Lock()
+		gotBaseOut := s.mainAutoCompact.bySession[ref].baselineOutputTokens
+		s.mainAutoCompact.mu.Unlock()
+		if gotBaseOut != 30_000 {
+			t.Fatalf("baselineOutputTokens = %d, want 30000 from pre-boundary timestamp sample", gotBaseOut)
+		}
+
+		// Adding 10k more output (85k post-boundary) crosses 80k and triggers.
+		f.setItems(
+			proto.Item{Seq: 26, TS: t0.Add(6 * time.Minute), Role: "system", Kind: proto.KindNotice, Text: transcript.CompactedNotice},
+			proto.Item{Seq: 27, TS: t0.Add(10 * time.Minute), Role: "assistant", Kind: proto.KindText, Text: "Reply A"},
+			proto.Item{Seq: 28, TS: t0.Add(15 * time.Minute), Role: "assistant", Kind: proto.KindText, Text: "Reply B"},
+		)
+		f.setSessions("server", proto.Session{
+			SessionID: mainID, Assistant: true, Agent: "claude", Launcher: "claude",
+			Status: proto.StatusDone, Rev: 140_000, UpdatedAt: t0.Add(15 * time.Minute), ContextTokens: 0, OutputTokens: 115_000,
+		})
+		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
+		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
+		if compacts.Load() != 1 {
+			t.Fatalf("compacts = %d, want 1 once post-boundary output reached 85k", compacts.Load())
+		}
+
+		// Case B: probe-recorded Item.Seq output attribution works even when Item.TS is zero.
+		mainID2 := "agy-98888888-2222-3333-4444-555555555555"
+		s2, f2, _, _ := newMainAutoCompactTestFixture(t, mainID2)
+		var compacts2 atomic.Int32
+		f2.answerNode(DeviceAssistantCompact, func(string, json.RawMessage) (any, error) {
+			compacts2.Add(1)
+			return map[string]any{"ok": true}, nil
+		})
+		// Initial probe records (seq=25, output=30_000) in seqOutputHistory without needing timestamps.
+		f2.setItems(proto.Item{Seq: 25, Role: "assistant", Kind: proto.KindText, Text: "Before compact"})
+		f2.setSessions("server", proto.Session{
+			SessionID: mainID2, Assistant: true, Agent: "agy", Launcher: "agy",
+			Status: proto.StatusDone, Rev: 9000, ContextTokens: 0, OutputTokens: 30_000,
+		})
+		s2.noteMainAutoCompactTurnEnded(ctx, "server", mainID2)
+		s2.mainAutoCompactTurnSettled(ctx, "server", mainID2)
+		if compacts2.Load() != 0 {
+			t.Fatalf("pre-compact probe compacted unexpectedly: %d", compacts2.Load())
+		}
+		// Compaction notice lands at seq 26 (zero TS), followed by 85k more output.
+		f2.setItems(
+			proto.Item{Seq: 26, Role: "system", Kind: proto.KindNotice, Text: transcript.CompactedNotice},
+			proto.Item{Seq: 27, Role: "assistant", Kind: proto.KindText, Text: "After compact"},
+		)
+		f2.setSessions("server", proto.Session{
+			SessionID: mainID2, Assistant: true, Agent: "agy", Launcher: "agy",
+			Status: proto.StatusDone, Rev: 140_000, ContextTokens: 0, OutputTokens: 115_000,
+		})
+		s2.noteMainAutoCompactTurnEnded(ctx, "server", mainID2)
+		s2.mainAutoCompactTurnSettled(ctx, "server", mainID2)
+		if compacts2.Load() != 1 {
+			t.Fatalf("compacts2 = %d, want 1 via seq-attributed 85k post-boundary output", compacts2.Load())
+		}
+	})
+}
+
+func TestMainAutoCompactByteSizedRevDoesNotFalseTrigger(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("native Claude byte-sized Rev growth with missing context_tokens does not false-trigger on small turns", func(t *testing.T) {
+		mainID := "claude-10000001-2222-3333-4444-555555555555"
 		s, f, _, _ := newMainAutoCompactTestFixture(t, mainID)
 		var compacts atomic.Int32
 		f.answerNode(DeviceAssistantCompact, func(string, json.RawMessage) (any, error) {
@@ -772,28 +884,172 @@ func TestMainAutoCompactCompactionNoticePreservesPostBoundaryOutput(t *testing.T
 			return map[string]any{"ok": true}, nil
 		})
 
-		// Pre-compaction observations record output 20k at seq 10 and 30k at seq 25.
-		for _, snap := range []proto.Session{
-			{SessionID: mainID, Assistant: true, Agent: "agy", Launcher: "agy", Status: proto.StatusDone, Rev: 10, OutputTokens: 20_000},
-			{SessionID: mainID, Assistant: true, Agent: "agy", Launcher: "agy", Status: proto.StatusDone, Rev: 25, OutputTokens: 30_000},
-		} {
-			s.SessionsChanged(ctx, DeviceSessions{MachineID: "server", Sessions: []proto.Session{snap}})
+		// Initial transcript is 4096 bytes; ordinary small turn appends 2404 bytes (Rev 4096 -> 6500) with only 2 items.
+		f.setItems(
+			proto.Item{Seq: 1, Role: "user", Kind: proto.KindText, Text: "What is 2+2?"},
+			proto.Item{Seq: 2, Role: "assistant", Kind: proto.KindText, Text: "4"},
+		)
+		s.SessionsChanged(ctx, DeviceSessions{
+			MachineID: "server",
+			Sessions: []proto.Session{{
+				SessionID: mainID, Assistant: true, Agent: "claude", Launcher: "claude",
+				Status: proto.StatusDone, Rev: 4096, ContextTokens: 0,
+			}},
+		})
+		f.setSessions("server", proto.Session{
+			SessionID: mainID, Assistant: true, Agent: "claude", Launcher: "claude",
+			Status: proto.StatusDone, Rev: 6500, ContextTokens: 0,
+		})
+		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
+		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
+		if compacts.Load() != 0 {
+			t.Fatalf("byte-sized Rev delta (4096->6500) false-triggered compaction: %d", compacts.Load())
 		}
 
-		// Compaction notice lands at seq 26; 85k more output accumulates by rev 60 without per-item usage fields.
+		// Another small append (Rev 6500 -> 9000, 4 total items): still must not trigger.
 		f.setItems(
-			proto.Item{Seq: 26, Role: "system", Kind: proto.KindNotice, Text: transcript.CompactedNotice},
-			proto.Item{Seq: 40, Role: "assistant", Kind: proto.KindText, Text: "Reply A"},
-			proto.Item{Seq: 60, Role: "assistant", Kind: proto.KindText, Text: "Reply B"},
+			proto.Item{Seq: 1, Role: "user", Kind: proto.KindText, Text: "What is 2+2?"},
+			proto.Item{Seq: 2, Role: "assistant", Kind: proto.KindText, Text: "4"},
+			proto.Item{Seq: 3, Role: "user", Kind: proto.KindText, Text: "And 3+3?"},
+			proto.Item{Seq: 4, Role: "assistant", Kind: proto.KindText, Text: "6"},
 		)
 		f.setSessions("server", proto.Session{
-			SessionID: mainID, Assistant: true, Agent: "agy", Launcher: "agy",
-			Status: proto.StatusDone, Rev: 60, ContextTokens: 0, OutputTokens: 115_000,
+			SessionID: mainID, Assistant: true, Agent: "claude", Launcher: "claude",
+			Status: proto.StatusDone, Rev: 9000, ContextTokens: 0,
+		})
+		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
+		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
+		if compacts.Load() != 0 {
+			t.Fatalf("second byte-sized Rev delta (6500->9000) false-triggered compaction: %d", compacts.Load())
+		}
+	})
+
+	t.Run("native Codex byte-sized Rev with frozen below-threshold context_tokens does not false-trigger", func(t *testing.T) {
+		mainID := "codex-10000002-2222-3333-4444-555555555555"
+		s, f, _, _ := newMainAutoCompactTestFixture(t, mainID)
+		var compacts atomic.Int32
+		f.answerNode(DeviceAssistantCompact, func(string, json.RawMessage) (any, error) {
+			compacts.Add(1)
+			return map[string]any{"ok": true}, nil
+		})
+		t0 := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+
+		// Fresh below-threshold reading at Rev 4096 (90k < 300k), then small append to Rev 6500 with identical 90k tokens.
+		s.SessionsChanged(ctx, DeviceSessions{
+			MachineID: "server",
+			Sessions: []proto.Session{{
+				SessionID: mainID, Assistant: true, Agent: "codex", Launcher: "codex",
+				Status: proto.StatusDone, Rev: 4096, UpdatedAt: t0, ContextTokens: 90_000, ContextWindow: 400_000,
+			}},
+		})
+		// Even with 170 pre-freeze items (at t0), only 2 items arrived after t0 -> must NOT trigger.
+		items := makeMainAutoCompactStepItems(1, 170, t0)
+		items = append(items,
+			proto.Item{Seq: 171, TS: t0.Add(2 * time.Minute), Role: "user", Kind: proto.KindText, Text: "Quick ping"},
+			proto.Item{Seq: 172, TS: t0.Add(2 * time.Minute), Role: "assistant", Kind: proto.KindText, Text: "Pong"},
+		)
+		f.setItems(items...)
+		f.setSessions("server", proto.Session{
+			SessionID: mainID, Assistant: true, Agent: "codex", Launcher: "codex",
+			Status: proto.StatusDone, Rev: 6500, UpdatedAt: t0.Add(2 * time.Minute), ContextTokens: 90_000, ContextWindow: 400_000,
+		})
+		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
+		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
+		if compacts.Load() != 0 {
+			t.Fatalf("frozen tokens with 2 new items and byte-sized Rev (4096->6500) false-triggered: %d", compacts.Load())
+		}
+
+		// Once 165 genuine post-freeze items accumulate while tokens stay frozen at 90k -> triggers.
+		postFreeze := makeMainAutoCompactStepItems(171, 335, t0.Add(5*time.Minute))
+		f.setItems(postFreeze...)
+		f.setSessions("server", proto.Session{
+			SessionID: mainID, Assistant: true, Agent: "codex", Launcher: "codex",
+			Status: proto.StatusDone, Rev: 95_000, UpdatedAt: t0.Add(10 * time.Minute), ContextTokens: 90_000, ContextWindow: 400_000,
 		})
 		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
 		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
 		if compacts.Load() != 1 {
-			t.Fatalf("compacts = %d, want 1 (baseline should stop at pre-boundary 30k, leaving 85k post-boundary output)", compacts.Load())
+			t.Fatalf("compacts = %d, want 1 after 165 genuine post-freeze steps", compacts.Load())
+		}
+	})
+
+	t.Run("byte-sized Rev compaction notice clears retained over-threshold tokens without comparing Seq to Rev", func(t *testing.T) {
+		mainID := "claude-10000003-2222-3333-4444-555555555555"
+		s, f, _, _ := newMainAutoCompactTestFixture(t, mainID)
+		var compacts atomic.Int32
+		f.answerNode(DeviceAssistantCompact, func(string, json.RawMessage) (any, error) {
+			compacts.Add(1)
+			return map[string]any{"ok": true}, nil
+		})
+		// High pre-compaction context at large byte Rev 40000, then compaction notice at small Item.Seq 20.
+		s.SessionsChanged(ctx, DeviceSessions{
+			MachineID: "server",
+			Sessions: []proto.Session{{
+				SessionID: mainID, Assistant: true, Agent: "claude", Launcher: "claude",
+				Status: proto.StatusWorking, Rev: 40_000, ContextTokens: 320_000, ContextWindow: 400_000,
+			}},
+		})
+		f.setItems(
+			proto.Item{Seq: 20, Role: "system", Kind: proto.KindNotice, Text: transcript.CompactedNotice},
+			proto.Item{Seq: 21, Role: "user", Kind: proto.KindText, Text: "Hi"},
+			proto.Item{Seq: 22, Role: "assistant", Kind: proto.KindText, Text: "Hello"},
+		)
+		f.setSessions("server", proto.Session{
+			SessionID: mainID, Assistant: true, Agent: "claude", Launcher: "claude",
+			Status: proto.StatusDone, Rev: 42_000, ContextTokens: 0, ContextWindow: 400_000,
+		})
+		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
+		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
+		if compacts.Load() != 0 {
+			t.Fatalf("compaction notice at Seq 20 under Rev 40000 failed to suppress duplicate compact: %d", compacts.Load())
+		}
+	})
+
+	t.Run("byte-sized Rev still triggers on real 160+ steps (including folded runs) and 512 KiB item bytes", func(t *testing.T) {
+		// Case A: real 160+ steps including a KindFold run.
+		mainID := "claude-10000004-2222-3333-4444-555555555555"
+		s, f, _, _ := newMainAutoCompactTestFixture(t, mainID)
+		var compacts atomic.Int32
+		f.answerNode(DeviceAssistantCompact, func(string, json.RawMessage) (any, error) {
+			compacts.Add(1)
+			return map[string]any{"ok": true}, nil
+		})
+		f.setItems(
+			proto.Item{Seq: 1, Role: "user", Kind: proto.KindText, Text: "Run build"},
+			proto.Item{Seq: 2, Role: "assistant", Kind: proto.KindFold, Fold: &proto.Fold{Items: 160, ThroughSeq: 161}},
+			proto.Item{Seq: 162, Role: "assistant", Kind: proto.KindText, Text: "Done"},
+		)
+		f.setSessions("server", proto.Session{
+			SessionID: mainID, Assistant: true, Agent: "claude", Launcher: "claude",
+			Status: proto.StatusDone, Rev: 85_000, ContextTokens: 0,
+		})
+		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
+		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
+		if compacts.Load() != 1 {
+			t.Fatalf("compacts = %d, want 1 via 162 real post-compact steps (including fold)", compacts.Load())
+		}
+
+		// Case B: real 512 KiB uncompacted item bytes with small step count.
+		mainID2 := "codex-10000005-2222-3333-4444-555555555555"
+		s2, f2, _, _ := newMainAutoCompactTestFixture(t, mainID2)
+		var compacts2 atomic.Int32
+		f2.answerNode(DeviceAssistantCompact, func(string, json.RawMessage) (any, error) {
+			compacts2.Add(1)
+			return map[string]any{"ok": true}, nil
+		})
+		f2.setItems(
+			proto.Item{Seq: 1, Role: "user", Kind: proto.KindText, Text: "Inspect dumps"},
+			proto.Item{Seq: 2, Role: "user", Kind: proto.KindToolResult, Text: "clipped", FullSize: 300 * 1024},
+			proto.Item{Seq: 3, Role: "user", Kind: proto.KindToolResult, Text: "clipped", FullSize: 280 * 1024},
+		)
+		f2.setSessions("server", proto.Session{
+			SessionID: mainID2, Assistant: true, Agent: "codex", Launcher: "codex",
+			Status: proto.StatusDone, Rev: 620_000, ContextTokens: 0,
+		})
+		s2.noteMainAutoCompactTurnEnded(ctx, "server", mainID2)
+		s2.mainAutoCompactTurnSettled(ctx, "server", mainID2)
+		if compacts2.Load() != 1 {
+			t.Fatalf("compacts2 = %d, want 1 via 580 KiB item volume", compacts2.Load())
 		}
 	})
 }
