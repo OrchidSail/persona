@@ -96,6 +96,8 @@ internal fun ShellChat(route: ChatRoute, session: ShellSession, navigator: Navig
     var openedPath by rememberSaveable { mutableStateOf<String?>(null) }
     // Its line (`a.kt:12`): the file opens scrolled to it.
     var openedLine by rememberSaveable { mutableStateOf<Int?>(null) }
+    // A paired machine opened via a card's `persona://file/<machine>/<path>` target.
+    var openedFileMachine by rememberSaveable { mutableStateOf<String?>(null) }
     // The terminal comes up over the chat (iOS TerminalCover, #4339 C7), from ⋯, the work line or a request's Open terminal.
     var terminalOpen by rememberSaveable(route.machineId, route.sessionId) { mutableStateOf(false) }
     // Resume in Terminal (#5565): the cover resumes the stopped Agent as it comes up.
@@ -111,9 +113,11 @@ internal fun ShellChat(route: ChatRoute, session: ShellSession, navigator: Navig
     }
     val filesAvailable = !assistant && cwd.isNotBlank() && session.files != null
     val canOpenFilePath = filesAvailable || (assistant && key.machineId.isNotBlank() && session.files != null)
-    fun open(p: FilesPane, path: String? = null, line: Int? = null) {
-        insertionFocused = composer.focused; focus.clearFocus(); openedPath = path; openedLine = line; pane = p
+    val canOpenMachineFile = session.files != null
+    fun open(p: FilesPane, path: String? = null, line: Int? = null, machineId: String? = null) {
+        insertionFocused = composer.focused; focus.clearFocus(); openedFileMachine = machineId; openedPath = path; openedLine = line; pane = p
     }
+    fun closeFiles() { pane = null; openedFileMachine = null; openedPath = null; openedLine = null }
     if (editor != null && storedComposer == null) return
     // ultracode's quota line (#582) reads this chat's hub
     androidx.compose.runtime.CompositionLocalProvider(persona.feature.chat.LocalUsageRead provides wiring?.usage) {
@@ -147,6 +151,10 @@ internal fun ShellChat(route: ChatRoute, session: ShellSession, navigator: Navig
                     onConnectionDetails = { navigator.navigate(SettingsPageRoute(SettingsPage.Diagnostics)) },
                     files = session.files, hubScope = wiring?.scope?.path ?: session.identity, ports = wiring?.ports,
                     onOpenPath = if (canOpenFilePath) ({ path, line -> open(FilesPane.Files, path, line) }) else null,
+                    onOpenMachineFile = if (canOpenMachineFile) ({ machineId, path ->
+                        val resolved = persona.core.contracts.GroupKeys.machine(machineId, persona.core.contracts.GroupKeys.namespaceOf(key.machineId))
+                        open(FilesPane.Files, path, null, machineId = resolved)
+                    }) else null,
                     onOpenTodo = { todoId -> navigator.navigate(persona.core.navigation.TodoDetailRoute(todoId)) },
                     // A model error the hub named on Persona's turn: Fix It opens what the home's readiness card would (MainReadiness.kt).
                     onFixModel = { action, launcher, manager ->
@@ -173,14 +181,14 @@ internal fun ShellChat(route: ChatRoute, session: ShellSession, navigator: Navig
                 onDraftChanged = editor?.let { it::changed },
                 statusBindings = ChatStatusBindings(recovery = wiring?.recovery, draftSaveError = draftError?.let { androidx.compose.ui.res.stringResource(it) }),
                 onContextCleared = { navigator.navigate(ChatRoute(it.machineId, it.sessionId)) })
-            if (pane != null && (filesAvailable || (canOpenFilePath && openedPath != null))) {
-                BackHandler { pane = null; openedPath = null; openedLine = null }
+            if (pane != null && (filesAvailable || ((canOpenFilePath || (openedFileMachine != null && canOpenMachineFile)) && openedPath != null))) {
+                BackHandler { closeFiles() }
+                val targetMachine = openedFileMachine ?: key.machineId
+                val targetCwd = if (openedFileMachine != null && openedFileMachine != key.machineId) "" else cwd.ifBlank { "~" }
                 CompositionLocalProvider(persona.core.designsystem.LocalSplitDetail provides null) {
-                    SessionFilesScreen(route.copy(machineId = key.machineId, sessionId = key.sessionId), cwd.ifBlank { "~" }, requireNotNull(session.files), { pane = null; openedPath = null; openedLine = null }, { path ->
+                    SessionFilesScreen(route.copy(machineId = targetMachine, sessionId = key.sessionId), targetCwd, requireNotNull(session.files), ::closeFiles, { path ->
                         composer.value = insertFilePath(composer.value, path, insertionFocused)
-                        pane = null
-                        openedPath = null
-                        openedLine = null
+                        closeFiles()
                         composer.focusRequest++
                     }, initialPane = pane!!, initialPath = openedPath, initialLine = openedLine,
                         connection = connectionState)

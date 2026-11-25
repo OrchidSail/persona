@@ -93,12 +93,16 @@ class AssistantCardsTest {
         assertEquals(AssistantOpenTarget.Knowledge("people/a.md"), AssistantOpen.target("persona://kb/people/a.md"))
         assertEquals(AssistantOpenTarget.File("mac", "/tmp/a b.txt"), AssistantOpen.target("persona://file/mac/%2Ftmp%2Fa%20b.txt"))
         val refused = listOf("http://example.com", "https://user:pw@example.com", "javascript:alert(1)", "file:///etc/passwd",
+            "content://media/external/images/media/1", "tel:10086", "mailto:user@example.com", "data:text/html,<script>alert(1)</script>",
+            "blob:https://example.com/1", "about:blank", "customscheme://open/now",
+            "https://example.com/%ZZ", "https://example.com/%0A", "https://example.com/%00", "https://" + "a".repeat(AssistantOpen.MaxUrlLength),
             "persona://kb/../secret", "persona://kb/a/%2E%2E/b", "persona://session/m", "persona://session/m/s/x", "persona://task/a%2Fb",
-            "persona://task/t?x=1", "persona://task/t#x", "persona://task/%zz", "persona://pair/x", "persona://file/m/relative",
+            "persona://task/t?x=1", "persona://task/t#x", "persona://task/%zz", "persona://pair/x", "persona://settings/hub", "persona://file/m/relative",
             "persona://task/a\u0001", "persona://task/a\\b", "intent://x", "persona://task/%C3%28", "persona://task/+%2b")
         for (url in refused.dropLast(1)) assertNull(url, AssistantOpen.target(url))
         // A plus stays a plus; only percent escapes are undone.
         assertEquals(AssistantOpenTarget.Task("++"), AssistantOpen.target("persona://task/+%2b"))
         assertTrue(AssistantOpen.target("https://example.com") is AssistantOpenTarget.Web)
+        assertTrue(AssistantOpen.target("HTTPS://example.com/path") is AssistantOpenTarget.Web)
     }
 }

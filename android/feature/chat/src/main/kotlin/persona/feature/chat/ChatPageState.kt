@@ -204,8 +204,16 @@ internal fun rememberChatPageLinks(key: SessionKey, chrome: ChatChromeBindings, 
     val mentions = if (readOnly || !canSend) null
         else ComposerMentions(mentionFiles, session?.cwd.orEmpty(), sessionList, key, taskMentions, mentionFolders)
     // An assistant conversation's cards answer through its hub's store (docs/assistant/assistant-views.md); elsewhere they only draw.
-    val cardsHost = remember(tasks, key.sessionId, readOnly, canSend) {
-        tasks?.let { persona.core.domain.views.AssistantCardsHost(key.sessionId, it.cards, it.cardActions, interactive = !readOnly && canSend) }
+    val cardsHost = remember(tasks, key.sessionId, readOnly, canSend, chrome.onOpenMachineFile) {
+        tasks?.let {
+            persona.core.domain.views.AssistantCardsHost(
+                key.sessionId,
+                it.cards,
+                it.cardActions,
+                interactive = !readOnly && canSend,
+                openFile = chrome.onOpenMachineFile,
+            )
+        }
     }
     // A task's notice jumps to the call that started it through the task bar's navigation (ChatTasks).
     val callJumps = remember(key) { ChatCallJumps() }

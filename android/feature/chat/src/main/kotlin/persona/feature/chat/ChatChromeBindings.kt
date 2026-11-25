@@ -55,6 +55,8 @@ data class ChatChromeBindings(
      * it names one; null: paths are not offered.
      */
     val onOpenPath: ((path: String, line: Int?) -> Unit)? = null,
+    /** Opens an absolute file path on a paired computer inside the app (`persona://file/<machine>/<path>`). */
+    val onOpenMachineFile: ((machineId: String, path: String) -> Unit)? = null,
     /** The assistant conversation's tasks (docs/assistant/unified-entry.md); null for an agent's chat. */
     val tasks: persona.core.domain.tasks.TasksStore? = null,
     val onOpenTodo: ((String) -> Unit)? = null,

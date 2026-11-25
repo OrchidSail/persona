@@ -204,19 +204,26 @@ sealed interface AssistantOpenTarget {
 }
 
 object AssistantOpen {
+    /** Schema cap on declarative `Action.open` URLs (`schema/extension/view.schema.json`). */
+    const val MaxUrlLength = 4096
+    /** Schema cap on HTML bridge `persona.open` URLs (`AssistantHTMLActionInput.url`). */
+    const val HtmlMaxUrlLength = 2048
+
     /**
      * [value] as a target, or null: https without credentials, or `persona://`
      * `session/<machine>/<session>`, `task/<id>`, `kb/<relative path>`, `file/<machine>/<absolute path>` with each
      * segment escaped once and nothing else. Never anything to hand to another app.
      */
     fun target(value: String): AssistantOpenTarget? {
-        if (value.any { it.isISOControl() } || value.contains('\\')) return null
+        if (value.isEmpty() || value.length > MaxUrlLength || value.any { it.isISOControl() } || value.contains('\\')) return null
+        val decodedWhole = unescape(value) ?: return null
+        if (decodedWhole.any { it.isISOControl() }) return null
         val uri = runCatching { URI(value) }.getOrNull() ?: return null
         if (uri.isOpaque || uri.rawUserInfo != null || uri.host.isNullOrEmpty()) return null
-        val scheme = uri.scheme ?: return null
+        val scheme = uri.scheme?.lowercase() ?: return null
         if (scheme == "https") return AssistantOpenTarget.Web(value)
         if (scheme !in ProtocolCompatibility.appSchemes || uri.rawQuery != null || uri.rawFragment != null || uri.port != -1) return null
-        val host = uri.host
+        val host = uri.host.lowercase()
         val parts = uri.rawPath.orEmpty().removePrefix("/").split('/')
         val decoded = parts.map { part ->
             val v = unescape(part) ?: return null

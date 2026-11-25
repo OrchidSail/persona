@@ -4,6 +4,7 @@ import persona.core.contracts.api.ExtensionView
 import persona.core.contracts.api.ExtensionViewBadge
 import persona.core.contracts.api.ExtensionViewItem
 import persona.core.contracts.generated.ExtensionViewAction
+import persona.core.contracts.generated.ExtensionViewActionKind
 import persona.core.contracts.generated.ExtensionViewActionStatus
 import persona.core.domain.views.AssistantCard
 
@@ -28,7 +29,7 @@ internal object AssistantCardPresentation {
      */
     fun page(page: ExtensionView, card: AssistantCard, answer: ExtensionViewAction?, locked: Boolean, words: AssistantCardWords): ExtensionView {
         val chosenBadge = ExtensionViewBadge(words.chosen, "positive")
-        val chosen = answer?.action
+        val chosen = answer?.takeUnless { it.kind == ExtensionViewActionKind.HTML }?.action
         val sent = answer?.values.orEmpty()
         fun replies(id: String?) = id != null && card.actions[id]?.answers == true
         fun mark(item: ExtensionViewItem) = if (item.action?.id == chosen) item.copy(badge = chosenBadge) else item

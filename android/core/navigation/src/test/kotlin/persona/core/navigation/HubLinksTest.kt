@@ -49,6 +49,8 @@ class HubLinksTest {
         assertEquals(HubPage.NewConversation, page("$hub/persona/new"))
         assertEquals(HubPage.Screen(TodoDetailRoute("todo_1")), page("$hub/todos/todo_1"))
         assertEquals(HubPage.Screen(TodosRoute), page("$hub/todos"))
+        assertEquals(HubPage.Knowledge("docs"), page("persona://kb/docs"))
+        assertEquals(HubPage.KnowledgeEntry("docs", "notes/plan.md"), page("persona://kb/docs/notes/plan.md"))
         assertEquals(HubPage.Screen(InboxRoute), page("$hub/inbox"))
         assertEquals(HubPage.Screen(InboxItemRoute("mail:1")), page("$hub/inbox/mail:1"))
         assertEquals(HubPage.Screen(AgentsRoute), page("$hub/agents"))
