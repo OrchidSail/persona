@@ -370,7 +370,9 @@ internal fun rememberChatPageLines(key: SessionKey, renderStyle: ChatRenderStyle
     val modelChanges = PersonaTheme.style == AppStyle.Glass
     val childPlaces = remember(key) { persona.core.domain.lines.ChildSessionPlaces() }
     val places = remember(children) { childPlaces.places(children) }
-    val earliest = remember(snapshot.hasOlder, snapshot.items) { loadedEarliest(snapshot.items, snapshot.hasOlder) }
+    val earliest = remember(snapshot.hasOlder, snapshot.olderBoundaryKnown, snapshot.loading, snapshot.items) {
+        loadedEarliest(snapshot.items, snapshot.hasOlder, snapshot.olderBoundaryKnown, snapshot.loading)
+    }
     val lines = remember(assistantPresentation, search.selected, jumpItem, feed, tasks, taskPlans, taskTodos, taskCardProjection, renderStyle, inlineRecords, nestedSubagents, viewedStrips, modelChanges, places, snapshot.hasOlder, earliest, openWork, modeChanges, modeChangesUntil) {
         searchVisibleLines(assistantPresentation.foreground, search.selected?.itemId ?: jumpItem)
             .let {
@@ -397,14 +399,36 @@ internal fun rememberChatPageLines(key: SessionKey, renderStyle: ChatRenderStyle
 }
 
 /**
+ * A timeline projection paired atomically with the snapshot window it was built from, so
+ * [rememberChatPageLines] never mixes an older projection's line IDs with a newer snapshot's items
+ * or pagination boundary while `Dispatchers.Default` computes the next projection.
+ */
+internal data class ProjectedTimeline(
+    val snapshot: persona.core.domain.lines.ChatSnapshot =
+        persona.core.domain.lines.ChatSnapshot(emptyList(), emptyList(), persona.core.domain.lines.TaskIndex()),
+    val items: List<Item>? = null,
+    val hasOlder: Boolean = false,
+    val olderBoundaryKnown: Boolean = false,
+    val loading: Boolean = true,
+)
+
+/**
  * When the oldest loaded transcript item happened while older pages remain unloaded (web `loadedFrom`,
  * `ModeChanges` `earliest`): holds back older feed items, task cards and mode changes until those pages load.
- * Returns [java.time.Instant.MAX] when [hasOlder] is true but no loaded item carries a timestamp yet, so older
- * history never floods an empty or untimed partial page.
+ * Also holds back timed history while the initial transcript page is still loading or its older-history
+ * boundary is unknown, and returns [java.time.Instant.MAX] when no loaded item carries a timestamp yet, so
+ * older feed items never flood an empty, loading, or untimed partial page.
  */
-internal fun loadedEarliest(items: List<Item>, hasOlder: Boolean): java.time.Instant? =
-    if (!hasOlder) null
-    else items.firstNotNullOfOrNull { item -> persona.core.contracts.parseTime(item.ts) } ?: java.time.Instant.MAX
+internal fun loadedEarliest(
+    items: List<Item>,
+    hasOlder: Boolean,
+    olderBoundaryKnown: Boolean = true,
+    loading: Boolean = false,
+): java.time.Instant? = when {
+    loading && items.isEmpty() -> java.time.Instant.MAX
+    !hasOlder && olderBoundaryKnown -> null
+    else -> items.firstNotNullOfOrNull { item -> persona.core.contracts.parseTime(item.ts) } ?: java.time.Instant.MAX
+}
 
 /** What [rememberChatPageLines] hands back to ChatPage: plain values, and the state objects ChatPage reads and writes. */
 internal class ChatPageLines(
