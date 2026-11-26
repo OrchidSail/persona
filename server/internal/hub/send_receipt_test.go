@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nwverse/persona/server/internal/assistantwire"
+	"github.com/nwverse/persona/server/internal/db"
 	"github.com/nwverse/persona/server/internal/proto"
 	"github.com/nwverse/persona/server/internal/rpc"
 )
@@ -205,9 +206,12 @@ func TestSendReceiptPreparationFailureCanRetry(t *testing.T) {
 	}) // no manager: parameter generation fails before node delivery
 	c := sendSubscriber(h, "box", "s1")
 	for range 2 {
-		status, _ := call(t, h.routes(), http.MethodPost, sendPath, h.cfg.Token, `{"text":"hello","client_msg_id":"receipt-3"}`)
+		status, body := call(t, h.routes(), http.MethodPost, sendPath, h.cfg.Token, `{"text":"hello","client_msg_id":"receipt-3"}`)
 		if status != http.StatusServiceUnavailable {
 			t.Fatalf("offline manager status=%d", status)
+		}
+		if body["code"] != assistantwire.CodeAssistantOffline || body["delivered"] != "none" || body["retryable"] != true {
+			t.Fatalf("offline manager body=%+v", body)
 		}
 		if event := nextSendState(t, c); event.State != proto.MessageSendProcessing {
 			t.Fatalf("initial=%+v", event)
@@ -215,5 +219,94 @@ func TestSendReceiptPreparationFailureCanRetry(t *testing.T) {
 		if event := nextSendState(t, c); event.State != proto.MessageSendFailed {
 			t.Fatalf("failure=%+v", event)
 		}
+	}
+}
+
+type sendClientOpStore struct {
+	*sentStore
+	ops *clientOpsStore
+}
+
+func (s *sendClientOpStore) BeginClientOp(ctx context.Context, op db.ClientOp) (*db.ClientOp, bool, error) {
+	return s.ops.BeginClientOp(ctx, op)
+}
+func (s *sendClientOpStore) ClientOp(ctx context.Context, id string) (*db.ClientOp, error) {
+	return s.ops.ClientOp(ctx, id)
+}
+func (s *sendClientOpStore) FinishClientOp(ctx context.Context, id, state string, result json.RawMessage) error {
+	return s.ops.FinishClientOp(ctx, id, state, result)
+}
+func (s *sendClientOpStore) ForgetClientOp(_ context.Context, id string) error {
+	s.ops.mu.Lock()
+	defer s.ops.mu.Unlock()
+	delete(s.ops.ops, id)
+	return nil
+}
+
+func TestSendMessageAssistantOfflineReleasesClientOpAndRetriesSameID(t *testing.T) {
+	const opID = "11111111-1111-4111-8111-111111111111"
+	h := newTestHub(t)
+	store := &sendClientOpStore{sentStore: newSentStore(), ops: &clientOpsStore{ops: map[string]db.ClientOp{}}}
+	h.store = store
+	var typed atomic.Int32
+	pipeNode(t, h, "box", func(context.Context) error { typed.Add(1); return nil })
+	editSessions(h.byID["box"], func([]proto.Session) []proto.Session {
+		return []proto.Session{{SessionID: "s1", Assistant: true}}
+	})
+
+	routes := h.routes()
+	post := func() (int, map[string]any) {
+		r := httptest.NewRequest(http.MethodPost, sendPath, strings.NewReader(`{"text":"hello","client_msg_id":"`+opID+`"}`))
+		r.RemoteAddr = "127.0.0.1:1"
+		r.Header.Set("Authorization", "Bearer "+h.cfg.Token)
+		r.Header.Set("X-Persona-Op-Id", opID)
+		w := httptest.NewRecorder()
+		routes.ServeHTTP(w, r)
+		var out map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out
+	}
+
+	status, body := post()
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("first status = %d, body = %+v", status, body)
+	}
+	if body["code"] != assistantwire.CodeAssistantOffline || body["delivered"] != "none" || body["retryable"] != true {
+		t.Fatalf("first body = %+v, want assistant_offline with delivered=none and retryable=true", body)
+	}
+	if typed.Load() != 0 {
+		t.Fatalf("typed = %d while assistant offline, want 0", typed.Load())
+	}
+	if op, err := store.ClientOp(context.Background(), opID); err != nil || op != nil {
+		t.Fatalf("client op was kept after assistant_offline: op=%+v err=%v", op, err)
+	}
+
+	// Bring the assistant manager online and retry with the exact same X-Persona-Op-Id.
+	h.bus.idents = &memIdents{}
+	busMux := http.NewServeMux()
+	h.busRoutes(busMux)
+	srv := httptest.NewServer(busMux)
+	t.Cleanup(srv.Close)
+	token, err := h.createBusToken(context.Background(), assistantwire.AssistantID, "Test manager")
+	if err != nil {
+		t.Fatal(err)
+	}
+	connectGuardManagerWith(t, srv.URL, assistantwire.AssistantID, token, func(method string, raw json.RawMessage) (any, error) {
+		if method != assistantwire.MethodSendParams {
+			return map[string]any{}, nil
+		}
+		var params assistantwire.SendParams
+		_ = json.Unmarshal(raw, &params)
+		return map[string]any{"params": params.Params}, nil
+	})
+
+	status, body = post()
+	if status != http.StatusOK || typed.Load() != 1 {
+		t.Fatalf("retry after manager online: status=%d body=%+v typed=%d", status, body, typed.Load())
+	}
+	// Repeating the same op id after success replays the done receipt without typing a second time.
+	status, body = post()
+	if status != http.StatusOK || typed.Load() != 1 {
+		t.Fatalf("idempotent replay: status=%d body=%+v typed=%d", status, body, typed.Load())
 	}
 }

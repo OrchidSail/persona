@@ -259,6 +259,43 @@ class HttpMessageTransportTest {
                     repeat(2) { withTimeout(5000) { requests.receive() } }
                     assertEquals(2, started.size)
                     assertEquals(started.first(), started.last())
+
+                    // Unknown op receipts check the transcript so already-landed messages converge to Shown,
+                    // while still reporting a finalized unknown receipt (including null-result hub recovery).
+                    val unknownBody = Base64.getEncoder().encodeToString("""{"error":"lost","code":"rpc_error","delivered":"unknown"}""".toByteArray())
+                    responses.send(MockResponse().setBody("""{"state":"unknown","result":{"status":502,"body":"$unknownBody"}}"""))
+                    responses.send(MockResponse().setBody("""{"items":[{"id":"echo","role":"user","kind":"text","text":"hello","client_msg_id":"stable-id"}]}"""))
+                    assertEquals(MessageEvidence.Shown, transport.reconcile(message, 0))
+                    repeat(2) { withTimeout(5000) { requests.receive() } }
+
+                    responses.send(MockResponse().setBody("""{"state":"unknown","result":{"status":502,"body":"$unknownBody"}}"""))
+                    responses.send(MockResponse().setBody("""{"items":[]}"""))
+                    assertEquals(
+                        MessageEvidence.Receipt(MessageTransportResult.HubError("rpc_error", "unknown", "lost", false)),
+                        transport.reconcile(message, 0),
+                    )
+                    repeat(2) { withTimeout(5000) { requests.receive() } }
+
+                    // RecoverClientOps leaves state=unknown with no saved result.
+                    responses.send(MockResponse().setBody("""{"state":"unknown"}"""))
+                    responses.send(MockResponse().setBody("""{"items":[]}"""))
+                    assertEquals(MessageEvidence.Receipt(MessageTransportResult.NoReceipt), transport.reconcile(message, 0))
+                    repeat(2) { withTimeout(5000) { requests.receive() } }
+
+                    responses.send(MockResponse().setBody("""{"state":"unknown"}"""))
+                    responses.send(MockResponse().setBody("""{"items":[{"id":"echo","role":"user","kind":"text","text":"hello","client_msg_id":"stable-id"}]}"""))
+                    assertEquals(MessageEvidence.Shown, transport.reconcile(message, 0))
+                    repeat(2) { withTimeout(5000) { requests.receive() } }
+
+                    // Older hubs saved 503 assistant_offline without delivered="none": definite non-delivery, no items fetch needed.
+                    val offlineBody = Base64.getEncoder().encodeToString("""{"error":"offline","code":"assistant_offline"}""".toByteArray())
+                    responses.send(MockResponse().setBody("""{"state":"unknown","result":{"status":503,"body":"$offlineBody"}}"""))
+                    assertEquals(
+                        MessageEvidence.Receipt(MessageTransportResult.HubError("assistant_offline", null, "offline", false)),
+                        transport.reconcile(message, 0),
+                    )
+                    withTimeout(5000) { requests.receive() }
+
                     responses.send(MockResponse().setResponseCode(401).setBody("""{"error":"expired","code":"invalid_token"}"""))
                     assertTrue(transport.send(message) is MessageTransportResult.HubError)
                     assertTrue(expired.get())

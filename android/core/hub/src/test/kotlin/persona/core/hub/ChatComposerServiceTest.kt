@@ -140,6 +140,24 @@ class ChatComposerServiceTest {
         assertNull(service.deliveries.value["kept"])
     }
 
+    @Test fun assistantOfflineWithoutDeliveredFieldRecordsRefusedInsteadOfUnknown() = runBlocking {
+        val scope = HubScope("test-hub", "generation")
+        val session = SessionKey("machine", "session")
+        val transport = object : MessageTransport {
+            override val readyToSend = MutableStateFlow(true)
+            override val supportsClientOps = true
+            override suspend fun send(request: MessageRequest): MessageTransportResult = error("Unexpected delegate send")
+        }
+        val service = HttpChatComposerService(scope, transport, request = { _, _, _ ->
+            Response.Builder().request(Request.Builder().url("https://example.com/").build())
+                .protocol(Protocol.HTTP_1_1).code(503).message("Service Unavailable")
+                .body("""{"error":"assistant offline","code":"assistant_offline"}""".toResponseBody()).build()
+        })
+        val result = service.send(MessageRequest(scope, session, "hello", "op-offline"))
+        assertEquals(MessageTransportResult.HubError("assistant_offline", null, "assistant offline", true), result)
+        assertEquals(DeliveryState.Refused, service.deliveries.value["op-offline"]?.state)
+    }
+
     @Test fun clearAndSendGoesUnderANewOperationIdTheHubHasNotAnswered() = runBlocking {
         val scope = HubScope("test-hub", "generation")
         val session = SessionKey("machine", "session")

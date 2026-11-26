@@ -3,6 +3,7 @@ package persona.feature.chat
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import persona.core.contracts.api.ComposerDelivery
 import persona.core.contracts.api.DeliveryState
 import persona.core.contracts.api.MessageSender
 import persona.core.contracts.api.OutboxMessage
@@ -24,6 +25,21 @@ internal val DeliveryState.pendingStatus: PendingStatus?
         DeliveryState.Rejected, DeliveryState.Refused -> PendingStatus.Refused
         DeliveryState.Sent, DeliveryState.Held -> null
     }
+
+/**
+ * Effective display state for an outbox bubble. A live composer retry overlay (`Sending` / `Sent` / `Held`)
+ * may lead a refused row, whereas a stale `Unknown` overlay from an earlier attempt must never override an
+ * authoritative `Refused` / `Rejected` outbox state across Glass, Brief, or Board.
+ */
+internal fun effectiveOutboxDeliveryState(outboxState: DeliveryState, composerDelivery: ComposerDelivery?): DeliveryState {
+    val overlay = composerDelivery?.state
+    return if (outboxState in setOf(DeliveryState.Refused, DeliveryState.Rejected) &&
+        overlay != null && overlay in setOf(DeliveryState.Sending, DeliveryState.Sent, DeliveryState.Held)) {
+        overlay
+    } else {
+        outboxState
+    }
+}
 
 /** [RetryNow]: one still on its way (queued, waiting for the network) tries at once (iOS's Retry Now on a waiting message). */
 internal enum class DeliveryAction { Cancel, Edit, Retry, RetryNow, Delete, Discard, ConfirmDelivered, ConfirmNotDelivered }

@@ -188,3 +188,21 @@ func TestClientOpsCleanupRetention(t *testing.T) {
 		t.Fatal("client operations were not cleaned up at startup")
 	}
 }
+
+func TestClientOpRetryMessageAssistantOffline(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		want bool
+	}{
+		{`{"code":"assistant_offline","delivered":"none","retryable":true}`, true},
+		{`{"code":"assistant_offline"}`, true},
+		{`{"code":"assistant_in_doubt","delivered":"unknown"}`, false},
+		{`{"delivered":"unknown"}`, false},
+		{`{"code":"input_draft","delivered":"none"}`, false},
+		{`{}`, false},
+	} {
+		if got := clientOpRetry("message", []byte(tc.body)); got != tc.want {
+			t.Errorf("clientOpRetry(message, %s) = %t, want %t", tc.body, got, tc.want)
+		}
+	}
+}
