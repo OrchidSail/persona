@@ -41,11 +41,14 @@ import (
 // ACP instruction fitting to the mounted device tools and supervision role (#16052) adds 244 B (270,873 B).
 // Antigravity settled-turn recovery across delayed shifted-index exports and structured agy_turn_end turn_duration items (#15619) add 1,169 B (272,042 B).
 // Antigravity non-rewind negative cache for summary_behind GetCascadeTrajectory checks + summarizeTranscript prefix summary reuse (#13086) add 872 B (272,914 B).
-// Antigravity silent /compact handling, /compact notice mapping, and truncated phantom /compact tail cleanup (#14686) add 383 B (273,297 B).
-// Personal US hub baseline (open PRs + US synergy + #15782 + #14755 compact fixes) totals 276,510 B.
+// Antigravity Desktop session.start (ConversationService/CreateConversation), model discovery, and lifecycle controls (#15994) add 4,922 B (277,836 B).
+// Antigravity Assistant run_command command-gate routing, unclipped command & per-call Cwd forwarding, fail-closed reconnect, tracks Assistant detection, and Assistant allow_always bypass guard (#16202) add 511 B (278,347 B).
+// After preserving Antigravity modes (#16300), the packages measured 278,334 B. Filtering botmux marker
+// lines before shortening runtime previews adds 549 B (#16310).
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 276_510
+	// Personal US hub baseline (+open PRs + US synergy + #14755 + upstream #16220/#16300/#16365) totals 282,466 B.
+	const budget = 282_466
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {
