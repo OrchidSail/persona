@@ -140,13 +140,13 @@ type runtimeConn struct {
 	// drop ends the connection (RuntimeHost.serve's); nil in tests that make connections by hand.
 	drop     func()
 	hello    runtimeHello
-	ready          bool            // runtime.hello arrived
-	sessions       []proto.Session // its last runtime.sessions
+	ready    bool            // runtime.hello arrived
+	sessions []proto.Session // its last runtime.sessions
 	// sessionsListed is true once this connection has pushed its first runtime.sessions list.
 	// Before that arrives (for example while a freshly started runtime scans disk), absence from
 	// runtimeRegistry.owner/known cannot prove a runtime session is gone.
 	sessionsListed bool
-	watched  map[string]bool // sessions this connection was asked to watch, including an attempt still pending
+	watched        map[string]bool // sessions this connection was asked to watch, including an attempt still pending
 	// watchTokens identifies the current attempt for each watched session. The counter is per connection and is never
 	// reset while it can have an RPC outstanding, so a late error cannot clear a newer attempt or a later hub watch.
 	watchTokens    map[string]uint64
