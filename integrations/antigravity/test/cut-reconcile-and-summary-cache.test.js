@@ -173,22 +173,24 @@ async function makeFixture(t, {
   return { home, transcript, db, upsertSummary, node, runtime, calls, trajectoryCalls, refreshList, setNative }
 }
 
+const textItems = (page) => page.items.filter((i) => i.kind === 'text')
+
 test('summary_behind idle session caches non-rewind check and stops GetCascadeTrajectory storm', async (t) => {
   const { node, trajectoryCalls, refreshList } = await makeFixture(t, {
     summary: { status: 'CASCADE_RUN_STATUS_IDLE', step_count: 2, last_modified_time: '2026-01-01T00:00:10Z' },
   })
 
   const first = await node.peer.call('session.items', { session_id: SESSION })
-  assert.deepEqual(first.items.map((i) => i.text), ['First question', 'First answer', 'Second question', 'Second answer'])
+  assert.deepEqual(textItems(first).map((i) => i.text), ['First question', 'First answer', 'Second question', 'Second answer'])
   assert.equal(trajectoryCalls(), 1, 'initial summary_behind check verifies native trajectory once')
 
   for (let i = 0; i < 5; i++) {
     const page = await node.peer.call('session.items', { session_id: SESSION })
     assert.equal(page.to_seq, 4)
-    assert.equal(page.items.length, 4)
+    assert.equal(textItems(page).length, 4)
   }
   await node.peer.call('session.watch', { session_id: SESSION })
-  await node.peer.call('session.item', { session_id: SESSION, item_id: first.items[3].id })
+  await node.peer.call('session.item', { session_id: SESSION, item_id: textItems(first)[3].id })
   await refreshList('Refresh 1')
   await refreshList('Refresh 2')
   const row = await refreshList('Refresh 3')
@@ -206,7 +208,7 @@ test('running sessions skip GetCascadeTrajectory under both nativeWorking and ha
 
   for (let i = 0; i < 3; i++) {
     const page = await node.peer.call('session.items', { session_id: SESSION })
-    assert.equal(page.items.length, 4)
+    assert.equal(textItems(page).length, 4)
   }
   await node.peer.call('session.watch', { session_id: SESSION })
   await refreshList('Running native')
@@ -250,7 +252,7 @@ test('real rewind after negative-cached summary_behind invalidates cache and tru
 
   // Warm negative cache in summary_behind state
   const initial = await node.peer.call('session.items', { session_id: SESSION })
-  assert.equal(initial.items.length, 4)
+  assert.equal(textItems(initial).length, 4)
   await node.peer.call('session.items', { session_id: SESSION })
   assert.equal(trajectoryCalls(), 1)
 
@@ -259,7 +261,7 @@ test('real rewind after negative-cached summary_behind invalidates cache and tru
   upsertSummary({ status: 'CASCADE_RUN_STATUS_IDLE', step_count: 2, last_modified_time: '2026-01-01T00:01:00Z' })
 
   const cutPage = await node.peer.call('session.items', { session_id: SESSION })
-  assert.deepEqual(cutPage.items.map((i) => i.text), ['First question', 'First answer'])
+  assert.deepEqual(textItems(cutPage).map((i) => i.text), ['First question', 'First answer'])
   assert.ok(cutPage.history.endsWith(':cut:2'), 'real rewind must apply cut immediately')
   assert.equal(trajectoryCalls(), 2, 'changed nativeCutState must invalidate negative cache')
 
@@ -275,7 +277,7 @@ test('real rewind after negative-cached summary_behind invalidates cache and tru
   setNative({ trajectory: { cascadeId: RAW, steps: [...baseRecords.slice(0, 2), branchReplacement].map(toNative) } })
   upsertSummary({ status: 'CASCADE_RUN_STATUS_IDLE', step_count: 1, last_modified_time: '2026-01-02T00:00:05Z' })
   const branched = await node.peer.call('session.items', { session_id: SESSION })
-  assert.deepEqual(branched.items.map((i) => i.text), ['First question', 'First answer', 'Branched question'])
+  assert.deepEqual(textItems(branched).map((i) => i.text), ['First question', 'First answer', 'Branched question'])
   const callsAfterBranch = trajectoryCalls()
   assert.ok(callsAfterBranch >= 3, 'branch change must invalidate cache')
 
@@ -283,7 +285,7 @@ test('real rewind after negative-cached summary_behind invalidates cache and tru
   setNative({ trajectory: { cascadeId: RAW, steps: baseRecords.slice(0, 1).map(toNative) } })
   upsertSummary({ status: 'CASCADE_RUN_STATUS_IDLE', step_count: 1, last_modified_time: '2026-01-02T00:00:20Z' })
   const cutAgain = await node.peer.call('session.items', { session_id: SESSION })
-  assert.deepEqual(cutAgain.items.map((i) => i.text), ['First question'])
+  assert.deepEqual(textItems(cutAgain).map((i) => i.text), ['First question'])
   assert.ok(cutAgain.history.endsWith(':cut:1'), 'last_modified_time change must invalidate negative cache and apply cut')
   assert.equal(trajectoryCalls(), callsAfterBranch + 1)
 })
@@ -297,7 +299,7 @@ test('transient GetCascadeTrajectory errors back off and still allow immediate r
 
   for (let i = 0; i < 4; i++) {
     const page = await node.peer.call('session.items', { session_id: SESSION })
-    assert.equal(page.items.length, 4)
+    assert.equal(textItems(page).length, 4)
   }
   assert.equal(trajectoryCalls(), 1, 'failed GetCascadeTrajectory must back off instead of retrying every request')
 
@@ -305,7 +307,7 @@ test('transient GetCascadeTrajectory errors back off and still allow immediate r
   setNative({ failTrajectory: false, trajectory: { cascadeId: RAW, steps: baseRecords.slice(0, 2).map(toNative) } })
   upsertSummary({ status: 'CASCADE_RUN_STATUS_IDLE', step_count: 2, last_modified_time: '2026-01-01T00:02:00Z' })
   const rewound = await node.peer.call('session.items', { session_id: SESSION })
-  assert.deepEqual(rewound.items.map((i) => i.text), ['First question', 'First answer'])
+  assert.deepEqual(textItems(rewound).map((i) => i.text), ['First question', 'First answer'])
   assert.ok(rewound.history.endsWith(':cut:2'))
   assert.equal(trajectoryCalls(), 2)
 })

@@ -38,10 +38,14 @@ import (
 // Antigravity launchers.check honoring explicit params.model (#15905) adds 1 B (266,213 B).
 // Antigravity withoutStaleWorking coverage for send policy, fork, rewind, modes, and native error reads (#15924) adds 48 B (266,261 B).
 // Runtime package lifecycle support for preserving tools across upgrades (#16016) adds 4,368 B (270,629 B).
-// Antigravity empty-dir ACP launch (#16052) and non-rewind negative cache for summary_behind GetCascadeTrajectory checks + summarizeTranscript prefix summary reuse (#13086) add 1,125 B (271,754 B).
+// ACP instruction fitting to the mounted device tools and supervision role (#16052) adds 244 B (270,873 B).
+// Antigravity settled-turn recovery across delayed shifted-index exports and structured agy_turn_end turn_duration items (#15619) add 1,169 B (272,042 B).
+// Antigravity non-rewind negative cache for summary_behind GetCascadeTrajectory checks + summarizeTranscript prefix summary reuse (#13086) add 872 B (272,914 B).
+// Antigravity silent /compact handling, /compact notice mapping, and truncated phantom /compact tail cleanup (#14686) add 383 B (273,297 B).
+// Personal US hub baseline (open PRs + US synergy + #15782 + #14755 compact fixes) totals 276,510 B.
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 275_154
+	const budget = 276_510
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {

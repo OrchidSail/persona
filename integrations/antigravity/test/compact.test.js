@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { startFakeNode, until } from '../../runtime-sdk/testing/fake-node.js'
+import { cleanUserText, stepsToItems } from '../lib/map.js'
 import { createAgyRuntime } from '../lib/runtime.js'
 
 const RAW = '11111111-2222-4333-8444-555555555555'
@@ -100,4 +101,64 @@ test('a genuine ACP error during /compact is still published as turn_error', asy
   await node.peer.call('session.send', { session_id: SESSION, text: '/compact', assistant: true })
   await until('compact error published', () => idle() && row()?.turn_error === 'Compaction failed upstream')
   assert.equal(calls().filter((call) => call.method === 'session/prompt').length, 1)
+})
+
+test('bare /compact USER_INPUT maps to system notice instead of user bubble and preserves lastText and client_msg_id', () => {
+  const steps = [
+    { step_index: 0, type: 'USER_INPUT', source: 'USER_EXPLICIT', status: 'DONE', created_at: AT, content: '<USER_REQUEST>\nHello\n</USER_REQUEST>' },
+    { step_index: 1, type: 'PLANNER_RESPONSE', source: 'MODEL', status: 'DONE', created_at: AT, content: 'Previous reply' },
+    { step_index: 2, type: 'USER_INPUT', source: 'USER_EXPLICIT', status: 'DONE', created_at: AT, content: '<USER_REQUEST>\n/compact\n</USER_REQUEST>' },
+    { step_index: 3, type: 'CHECKPOINT', source: 'SYSTEM', status: 'DONE', created_at: AT, content: '# Resuming from a compaction' },
+    { step_index: 4, type: 'USER_INPUT', source: 'USER_EXPLICIT', status: 'DONE', created_at: AT, content: '<USER_REQUEST>\nNext message\n</USER_REQUEST>' },
+  ]
+  const ordinals = []
+  const full = stepsToItems(steps, {
+    full: false,
+    clientMsgIdFor: (_idx, text, ord) => {
+      ordinals.push([ord, text])
+      if (ord === 2) return 'manual-compact-1'
+      if (ord === 3) return 'next-msg-id'
+      return undefined
+    },
+  })
+  assert.equal(full.items.some((item) => item.role === 'user' && item.text === '/compact'), false)
+  const notices = full.items.filter((item) => item.kind === 'notice')
+  assert.deepEqual(notices.map((n) => ({ role: n.role, text: n.text, client_msg_id: n.client_msg_id })), [
+    { role: 'system', text: '压缩上下文', client_msg_id: 'manual-compact-1' },
+    { role: 'system', text: '上下文已压缩', client_msg_id: undefined },
+  ])
+  assert.deepEqual(ordinals, [[1, 'Hello'], [2, '/compact'], [3, 'Next message']])
+  assert.equal(full.items.at(-1).client_msg_id, 'next-msg-id')
+
+  const fullBeforeNext = stepsToItems(steps.slice(0, 4), { full: false })
+  const summaryBeforeNext = stepsToItems(steps.slice(0, 4), { full: false, summaryOnly: true })
+  assert.equal(fullBeforeNext.lastText, 'Previous reply')
+  assert.equal(summaryBeforeNext.lastText, 'Previous reply')
+})
+
+test('live and exported /compact with USER_INPUT never emits a /compact user bubble', async (t) => {
+  const { node, row, items, idle } = await fixture(t, [{ export: true, checkpoint: true }])
+  await node.peer.call('session.send', { session_id: SESSION, text: '/compact', assistant: true })
+  await until('compaction settled', () => idle() && row()?.context_tokens === undefined)
+  const page = await items()
+  assert.equal(page.items.some((item) => item.role === 'user' && item.text === '/compact'), false)
+  const notices = page.items.filter((item) => item.kind === 'notice').map((item) => item.text)
+  assert.deepEqual(notices, ['压缩上下文', '上下文已压缩'])
+})
+
+test('cleanUserText strips phantom trailing /compact appended by agy CLI even when middle text is truncated', () => {
+  const fullMention = '<USER_REQUEST>\nFix agy /compact handling in PR #14755.\nStatus: CLEAN\n/compact\n</USER_REQUEST>'
+  assert.equal(cleanUserText(fullMention), 'Fix agy /compact handling in PR #14755.\nStatus: CLEAN')
+
+  const truncatedMention = '<USER_REQUEST>\nContent of persona-context:///snapshot.txt:\n<persona-context>\nsnapshot\n</persona-context>\nHeader\n<truncated 12684 bytes>\nStatus: CLEAN\n/compact\n</USER_REQUEST>'
+  assert.equal(cleanUserText(truncatedMention), 'Header\n<truncated 12684 bytes>\nStatus: CLEAN')
+
+  const attachedImg = '<USER_REQUEST>\nFix /compact\n<attached_images>\n/tmp/a.png\n</attached_images>/compact\n</USER_REQUEST>'
+  assert.equal(cleanUserText(attachedImg), 'Fix /compact\n<attached_images>\n/tmp/a.png\n</attached_images>')
+
+  const bareCompact = '<USER_REQUEST>\n/compact\n</USER_REQUEST>'
+  assert.equal(cleanUserText(bareCompact), '/compact')
+
+  const genuineEnding = '<USER_REQUEST>\nPlease run this next\n/compact\n</USER_REQUEST>'
+  assert.equal(cleanUserText(genuineEnding), 'Please run this next\n/compact')
 })
