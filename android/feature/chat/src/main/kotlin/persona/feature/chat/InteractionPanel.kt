@@ -11,6 +11,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.testTag
@@ -24,6 +25,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.constrainHeight
+import androidx.compose.ui.unit.constrainWidth
 import androidx.compose.ui.unit.dp
 import persona.core.contracts.Session
 import persona.core.domain.sort.canAnswerInteraction
@@ -117,11 +120,16 @@ internal fun InteractionPanel(
         }
     }
     DecisionStack(requests.size, maxHeight, modifier, keyboard = keyboard, keys = ids, counted = counted) { scrolling ->
+        val cardMaxHeight = if (scrolling && requests.size > 1) {
+            (maxHeight - Tokens.Space.section - Tokens.Space.l).coerceAtLeast(Tokens.MinTouch.android)
+        } else {
+            maxHeight
+        }
         for (request in PendingStack.order(requests, scrolling, first)) key(request.id) {
             val folded = folds.isFolded(request.id)
             val headline = request.cardTitle()
             // A card with its line is at most the stack's height; its form scrolls inside it.
-            Column(Modifier.heightIn(max = maxHeight).testTag("pending-card-${request.id}"), verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs)) {
+            Column(Modifier.heightIn(max = cardMaxHeight).testTag("pending-card-${request.id}"), verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs)) {
                 labels[request.id]?.let { StackLabelLine(it) }
                 DecisionDock(
                     kind = when (request.kind) {
@@ -403,10 +411,13 @@ internal fun InteractionForm(
         }
     }
     val content: @Composable () -> Unit = {
+        val sourceLabel = interaction.requestSourceLabel()
+        val hasStatus = uncertain || (!readOnly && busy) || refusal != null
+        val hasExpiryLine = readOnly || (full && !uncertain && !busy)
         if (interaction.kind == "question") DelegateNotes(interaction, recommendationOnOptions)
         // In the conversation's dock the session is the page itself and the countdown is in the dock's header.
         if (full) Text(interactionSource(interaction, machine), style = PersonaTheme.type.caption, color = PersonaTheme.palette.ink2)
-        interaction.requestSourceLabel()?.let { Text(it.text(), style = PersonaTheme.type.caption, color = PersonaTheme.palette.ink2) }
+        sourceLabel?.let { Text(it.text(), style = PersonaTheme.type.caption, color = PersonaTheme.palette.ink2) }
         blockedReason?.let { Text(it, style = PersonaTheme.type.callout, color = PersonaTheme.palette.cautionText) }
         // Always present (empty and sizeless when idle) so a screen reader announces "Sending" / "Delivery not confirmed" after an answer;
         // the countdown stays outside, or it would be read out every minute.
@@ -416,11 +427,11 @@ internal fun InteractionForm(
                 style = PersonaTheme.type.callout, color = PersonaTheme.palette.ink2)
             if (refusal != null) Text(refusal, style = PersonaTheme.type.callout, color = PersonaTheme.palette.cautionText)
         }
-        if (readOnly || (full && !uncertain && !busy)) Text(
+        if (hasExpiryLine) Text(
             if (readOnly) stringResource(R.string.chat_request_read_only)
             else RequestExpiry.label(interaction.expiresAt, now)?.text() ?: stringResource(R.string.chat_request_waiting),
             style = PersonaTheme.type.callout, color = PersonaTheme.palette.ink2)
-        Spacer(Modifier.height(Tokens.Space.s))
+        if (full || sourceLabel != null || blockedReason != null || hasStatus || hasExpiryLine) Spacer(Modifier.height(Tokens.Space.s))
         when (interaction.kind) {
             "permission" -> if (interaction.isSecretRun) SecretRunSummary(interaction)
             else if (command != null) {
@@ -525,22 +536,117 @@ internal fun InteractionForm(
             }
         }
     }
-    // Large accessibility text scrolls together with vertically arranged actions.
+    // Large accessibility text — and very short viewports where body + full action buttons cannot both stay unclipped —
+    // scroll body and actions together in one viewport instead of slicing buttons below their touch height.
     val largeText = LocalDensity.current.fontScale >= 1.5f
-    Column(if (full) Modifier.fillMaxHeight() else Modifier) {
-        Column(Modifier.weight(1f, fill = full).verticalScroll(scroll)) {
-            content()
-            if (largeText && !readOnly) actions()
+    val hasFooter = !readOnly && when (interaction.kind) {
+        "permission", "plan", "elicitation" -> true
+        "question" -> question != null && (questions.size > 1 || question.multiSelect || !draft.other[question.question].isNullOrBlank())
+        "screen" -> secret || commandPair != null || options.isNotEmpty() || interaction.dialog?.multi == true
+        else -> false
+    }
+    val scrollableOptionActions = interaction.kind == "screen" && !secret && commandPair == null && options.isNotEmpty()
+    val tallFooter = when (interaction.kind) {
+        "permission" -> when {
+            interaction.isSecretRun -> true
+            interaction.isSecretHandoff -> !interaction.alwaysLabel.isNullOrBlank()
+            command != null -> false
+            interaction.hasFieldsForm -> true
+            else -> interaction.offersAlways || interaction.ownerApprovalPhrase != null
         }
-        if (!largeText && !readOnly) {
-            JDivider()
-            // Bound long option lists so the request body remains reachable on compact screens.
-            BoxWithConstraints {
-                Column(Modifier.heightIn(max = maxHeight * 0.6f).verticalScroll(rememberScrollState())) { actions() }
+        "plan", "elicitation" -> true
+        else -> false
+    }
+    val minBodyRoom = if (scrollableOptionActions) Tokens.Size.box80 else Tokens.MinTouch.android
+    val minPinnedHeight = when {
+        scrollableOptionActions -> Tokens.Size.box80 + Tokens.Size.box64
+        tallFooter -> Tokens.Size.box150 + Tokens.MinTouch.android
+        else -> Tokens.MinTouch.android * 2 + Tokens.Space.l
+    }
+    val latestActions by rememberUpdatedState(actions)
+    val movableActions = remember(interaction.id) { movableContentOf { latestActions() } }
+    BoxWithConstraints(if (full) Modifier.fillMaxHeight() else Modifier) {
+        val unifiedScroll = largeText || (hasFooter && constraints.hasBoundedHeight && maxHeight < minPinnedHeight)
+        if (!hasFooter || unifiedScroll) {
+            Column(Modifier.fillMaxWidth().then(if (full) Modifier.fillMaxHeight() else Modifier).verticalScroll(scroll)) {
+                Column(Modifier.fillMaxWidth().testTag("interaction-card-body")) { content() }
+                if (hasFooter) {
+                    Spacer(Modifier.height(Tokens.Space.s))
+                    JDivider()
+                    Spacer(Modifier.height(Tokens.Space.s))
+                    Column(Modifier.fillMaxWidth().testTag("interaction-card-actions")) { movableActions() }
+                }
             }
+        } else {
+            val footerScroll = rememberScrollState()
+            InteractionSplitLayout(
+                full = full,
+                minBodyHeight = minBodyRoom,
+                body = {
+                    Column(Modifier.fillMaxWidth().verticalScroll(scroll).testTag("interaction-card-body")) {
+                        content()
+                    }
+                },
+                footer = {
+                    Column(Modifier.fillMaxWidth().testTag("interaction-card-actions")) {
+                        Spacer(Modifier.height(Tokens.Space.xs))
+                        JDivider()
+                        Spacer(Modifier.height(Tokens.Space.s))
+                        Column(Modifier.fillMaxWidth().verticalScroll(footerScroll)) {
+                            movableActions()
+                        }
+                    }
+                },
+            )
         }
     }
     if (terminalHelp) TerminalHelpDialog { terminalHelp = false }
+}
+
+/**
+ * Splits a pending card's form into a scrollable [body] above a pinned [footer] within its bounded height: measures
+ * [footer] first within at most `maxHeight - minBodyHeight` so primary action buttons stay full-height and unclipped,
+ * then gives [body] all remaining height so body text never overlaps or collides with the action bar.
+ */
+@Composable
+private fun InteractionSplitLayout(
+    full: Boolean,
+    minBodyHeight: Dp,
+    body: @Composable () -> Unit,
+    footer: @Composable () -> Unit,
+) {
+    Layout(content = {
+        Box { body() }
+        Box { footer() }
+    }) { measurables, constraints ->
+        val loose = constraints.copy(minWidth = 0, minHeight = 0)
+        val bodyMeasurable = measurables[0]
+        val footerMeasurable = measurables[1]
+        val minBodyPx = minBodyHeight.roundToPx()
+        val footerMaxPx = if (constraints.hasBoundedHeight) {
+            (constraints.maxHeight - minBodyPx).coerceAtLeast(0)
+        } else {
+            constraints.maxHeight
+        }
+        val footerPlaceable = footerMeasurable.measure(loose.copy(maxHeight = footerMaxPx))
+        val bodyMaxPx = if (constraints.hasBoundedHeight) {
+            (constraints.maxHeight - footerPlaceable.height).coerceAtLeast(0)
+        } else {
+            constraints.maxHeight
+        }
+        val bodyConstraints = if (full && constraints.hasBoundedHeight) {
+            loose.copy(minHeight = bodyMaxPx, maxHeight = bodyMaxPx)
+        } else {
+            loose.copy(maxHeight = bodyMaxPx)
+        }
+        val bodyPlaceable = bodyMeasurable.measure(bodyConstraints)
+        val width = constraints.constrainWidth(maxOf(bodyPlaceable.width, footerPlaceable.width))
+        val height = constraints.constrainHeight(bodyPlaceable.height + footerPlaceable.height)
+        layout(width, height) {
+            bodyPlaceable.placeRelative(0, 0)
+            footerPlaceable.placeRelative(0, bodyPlaceable.height)
+        }
+    }
 }
 
 /** Claude Code's command prompt read off its terminal (#5265), with the same field and answer rules as iOS and web. */

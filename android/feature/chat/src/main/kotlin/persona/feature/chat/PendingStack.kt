@@ -24,6 +24,13 @@ internal object PendingStack {
     /** The share of the page the cards may take before they scroll (iOS `PendingCards.share`). */
     const val SHARE = 0.5f
 
+    /**
+     * Shortest resized height for a lone unfolded pending card on Android: fits the grabber, two-row header with
+     * 48dp touch controls (even with a 2-line wrapped tool headline on 360dp screens), readable request body, divider,
+     * and full unclipped 48dp action buttons pinned at the bottom.
+     */
+    val MINIMUM_RESIZE_HEIGHT: Dp = Tokens.Size.box280
+
     /** Permissions first (they hold a tool call back), then everything newest first (iOS `urgentFirst`). */
     fun urgentFirst(cards: List<Interaction>): List<Interaction> = cards.withIndex().sortedWith(
         compareBy<IndexedValue<Interaction>> { if (it.value.kind == "permission") 0 else 1 }
@@ -71,7 +78,7 @@ internal object PendingStack {
         val tallest = if (other == null) room else room - if (other > Tokens.Space.flush) other else room / 2f
         val top = max(Tokens.MinTouch.android, tallest)
         if (tallest <= Tokens.MinTouch.android) return null
-        val bottom = min(Tokens.Size.box150, top)
+        val bottom = min(MINIMUM_RESIZE_HEIGHT, top)
         return bottom..top
     }
 }

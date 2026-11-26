@@ -209,6 +209,7 @@ fun Fields(values: List<String>, modifier: Modifier = Modifier) {
  * (board). With [onCollapsedChange] a tap anywhere on its header folds it to that line, [preview] after the headline, and
  * opens it again; the caret is the control TalkBack reads.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DecisionDock(
     kind: DecisionKind,
@@ -233,23 +234,30 @@ fun DecisionDock(
     val style = PersonaTheme.style
     val fold by rememberUpdatedState(onCollapsedChange?.let { change -> { change(!collapsed) } })
     val folds = if (onCollapsedChange == null) Modifier else Modifier.pointerInput(Unit) { detectTapGestures { fold?.invoke() } }
+    val kindIcon: @Composable () -> Unit = {
+        when (style) {
+            AppStyle.Glass -> JIcon(kind.icon, null, size = Tokens.Size.badge, tint = palette.needsYou.dot, selected = true)
+            AppStyle.Brief -> JIcon(kind.icon, null, size = Tokens.Size.badge, tint = palette.ink2)
+            AppStyle.Board -> JIcon(PhIcons.Hand, null, size = Tokens.Size.badge, tint = palette.needsYou.dot, selected = true)
+        }
+    }
+    val actionButtons: @Composable () -> Unit = {
+        if (!collapsed) onExpand?.let { JIconButton(PhIcons.ArrowSquareOut, stringResource(R.string.designsystem_decision_open_full), it, tint = palette.ink2) }
+        onCollapsedChange?.let { change -> JIconButton(if (collapsed) PhIcons.CaretUp else PhIcons.CaretDown, stringResource(if (collapsed) R.string.designsystem_expand else R.string.designsystem_collapse), { change(!collapsed) }, tint = palette.ink2) }
+        headerActions?.invoke()
+    }
     val header: @Composable () -> Unit = {
-        Column(folds) {
-            if (!collapsed) kicker?.let { Text(it, style = type.caption, color = palette.ink2, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                when (style) {
-                    AppStyle.Glass -> JIcon(kind.icon, null, size = Tokens.Size.badge, tint = palette.needsYou.dot, selected = true)
-                    AppStyle.Brief -> JIcon(kind.icon, null, size = 18.dp, tint = palette.ink2)
-                    AppStyle.Board -> JIcon(PhIcons.Hand, null, size = 18.dp, tint = palette.needsYou.dot, selected = true)
-                }
-                Spacer(Modifier.width(8.dp.dense))
-                // Folded, what it asks follows the title on the same line and gives way first (iOS `previewText`).
-                val previewShown = collapsed && !preview.isNullOrBlank()
-                val ink = when (style) {
-                    AppStyle.Glass -> palette.needsYou.text
-                    AppStyle.Brief -> palette.ink2
-                    AppStyle.Board -> palette.ink
-                }
+        val ink = when (style) {
+            AppStyle.Glass -> palette.needsYou.text
+            AppStyle.Brief -> if (collapsed) palette.ink2 else palette.ink
+            AppStyle.Board -> palette.ink
+        }
+        if (collapsed) {
+            // Folded, what it asks follows the title on the same line and gives way first (iOS `previewText`).
+            val previewShown = !preview.isNullOrBlank()
+            Row(folds.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                kindIcon()
+                Spacer(Modifier.width(Tokens.Space.s))
                 Text(
                     if (!previewShown) AnnotatedString(headline) else buildAnnotatedString {
                         append(headline)
@@ -259,10 +267,61 @@ fun DecisionDock(
                     style = if (style == AppStyle.Brief) type.caption else type.label, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f).semantics { heading() }, color = ink,
                 )
-                expires?.let { Text(it, style = type.micro, color = palette.ink3, maxLines = 1); Spacer(Modifier.width(4.dp.dense)) }
-                if (!collapsed) onExpand?.let { JIconButton(PhIcons.ArrowSquareOut, stringResource(R.string.designsystem_decision_open_full), it, tint = palette.ink2) }
-                onCollapsedChange?.let { change -> JIconButton(if (collapsed) PhIcons.CaretUp else PhIcons.CaretDown, stringResource(if (collapsed) R.string.designsystem_expand else R.string.designsystem_collapse), { change(!collapsed) }, tint = palette.ink2) }
-                headerActions?.invoke()
+                expires?.let {
+                    Spacer(Modifier.width(Tokens.Space.xs))
+                    Text(it, style = type.micro, color = palette.ink3, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                actionButtons()
+            }
+        } else if (kicker != null) {
+            // Expanded card with a status kicker: keep kicker, expiry and icon controls on the top row so the
+            // tool/request headline spans the full card width below and wraps cleanly instead of ellipsizing mid-word.
+            Column(folds.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Tokens.Space.xxs)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    FlowRow(
+                        Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+                        verticalArrangement = Arrangement.spacedBy(Tokens.Space.xxs),
+                        itemVerticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(kicker, style = type.caption, color = palette.ink2, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        expires?.let { Text(it, style = type.micro, color = palette.ink3, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) { actionButtons() }
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                    Box(Modifier.padding(top = Tokens.Space.xxs)) { kindIcon() }
+                    Spacer(Modifier.width(Tokens.Space.s))
+                    Text(
+                        headline,
+                        style = type.label,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f).semantics { heading() },
+                        color = ink,
+                    )
+                }
+            }
+        } else {
+            // Expanded card without a kicker: keep expiry quiet below the headline so icon controls never squeeze
+            // the title, and allow multi-line wrapping for long titles or large accessibility text.
+            Row(folds.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.weight(1f), verticalAlignment = Alignment.Top) {
+                    Box(Modifier.padding(top = Tokens.Space.xxs)) { kindIcon() }
+                    Spacer(Modifier.width(Tokens.Space.s))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Tokens.Space.xxs)) {
+                        Text(
+                            headline,
+                            style = type.label,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.semantics { heading() },
+                            color = ink,
+                        )
+                        expires?.let { Text(it, style = type.micro, color = palette.ink3, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) { actionButtons() }
             }
         }
     }
@@ -317,7 +376,8 @@ fun DecisionStack(
     val palette = PersonaTheme.palette
     var contentHeight by remember { mutableIntStateOf(0) }
     val cap = with(LocalDensity.current) { maxHeight.roundToPx() }
-    val scrolling = keyboard || contentHeight > cap + 1
+    val overflows = contentHeight > cap + 1
+    val scrolling = keyboard || overflows
     val scroll = rememberScrollState()
     var seen by remember { mutableStateOf(keys.toSet()) }
     LaunchedEffect(keys) {
@@ -331,11 +391,19 @@ fun DecisionStack(
             Modifier.padding(horizontal = Tokens.Space.m + Tokens.Space.xs).semantics { heading() },
             style = PersonaTheme.type.caption, color = palette.ink2, maxLines = 1, overflow = TextOverflow.Ellipsis)
         // Fitting, the cards are measured whole and nothing scrolls or clips; past the cap, what scrolls out fades at the edges.
-        val area = if (scrolling) Modifier.edgeFade(palette.ink).verticalScroll(scroll)
-            else Modifier.wrapContentHeight(Alignment.Top, unbounded = true)
+        // Measure contentHeight without scroll padding so a lone card at maxHeight never enters a +16dp hysteresis loop, and
+        // skip edgeFade / vertical scroll padding when a keyboard-mode lone card already fits inside maxHeight.
+        val area = when {
+            overflows -> Modifier.edgeFade(palette.ink).verticalScroll(scroll)
+            scrolling -> Modifier.verticalScroll(scroll)
+            else -> Modifier.wrapContentHeight(Alignment.Top, unbounded = true)
+        }
         Box(Modifier.fillMaxWidth().weight(1f, fill = false).then(area)) {
-            Column(Modifier.fillMaxWidth().padding(vertical = if (scrolling) Tokens.Space.s else Tokens.Space.flush)
-                .onSizeChanged { contentHeight = it.height }, verticalArrangement = Arrangement.spacedBy(Tokens.Space.m)) { content(scrolling) }
+            Box(Modifier.fillMaxWidth().padding(vertical = if (overflows) Tokens.Space.s else Tokens.Space.flush)) {
+                Column(Modifier.fillMaxWidth().onSizeChanged { contentHeight = it.height }, verticalArrangement = Arrangement.spacedBy(Tokens.Space.m)) {
+                    content(scrolling)
+                }
+            }
         }
     }
 }
