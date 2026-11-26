@@ -46,11 +46,13 @@ import (
 // After preserving Antigravity modes (#16300), the packages measured 278,334 B. Filtering botmux marker
 // lines before shortening runtime previews adds 549 B (#16310).
 // Antigravity detached pending approval turn cancellation (including sibling-ask withdrawal and stale-turn/racing-ask/refusal guards) and explicit deny-with-note refusal follow-up add 436 B (279,319 B).
-// Preserving delivered replies across live Antigravity background wakes, in-place RUNNING->DONE updates,
-// and runtime-sdk catch-up/batch delta ordering (#14920) adds 935 B (280,254 B).
+// Antigravity native usage account name and subscription plan enrichment via GetUserStatus (#16277) adds 286 B (279,605 B).
+// Subsequent runtime fixes on main (#16490, #15678) bring the total to 280,046 B; preserving delivered replies
+// across live Antigravity background wakes, in-place RUNNING->DONE updates, and runtime-sdk catch-up/batch delta
+// ordering (#14920) adds 985 B (281,031 B).
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 280_254
+	const budget = 281_031
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {
