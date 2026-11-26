@@ -111,6 +111,7 @@ type Hub struct {
 
 	inboxForms   inboxForms   // the inbox lists' items as localized lately (inbox_forms.go)
 	inboxAnswers inboxAnswers // the merged inbox answer, reused while no manager's inbox moved (inbox_answers.go)
+	todoAnswers  todoAnswers  // the merged to-dos answer, reused while no manager's to-dos moved (todo_answers.go)
 	// handoffRecorded: the refused approvals of hand-off cards recorded lately (secret_handoff.go).
 	handoffRecorded handoffRecorded
 

@@ -131,6 +131,9 @@ func (h *Hub) relayBroadcastFrom(from string, message json.RawMessage) error {
 	if typ == "inbox" { // before the apps hear it: the list they ask for then is fetched afresh (inbox_answers.go)
 		h.inboxAnswers.changed(from)
 	}
+	if typ == "todos" { // before the apps hear it: the list they ask for then is fetched afresh (todo_answers.go)
+		h.todoAnswers.changed(from)
+	}
 	var intake uint64 // the widget revision this event carries to the open apps (widget_wake.go)
 	if (typ == "health_intake" || typ == "health_items") && h.live != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

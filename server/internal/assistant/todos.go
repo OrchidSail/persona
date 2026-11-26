@@ -1056,11 +1056,15 @@ func (s *Service) todoRoutes() {
 			apierr.WriteCode(w, http.StatusBadRequest, code, err)
 			return
 		}
+		compact := todoListCompactQuery(r.URL.Query())
 		writes := s.trevision.writes.Load()
-		list, p, err := s.todosViewed(r.Context(), true)
+		list, p, err := s.todosViewed(r.Context(), !compact)
 		if err != nil {
 			apierr.Write(w, http.StatusServiceUnavailable, errTodosUnavailable)
 			return
+		}
+		if compact {
+			s.compactListedTodos(list)
 		}
 		isExtension := r.Header.Get(RoleHeader) == roleExtension
 		if isExtension {

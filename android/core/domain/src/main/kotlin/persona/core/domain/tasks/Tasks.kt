@@ -22,6 +22,7 @@ import persona.core.contracts.parseTime
 import persona.core.contracts.stripToolResultTimestampHeaders
 import persona.core.domain.lines.ApiErrorInfo
 import persona.core.domain.lines.ChatLine
+import persona.core.domain.lines.TimedExtraPayload
 import persona.core.domain.lines.ToolCall
 import persona.core.domain.lines.WorkItem
 import persona.core.domain.sort.AgentSession
@@ -173,7 +174,9 @@ enum class QuickResultUndo { Added, Undoing, Undone }
 
 /** What the assistant's conversation adds to the transcript's lines, drawn by the chat's host. */
 sealed interface AssistantExtra {
-    data class Feed(val item: FeedItem) : AssistantExtra
+    data class Feed(val item: FeedItem) : AssistantExtra, TimedExtraPayload {
+        override val anchorTime: Instant? get() = AssistantLines.time(item.at)
+    }
     data class Quick(val result: QuickResult) : AssistantExtra
     data class Day(val date: LocalDate) : AssistantExtra
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +41,13 @@ type conversationHistoryBook struct {
 	changes, checked map[searchKey]uint64
 	probed           map[searchKey]time.Time
 	retry            map[searchKey]historyRetry
+	flights          map[string]*historyFlight
+}
+
+type historyFlight struct {
+	done   chan struct{}
+	source historyPage
+	err    error
 }
 
 func (s *Service) historyNow() time.Time {
@@ -60,6 +68,15 @@ type historyRetry struct {
 
 // historySourceKey prevents a synchronization source read from reading itself from the database.
 type historySourceKey struct{}
+
+// frozenSegmentKey carries a retired logical segment's immutable source boundary into historyCall
+// so covered durable history serves directly from Postgres without querying the retired runtime.
+type frozenSegmentKey struct{}
+
+type frozenSegmentHint struct {
+	history   string
+	frozenEnd int
+}
 
 func (s *Service) historyDB(ctx context.Context) conversationHistoryStore {
 	st := s.store()
@@ -92,6 +109,11 @@ func (s *Service) historySession(ctx context.Context, machine, sid string) (prot
 				c.Assistant = m.isAssistant(c)
 			}
 			return c, true
+		}
+		// Never fall back to logicalDevices.Session for a retired physical root segment:
+		// the logical row carries the active tail segment's revision, not the retired root's.
+		if _, wrapped := s.devs.(*logicalDevices); wrapped {
+			return proto.Session{}, false
 		}
 	}
 	return s.session(ctx, machine, sid)
@@ -172,12 +194,17 @@ func (s *Service) historyCall(ctx context.Context, machine, method string, raw j
 	if h == nil && !s.historyEligible(ctx, machine, p.SessionID) {
 		return nil, false, nil
 	}
+	hint, isFrozen := ctx.Value(frozenSegmentKey{}).(frozenSegmentHint)
+	frozenCovered := isFrozen && h != nil && hint.history != "" && h.History == hint.history &&
+		conversationlog.Covers(h.Coverage, 0, hint.frozenEnd)
 	if method == "session.item" || method == "session.image" {
 		if h == nil {
 			return nil, false, nil
 		}
-		if c, known := s.historySession(ctx, machine, p.SessionID); known && (c.Rev == 0 || c.Rev != h.Revision || s.historyDirty(searchKey{machine, p.SessionID})) {
-			return nil, false, nil
+		if !frozenCovered {
+			if c, known := s.historySession(ctx, machine, p.SessionID); known && (c.Rev == 0 || c.Rev != h.Revision || s.historyDirty(searchKey{machine, p.SessionID})) {
+				return nil, false, nil
+			}
 		}
 		row, err := st.ConversationItem(ctx, machine, p.SessionID, h.History, p.ItemID)
 		if err != nil || row == nil || !row.Complete {
@@ -224,6 +251,18 @@ func (s *Service) historyCall(ctx context.Context, machine, method string, raw j
 		}
 		return nil, false, nil
 	}
+	// A retired logical segment whose frozen prefix is already durably covered in Postgres
+	// is immutable: serve it straight from Postgres without touching the physical runtime.
+	if frozenCovered {
+		frozenCopy := *h
+		if frozenCopy.TailSeq == nil {
+			end := hint.frozenEnd
+			frozenCopy.TailSeq = &end
+		}
+		if out, ok := s.historyPage(ctx, st, &frozenCopy, p, true, false); ok {
+			return out, true, nil
+		}
+	}
 	// Known current revision gives the latest end; an offline node may still have a
 	// durable end, but cannot prove it has not appended since then.
 	fresh := true
@@ -244,12 +283,8 @@ func (s *Service) historyCall(ctx context.Context, machine, method string, raw j
 	params := map[string]any{}
 	_ = json.Unmarshal(raw, &params)
 	delete(params, "fold_work") // persist source blocks, never display folds
-	sourceRevision := int64(0)
-	if c, known := s.historySession(ctx, machine, p.SessionID); known {
-		sourceRevision = c.Rev
-	}
-	var source historyPage
-	if err := s.historySource(ctx, machine, DeviceSessionItems, params, &source); err != nil {
+	source, err := s.historyFetchSingleflight(ctx, st, machine, p, params, h)
+	if err != nil {
 		if ctx.Err() != nil {
 			return nil, true, ctx.Err()
 		}
@@ -260,9 +295,6 @@ func (s *Service) historyCall(ctx context.Context, machine, method string, raw j
 			}
 		}
 		return nil, true, err
-	}
-	if err := s.historyRemember(ctx, st, machine, p.SessionID, h, p, source, sourceRevision); err != nil && !errors.Is(err, errHistoryGenerationUnavailable) {
-		s.logf("assistant: persist history page: %v", err)
 	}
 	if p.FoldWork && p.After == nil && p.Through == nil {
 		if p.Before == nil || *p.Before <= 0 {
@@ -276,6 +308,100 @@ func (s *Service) historyCall(ctx context.Context, machine, method string, raw j
 	}
 	out, err := json.Marshal(source)
 	return out, true, err
+}
+
+func (s *Service) historyFetchSingleflight(ctx context.Context, st conversationHistoryStore, machine string, p historyParams, params map[string]any, h *db.ConversationHistory) (historyPage, error) {
+	canonical, _ := json.Marshal(params)
+	key := machine + "\x00" + p.SessionID + "\x00" + string(canonical)
+	for {
+		if err := ctx.Err(); err != nil {
+			return historyPage{}, err
+		}
+		s.history.mu.Lock()
+		if flight := s.history.flights[key]; flight != nil {
+			s.history.mu.Unlock()
+			select {
+			case <-flight.done:
+				if flight.err != nil && errors.Is(flight.err, context.Canceled) && ctx.Err() == nil {
+					continue // the leader canceled; retry with this caller's context
+				}
+				page := flight.source
+				page.Items = slices.Clone(page.Items)
+				return page, flight.err
+			case <-ctx.Done():
+				return historyPage{}, ctx.Err()
+			}
+		}
+		if s.history.flights == nil {
+			s.history.flights = map[string]*historyFlight{}
+		}
+		flight := &historyFlight{done: make(chan struct{})}
+		s.history.flights[key] = flight
+		s.history.mu.Unlock()
+
+		var source historyPage
+		sourceRevision := int64(0)
+		if c, known := s.historySession(ctx, machine, p.SessionID); known {
+			sourceRevision = c.Rev
+		}
+		err := s.historySource(ctx, machine, DeviceSessionItems, params, &source)
+		if err == nil {
+			s.historyRememberWithRetry(ctx, st, machine, p.SessionID, h, p, source, sourceRevision)
+		}
+		flight.source, flight.err = source, err
+		s.history.mu.Lock()
+		if s.history.flights[key] == flight {
+			delete(s.history.flights, key)
+		}
+		s.history.mu.Unlock()
+		close(flight.done)
+
+		page := source
+		page.Items = slices.Clone(page.Items)
+		return page, err
+	}
+}
+
+func (s *Service) historyRememberWithRetry(ctx context.Context, st conversationHistoryStore, machine, sid string, previous *db.ConversationHistory, p historyParams, source historyPage, sourceRevision int64) {
+	err := s.historyRemember(ctx, st, machine, sid, previous, p, source, sourceRevision)
+	if err == nil || errors.Is(err, errHistoryGenerationUnavailable) {
+		return
+	}
+	if errors.Is(err, db.ErrConversationHistoryChanged) {
+		latest, rerr := st.ConversationHistory(ctx, machine, sid)
+		if rerr == nil && latest != nil {
+			if latest.History == source.History {
+				tail := (p.Before == nil || *p.Before <= 0) && p.Through == nil && !source.MoreAfter
+				if tail && sourceRevision != 0 && latest.Revision > sourceRevision {
+					// A newer tail is already persisted in this generation; nothing to overwrite.
+					return
+				}
+				retryErr := s.historyRemember(ctx, st, machine, sid, latest, p, source, max(sourceRevision, latest.Revision))
+				if retryErr == nil || errors.Is(retryErr, db.ErrConversationHistoryChanged) || errors.Is(retryErr, errHistoryGenerationUnavailable) {
+					return
+				}
+				err = retryErr
+			} else {
+				// The runtime rotated its generation while serving a partial/tail page; wake
+				// historySync to re-ingest from seq=0 without spamming persistence errors.
+				s.historyMarkDirty(machine, sid)
+				s.historyWake()
+				return
+			}
+		}
+	}
+	s.logf("assistant: persist history page: %v", err)
+}
+
+func (s *Service) historyMarkDirty(machine, sid string) {
+	s.history.mu.Lock()
+	if s.history.changes == nil {
+		s.history.changes = map[searchKey]uint64{}
+	}
+	for _, alias := range s.physicalAliases(machine) {
+		s.history.changes[searchKey{alias, sid}]++
+	}
+	s.history.mu.Unlock()
 }
 
 func partialHistoryPage(raw json.RawMessage) json.RawMessage {
@@ -738,14 +864,23 @@ func (s *Service) historySweep(ctx context.Context, st conversationHistoryStore)
 				// Retired sources remain readable for frozen history, but their tails do
 				// not revise the logical generation. Keep their original durable keys.
 				matches := 0
+				var matched conversationlog.Segment
 				for _, seg := range root.Segments {
 					if seg.SessionID == c.SessionID && s.physicalSameMachine(seg.MachineID, source) {
 						source = seg.MachineID
+						matched = seg
 						matches++
 					}
 				}
 				if matches != 1 {
 					continue
+				}
+				if matched.State == "retired" && matched.FrozenEnd != nil && matched.SourceHistory != "" {
+					if h, err := st.ConversationHistory(ctx, source, c.SessionID); err == nil && h != nil &&
+						h.History == matched.SourceHistory && h.SummaryKnown &&
+						conversationlog.Covers(h.Coverage, 0, *matched.FrozenEnd) {
+						continue
+					}
 				}
 			}
 			if err := s.historySync(ctx, st, source, c); err != nil && !errors.Is(err, db.ErrConversationHistoryChanged) && ctx.Err() == nil {

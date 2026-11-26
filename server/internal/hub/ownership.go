@@ -211,6 +211,7 @@ func (h *Hub) ownersChanged() {
 	c.gen++
 	c.mu.Unlock()
 	h.inboxAnswers.changedAll()
+	h.todoAnswers.changedAll()
 }
 
 // machineOwner is the manager machine mid belongs to, the only one that may act on it or its sessions.

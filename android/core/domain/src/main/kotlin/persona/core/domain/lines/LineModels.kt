@@ -137,6 +137,11 @@ data class ChatTurn(
     val interimCount get() = process.count { it.type == "reply" }
 }
 
+/** An [ChatLine.Extra] payload that provides a chronological anchor for ordering failed sends. */
+interface TimedExtraPayload {
+    val anchorTime: Instant?
+}
+
 sealed interface ChatLine {
     val id: String
     /** Stable composition identity; a turn's latest reply replaces its predecessor without changing wire identity. */

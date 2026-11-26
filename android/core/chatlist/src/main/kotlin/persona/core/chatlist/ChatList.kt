@@ -205,12 +205,18 @@ fun ChatListEffects(
                     state.returnToLatest()
             }
     }
-    LaunchedEffect(state, hasOlder, loadingOlder, rowIds, foreground) {
+    // Key on rowIds rather than loadingOlder or state.epoch, and emit the drag epoch inside snapshotFlow
+    // so a single drag fires prefetch once (never looping when a failed read toggles loadingOlder or
+    // wobbles visible indices), while new rows, a fresh drag, or an explicit retry still advance paging.
+    LaunchedEffect(state, hasOlder, rowIds, foreground) {
         if (!foreground) return@LaunchedEffect
-        snapshotFlow { state.dragged to (state.list.layoutInfo.visibleItemsInfo.maxOfOrNull { it.index } ?: -1) }
-            .distinctUntilChanged().collect { (dragged, last) ->
-                if (shouldPrefetch(dragged, older, loading, last, latestRows.size, prefetchRows)) load()
-            }
+        snapshotFlow {
+            val last = state.list.layoutInfo.visibleItemsInfo.maxOfOrNull { it.index } ?: -1
+            val trigger = shouldPrefetch(state.dragged, older, loading = false, last, latestRows.size, prefetchRows)
+            if (trigger) state.epoch else -1
+        }.distinctUntilChanged().collect { epoch ->
+            if (epoch >= 0 && !loading) load()
+        }
     }
     LaunchedEffect(state) {
         snapshotFlow { state.position }.debounce(250).distinctUntilChanged().collect { state.persist() }

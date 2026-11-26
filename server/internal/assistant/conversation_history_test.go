@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -888,5 +889,282 @@ func TestConversationHistoryOfflineIdleProbeBackoff(t *testing.T) {
 	partialAfter, err := st.ConversationHistory(t.Context(), "server", partialSess.SessionID)
 	if err != nil || partialAfter == nil || partialAfter.TailSeq == nil || !conversationlog.Covers(partialAfter.Coverage, 0, *partialAfter.TailSeq) {
 		t.Fatalf("uncovered offline session was not fully backfilled: %+v %v", partialAfter, err)
+	}
+}
+
+func TestLogicalRetiredFrozenSegmentServesFromPostgresWhileActiveSegmentGrows(t *testing.T) {
+	s, f, d, _ := logicalPair(t, "agy")
+	ctx := t.Context()
+	// Persist complete durable history + summary for the retired root segment.
+	rootItems := []proto.Item{
+		{ID: "u1", Seq: 1, Role: "user", Kind: proto.KindText, Text: "earlier question"},
+		{ID: "a6", Seq: 6, Role: "assistant", Kind: proto.KindText, Text: "earlier answer"},
+	}
+	if err := d.PutConversationPage(ctx, db.ConversationPage{
+		MachineID: "server", SessionID: "side-chat", History: "h1", Revision: 100,
+		FromSeq: 0, ThroughSeq: 6, Tail: true, Items: rootItems,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.PutConversationSummary(ctx, "server", "side-chat", "h1", 100, "retired summary"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.PutConversationPage(ctx, db.ConversationPage{
+		MachineID: "server", SessionID: "target-chat", History: "h2", Revision: 200,
+		FromSeq: 0, ThroughSeq: 2, Tail: true,
+		Items: []proto.Item{{ID: "n1", Seq: 1, Role: "user", Kind: proto.KindText, Text: "after switch"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	activatePair(t, d)
+
+	// Wire logicalDevices where active target-chat keeps advancing revision and retired side-chat is absent from physical sessions.
+	physical := newFleetDevs()
+	physical.add("server", "Computer")
+	physical.setSessions("server", []proto.Session{
+		{SessionID: "side-chat", Cwd: "/home/u/.persona/assistant", Assistant: true, Rev: 150},
+		{SessionID: "target-chat", Cwd: "/home/u/.persona/assistant", Assistant: true, Rev: 200},
+	})
+	s.devs = &logicalDevices{Devices: physical, s: s}
+	s.logicalChanged()
+
+	var retiredReads, activeReads int
+	f.answerNode(DeviceSessionItems, func(_ string, raw json.RawMessage) (any, error) {
+		var p historyParams
+		_ = json.Unmarshal(raw, &p)
+		if p.SessionID == "side-chat" {
+			retiredReads++
+		} else {
+			activeReads++
+		}
+		return map[string]any{"items": []proto.Item{}, "history": "h2", "from_seq": 0, "to_seq": 2}, nil
+	})
+	// Even with a dirty mark on retired side-chat and growing logical rev, reading frozen pages and sweeping
+	// must NOT hit the retired physical runtime.
+	s.historyMarkDirty("server", "side-chat")
+	before := 7
+	c, err := d.LogicalConversation(ctx, "server", "side-chat")
+	if err != nil || c == nil {
+		t.Fatalf("logical conversation: %v", err)
+	}
+	page, err := s.logicalHistoryPage(ctx, d, c, historyParams{Before: &before, Limit: 80, LazyImages: true})
+	if err != nil || len(page.Items) != 2 || page.Items[0].ID != "u1" || page.Items[1].ID != "a6" {
+		t.Fatalf("retired frozen page: %+v %v", page, err)
+	}
+	s.historySweep(ctx, d)
+	if retiredReads != 0 {
+		t.Fatalf("retired frozen segment queried runtime %d times, want 0", retiredReads)
+	}
+	// Remove side-chat from physicalDevices to verify historySession never falls back to logicalDevices.Session.
+	physical.setSessions("server", []proto.Session{
+		{SessionID: "target-chat", Cwd: "/home/u/.persona/assistant", Assistant: true, Rev: 999},
+	})
+	if _, ok := s.historySession(ctx, "server", "side-chat"); ok {
+		t.Fatal("historySession fell back to logicalDevices for an unlisted retired physical segment")
+	}
+}
+
+func TestHistoryCallCoalescesConcurrentReadsAndWakesSyncOnRotation(t *testing.T) {
+	var logMu sync.Mutex
+	var logs []string
+	s, f, database, rt := historyFixture(t, func(format string, args ...any) {
+		logMu.Lock()
+		logs = append(logs, fmt.Sprintf(format, args...))
+		logMu.Unlock()
+	})
+	gate := make(chan struct{})
+	entered := make(chan struct{}, 8)
+	var sourceCalls int
+	var callMu sync.Mutex
+	f.answerNode(DeviceSessionItems, func(machine string, raw json.RawMessage) (any, error) {
+		callMu.Lock()
+		sourceCalls++
+		callMu.Unlock()
+		entered <- struct{}{}
+		<-gate
+		return rt.page(machine, raw)
+	})
+	var wg sync.WaitGroup
+	errs := make(chan error, 4)
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var p historyPage
+			errs <- s.call(t.Context(), "server", DeviceSessionItems, map[string]any{"session_id": "main-chat", "lazy_images": true}, &p)
+		}()
+	}
+	<-entered
+	// Give the other 3 goroutines a moment to join the in-flight read.
+	time.Sleep(30 * time.Millisecond)
+	close(gate)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent read failed: %v", err)
+		}
+	}
+	callMu.Lock()
+	gotCalls := sourceCalls
+	callMu.Unlock()
+	if gotCalls != 1 {
+		t.Fatalf("concurrent identical misses fired %d runtime reads, want 1", gotCalls)
+	}
+	// Now simulate runtime generation rotation while serving a tail incremental read (after_seq > 0):
+	// it must mark dirty + wake historySync instead of spamming persist errors.
+	f.answerNode(DeviceSessionItems, rt.page)
+	rt.mu.Lock()
+	rt.history = "h1:projected:deadbeef"
+	rt.mu.Unlock()
+	s.historyMarkDirty("server", "main-chat")
+	if p := readHistory(t, s, "main-chat", map[string]any{"after_seq": 3, "lazy_images": true}); p.History != "h1:projected:deadbeef" {
+		t.Fatalf("rotated read: %+v", p)
+	}
+	logMu.Lock()
+	joined := strings.Join(logs, "\n")
+	logMu.Unlock()
+	if strings.Contains(joined, "persist history page:") {
+		t.Fatalf("unexpected persist history page log spam:\n%s", joined)
+	}
+	if !s.historyDirty(searchKey{"server", "main-chat"}) {
+		t.Fatal("generation rotation did not leave session marked dirty for historySync")
+	}
+	// Running historySync catches up from seq=0 onto the rotated generation.
+	if err := s.historySync(t.Context(), database, "server", proto.Session{SessionID: "main-chat", Assistant: true, Rev: 100}); err != nil {
+		t.Fatal(err)
+	}
+	h, err := database.ConversationHistory(t.Context(), "server", "main-chat")
+	if err != nil || h == nil || h.History != "h1:projected:deadbeef" {
+		t.Fatalf("historySync did not converge onto rotated generation: %+v %v", h, err)
+	}
+}
+
+func TestLogicalBackwardPageRespectsSourceHasMoreWithoutFromSeqAndNeverSkipsSegment(t *testing.T) {
+	s, f, d, _ := logicalPair(t, "agy")
+	ctx := t.Context()
+	// Retired seg1 (offset=0, frozen_end=6) already stored in Postgres.
+	seg1Items := []proto.Item{
+		{ID: "1#0", Seq: 1, Role: "user", Kind: proto.KindText, Text: "old segment question"},
+		{ID: "6#0", Seq: 6, Role: "assistant", Kind: proto.KindText, Text: "old segment answer"},
+	}
+	if err := d.PutConversationPage(ctx, db.ConversationPage{
+		MachineID: "server", SessionID: "side-chat", History: "h1", Revision: 100, ThroughSeq: 6, Tail: true, Items: seg1Items,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c := activatePair(t, d)
+
+	// Active seg2 (offset=6) lives on a runtime-sdk source that omits from_seq and counts injected supervision
+	// items as turns: seq 1..6 are real user+assistant exchanges, seq 7..10 are two injected supervision rounds.
+	seg2Items := []proto.Item{
+		{ID: "1#0", Seq: 1, Role: "user", Kind: proto.KindText, Text: "seg2 question 1"},
+		{ID: "2#0", Seq: 2, Role: "assistant", Kind: proto.KindText, Text: "seg2 answer 1"},
+		{ID: "3#0", Seq: 3, Role: "user", Kind: proto.KindText, Text: "seg2 question 2"},
+		{ID: "4#0", Seq: 4, Role: "assistant", Kind: proto.KindText, Text: "seg2 answer 2"},
+		{ID: "7#0", Seq: 7, Role: "user", Kind: proto.KindText, Text: "supervision 1", Injected: &proto.Injected{Kind: proto.InjectedSystem, State: "supervise"}},
+		{ID: "8#0", Seq: 8, Role: "assistant", Kind: proto.KindText, Text: "supervision reply 1"},
+		{ID: "9#0", Seq: 9, Role: "user", Kind: proto.KindText, Text: "supervision 2", Injected: &proto.Injected{Kind: proto.InjectedSystem, State: "supervise"}},
+		{ID: "10#0", Seq: 10, Role: "assistant", Kind: proto.KindText, Text: "supervision reply 2"},
+		{ID: "11#0", Seq: 11, Role: "user", Kind: proto.KindText, Text: "latest question"},
+		{ID: "12#0", Seq: 12, Role: "assistant", Kind: proto.KindText, Text: "latest answer"},
+	}
+	var seg1NodeReads int
+	var seg2BeforeSeqs []int
+	f.answerNode(DeviceSessionItems, func(_ string, raw json.RawMessage) (any, error) {
+		var p historyParams
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, err
+		}
+		if p.SessionID == "side-chat" {
+			seg1NodeReads++
+			return historyPage{Items: seg1Items, History: "h1"}, nil
+		}
+		if p.SessionID != "target-chat" {
+			return nil, fmt.Errorf("unexpected session %s", p.SessionID)
+		}
+		if p.Before != nil {
+			seg2BeforeSeqs = append(seg2BeforeSeqs, *p.Before)
+		}
+		// Mimic integrations/runtime-sdk/lib/items.js: omit from_seq and count every role=user as a turn.
+		var before []proto.Item
+		for _, it := range seg2Items {
+			if p.Before != nil && *p.Before > 0 && it.Seq >= *p.Before {
+				continue
+			}
+			before = append(before, it)
+		}
+		start := 0
+		if p.Turns > 0 {
+			turns := 0
+			for i := len(before) - 1; i >= 0; i-- {
+				if before[i].Role == "user" && before[i].Kind == proto.KindText {
+					turns++
+					if turns == min(p.Turns, 10) {
+						start = i
+						break
+					}
+				}
+			}
+		} else {
+			limit := p.Limit
+			if limit <= 0 {
+				limit = 80
+			}
+			// Simulate a small chunk returned with has_more=true and no from_seq.
+			if len(before) > 2 {
+				start = len(before) - 2
+			}
+		}
+		out := append([]proto.Item(nil), before[start:]...)
+		hasMore := start > 0
+		to := 0
+		if len(out) > 0 {
+			to = out[len(out)-1].Seq
+		}
+		return historyPage{Items: out, HasMore: &hasMore, History: "h2", ToSeq: &to}, nil
+	})
+
+	// Case A: turns=2 before logical seq 17 (seg2 seq 11) hits the two injected supervision rounds first.
+	// logicalHistoryPage must keep paging within seg2 instead of skipping seg2's real replies (seq 1..4) into seg1.
+	before := 17 // offset 6 + seg2 seq 11
+	page, err := s.logicalHistoryPage(ctx, d, c, historyParams{Before: &before, Turns: 2, LazyImages: true})
+	if err != nil {
+		t.Fatalf("turns backward page: %v", err)
+	}
+	if len(seg2BeforeSeqs) < 2 {
+		t.Fatalf("expected inner backward paging inside seg2, got before_seqs=%v", seg2BeforeSeqs)
+	}
+	if seg1NodeReads != 0 {
+		t.Fatalf("must not jump into retired seg1 while seg2 still has unread turns; seg1NodeReads=%d", seg1NodeReads)
+	}
+	var gotTexts []string
+	for _, it := range page.Items {
+		gotTexts = append(gotTexts, it.Text)
+	}
+	if !slices.Contains(gotTexts, "seg2 answer 1") || !slices.Contains(gotTexts, "seg2 answer 2") {
+		t.Fatalf("lost seg2 assistant answers during backward paging: got %v", gotTexts)
+	}
+	if page.HasMore == nil || !*page.HasMore {
+		t.Fatalf("expected has_more=true while seg1 remains unread, got %+v", page)
+	}
+
+	// Case B: limit-based backward page where the source omits from_seq and returns fewer items than limit
+	// with has_more=true must neither jump into seg1 nor report has_more=false.
+	before = 17
+	limitPage, err := s.logicalHistoryPage(ctx, d, c, historyParams{Before: &before, Limit: 80, LazyImages: true})
+	if err != nil {
+		t.Fatalf("limit backward page: %v", err)
+	}
+	if limitPage.HasMore == nil || !*limitPage.HasMore {
+		t.Fatalf("expected has_more=true when source returned has_more=true without from_seq, got %+v", limitPage)
+	}
+	if intValue(limitPage.FromSeq) <= 6 {
+		t.Fatalf("from_seq %d falsely crossed into seg1 while seg2 still had unread items", intValue(limitPage.FromSeq))
+	}
+	for _, it := range limitPage.Items {
+		if it.Seq <= 6 {
+			t.Fatalf("leaked seg1 item %+v while skipping unread seg2 items", it)
+		}
 	}
 }

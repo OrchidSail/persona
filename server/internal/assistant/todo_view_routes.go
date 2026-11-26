@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -112,6 +113,68 @@ func (s *Service) listedTodosOf(ctx context.Context, briefs bool, ids map[string
 		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(a.ID, b.ID))
 	})
 	return list, nil
+}
+
+// todoListCompactQuery reports whether a GET /api/v1/todos caller opted into compact list rows
+// (omitting embedded task briefs, redundant supervision criteria, and closed intermediate review history).
+func todoListCompactQuery(q url.Values) bool {
+	v := strings.ToLower(strings.TrimSpace(q.Get("compact")))
+	return v == "1" || v == "true"
+}
+
+// compactListedTodos trims large detail-only fields on opt-in compact list reads while preserving
+// lineage, view, counts, notes, asks, latest/accepted review notes, and cumulative checklist state.
+func (s *Service) compactListedTodos(list []listedTodo) {
+	links := s.briefLinksNow()
+	for i := range list {
+		t := &list[i].Todo
+		if briefID := links.of[t.ID]; briefID != "" {
+			t.Lineage = s.lineageOf(t.ID, links.on[briefID])
+		}
+		if t.Supervision == nil {
+			continue
+		}
+		sup := t.Supervision.clone()
+		sup.Criteria = nil
+		if t.closedForGood() && len(sup.Reviews) > 1 {
+			sup.Reviews = compactClosedReviews(sup.Reviews)
+		}
+		t.Supervision = sup
+	}
+}
+
+func compactClosedReviews(reviews []TaskReview) []TaskReview {
+	// Fold checks chronologically so each criterion keeps its latest check in last-seen order,
+	// matching Supervision.checklist() on clients.
+	var order []string
+	latestByCriterion := make(map[string]ReviewCheck)
+	for _, r := range reviews {
+		for _, c := range r.Checks {
+			if _, seen := latestByCriterion[c.Criterion]; seen {
+				if idx := slices.Index(order, c.Criterion); idx >= 0 {
+					order = slices.Delete(order, idx, idx+1)
+				}
+			}
+			order = append(order, c.Criterion)
+			latestByCriterion[c.Criterion] = c
+		}
+	}
+	mergedChecks := make([]ReviewCheck, 0, len(order))
+	for _, crit := range order {
+		mergedChecks = append(mergedChecks, latestByCriterion[crit])
+	}
+	last := reviews[len(reviews)-1]
+	last.Checks = mergedChecks
+	if last.Verdict != reviewAccepted {
+		for i := len(reviews) - 2; i >= 0; i-- {
+			if reviews[i].Verdict == reviewAccepted {
+				accepted := reviews[i]
+				accepted.Checks = nil
+				return []TaskReview{accepted, last}
+			}
+		}
+	}
+	return []TaskReview{last}
 }
 
 // viewed gives every row of list its view at now and answers the list's projection.

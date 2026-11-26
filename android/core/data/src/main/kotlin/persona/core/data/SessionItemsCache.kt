@@ -146,9 +146,13 @@ class SessionItemsCache(
                 old == null || old.seq != row.seq || old.part != row.part || old.json != row.json
             }
             if (changed.isNotEmpty()) dao.insert(changed)
+            // Preserve an unknown older boundary (null) when the cache kept the whole window; only trimming
+            // earlier turns (start > 0) proves more history exists. Coercing null to false permanently locks out
+            // loadOlder and unclips historical assistant feed entries on restore.
+            val hasMore = if (start > 0) true else snapshot.hasMore
             if (rows.isEmpty()) dao.clearCursor(scope.path, session.machineId, session.sessionId)
             else dao.putCursor(SessionCursorRow(scope.path, session.machineId, session.sessionId,
-                snapshot.history, snapshot.covered, snapshot.hasMore == true || start > 0,
+                snapshot.history, snapshot.covered, hasMore,
                 System.currentTimeMillis()))
             // Only this session's rows are read; the whole cache only when the total is over budget (where eviction
             // starts) or not known yet. Under budget the full scan evicted nothing either.

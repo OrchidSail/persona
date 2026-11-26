@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import { startFakeNode, until } from '../../runtime-sdk/testing/fake-node.js'
@@ -341,4 +342,80 @@ test('lagging summaries never truncate freshly exported steps by timestamp alone
   state({ ...idle, step_count: 2, last_modified_time: '2026-01-03T00:00:01Z' })
   await refresh()
   assert.equal(node.last('runtime.sessions').sessions[0].rev, history)
+})
+
+test('zero-turn assistant sessions survive runtime restart with valid idle timestamps and hide after close', { timeout: 15_000 }, async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'persona-agy-zero-asst-'))
+  const agyDir = join(home, 'agy')
+  const asstDir = join(home, '.persona', 'assistant')
+  const trackDir = join(home, '.persona', 'tracks', 'project-alpha')
+  mkdirSync(asstDir, { recursive: true })
+  mkdirSync(trackDir, { recursive: true })
+  mkdirSync(join(agyDir, 'brain', ID), { recursive: true })
+
+  // Case 1: Legacy pre-existing zero-turn assistant segment with step_count=0 and 0001-01-01 timestamp.
+  const summaryFile = join(agyDir, 'conversation_summaries.db')
+  const db = new DatabaseSync(summaryFile)
+  db.exec('CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, status TEXT, not_fully_idle NUMERIC, killed NUMERIC, step_count INTEGER, title TEXT, workspace_uris TEXT, last_modified_time TEXT)')
+  db.prepare('INSERT OR REPLACE INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(ID, 'CASCADE_RUN_STATUS_IDLE', 0, 0, 0, 'Supervisor', JSON.stringify([pathToFileURL(asstDir).href]), '0001-01-01 00:00:00+00:00')
+
+  const preparedId = '22222222-3333-4444-5555-666666666666'
+  const preparedSession = `agy-${preparedId}`
+  const binary = join(home, 'fake-agy.mjs')
+  writeFileSync(binary, `#!/usr/bin/env node
+if (process.argv.includes('models')) { console.log('test-model\\tTest Model'); process.exit(0) }
+import { createInterface } from 'node:readline'
+createInterface({ input: process.stdin }).on('line', (line) => {
+  const request = JSON.parse(line)
+  if (request.id === undefined || request.method === 'session/prompt') return
+  const result = request.method === 'session/new' ? { sessionId: '${preparedId}' } : {}
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n')
+})
+`, { mode: 0o700 })
+
+  const node = await startFakeNode(t)
+  let runtime = createAgyRuntime({ home, agyDir, agyBin: binary, socketPath: node.path, listDays: 1, maxSessions: 10 })
+  t.after(async () => {
+    await runtime.stop()
+    db.close()
+    rmSync(home, { recursive: true, force: true })
+  })
+  runtime.start()
+  await node.ready
+  await until('legacy zero-turn assistant listed', () => node.last('runtime.sessions')?.sessions.some((s) => s.session_id === SESSION))
+  const legacyRow = node.last('runtime.sessions').sessions.find((s) => s.session_id === SESSION)
+  assert.equal(legacyRow.status, 'idle')
+  assert.ok(Date.parse(legacyRow.updated_at) > Date.UTC(2020, 0, 1), `expected valid updated_at, got ${legacyRow.updated_at}`)
+
+  // Case 2: Newly prepared track supervisor writes durable marker and survives restart with no transcript or summary row.
+  const started = await node.peer.call('session.start', { cwd: trackDir, assistant: true })
+  assert.equal(started.session.session_id, preparedSession)
+  await runtime.stop()
+
+  const node2 = await startFakeNode(t)
+  runtime = createAgyRuntime({ home, agyDir, agyBin: binary, socketPath: node2.path, listDays: 1, maxSessions: 10 })
+  runtime.start()
+  await node2.ready
+  await until('prepared zero-turn assistant survives restart', () => {
+    const ids = (node2.last('runtime.sessions')?.sessions ?? []).map((s) => s.session_id)
+    return ids.includes(SESSION) && ids.includes(preparedSession)
+  })
+  const restartedPrepared = node2.last('runtime.sessions').sessions.find((s) => s.session_id === preparedSession)
+  assert.equal(restartedPrepared.status, 'idle')
+  assert.equal(restartedPrepared.cwd, trackDir)
+
+  // Closing marks the prepared session closed so it stays hidden across subsequent restarts.
+  await node2.peer.call('session.close', { session_id: preparedSession })
+  await runtime.stop()
+
+  const node3 = await startFakeNode(t)
+  runtime = createAgyRuntime({ home, agyDir, agyBin: binary, socketPath: node3.path, listDays: 1, maxSessions: 10 })
+  runtime.start()
+  await node3.ready
+  await until('closed zero-turn assistant stays hidden after restart', () => {
+    const sessions = node3.last('runtime.sessions')?.sessions
+    return Array.isArray(sessions) && sessions.some((s) => s.session_id === SESSION)
+  })
+  assert.equal(node3.last('runtime.sessions').sessions.some((s) => s.session_id === preparedSession), false)
 })

@@ -24,6 +24,13 @@ func visibleSegments(c *db.LogicalConversation) []conversationlog.Segment {
 	return out
 }
 
+func logicalSegmentContext(ctx context.Context, seg conversationlog.Segment, strict bool) context.Context {
+	if !strict && seg.State == "retired" && seg.FrozenEnd != nil && seg.SourceHistory != "" {
+		return context.WithValue(ctx, frozenSegmentKey{}, frozenSegmentHint{history: seg.SourceHistory, frozenEnd: *seg.FrozenEnd})
+	}
+	return ctx
+}
+
 func (s *Service) physicalHistoryCall(ctx context.Context, machine, method string, p any, out any) error {
 	ctx = context.WithValue(ctx, logicalSourceKey{}, true)
 	raw, err := json.Marshal(p)
@@ -125,16 +132,19 @@ func (s *Service) logicalFullItem(ctx context.Context, c *db.LogicalConversation
 	if !ok {
 		return nil, logicalRefusal(ctx, "unavailable")
 	}
+	segCtx := logicalSegmentContext(ctx, seg, p.Strict)
 	check := func() error {
 		var tail historyPage
-		if err := s.physicalHistoryCall(ctx, seg.MachineID, DeviceSessionItems, map[string]any{"session_id": seg.SessionID, "limit": 1, "lazy_images": true, "strict_read": p.Strict}, &tail); err != nil {
+		if err := s.physicalHistoryCall(segCtx, seg.MachineID, DeviceSessionItems, map[string]any{"session_id": seg.SessionID, "limit": 1, "lazy_images": true, "strict_read": p.Strict}, &tail); err != nil {
 			return err
 		}
 		if tail.History == "" {
 			return logicalRefusal(ctx, "missing_generation")
 		}
-		if err := st.ObserveConversationSource(ctx, seg.MachineID, seg.SessionID, tail.History); err != nil {
-			return err
+		if tail.History != seg.SourceHistory {
+			if err := st.ObserveConversationSource(ctx, seg.MachineID, seg.SessionID, tail.History); err != nil {
+				return err
+			}
 		}
 		return s.checkLogicalRead(ctx, st, c)
 	}
@@ -145,7 +155,7 @@ func (s *Service) logicalFullItem(ctx context.Context, c *db.LogicalConversation
 	// Fetch the item first even for images: prove it is inside the frozen public
 	// range before fetching or returning its bytes through a scoped logical link.
 	var it proto.Item
-	if err := s.physicalHistoryCall(ctx, seg.MachineID, "session.item", params, &it); err != nil {
+	if err := s.physicalHistoryCall(segCtx, seg.MachineID, "session.item", params, &it); err != nil {
 		return nil, err
 	}
 	projected, ok, err := seg.Project(it, c.MachineID, c.SessionID, c.History)
@@ -157,7 +167,7 @@ func (s *Service) logicalFullItem(ctx context.Context, c *db.LogicalConversation
 	}
 	if method == "session.image" {
 		var image proto.Image
-		if err := s.physicalHistoryCall(ctx, seg.MachineID, method, params, &image); err != nil {
+		if err := s.physicalHistoryCall(segCtx, seg.MachineID, method, params, &image); err != nil {
 			return nil, err
 		}
 		if err := check(); err != nil {
@@ -211,6 +221,8 @@ func (s *Service) logicalHistoryPage(ctx context.Context, st logicalConversation
 	var coverage []conversationlog.Range
 	end := 0
 	moreSource := false
+	moreOlder := false
+	const maxSegmentBackwardPages = 8
 	for index, seg := range segs {
 		if p.Before != nil && *p.Before > 0 && seg.Offset >= *p.Before {
 			continue
@@ -262,96 +274,141 @@ func (s *Service) logicalHistoryPage(ctx context.Context, st logicalConversation
 		if p.Turns > 0 && !forward {
 			params["turns"] = min(p.Turns, 10)
 		}
-		var source historyPage
-		if err := s.physicalHistoryCall(ctx, seg.MachineID, DeviceSessionItems, params, &source); err != nil {
-			if isMissingTranscriptErr(err) && s.isZeroTurnPreparedSegment(ctx, c, seg) {
-				var spanErr error
-				coverage, end, spanErr = mergeLogicalSpan(coverage, end, seg, 0, 0)
-				if spanErr != nil {
-					return page, spanErr
+		segCtx := logicalSegmentContext(ctx, seg, p.Strict)
+		stopSegments := false
+		for inner := 0; inner < maxSegmentBackwardPages; inner++ {
+			reqBefore, _ := params["before_seq"].(int)
+			var source historyPage
+			if err := s.physicalHistoryCall(segCtx, seg.MachineID, DeviceSessionItems, params, &source); err != nil {
+				if isMissingTranscriptErr(err) && s.isZeroTurnPreparedSegment(ctx, c, seg) {
+					var spanErr error
+					coverage, end, spanErr = mergeLogicalSpan(coverage, end, seg, 0, 0)
+					if spanErr != nil {
+						return page, spanErr
+					}
+					break
 				}
-				continue
+				return page, err
 			}
-			return page, err
-		}
-		// A raw range can omit its generation. In a frozen segment, a newer source can supply a verified
-		// continuation so a cursor from a detached window can still page forward through that segment.
-		if source.History == "" && p.After != nil && seg.FrozenEnd != nil {
-			from := max(1, *p.After+1-seg.Offset)
-			through := from + min(*seg.FrozenEnd-from, 2*proto.MaxWindowRadius)
-			scoped := proto.ItemsWindowRequest{SessionID: proto.NavigationSessionID(seg.SessionID), FromSeq: from, ThroughSeq: through, BeforeSeq: *seg.FrozenEnd + 1}
-			var window proto.ItemsWindow
-			if err := s.physicalHistoryCall(ctx, seg.MachineID, proto.MethodSessionItemsWindow, scoped, &window); err == nil && window.Matches(scoped) {
-				source = historyPage{Items: window.Items, History: window.History, FromSeq: &window.FromSeq, ToSeq: &window.ToSeq, MoreAfter: window.MoreAfter}
-			}
-		}
-		if source.History == "" {
-			if len(source.Items) == 0 && intValue(source.ToSeq) == 0 && s.isZeroTurnPreparedSegment(ctx, c, seg) {
-				var spanErr error
-				coverage, end, spanErr = mergeLogicalSpan(coverage, end, seg, 0, 0)
-				if spanErr != nil {
-					return page, spanErr
+			// A raw range can omit its generation. In a frozen segment, a newer source can supply a verified
+			// continuation so a cursor from a detached window can still page forward through that segment.
+			if source.History == "" && p.After != nil && seg.FrozenEnd != nil {
+				from := max(1, *p.After+1-seg.Offset)
+				through := from + min(*seg.FrozenEnd-from, 2*proto.MaxWindowRadius)
+				scoped := proto.ItemsWindowRequest{SessionID: proto.NavigationSessionID(seg.SessionID), FromSeq: from, ThroughSeq: through, BeforeSeq: *seg.FrozenEnd + 1}
+				var window proto.ItemsWindow
+				if err := s.physicalHistoryCall(segCtx, seg.MachineID, proto.MethodSessionItemsWindow, scoped, &window); err == nil && window.Matches(scoped) {
+					source = historyPage{Items: window.Items, History: window.History, FromSeq: &window.FromSeq, ToSeq: &window.ToSeq, MoreAfter: window.MoreAfter}
 				}
-				continue
 			}
-			return page, logicalRefusal(ctx, "missing_generation")
-		}
-		if err := st.ObserveConversationSource(ctx, seg.MachineID, seg.SessionID, source.History); err != nil {
-			return page, err
-		}
-		// A fold must be built after combining segments, never imported as source data.
-		for _, it := range source.Items {
-			projected, ok, err := seg.Project(it, c.MachineID, c.SessionID, c.History)
+			if source.History == "" {
+				if len(source.Items) == 0 && intValue(source.ToSeq) == 0 && s.isZeroTurnPreparedSegment(ctx, c, seg) {
+					var spanErr error
+					coverage, end, spanErr = mergeLogicalSpan(coverage, end, seg, 0, 0)
+					if spanErr != nil {
+						return page, spanErr
+					}
+					break
+				}
+				return page, logicalRefusal(ctx, "missing_generation")
+			}
+			if source.History != seg.SourceHistory {
+				if err := st.ObserveConversationSource(ctx, seg.MachineID, seg.SessionID, source.History); err != nil {
+					return page, err
+				}
+			}
+			// A fold must be built after combining segments, never imported as source data.
+			for _, it := range source.Items {
+				if !forward && inner > 0 && reqBefore > 0 && it.Seq >= reqBefore {
+					continue
+				}
+				projected, ok, err := seg.Project(it, c.MachineID, c.SessionID, c.History)
+				if err != nil {
+					return page, err
+				}
+				if !ok {
+					continue
+				}
+				if p.After != nil && projected.Seq <= *p.After {
+					continue
+				}
+				if p.Before != nil && *p.Before > 0 && projected.Seq >= *p.Before {
+					continue
+				}
+				if p.Through != nil && (projected.Seq < intValue(p.From) || projected.Seq > *p.Through) {
+					continue
+				}
+				page.Items = append(page.Items, projected)
+			}
+			sourceHasMore := source.HasMore != nil && *source.HasMore
+			from, to := intValue(source.FromSeq), intValue(source.ToSeq)
+			if !forward && source.FromSeq == nil && (source.HasMore == nil || *source.HasMore) && len(source.Items) > 0 {
+				from = max(0, source.Items[0].Seq-1)
+			}
+			if source.ToSeq == nil {
+				for _, it := range source.Items {
+					to = max(to, it.Seq)
+				}
+			}
+			if !forward && source.ToSeq == nil && reqBefore > 1 && to < reqBefore-1 && (inner > 0 || seg.FrozenEnd != nil) {
+				to = reqBefore - 1
+			}
+			a, b, err := seg.Span(from, to)
 			if err != nil {
 				return page, err
 			}
-			if !ok {
-				continue
+			coverage = conversationlog.MergeRanges(coverage, conversationlog.Range{From: a, Through: b})
+			end = max(end, b)
+			if seg.FrozenEnd != nil {
+				end = max(end, seg.Offset+*seg.FrozenEnd)
 			}
-			if p.After != nil && projected.Seq <= *p.After {
-				continue
-			}
-			if p.Before != nil && *p.Before > 0 && projected.Seq >= *p.Before {
-				continue
-			}
-			if p.Through != nil && (projected.Seq < intValue(p.From) || projected.Seq > *p.Through) {
-				continue
-			}
-			page.Items = append(page.Items, projected)
-		}
-		from, to := intValue(source.FromSeq), intValue(source.ToSeq)
-		if source.ToSeq == nil {
-			for _, it := range source.Items {
-				to = max(to, it.Seq)
-			}
-		}
-		var err error
-		coverage, end, err = mergeLogicalSpan(coverage, end, seg, from, to)
-		if err != nil {
-			return page, err
-		}
-		if seg.FrozenEnd != nil {
-			end = max(end, seg.Offset+*seg.FrozenEnd)
-		}
-		page.Partial = page.Partial || source.Partial
-		moreSource = moreSource || source.MoreAfter || source.More
-		if p.After != nil && seg.FrozenEnd != nil && source.MoreAfter {
-			break // finish this segment before advancing to its successor
-		}
-		if len(page.Items) >= limit && p.Turns <= 0 {
-			moreSource = moreSource || forward && index+1 < len(segs)
-			break
-		}
-		if p.Turns > 0 {
-			seen := 0
-			for _, it := range page.Items {
-				if transcript.IsPagePrompt(it) {
-					seen++
+			page.Partial = page.Partial || source.Partial
+			moreSource = moreSource || source.MoreAfter || source.More
+			if forward {
+				if p.After != nil && seg.FrozenEnd != nil && source.MoreAfter {
+					stopSegments = true
+					break
 				}
-			}
-			if seen >= min(p.Turns, 10) {
+				if len(page.Items) >= limit && p.Turns <= 0 {
+					moreSource = moreSource || index+1 < len(segs)
+					stopSegments = true
+				}
 				break
 			}
+			segmentHasOlder := sourceHasMore || from > 0
+			if len(page.Items) >= limit {
+				moreOlder = moreOlder || segmentHasOlder || index+1 < len(segs)
+				stopSegments = true
+				break
+			}
+			if p.Turns > 0 {
+				seen := 0
+				for _, it := range page.Items {
+					if transcript.IsPagePrompt(it) {
+						seen++
+					}
+				}
+				if seen >= min(p.Turns, 10) {
+					moreOlder = moreOlder || segmentHasOlder || index+1 < len(segs)
+					stopSegments = true
+					break
+				}
+			}
+			if !segmentHasOlder {
+				break
+			}
+			// This segment still has unread older items. Never skip over them into an older segment:
+			// keep paging backward within this segment for turn-bounded reads, or stop with has_more=true.
+			if p.Turns > 0 && inner+1 < maxSegmentBackwardPages && len(source.Items) > 0 && source.Items[0].Seq > 1 && (reqBefore == 0 || source.Items[0].Seq < reqBefore) {
+				params["before_seq"] = source.Items[0].Seq
+				continue
+			}
+			moreOlder = true
+			stopSegments = true
+			break
+		}
+		if stopSegments {
+			break
 		}
 	}
 	sort.SliceStable(page.Items, func(i, j int) bool { return page.Items[i].Seq < page.Items[j].Seq })
@@ -416,7 +473,7 @@ func (s *Service) logicalHistoryPage(ctx context.Context, st logicalConversation
 	if forward {
 		page.MoreAfter = moreSource || to < end
 	} else {
-		more := from > 0
+		more := from > 0 || moreOlder
 		page.HasMore = &more
 	}
 	if p.Through != nil {
@@ -483,7 +540,7 @@ func (s *Service) logicalUserInputs(ctx context.Context, st logicalConversationS
 		if source.Total != len(source.Inputs) || source.Inputs == nil {
 			return nil, errors.New("incomplete source input positions")
 		}
-		if source.History != "" {
+		if source.History != "" && source.History != seg.SourceHistory {
 			if err := st.ObserveConversationSource(ctx, seg.MachineID, seg.SessionID, source.History); err != nil {
 				return nil, err
 			}

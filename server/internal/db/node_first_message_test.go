@@ -31,3 +31,39 @@ func TestNodeAwaitingFirstMessageIsPersisted(t *testing.T) {
 		t.Fatalf("legacy session became pending: %+v %v", out, err)
 	}
 }
+
+func TestNodeSegmentOperationAndRetiredArePersisted(t *testing.T) {
+	d, ctx := open(t), context.Background()
+	initial := NodeSession{
+		Launcher: "agy", Cwd: "/tmp/.persona/assistant",
+		AwaitingFirstMessage: true, SegmentOperation: "switch-op-1", SegmentRetired: false,
+	}
+	if err := d.PutNodeSession(ctx, "machine", "agy-seg-2", initial); err != nil {
+		t.Fatal(err)
+	}
+	out, err := d.NodeSessions(ctx, "machine")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := out["agy-seg-2"]
+	if !got.AwaitingFirstMessage || got.SegmentOperation != "switch-op-1" || got.SegmentRetired {
+		t.Fatalf("initial segment state lost: %+v", got)
+	}
+	// A later update with empty SegmentOperation must keep the original operation id,
+	// while SegmentRetired updates cleanly.
+	updated := NodeSession{
+		Launcher: "agy", Cwd: "/tmp/.persona/assistant",
+		AwaitingFirstMessage: true, SegmentOperation: "", SegmentRetired: true,
+	}
+	if err := d.PutNodeSession(ctx, "machine", "agy-seg-2", updated); err != nil {
+		t.Fatal(err)
+	}
+	out, err = d.NodeSessions(ctx, "machine")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = out["agy-seg-2"]
+	if got.SegmentOperation != "switch-op-1" || !got.SegmentRetired {
+		t.Fatalf("segment state after update: %+v", got)
+	}
+}

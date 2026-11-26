@@ -498,3 +498,56 @@ func TestSyntheticSegmentIDDoesNotResetIdleCompaction(t *testing.T) {
 		}
 	}
 }
+
+func TestPreparedZeroTurnAssistantSegmentSurvivesRestart(t *testing.T) {
+	n, hub := runtimeNode(t)
+	assistantHub(hub)
+	host := dialRuntime(t, n, assistantRuntimeHello())
+	asstDir := filepath.Join(n.home, ".persona", "assistant")
+	const segID = "dsh-prepared-seg2"
+	host.answer = func(method string, params json.RawMessage) (any, error) {
+		if method == "session.start" {
+			return map[string]any{"session": map[string]any{
+				"session_id": segID,
+				"cwd":        asstDir,
+				"status":     proto.StatusIdle,
+				"model":      "model-next",
+			}}, nil
+		}
+		return map[string]any{"ok": true}, nil
+	}
+	raw, err := nodeCall(t, n, "assistant.segment.prepare", map[string]any{
+		"operation_id": "op-restart-seg2",
+		"launcher":     "dsh",
+		"cwd":          asstDir,
+		"model":        "model-next",
+		"effort":       "high",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt struct {
+		SessionID string `json:"session_id"`
+		Prepared  bool   `json:"prepared"`
+	}
+	if err := json.Unmarshal(raw, &receipt); err != nil || !receipt.Prepared || receipt.SessionID != segID {
+		t.Fatalf("prepare receipt = %s err=%v", raw, err)
+	}
+	// Simulate a restart where the runtime connects with an empty live list (no transcript yet for the zero-turn segment)
+	// while the node reloaded its persisted sessionState (AwaitingFirstMessage=true, SegmentOperation set, SegmentRetired=false).
+	if err := host.peer.Notify("runtime.sessions", map[string]any{"sessions": []proto.Session{}}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "persisted zero-turn assistant stays listed as idle", func() bool {
+		row, ok := listed(t, n)[segID]
+		return ok && row.Status == proto.StatusIdle && row.Assistant && row.AwaitingFirstMessage && row.Model == "model-next" && row.Effort == "high"
+	})
+	// Once retired, the zero-turn segment must no longer be surfaced as live.
+	if _, err := nodeCall(t, n, "assistant.segment.retire", map[string]any{"session_id": segID}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "retired zero-turn assistant leaves live list", func() bool {
+		_, ok := listed(t, n)[segID]
+		return !ok
+	})
+}

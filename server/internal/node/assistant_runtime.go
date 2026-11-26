@@ -155,10 +155,15 @@ func (n *Node) assistantSendRuntime(ctx context.Context, h *runtimeConn, id, cwd
 	if h == nil && id != "" { // its own runtime: the one that has the conversation
 		var label string
 		if h, label, _ = n.runtimes.belongs(id); h == nil {
-			if label == "" {
-				label = launcher
+			if st.AwaitingFirstMessage && launcher != "" {
+				h = n.assistantRuntime(launcher)
 			}
-			return "", errRuntimeAway(label)
+			if h == nil {
+				if label == "" {
+					label = launcher
+				}
+				return "", errRuntimeAway(label)
+			}
 		}
 	}
 	if h == nil {
@@ -231,11 +236,19 @@ func (n *Node) assistantSendRuntime(ctx context.Context, h *runtimeConn, id, cwd
 	if m := n.assistantModeOf(id); m != "" {
 		turn["mode"] = m
 	}
-	if !known || st.Launcher != launcher || st.Cwd != cwd || hasInput && st.TaskExecution != strict || (startedNew && supportsPolicy && policy != "") || (remote && !wasRemote) {
+	modelChanged := pickedModel != "" && st.Model != pickedModel
+	effortChanged := pickedEffort != "" && st.ModelEffort != pickedEffort
+	if !known || st.Launcher != launcher || st.Cwd != cwd || modelChanged || effortChanged || hasInput && st.TaskExecution != strict || (startedNew && supportsPolicy && policy != "") || (remote && !wasRemote) {
 		if st.StartedAt.IsZero() {
 			st.StartedAt = time.Now().UTC()
 		}
 		st.Launcher, st.Cwd = launcher, cwd
+		if pickedModel != "" {
+			st.Model = pickedModel
+		}
+		if pickedEffort != "" {
+			st.ModelEffort = pickedEffort
+		}
 		if hasInput {
 			st.TaskExecution = strict
 		}

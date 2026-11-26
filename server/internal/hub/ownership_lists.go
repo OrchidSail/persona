@@ -174,9 +174,14 @@ func (h *Hub) mergedAsk(w http.ResponseWriter, r *http.Request) ([]string, []byt
 // answer is given as it is. A paginated to-dos read is one manager's (pagedTodoList): its cursor cannot name rows of
 // another manager's list.
 func (h *Hub) mergeList(w http.ResponseWriter, r *http.Request, key string, ask func(w http.ResponseWriter, r *http.Request, id string)) {
-	if key == "todos" && (r.URL.Query().Has("limit") || r.URL.Query().Has("cursor")) {
-		h.pagedTodoList(w, r, key, ask)
-		return
+	if key == "todos" {
+		if r.URL.Query().Has("limit") || r.URL.Query().Has("cursor") {
+			h.pagedTodoList(w, r, key, ask)
+			return
+		}
+		if h.mergedTodos(w, r, key, ask) {
+			return
+		}
 	}
 	ids, body, ok := h.mergedAsk(w, r)
 	if !ok {

@@ -298,4 +298,33 @@ class SessionItemsCacheTest {
         db.query("SELECT (SELECT COUNT(*) FROM items) + (SELECT COUNT(*) FROM cursors)").use { it.moveToFirst(); assertEquals(0, it.getInt(0)) }
         db.close()
     }
+
+    @Test fun savePreservesUnknownHasMoreBoundaryInsteadOfCoercingFalse() = runBlocking {
+        val cache = SessionItemsCache(database, scope)
+        val session = SessionKey("computer", "unknown-boundary")
+        val twoTurns = listOf(
+            Item("u1", 1, role = "user", kind = "text", text = "First"),
+            Item("a2", 2, role = "assistant", kind = "text", text = "Reply 1"),
+            Item("u3", 3, role = "user", kind = "text", text = "Second"),
+            Item("a4", 4, role = "assistant", kind = "text", text = "Reply 2"),
+        )
+        // Unknown older boundary (hasMore = null) with <= 2 turns kept intact must restore as null, not false.
+        cache.save(session, CachedChat(twoTurns, history = "h1", covered = 4, hasMore = null))
+        val restoredUnknown = SessionItemsCache(database, scope).load(session)
+        assertEquals(null, restoredUnknown.hasMore)
+
+        // Confirmed beginning of history (hasMore = false) with <= 2 turns preserves false.
+        cache.save(session, CachedChat(twoTurns, history = "h1", covered = 4, hasMore = false))
+        val restoredStart = SessionItemsCache(database, scope).load(session)
+        assertEquals(false, restoredStart.hasMore)
+
+        // Trimming earlier turns (start > 0) proves older history exists even when snapshot.hasMore was null.
+        val threeTurns = twoTurns + listOf(
+            Item("u5", 5, role = "user", kind = "text", text = "Third"),
+            Item("a6", 6, role = "assistant", kind = "text", text = "Reply 3"),
+        )
+        cache.save(session, CachedChat(threeTurns, history = "h1", covered = 6, hasMore = null))
+        val restoredTrimmed = SessionItemsCache(database, scope).load(session)
+        assertEquals(true, restoredTrimmed.hasMore)
+    }
 }

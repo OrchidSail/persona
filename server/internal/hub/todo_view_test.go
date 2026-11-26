@@ -33,18 +33,27 @@ type todoReplies struct {
 	revision      string // X-Persona-Todos-Revision on the list and revision route; "": an older manager
 	fullReads     int
 	revisionReads int
+	onChange      func()
 }
 
 func (r *todoReplies) set(list, places string, status int) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.list, r.places, r.status = list, places, status
+	cb := r.onChange
+	r.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
 }
 
 func (r *todoReplies) setRevision(revision string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.revision = revision
+	cb := r.onChange
+	r.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
 }
 
 func (r *todoReplies) reads() (full, revision int) {
@@ -99,7 +108,8 @@ func (r *todoReplies) answer(method string, params json.RawMessage) (any, error)
 func todoViewHub(t *testing.T) (*Hub, *httptest.Server, *guardManager, *guardManager, *todoReplies, *todoReplies) {
 	t.Helper()
 	h, srv, _ := newBusHub(t)
-	ra, rb := &todoReplies{}, &todoReplies{}
+	ra := &todoReplies{onChange: func() { h.todoAnswers.changed(assistantwire.AssistantID) }}
+	rb := &todoReplies{onChange: func() { h.todoAnswers.changed("m-0c0c0c") }}
 	a := connectGuardManager(t, h, srv.URL, assistantwire.AssistantID, ra.answer)
 	b := connectGuardManager(t, h, srv.URL, "m-0c0c0c", rb.answer)
 	return h, srv, a, b, ra, rb

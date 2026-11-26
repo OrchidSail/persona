@@ -363,4 +363,30 @@ class TaskLaunchReconciliationTest {
         gate.complete(running); runCurrent()
         assertTrue(store.agentSessions.value.isEmpty())
     }
+
+    @Test fun burstOfTodosEventsDuringSlowRefreshCoalescesToSingleTrailingRead() = runTest {
+        val firstGate = CompletableDeferred<Unit>()
+        var calls = 0
+        val api = Api().apply {
+            read = {
+                val n = ++calls
+                if (n == 1) firstGate.await()
+                if (n == 1) listOf(starting) else listOf(linked)
+            }
+        }
+        val connection = Connection()
+        val store = TasksStore(api, connection, backgroundScope)
+        connection.events.emit(TodosEvent()); runCurrent()
+        assertEquals(1, calls)
+
+        // Emit a burst of 10 todos invalidations while the first read is in flight.
+        repeat(10) { connection.events.emit(TodosEvent()) }
+        runCurrent()
+        assertEquals(1, calls)
+
+        // Completing the first read runs exactly one trailing read for the entire burst.
+        firstGate.complete(Unit); runCurrent()
+        assertEquals(2, calls)
+        assertEquals(listOf(linked), store.todos.value)
+    }
 }

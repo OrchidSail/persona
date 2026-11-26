@@ -146,3 +146,96 @@ func TestTodoPlacesRoute(t *testing.T) {
 		t.Fatalf("places %+v, the list's counts %+v", places, list.Counts)
 	}
 }
+
+func TestTodosListCompactTrimsDetailsWhilePreservingChecklistAndDefaultBytes(t *testing.T) {
+	todoStores(t, func(t *testing.T, e *todoEnv, _ *db.DB) {
+		ctx := context.Background()
+		td := e.create("Ship release")
+		now := time.Now().UTC()
+		// Attach a task brief and multi-round supervision history on a closed todo.
+		if _, err := e.s.putTaskBrief(ctx, briefRecord{
+			CreatedAt: now, StartedBy: briefByOwner, Goal: "Ship release",
+			DoneWhen: []string{"tests green", "docs updated"}, Handover: "large handover context payload",
+		}, td.ID); err != nil {
+			t.Fatal(err)
+		}
+		e.s.todos.mu.Lock()
+		cur := e.s.todos.todos[td.ID]
+		doneAt := now
+		cur.DoneAt = &doneAt
+		cur.DoneBy = db.DoneByReview
+		cur.Supervision = &Supervision{
+			Supervisor: "main",
+			DoneWhen:   []string{"tests green", "docs updated"},
+			Criteria: []db.TodoCriterion{
+				{Criterion: "tests green", State: "met"},
+				{Criterion: "docs updated", State: "met"},
+			},
+			State: reviewAccepted,
+			Round: 2,
+			Reviews: []TaskReview{
+				{
+					At: now.Add(-2 * time.Minute), Verdict: reviewRework, Round: 1, Note: "fix docs",
+					Checks: []ReviewCheck{
+						{Criterion: "tests green", Met: true, Evidence: "all passed"},
+						{Criterion: "docs updated", Met: false, Evidence: "missing changelog"},
+					},
+				},
+				{
+					At: now.Add(-time.Minute), Verdict: reviewAccepted, Round: 2, Note: "looks good",
+					Checks: []ReviewCheck{
+						{Criterion: "docs updated", Met: true, Evidence: "changelog added"},
+					},
+				},
+			},
+			UpdatedAt: now,
+		}
+		e.s.todos.mu.Unlock()
+
+		fullRec := e.must("GET", "/api/v1/todos", "")
+		compactRec := e.must("GET", "/api/v1/todos?compact=1", "")
+		if compactRec.Body.Len() >= fullRec.Body.Len() {
+			t.Fatalf("compact payload (%d bytes) was not smaller than full payload (%d bytes)", compactRec.Body.Len(), fullRec.Body.Len())
+		}
+		if compactRec.Header().Get(assistantwire.TodoRevisionHeader) == "" {
+			t.Fatal("compact list omitted X-Persona-Todo-Revision header")
+		}
+		var full, compact struct {
+			Todos  []listedTodo
+			Counts assistantwire.TodoCounts
+		}
+		if err := json.Unmarshal(fullRec.Body.Bytes(), &full); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(compactRec.Body.Bytes(), &compact); err != nil {
+			t.Fatal(err)
+		}
+		if len(full.Todos) != 1 || full.Todos[0].Brief == nil || len(full.Todos[0].Supervision.Reviews) != 2 {
+			t.Fatalf("full list lost detail fields: %+v", full.Todos)
+		}
+		row := compact.Todos[0]
+		if row.Brief != nil {
+			t.Fatalf("compact list included embedded brief: %+v", row.Brief)
+		}
+		if len(row.Lineage) != 1 || row.Lineage[0].TodoID != td.ID {
+			t.Fatalf("compact list lost lineage: %+v", row.Lineage)
+		}
+		if row.Supervision == nil || len(row.Supervision.Criteria) != 0 {
+			t.Fatalf("compact list retained redundant criteria: %+v", row.Supervision)
+		}
+		if len(row.Supervision.Reviews) != 1 || row.Supervision.Reviews[0].Verdict != reviewAccepted || row.Supervision.Reviews[0].Note != "looks good" {
+			t.Fatalf("compact list closed reviews = %+v", row.Supervision.Reviews)
+		}
+		// Cumulative checks must preserve both "tests green" (from round 1) and "docs updated" (updated in round 2).
+		wantChecks := []ReviewCheck{
+			{Criterion: "tests green", Met: true, Evidence: "all passed"},
+			{Criterion: "docs updated", Met: true, Evidence: "changelog added"},
+		}
+		if !reflect.DeepEqual(row.Supervision.Reviews[0].Checks, wantChecks) {
+			t.Fatalf("compact merged checks = %+v, want %+v", row.Supervision.Reviews[0].Checks, wantChecks)
+		}
+		if !reflect.DeepEqual(compact.Counts, full.Counts) {
+			t.Fatalf("compact counts %+v != full counts %+v", compact.Counts, full.Counts)
+		}
+	})
+}

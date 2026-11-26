@@ -605,4 +605,59 @@ class HttpTasksApiTest {
             assertEquals(persona.core.contracts.api.AssistantViewAnswer.Open("https://example.com/a", 4), answer)
         }
     }
+
+    @Test fun todosUsesCompactQueryRevisionProbeAndEtagForZeroByteNotModifiedRefreshes() = runBlocking {
+        MockWebServer().use { server ->
+            val http = OkHttpClient.Builder().retryOnConnectionFailure(false).build()
+            val features = kotlinx.coroutines.flow.MutableStateFlow(setOf("todo_revision"))
+            val api = HttpTasksApi({ path, method, body, headers ->
+                val rb = body?.toString()?.toRequestBody("application/json".toMediaType())
+                val req = Request.Builder().url(server.url(path)).method(method, rb)
+                headers.forEach { (k, v) -> req.header(k, v) }
+                http.newCall(req.build()).execute()
+            }, features)
+
+            // First read: requests compact=1 and caches ETag + X-Persona-Todos-Revision.
+            server.enqueue(MockResponse()
+                .addHeader("ETag", "\"etag-1\"")
+                .addHeader("X-Persona-Todos-Revision", "rev-1")
+                .setBody("""{"todos":[{"id":"t1","title":"Ship fix"}]}"""))
+            val first = api.todos()
+            assertEquals(listOf("t1"), first.map { it.id })
+            val firstReq = server.takeRequest()
+            assertEquals("/api/v1/todos?compact=1", firstReq.path)
+            assertNull(firstReq.getHeader("If-None-Match"))
+
+            // Second read with todo_revision feature: probes /api/v1/todos/revision -> 304, returns cached list without fetching /todos.
+            server.enqueue(MockResponse().setResponseCode(304))
+            val second = api.todos()
+            assertEquals(first, second)
+            val probeReq = server.takeRequest()
+            assertEquals("/api/v1/todos/revision", probeReq.path)
+            assertEquals("rev-1", probeReq.getHeader("If-None-Match"))
+
+            // Third read: revision changed -> fetches /api/v1/todos?compact=1 with If-None-Match: "etag-1", receives 304 -> keeps cache.
+            server.enqueue(MockResponse().addHeader("X-Persona-Todos-Revision", "rev-2").setBody("""{"revision":"rev-2"}"""))
+            server.enqueue(MockResponse().setResponseCode(304).addHeader("ETag", "\"etag-1\"").addHeader("X-Persona-Todos-Revision", "rev-2"))
+            val third = api.todos()
+            assertEquals(first, third)
+            assertEquals("/api/v1/todos/revision", server.takeRequest().path)
+            val revalReq = server.takeRequest()
+            assertEquals("/api/v1/todos?compact=1", revalReq.path)
+            assertEquals("\"etag-1\"", revalReq.getHeader("If-None-Match"))
+
+            // Fourth read: revision changed and full body updated -> returns fresh list and updates cache validators.
+            server.enqueue(MockResponse().addHeader("X-Persona-Todos-Revision", "rev-3").setBody("""{"revision":"rev-3"}"""))
+            server.enqueue(MockResponse()
+                .addHeader("ETag", "\"etag-3\"")
+                .addHeader("X-Persona-Todos-Revision", "rev-3")
+                .setBody("""{"todos":[{"id":"t1","title":"Ship fix"},{"id":"t2","title":"Verify"}]}"""))
+            val fourth = api.todos()
+            assertEquals(listOf("t1", "t2"), fourth.map { it.id })
+            assertEquals("/api/v1/todos/revision", server.takeRequest().path)
+            val freshReq = server.takeRequest()
+            assertEquals("/api/v1/todos?compact=1", freshReq.path)
+            assertEquals("\"etag-1\"", freshReq.getHeader("If-None-Match"))
+        }
+    }
 }
