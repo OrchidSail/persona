@@ -15,6 +15,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -25,6 +26,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation3.runtime.NavKey
 import persona.core.designsystem.dense
 import persona.core.navigation.Navigator
+import persona.platform.phonetools.control.PhoneControlAccessibilityService
+import persona.platform.phonetools.control.PhoneControlNotificationListener
+import persona.platform.phonetools.control.PhoneControlPermissionsChecker
 import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -62,6 +66,14 @@ fun PhoneToolsScreen(runtime: PhoneToolsRuntime, navigator: Navigator) {
         item {
             Text(stringResource(R.string.phonetools_intro),
                 Modifier.padding(bottom = 16.dp.dense), style = PersonaTheme.type.callout, color = PersonaTheme.palette.ink2)
+        }
+        item(key = "remote_phone_control") {
+            PhoneControlSection(
+                runtime = runtime,
+                revision = revision,
+                onError = { error = it },
+                onClearError = { error = null },
+            )
         }
         items(PhoneSource.entries, key = { it.name }) { source ->
             val status = remember(revision, source, healthGranted) {
@@ -131,6 +143,209 @@ fun PhoneToolsScreen(runtime: PhoneToolsRuntime, navigator: Navigator) {
                 style = PersonaTheme.type.caption, color = PersonaTheme.palette.ink3)
         }
         error?.let { item { JNotice(it, Modifier.padding(top = 12.dp.dense), status = Status.NeedsYou) } }
+    }
+}
+
+@Composable
+private fun PhoneControlSection(
+    runtime: PhoneToolsRuntime,
+    revision: Int,
+    onError: (String) -> Unit,
+    onClearError: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val remoteControlEnabled by runtime.settings.remoteControlEnabled.collectAsStateWithLifecycle()
+    val allowOtp by runtime.settings.allowNotificationOtpAutoLogin.collectAsStateWithLifecycle()
+    val blockPayment by runtime.settings.blockRealPayment.collectAsStateWithLifecycle()
+    val a11yService by PhoneControlAccessibilityService.instance.collectAsStateWithLifecycle()
+    val notifConnected by PhoneControlNotificationListener.isConnected.collectAsStateWithLifecycle()
+    val snapshot = remember(revision, remoteControlEnabled, allowOtp, blockPayment, a11yService, notifConnected) {
+        runtime.control.currentSnapshot()
+    }
+    val toggleFailed = stringResource(R.string.phonetools_error_toggle)
+    val settingsFailed = stringResource(R.string.phonetools_error_settings)
+    val statusText: String
+    val statusTone: Status?
+    when {
+        !remoteControlEnabled -> {
+            statusText = stringResource(R.string.phonetools_control_status_off)
+            statusTone = null
+        }
+        !snapshot.permissions.accessibility -> {
+            statusText = stringResource(R.string.phonetools_control_status_needs_permission)
+            statusTone = Status.NeedsYou
+        }
+        !snapshot.residentConnection && !snapshot.permissions.batteryOptimizationIgnored -> {
+            statusText = stringResource(R.string.phonetools_control_status_foreground_only)
+            statusTone = Status.Working
+        }
+        else -> {
+            statusText = stringResource(R.string.phonetools_control_status_ready)
+            statusTone = Status.Unread
+        }
+    }
+    Column(Modifier.fillMaxWidth()) {
+        JSectionHeader(stringResource(R.string.phonetools_control_section_title), sub = true)
+        JGroupItem(GroupPosition.Single, Modifier.padding(bottom = Tokens.Space.m)) {
+            JSwitchRow(
+                title = stringResource(R.string.phonetools_control_title),
+                checked = remoteControlEnabled,
+                subtitle = stringResource(R.string.phonetools_control_subtitle),
+                subtitleLines = Int.MAX_VALUE,
+                titleLines = 2,
+                onCheckedChange = { value ->
+                    scope.launch {
+                        try {
+                            runtime.settings.setRemoteControlEnabled(value)
+                            onClearError()
+                        } catch (_: Exception) {
+                            onError(toggleFailed)
+                        }
+                    }
+                },
+            )
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = Tokens.Space.l).padding(bottom = Tokens.Space.l),
+                verticalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+            ) {
+                JTag(statusText, status = statusTone)
+                if (remoteControlEnabled) {
+                    JDivider()
+                    ControlPermissionRow(
+                        title = stringResource(R.string.phonetools_control_perm_a11y_title),
+                        detail = stringResource(R.string.phonetools_control_perm_a11y_detail),
+                        granted = snapshot.permissions.accessibility,
+                        onOpenSettings = {
+                            try {
+                                PhoneControlPermissionsChecker.openAccessibilitySettings(context)
+                                onClearError()
+                            } catch (_: Exception) {
+                                onError(settingsFailed)
+                            }
+                        },
+                    )
+                    JDivider()
+                    ControlPermissionRow(
+                        title = stringResource(R.string.phonetools_control_perm_notif_title),
+                        detail = stringResource(R.string.phonetools_control_perm_notif_detail),
+                        granted = snapshot.permissions.notificationListener,
+                        onOpenSettings = {
+                            try {
+                                PhoneControlPermissionsChecker.openNotificationListenerSettings(context)
+                                onClearError()
+                            } catch (_: Exception) {
+                                onError(settingsFailed)
+                            }
+                        },
+                    )
+                    JDivider()
+                    ControlPermissionRow(
+                        title = stringResource(R.string.phonetools_control_perm_overlay_title),
+                        detail = stringResource(R.string.phonetools_control_perm_overlay_detail),
+                        granted = snapshot.permissions.overlay,
+                        onOpenSettings = {
+                            try {
+                                PhoneControlPermissionsChecker.openOverlayPermissionSettings(context)
+                                onClearError()
+                            } catch (_: Exception) {
+                                onError(settingsFailed)
+                            }
+                        },
+                    )
+                    if (!snapshot.permissions.batteryOptimizationIgnored) {
+                        JNotice(
+                            text = stringResource(R.string.phonetools_control_bg_notice),
+                            status = Status.NeedsYou,
+                            actionLabel = stringResource(R.string.phonetools_control_bg_action),
+                            onAction = {
+                                try {
+                                    PhoneControlPermissionsChecker.requestIgnoreBatteryOptimizations(context)
+                                    onClearError()
+                                } catch (_: Exception) {
+                                    onError(settingsFailed)
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+            if (remoteControlEnabled) {
+                JDivider()
+                JSwitchRow(
+                    title = stringResource(R.string.phonetools_control_gate_otp_title),
+                    checked = allowOtp,
+                    subtitle = stringResource(R.string.phonetools_control_gate_otp_detail),
+                    subtitleLines = Int.MAX_VALUE,
+                    titleLines = 2,
+                    onCheckedChange = { value ->
+                        scope.launch {
+                            try {
+                                runtime.settings.setAllowNotificationOtpAutoLogin(value)
+                                onClearError()
+                            } catch (_: Exception) {
+                                onError(toggleFailed)
+                            }
+                        }
+                    },
+                )
+                JDivider()
+                JSwitchRow(
+                    title = stringResource(R.string.phonetools_control_gate_payment_title),
+                    checked = blockPayment,
+                    subtitle = stringResource(R.string.phonetools_control_gate_payment_detail),
+                    subtitleLines = Int.MAX_VALUE,
+                    titleLines = 2,
+                    onCheckedChange = { value ->
+                        scope.launch {
+                            try {
+                                runtime.settings.setBlockRealPayment(value)
+                                onClearError()
+                            } catch (_: Exception) {
+                                onError(toggleFailed)
+                            }
+                        }
+                    },
+                )
+                Text(
+                    text = stringResource(R.string.phonetools_control_safety_footnote),
+                    modifier = Modifier.padding(horizontal = Tokens.Space.l).padding(bottom = Tokens.Space.l),
+                    style = PersonaTheme.type.caption,
+                    color = PersonaTheme.palette.ink3,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ControlPermissionRow(
+    title: String,
+    detail: String,
+    granted: Boolean,
+    onOpenSettings: () -> Unit,
+) {
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = Tokens.Space.xs),
+        verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+    ) {
+        Text(title, style = PersonaTheme.type.headline, color = PersonaTheme.palette.ink)
+        Text(detail, style = PersonaTheme.type.caption, color = PersonaTheme.palette.ink2)
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            JTag(
+                text = stringResource(if (granted) R.string.phonetools_status_granted else R.string.phonetools_status_denied),
+                status = if (granted) Status.Unread else Status.NeedsYou,
+            )
+            JButton(
+                text = stringResource(R.string.phonetools_control_open_settings),
+                onClick = onOpenSettings,
+                kind = JButtonKind.Secondary,
+                size = JButtonSize.Small,
+            )
+        }
     }
 }
 

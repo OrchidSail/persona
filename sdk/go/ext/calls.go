@@ -264,6 +264,24 @@ func (h *Hub) AssistantEvent(ctx context.Context, p wire.AssistantEventParams) (
 	return callHub[wire.AssistantEventResult](ctx, h, "assistant.event", p)
 }
 
+// DeviceRelayDevices lists online paired full-access devices advertising a named relay channel over /api/v1/ws
+// (permission device.relay:<channel>, named grant only).
+func (h *Hub) DeviceRelayDevices(ctx context.Context, p wire.DeviceRelayDevicesParams) (wire.DeviceRelayDevicesResult, error) {
+	return callHub[wire.DeviceRelayDevicesResult](ctx, h, "device.relay.devices", p)
+}
+
+// DeviceRelayCall relays one opaque JSON payload to a specific paired device on a named channel without cross-device
+// fallback (permission device.relay:<channel>, named grant only).
+func (h *Hub) DeviceRelayCall(ctx context.Context, p wire.DeviceRelayCallParams) (wire.DeviceRelayCallResult, error) {
+	return callHub[wire.DeviceRelayCallResult](ctx, h, "device.relay.call", p)
+}
+
+// DeviceRelayCancel cancels an in-flight relay call started by this extension on a named channel
+// (permission device.relay:<channel>, named grant only).
+func (h *Hub) DeviceRelayCancel(ctx context.Context, p wire.DeviceRelayCancelParams) (wire.DeviceRelayCancelResult, error) {
+	return callHub[wire.DeviceRelayCancelResult](ctx, h, "device.relay.cancel", p)
+}
+
 func callHub[R any](ctx context.Context, h *Hub, method string, params any) (R, error) {
 	var r R
 	err := h.Call(ctx, method, params, &r)

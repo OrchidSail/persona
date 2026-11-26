@@ -1,0 +1,350 @@
+package persona.platform.phonetools.control
+
+import android.accessibilityservice.AccessibilityService
+import android.app.ActivityOptions
+import android.content.Context
+import android.content.Intent
+import android.graphics.Rect
+import android.os.Build
+import android.view.Display
+import android.view.accessibility.AccessibilityNodeInfo
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * Concrete Android implementation of [ScreenPort] combining:
+ * - [PhoneControlAccessibilityService] for UI hierarchy collection, gestures & API 30+ JPEG screenshots
+ * - [PhoneControlVirtualDisplay] for strictly lazy, zero-MediaProjection background VirtualDisplay
+ * - [NotificationBuffer] for ephemeral in-memory OTP reading and one-time consumption
+ * - [PackageManager] for app launching with unconditional URI scheme (`://`) blocking
+ */
+internal class AndroidScreenController(
+    private val context: Context,
+    private val virtualDisplay: PhoneControlVirtualDisplay,
+    private val notifications: NotificationBuffer,
+) : ScreenPort {
+
+    private val nodeCache = ConcurrentHashMap<String, List<CollectedNode>>()
+    @Volatile
+    private var activeDisplayId: Int = Display.DEFAULT_DISPLAY
+
+    private fun requireA11y(): PhoneControlAccessibilityService =
+        PhoneControlAccessibilityService.instance.value
+            ?: throw PhoneControlException("accessibility_offline", "Accessibility service is not connected")
+
+    override suspend fun captureSnapshot(
+        includeScreenshot: Boolean,
+        screenshotMaxEdge: Int,
+        screenshotQuality: Int,
+    ): ScreenSnapshot = withContext(Dispatchers.IO) {
+        val a11y = requireA11y()
+        val virtualId = virtualDisplay.displayId.value
+
+        var targetDisplay = virtualId ?: Display.DEFAULT_DISPLAY
+        var windows = a11y.windowsOnDisplay(targetDisplay)
+        var usingVirtual = virtualId != null && targetDisplay == virtualId && windows.isNotEmpty()
+        if (windows.isEmpty() && targetDisplay != Display.DEFAULT_DISPLAY) {
+            targetDisplay = Display.DEFAULT_DISPLAY
+            windows = a11y.windowsOnDisplay(targetDisplay)
+            usingVirtual = false
+        }
+        activeDisplayId = targetDisplay
+
+        val metrics = context.resources.displayMetrics
+        val collected = ScreenTreeCollector.collect(
+            windows = windows,
+            width = metrics.widthPixels,
+            height = metrics.heightPixels,
+            ownPackage = context.packageName,
+        )
+
+        val snapshotId = "snap_${UUID.randomUUID().toString().take(8)}"
+        nodeCache.clear()
+        val _ = nodeCache.put(snapshotId, collected.nodes)
+
+        val capture = if (includeScreenshot) {
+            captureVisual(a11y, targetDisplay, usingVirtual, screenshotMaxEdge, screenshotQuality)
+        } else {
+            ScreenshotCaptureResult()
+        }
+
+        ScreenSnapshot(
+            snapshotId = snapshotId,
+            displayId = targetDisplay,
+            width = metrics.widthPixels,
+            height = metrics.heightPixels,
+            topPackage = collected.topPackage,
+            elements = collected.nodes.map { it.element },
+            visibleTexts = collected.visibleTexts,
+            hasPasswordField = collected.hasPasswordField,
+            uiHash = collected.uiHash,
+            usingVirtualDisplay = usingVirtual,
+            screenshot = capture.payload,
+            screenshotOmittedReason = capture.omittedReason,
+        )
+    }
+
+    private suspend fun captureVisual(
+        a11y: PhoneControlAccessibilityService,
+        displayId: Int,
+        usingVirtual: Boolean,
+        maxEdge: Int,
+        quality: Int,
+    ): ScreenshotCaptureResult {
+        if (usingVirtual) {
+            virtualDisplay.latestFrameJpeg(maxEdge = maxEdge, quality = quality)?.let { return it }
+        }
+        return a11y.captureScreenshotJpeg(displayId = displayId, maxEdge = maxEdge, quality = quality)
+    }
+
+    override suspend fun tapRef(ref: String, snapshotId: String): ActionOutcome = withContext(Dispatchers.IO) {
+        val a11y = requireA11y()
+        val entry = resolveNode(ref, snapshotId) ?: return@withContext ActionOutcome.Failed("ref_expired:$ref")
+        val clickable = findClickableAncestor(entry.node)
+        if (clickable?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) {
+            delay(220)
+            return@withContext ActionOutcome.Ok("Clicked $ref (${entry.element.name.take(24)})")
+        }
+        val rect = Rect().also { entry.node.getBoundsInScreen(it) }
+        val ok = a11y.tap(activeDisplayId, rect.centerX().toFloat(), rect.centerY().toFloat())
+        delay(220)
+        if (ok) ActionOutcome.Ok("Tapped $ref at (${rect.centerX()},${rect.centerY()})")
+        else ActionOutcome.Failed("Failed to tap $ref")
+    }
+
+    override suspend fun tapXY(x: Int, y: Int): ActionOutcome = withContext(Dispatchers.IO) {
+        val ok = requireA11y().tap(activeDisplayId, x.toFloat(), y.toFloat())
+        delay(220)
+        if (ok) ActionOutcome.Ok("Tapped ($x,$y)") else ActionOutcome.Failed("Gesture cancelled")
+    }
+
+    override suspend fun doubleTapRef(ref: String, snapshotId: String): ActionOutcome = withContext(Dispatchers.IO) {
+        val entry = resolveNode(ref, snapshotId) ?: return@withContext ActionOutcome.Failed("ref_expired:$ref")
+        val ok = requireA11y().doubleTap(activeDisplayId, entry.element.centerX.toFloat(), entry.element.centerY.toFloat())
+        delay(220)
+        if (ok) ActionOutcome.Ok("Double tapped $ref") else ActionOutcome.Failed("Double tap cancelled")
+    }
+
+    override suspend fun longPressRef(ref: String, snapshotId: String): ActionOutcome = withContext(Dispatchers.IO) {
+        val entry = resolveNode(ref, snapshotId) ?: return@withContext ActionOutcome.Failed("ref_expired:$ref")
+        val ok = requireA11y().longPress(activeDisplayId, entry.element.centerX.toFloat(), entry.element.centerY.toFloat())
+        delay(250)
+        if (ok) ActionOutcome.Ok("Long pressed $ref") else ActionOutcome.Failed("Long press cancelled")
+    }
+
+    override suspend fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Long): ActionOutcome = withContext(Dispatchers.IO) {
+        val ok = requireA11y().swipe(activeDisplayId, x1.toFloat(), y1.toFloat(), x2.toFloat(), y2.toFloat(), durationMs)
+        delay(260)
+        if (ok) ActionOutcome.Ok("Swiped ($x1,$y1)->($x2,$y2)") else ActionOutcome.Failed("Swipe cancelled")
+    }
+
+    override suspend fun scroll(ref: String?, snapshotId: String?, down: Boolean): ActionOutcome = withContext(Dispatchers.IO) {
+        val a11y = requireA11y()
+        val entry = if (ref != null && snapshotId != null) resolveNode(ref, snapshotId) else null
+        val scrollable = entry?.node?.let { findScrollableAncestor(it) }
+        if (scrollable != null) {
+            val action = if (down) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            if (scrollable.performAction(action)) {
+                delay(260)
+                return@withContext ActionOutcome.Ok("Scrolled ${if (down) "down" else "up"}")
+            }
+        }
+        val m = context.resources.displayMetrics
+        val cx = m.widthPixels / 2f
+        val (y1, y2) = if (down) m.heightPixels * 0.72f to m.heightPixels * 0.28f else m.heightPixels * 0.28f to m.heightPixels * 0.72f
+        val ok = a11y.swipe(activeDisplayId, cx, y1, cx, y2, 360L)
+        delay(260)
+        if (ok) ActionOutcome.Ok("Swiped to scroll ${if (down) "down" else "up"}") else ActionOutcome.Failed("Scroll failed")
+    }
+
+    override suspend fun inputText(
+        ref: String?,
+        snapshotId: String?,
+        text: String,
+        clearFirst: Boolean,
+    ): ActionOutcome = withContext(Dispatchers.IO) {
+        val a11y = requireA11y()
+        val node = resolveEditableNode(ref, snapshotId)
+            ?: return@withContext ActionOutcome.Failed("No editable field found")
+        val ok = a11y.setNodeText(node, text, clearFirst)
+        delay(180)
+        if (ok) ActionOutcome.Ok("Entered text (${text.length} chars)")
+        else ActionOutcome.Failed("Failed to set text on target field")
+    }
+
+    override suspend fun fillVerificationCode(
+        ref: String?,
+        snapshotId: String?,
+        otpId: String?,
+        appHint: String?,
+        sinceMs: Long,
+        clearFirst: Boolean,
+    ): ActionOutcome = withContext(Dispatchers.IO) {
+        val a11y = requireA11y()
+        val node = resolveEditableNode(ref, snapshotId)
+            ?: return@withContext ActionOutcome.Failed("No editable field found for verification code")
+        val otp = notifications.consumeOtp(
+            windowMs = 180_000L,
+            sinceMs = sinceMs,
+            appHint = appHint,
+            otpId = otpId,
+            consume = true,
+        ) ?: return@withContext ActionOutcome.Failed("No unconsumed verification code found in notifications")
+        val ok = a11y.setNodeText(node, otp.code, clearFirst)
+        delay(180)
+        if (ok) ActionOutcome.Ok("Filled verification code from ${otp.senderOrTitle} (${otp.packageName})")
+        else ActionOutcome.Failed("Failed to fill verification code into target field")
+    }
+
+    override suspend fun pressBack(): ActionOutcome = withContext(Dispatchers.IO) {
+        val ok = requireA11y().performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+        delay(220)
+        if (ok) ActionOutcome.Ok("Pressed Back") else ActionOutcome.Failed("Back action failed")
+    }
+
+    override suspend fun pressHome(): ActionOutcome = withContext(Dispatchers.IO) {
+        val ok = requireA11y().performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
+        delay(250)
+        if (ok) ActionOutcome.Ok("Pressed Home") else ActionOutcome.Failed("Home action failed")
+    }
+
+    override suspend fun pressRecents(): ActionOutcome = withContext(Dispatchers.IO) {
+        val ok = requireA11y().performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS)
+        delay(250)
+        if (ok) ActionOutcome.Ok("Opened Recents") else ActionOutcome.Failed("Recents action failed")
+    }
+
+    override suspend fun launchApp(packageOrName: String, preferVirtualDisplay: Boolean): ActionOutcome = withContext(Dispatchers.IO) {
+        val query = packageOrName.trim()
+        if (query.isEmpty()) {
+            return@withContext ActionOutcome.Failed("launch_app requires params.app")
+        }
+        // Unconditional low-level anti-fraud guard: never launch URI schemes or deep links.
+        if (query.contains("://")) {
+            return@withContext ActionOutcome.Failed("URI scheme deep links are forbidden; launch apps by package or app name only")
+        }
+        val pm = context.packageManager
+        val resolvedPkg = if (pm.getLaunchIntentForPackage(query) != null) {
+            query
+        } else {
+            listLaunchableApps().firstOrNull {
+                it.label.equals(query, ignoreCase = true) ||
+                    it.label.contains(query, ignoreCase = true) ||
+                    it.packageName.equals(query, ignoreCase = true)
+            }?.packageName
+        } ?: return@withContext ActionOutcome.Failed("App not found: $query")
+
+        val intent = pm.getLaunchIntentForPackage(resolvedPkg)
+            ?: return@withContext ActionOutcome.Failed("App has no launcher activity: $resolvedPkg")
+        val _ = intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+        val launchedVirtual = if (preferVirtualDisplay) {
+            val vdId = virtualDisplay.ensureCreated()
+            if (vdId != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                runCatching {
+                    val opts = ActivityOptions.makeBasic().setLaunchDisplayId(vdId)
+                    context.startActivity(intent, opts.toBundle())
+                    activeDisplayId = vdId
+                    true
+                }.getOrDefault(false)
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+
+        if (!launchedVirtual) {
+            val started = runCatching { context.startActivity(intent) }
+            started.exceptionOrNull()?.let {
+                return@withContext ActionOutcome.Failed("Launch failed: ${it.message}")
+            }
+            activeDisplayId = Display.DEFAULT_DISPLAY
+        }
+        delay(700)
+        ActionOutcome.Ok("Launched $resolvedPkg (virtual=$launchedVirtual)")
+    }
+
+    override suspend fun listLaunchableApps(): List<LaunchableApp> = withContext(Dispatchers.IO) {
+        val pm = context.packageManager
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        pm.queryIntentActivities(intent, 0)
+            .map { info ->
+                LaunchableApp(
+                    packageName = info.activityInfo.packageName,
+                    label = info.loadLabel(pm)?.toString()?.trim().orEmpty().ifBlank { info.activityInfo.packageName },
+                )
+            }
+            .distinctBy { it.packageName }
+            .sortedBy { it.label.lowercase() }
+    }
+
+    override suspend fun findLatestOtp(
+        windowMs: Long,
+        sinceMs: Long,
+        appHint: String?,
+        otpId: String?,
+    ): ExtractedOtp? = notifications.findLatestOtp(windowMs = windowMs, sinceMs = sinceMs, appHint = appHint, otpId = otpId)
+
+    override suspend fun consumeOtp(
+        windowMs: Long,
+        sinceMs: Long,
+        appHint: String?,
+        otpId: String?,
+        consume: Boolean,
+    ): ExtractedOtp? = notifications.consumeOtp(
+        windowMs = windowMs,
+        sinceMs = sinceMs,
+        appHint = appHint,
+        otpId = otpId,
+        consume = consume,
+    )
+
+    override suspend fun waitMs(ms: Long) {
+        delay(ms)
+    }
+
+    override fun clearCaches() {
+        nodeCache.clear()
+        activeDisplayId = Display.DEFAULT_DISPLAY
+    }
+
+    override fun releaseVirtualDisplay() {
+        virtualDisplay.release()
+        activeDisplayId = Display.DEFAULT_DISPLAY
+    }
+
+    private fun resolveNode(ref: String, snapshotId: String): CollectedNode? =
+        nodeCache[snapshotId]?.firstOrNull { it.element.ref == ref }
+
+    private fun resolveEditableNode(ref: String?, snapshotId: String?): AccessibilityNodeInfo? =
+        if (ref != null && snapshotId != null) {
+            resolveNode(ref, snapshotId)?.node
+        } else {
+            nodeCache.values.firstOrNull()?.firstOrNull { it.element.editable && it.element.focused }?.node
+                ?: nodeCache.values.firstOrNull()?.firstOrNull { it.element.editable }?.node
+        }
+
+    private fun findClickableAncestor(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var cur: AccessibilityNodeInfo? = node
+        var depth = 0
+        while (cur != null && depth++ < 8) {
+            if (cur.isClickable) return cur
+            cur = cur.parent
+        }
+        return null
+    }
+
+    private fun findScrollableAncestor(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var cur: AccessibilityNodeInfo? = node
+        var depth = 0
+        while (cur != null && depth++ < 8) {
+            if (cur.isScrollable) return cur
+            cur = cur.parent
+        }
+        return null
+    }
+}

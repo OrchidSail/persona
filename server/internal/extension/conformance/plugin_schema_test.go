@@ -189,6 +189,15 @@ var goTypes = map[string]any{
 	"BrowserRunParams":      wire.BrowserRunParams{},
 	"BrowserRunResult":      wire.BrowserRunResult{},
 
+	// The manager forwards device relay calls to the hub using the generated wire types
+	// (extmgr/extension_device_relay.go, hub/device_relay.go).
+	"DeviceRelayDevicesParams": wire.DeviceRelayDevicesParams{},
+	"DeviceRelayDevicesResult": wire.DeviceRelayDevicesResult{},
+	"DeviceRelayCallParams":    wire.DeviceRelayCallParams{},
+	"DeviceRelayCallResult":    wire.DeviceRelayCallResult{},
+	"DeviceRelayCancelParams":  wire.DeviceRelayCancelParams{},
+	"DeviceRelayCancelResult":  wire.DeviceRelayCancelResult{},
+
 	// Storage params are the actual manager-engine decoder types. Dynamic result
 	// objects are validated against these wire DTOs before committing/acknowledging.
 	"StorageEmptyParams":       struct{}{},
@@ -275,6 +284,8 @@ var storageCalls = []string{"storage.request", "storage.get", "storage.list", "s
 	"storage.queue.list", "storage.queue.enqueue", "storage.queue.claim", "storage.queue.renew", "storage.queue.ack", "storage.queue.forget", "storage.queue.retry",
 	"storage.blob.create", "storage.blob.write", "storage.blob.finish", "storage.blob.delete", "storage.blob.read"}
 
+var deviceRelayCalls = []string{"device.relay.devices", "device.relay.call", "device.relay.cancel"}
+
 func TestPluginSchemasListTheServersCalls(t *testing.T) {
 	var want []string
 	for _, m := range serverCalls {
@@ -291,6 +302,7 @@ func TestPluginSchemasListTheServersCalls(t *testing.T) {
 	want = append(want, assistantCalls...)
 	want = append(want, sentCalls...)
 	want = append(want, storageCalls...)
+	want = append(want, deviceRelayCalls...)
 	want = append(want, repoCalls...)
 	want = append(want, offloadCalls...)
 	for _, name := range want {
@@ -300,7 +312,7 @@ func TestPluginSchemasListTheServersCalls(t *testing.T) {
 	}
 	for name := range wire.Calls {
 		if (strings.HasPrefix(name, serve.Namespace+".") || strings.HasPrefix(name, channel.Namespace+".") ||
-			strings.HasPrefix(name, "kb.") || strings.HasPrefix(name, "event.kb.") || strings.HasPrefix(name, "event.todo.") || strings.HasPrefix(name, "event.leader.") || strings.HasPrefix(name, "sent.") || strings.HasPrefix(name, "model.") || strings.HasPrefix(name, "transcription.") || strings.HasPrefix(name, "assistant.") || strings.HasPrefix(name, "storage.") || strings.HasPrefix(name, ext.RepositoryNamespace+".") || strings.HasPrefix(name, ext.OffloadNamespace+".")) &&
+			strings.HasPrefix(name, "kb.") || strings.HasPrefix(name, "event.kb.") || strings.HasPrefix(name, "event.todo.") || strings.HasPrefix(name, "event.leader.") || strings.HasPrefix(name, "sent.") || strings.HasPrefix(name, "model.") || strings.HasPrefix(name, "transcription.") || strings.HasPrefix(name, "assistant.") || strings.HasPrefix(name, "storage.") || strings.HasPrefix(name, "device.relay.") || strings.HasPrefix(name, ext.RepositoryNamespace+".") || strings.HasPrefix(name, ext.OffloadNamespace+".")) &&
 			!slices.Contains(want, name) {
 			t.Errorf("%s: schema/extension lists it, the server has no such call", name)
 		}
