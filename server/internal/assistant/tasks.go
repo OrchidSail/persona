@@ -236,6 +236,9 @@ type PlanTask struct {
 	rememberKind bool
 	// task_spawn preserves the caller's mode instead of applying a fresh task's Claude-family permission default.
 	preservePermission bool
+	// handoffLauncherSwitch marks a continuation whose launcher or agent kind changed (not only machine);
+	// cross-launcher / cross-provider switches always require explicit owner confirmation on the plan card.
+	handoffLauncherSwitch bool
 	// LauncherDefaultModel selects the launcher's own model instead of a matching Agents binding. It is hub-owned:
 	// task_spawn sets it for an explicitly empty parent model, and a launcher-only retry override sets it too. Its
 	// absence on a legacy plan keeps that row's opaque launch unchanged.
