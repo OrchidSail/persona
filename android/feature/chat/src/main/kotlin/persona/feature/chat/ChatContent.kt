@@ -542,6 +542,32 @@ internal fun ChatLineContent(
 @Composable
 private fun ChatRenderStyle.hidesThoughts(): Boolean = false
 
+/**
+ * Whether a compact assistant work fold (Brief/Board) has any step that would actually render when expanded.
+ * Thoughts are hidden on Brief/Board, so a live turn that has only started thinking has zero inspectable steps.
+ */
+internal fun ChatLine.Work.hasVisibleCompactSteps(hidesThoughts: Boolean): Boolean = steps.any { step ->
+    when (step) {
+        is WorkItem.Tool, is WorkItem.Narration, is WorkItem.Folded -> true
+        is WorkItem.Thought -> !hidesThoughts || step.item.kind != "thinking"
+    }
+}
+
+@Composable
+private fun AssistantWorkSummary(line: ChatLine.Work, hidesThoughts: Boolean, onToggle: (String) -> Unit) {
+    val label = when {
+        line.tools > 0 -> pluralStringResource(R.plurals.chat_assistant_checked, line.tools, line.tools)
+        !line.hasVisibleCompactSteps(hidesThoughts) -> return
+        line.live -> stringResource(R.string.chat_work_working)
+        else -> {
+            val replies = line.steps.count { it is WorkItem.Narration }
+            if (replies > 0) stringResource(R.string.chat_work_replies, replies)
+            else stringResource(R.string.chat_work_done)
+        }
+    }
+    AssistantFoldLine(label, line.open) { onToggle(line.id) }
+}
+
 /** One muted line that opens and closes what it stands for: the work summary, a folded background round (#4314). */
 @Composable
 internal fun AssistantFoldLine(label: String, open: Boolean, modifier: Modifier = Modifier, onToggle: () -> Unit) {
