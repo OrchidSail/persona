@@ -1,30 +1,35 @@
 package persona.platform.phonetools.control
 
 import android.accessibilityservice.AccessibilityService
-import android.app.ActivityOptions
 import android.content.Context
 import android.content.Intent
 import android.graphics.Rect
-import android.os.Build
 import android.view.Display
+import android.view.KeyEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import persona.platform.phonetools.control.shell.IPhoneControlShell
+import persona.platform.phonetools.control.shell.PhoneControlShellService
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.roundToInt
 
 /**
  * Concrete Android implementation of [ScreenPort] combining:
- * - [PhoneControlAccessibilityService] for UI hierarchy collection, gestures & API 30+ JPEG screenshots
- * - [PhoneControlVirtualDisplay] for strictly lazy, zero-MediaProjection background VirtualDisplay
- * - [NotificationBuffer] for ephemeral in-memory OTP reading and one-time consumption
- * - [PackageManager] for app launching with unconditional URI scheme (`://`) blocking
+ * - Privileged uid-2000 [IPhoneControlShell] + [PhoneControlVirtualDisplay] for true off-screen
+ *   background execution, live mini-screen preview frames, and targeted touch/key injection
+ *   (zero overlay flashing and zero main-screen focus stealing).
+ * - [PhoneControlAccessibilityService] for UI hierarchy collection, text setting, and seamless
+ *   foreground fallback whenever the privileged shell is not yet configured.
+ * - [NotificationBuffer] for ephemeral in-memory OTP reading and one-time consumption.
  */
 internal class AndroidScreenController(
     private val context: Context,
     private val virtualDisplay: PhoneControlVirtualDisplay,
     private val notifications: NotificationBuffer,
+    private val shellProvider: () -> IPhoneControlShell? = { null },
 ) : ScreenPort {
 
     private val nodeCache = ConcurrentHashMap<String, List<CollectedNode>>()
@@ -35,6 +40,11 @@ internal class AndroidScreenController(
         PhoneControlAccessibilityService.instance.value
             ?: throw PhoneControlException("accessibility_offline", "Accessibility service is not connected")
 
+    private fun isOnVirtualDisplay(): Boolean {
+        val vdId = virtualDisplay.displayId.value ?: return false
+        return activeDisplayId == vdId && vdId > Display.DEFAULT_DISPLAY
+    }
+
     override suspend fun captureSnapshot(
         includeScreenshot: Boolean,
         screenshotMaxEdge: Int,
@@ -42,24 +52,30 @@ internal class AndroidScreenController(
     ): ScreenSnapshot = withContext(Dispatchers.IO) {
         val a11y = requireA11y()
         val virtualId = virtualDisplay.displayId.value
+        val hasVirtualTask = virtualId != null && (virtualDisplay.topTaskPackage() != null || activeDisplayId == virtualId)
 
-        var targetDisplay = virtualId ?: Display.DEFAULT_DISPLAY
+        var targetDisplay = if (hasVirtualTask && virtualId != null) virtualId else Display.DEFAULT_DISPLAY
         var windows = a11y.windowsOnDisplay(targetDisplay)
-        var usingVirtual = virtualId != null && targetDisplay == virtualId && windows.isNotEmpty()
-        if (windows.isEmpty() && targetDisplay != Display.DEFAULT_DISPLAY) {
+        var usingVirtual = virtualId != null && targetDisplay == virtualId
+
+        // Only fall back to DEFAULT_DISPLAY when no background task is actually alive on the virtual display.
+        if (windows.isEmpty() && usingVirtual && virtualDisplay.topTaskPackage() == null) {
             targetDisplay = Display.DEFAULT_DISPLAY
             windows = a11y.windowsOnDisplay(targetDisplay)
             usingVirtual = false
         }
         activeDisplayId = targetDisplay
 
-        val metrics = context.resources.displayMetrics
+        val width = if (usingVirtual) virtualDisplay.currentWidth else context.resources.displayMetrics.widthPixels
+        val height = if (usingVirtual) virtualDisplay.currentHeight else context.resources.displayMetrics.heightPixels
+
         val collected = ScreenTreeCollector.collect(
             windows = windows,
-            width = metrics.widthPixels,
-            height = metrics.heightPixels,
+            width = width,
+            height = height,
             ownPackage = context.packageName,
         )
+        val topPkg = collected.topPackage ?: if (usingVirtual) virtualDisplay.topTaskPackage() else null
 
         val snapshotId = "snap_${UUID.randomUUID().toString().take(8)}"
         nodeCache.clear()
@@ -74,9 +90,9 @@ internal class AndroidScreenController(
         ScreenSnapshot(
             snapshotId = snapshotId,
             displayId = targetDisplay,
-            width = metrics.widthPixels,
-            height = metrics.heightPixels,
-            topPackage = collected.topPackage,
+            width = width,
+            height = height,
+            topPackage = topPkg,
             elements = collected.nodes.map { it.element },
             visibleTexts = collected.visibleTexts,
             hasPasswordField = collected.hasPasswordField,
@@ -96,6 +112,10 @@ internal class AndroidScreenController(
     ): ScreenshotCaptureResult {
         if (usingVirtual) {
             virtualDisplay.latestFrameJpeg(maxEdge = maxEdge, quality = quality)?.let { return it }
+            // Never hide the overlay when waiting briefly for the first virtual-display frame.
+            delay(150L)
+            virtualDisplay.latestFrameJpeg(maxEdge = maxEdge, quality = quality)?.let { return it }
+            return ScreenshotCaptureResult(omittedReason = "virtual_frame_pending")
         }
         return a11y.captureScreenshotJpeg(displayId = displayId, maxEdge = maxEdge, quality = quality)
     }
@@ -109,34 +129,60 @@ internal class AndroidScreenController(
             return@withContext ActionOutcome.Ok("Clicked $ref (${entry.element.name.take(24)})")
         }
         val rect = Rect().also { entry.node.getBoundsInScreen(it) }
-        val ok = a11y.tap(activeDisplayId, rect.centerX().toFloat(), rect.centerY().toFloat())
+        val ok = dispatchTap(a11y, rect.centerX(), rect.centerY())
         delay(220)
         if (ok) ActionOutcome.Ok("Tapped $ref at (${rect.centerX()},${rect.centerY()})")
         else ActionOutcome.Failed("Failed to tap $ref")
     }
 
     override suspend fun tapXY(x: Int, y: Int): ActionOutcome = withContext(Dispatchers.IO) {
-        val ok = requireA11y().tap(activeDisplayId, x.toFloat(), y.toFloat())
+        val ok = dispatchTap(requireA11y(), x, y)
         delay(220)
         if (ok) ActionOutcome.Ok("Tapped ($x,$y)") else ActionOutcome.Failed("Gesture cancelled")
     }
 
     override suspend fun doubleTapRef(ref: String, snapshotId: String): ActionOutcome = withContext(Dispatchers.IO) {
         val entry = resolveNode(ref, snapshotId) ?: return@withContext ActionOutcome.Failed("ref_expired:$ref")
-        val ok = requireA11y().doubleTap(activeDisplayId, entry.element.centerX.toFloat(), entry.element.centerY.toFloat())
+        val x = entry.element.centerX
+        val y = entry.element.centerY
+        val ok = if (isOnVirtualDisplay()) {
+            val sh = shellProvider()
+            val vdId = activeDisplayId
+            if (sh != null && runCatching { sh.injectTap(vdId, x, y) }.getOrDefault(false)) {
+                delay(80)
+                runCatching { sh.injectTap(vdId, x, y) }.getOrDefault(false)
+            } else {
+                false
+            }
+        } else {
+            requireA11y().doubleTap(activeDisplayId, x.toFloat(), y.toFloat())
+        }
         delay(220)
         if (ok) ActionOutcome.Ok("Double tapped $ref") else ActionOutcome.Failed("Double tap cancelled")
     }
 
     override suspend fun longPressRef(ref: String, snapshotId: String): ActionOutcome = withContext(Dispatchers.IO) {
         val entry = resolveNode(ref, snapshotId) ?: return@withContext ActionOutcome.Failed("ref_expired:$ref")
-        val ok = requireA11y().longPress(activeDisplayId, entry.element.centerX.toFloat(), entry.element.centerY.toFloat())
+        val x = entry.element.centerX
+        val y = entry.element.centerY
+        val ok = if (isOnVirtualDisplay()) {
+            val sh = shellProvider()
+            if (sh != null) {
+                runCatching {
+                    sh.injectStroke(activeDisplayId, intArrayOf(x, x), intArrayOf(y, y), longArrayOf(0L, 650L))
+                }.getOrDefault(false)
+            } else {
+                false
+            }
+        } else {
+            requireA11y().longPress(activeDisplayId, x.toFloat(), y.toFloat())
+        }
         delay(250)
         if (ok) ActionOutcome.Ok("Long pressed $ref") else ActionOutcome.Failed("Long press cancelled")
     }
 
     override suspend fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Long): ActionOutcome = withContext(Dispatchers.IO) {
-        val ok = requireA11y().swipe(activeDisplayId, x1.toFloat(), y1.toFloat(), x2.toFloat(), y2.toFloat(), durationMs)
+        val ok = dispatchSwipe(requireA11y(), x1, y1, x2, y2, durationMs)
         delay(260)
         if (ok) ActionOutcome.Ok("Swiped ($x1,$y1)->($x2,$y2)") else ActionOutcome.Failed("Swipe cancelled")
     }
@@ -152,10 +198,11 @@ internal class AndroidScreenController(
                 return@withContext ActionOutcome.Ok("Scrolled ${if (down) "down" else "up"}")
             }
         }
-        val m = context.resources.displayMetrics
-        val cx = m.widthPixels / 2f
-        val (y1, y2) = if (down) m.heightPixels * 0.72f to m.heightPixels * 0.28f else m.heightPixels * 0.28f to m.heightPixels * 0.72f
-        val ok = a11y.swipe(activeDisplayId, cx, y1, cx, y2, 360L)
+        val w = if (isOnVirtualDisplay()) virtualDisplay.currentWidth else context.resources.displayMetrics.widthPixels
+        val h = if (isOnVirtualDisplay()) virtualDisplay.currentHeight else context.resources.displayMetrics.heightPixels
+        val cx = w / 2
+        val (y1, y2) = if (down) (h * 0.72f).roundToInt() to (h * 0.28f).roundToInt() else (h * 0.28f).roundToInt() to (h * 0.72f).roundToInt()
+        val ok = dispatchSwipe(a11y, cx, y1, cx, y2, 360L)
         delay(260)
         if (ok) ActionOutcome.Ok("Swiped to scroll ${if (down) "down" else "up"}") else ActionOutcome.Failed("Scroll failed")
     }
@@ -200,18 +247,29 @@ internal class AndroidScreenController(
     }
 
     override suspend fun pressBack(): ActionOutcome = withContext(Dispatchers.IO) {
-        val ok = requireA11y().performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+        val ok = if (isOnVirtualDisplay()) {
+            val sh = shellProvider()
+            sh != null && runCatching { sh.injectKey(activeDisplayId, KeyEvent.KEYCODE_BACK) }.getOrDefault(false)
+        } else {
+            requireA11y().performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+        }
         delay(220)
         if (ok) ActionOutcome.Ok("Pressed Back") else ActionOutcome.Failed("Back action failed")
     }
 
     override suspend fun pressHome(): ActionOutcome = withContext(Dispatchers.IO) {
+        if (isOnVirtualDisplay()) {
+            return@withContext ActionOutcome.Ok("Background virtual display keeps main Home screen untouched", uiChanged = false)
+        }
         val ok = requireA11y().performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
         delay(250)
         if (ok) ActionOutcome.Ok("Pressed Home") else ActionOutcome.Failed("Home action failed")
     }
 
     override suspend fun pressRecents(): ActionOutcome = withContext(Dispatchers.IO) {
+        if (isOnVirtualDisplay()) {
+            return@withContext ActionOutcome.Ok("Background virtual display keeps main Recents untouched", uiChanged = false)
+        }
         val ok = requireA11y().performGlobalAction(AccessibilityService.GLOBAL_ACTION_RECENTS)
         delay(250)
         if (ok) ActionOutcome.Ok("Opened Recents") else ActionOutcome.Failed("Recents action failed")
@@ -222,7 +280,6 @@ internal class AndroidScreenController(
         if (query.isEmpty()) {
             return@withContext ActionOutcome.Failed("launch_app requires params.app")
         }
-        // Unconditional low-level anti-fraud guard: never launch URI schemes or deep links.
         if (query.contains("://")) {
             return@withContext ActionOutcome.Failed("URI scheme deep links are forbidden; launch apps by package or app name only")
         }
@@ -237,35 +294,44 @@ internal class AndroidScreenController(
             }?.packageName
         } ?: return@withContext ActionOutcome.Failed("App not found: $query")
 
-        val intent = pm.getLaunchIntentForPackage(resolvedPkg)
-            ?: return@withContext ActionOutcome.Failed("App has no launcher activity: $resolvedPkg")
-        val _ = intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-
-        val launchedVirtual = if (preferVirtualDisplay) {
+        var launchedVirtual = false
+        var fallbackNote = ""
+        val shell = shellProvider()
+        if (preferVirtualDisplay && shell != null) {
             val vdId = virtualDisplay.ensureCreated()
-            if (vdId != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                runCatching {
-                    val opts = ActivityOptions.makeBasic().setLaunchDisplayId(vdId)
-                    context.startActivity(intent, opts.toBundle())
+            if (vdId != null) {
+                val code = runCatching { shell.startApp(vdId, resolvedPkg) }.getOrDefault(PhoneControlShellService.START_ERROR)
+                if (code == PhoneControlShellService.START_OK) {
                     activeDisplayId = vdId
-                    true
-                }.getOrDefault(false)
-            } else {
-                false
+                    launchedVirtual = true
+                    // Wait briefly for the first window or frame on the virtual display.
+                    val a11y = PhoneControlAccessibilityService.instance.value
+                    repeat(6) {
+                        delay(200)
+                        if (virtualDisplay.previewFrames.value != null || (a11y != null && a11y.windowsOnDisplay(vdId).isNotEmpty())) {
+                            return@repeat
+                        }
+                    }
+                } else if (code == PhoneControlShellService.START_IN_USE_ON_MAIN) {
+                    fallbackNote = ", fallback=in_use_on_main"
+                } else {
+                    fallbackNote = ", fallback=shell_start_code_$code"
+                }
             }
-        } else {
-            false
         }
 
         if (!launchedVirtual) {
+            val intent = pm.getLaunchIntentForPackage(resolvedPkg)
+                ?: return@withContext ActionOutcome.Failed("App has no launcher activity: $resolvedPkg")
+            val _ = intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             val started = runCatching { context.startActivity(intent) }
             started.exceptionOrNull()?.let {
                 return@withContext ActionOutcome.Failed("Launch failed: ${it.message}")
             }
             activeDisplayId = Display.DEFAULT_DISPLAY
+            delay(700)
         }
-        delay(700)
-        ActionOutcome.Ok("Launched $resolvedPkg (virtual=$launchedVirtual)")
+        ActionOutcome.Ok("Launched $resolvedPkg (virtual=$launchedVirtual$fallbackNote)")
     }
 
     override suspend fun listLaunchableApps(): List<LaunchableApp> = withContext(Dispatchers.IO) {
@@ -315,6 +381,38 @@ internal class AndroidScreenController(
     override fun releaseVirtualDisplay() {
         virtualDisplay.release()
         activeDisplayId = Display.DEFAULT_DISPLAY
+    }
+
+    private suspend fun dispatchTap(a11y: PhoneControlAccessibilityService, x: Int, y: Int): Boolean {
+        if (isOnVirtualDisplay()) {
+            val sh = shellProvider()
+            if (sh != null) {
+                return runCatching { sh.injectTap(activeDisplayId, x, y) }.getOrDefault(false)
+            }
+        }
+        return a11y.tap(activeDisplayId, x.toFloat(), y.toFloat())
+    }
+
+    private suspend fun dispatchSwipe(
+        a11y: PhoneControlAccessibilityService,
+        x1: Int,
+        y1: Int,
+        x2: Int,
+        y2: Int,
+        durationMs: Long,
+    ): Boolean {
+        if (isOnVirtualDisplay()) {
+            val sh = shellProvider()
+            if (sh != null) {
+                val dur = durationMs.coerceIn(80L, 2_000L)
+                val steps = 10
+                val xs = IntArray(steps + 1) { i -> x1 + ((x2 - x1) * i) / steps }
+                val ys = IntArray(steps + 1) { i -> y1 + ((y2 - y1) * i) / steps }
+                val times = LongArray(steps + 1) { i -> (dur * i) / steps }
+                return runCatching { sh.injectStroke(activeDisplayId, xs, ys, times) }.getOrDefault(false)
+            }
+        }
+        return a11y.swipe(activeDisplayId, x1.toFloat(), y1.toFloat(), x2.toFloat(), y2.toFloat(), durationMs)
     }
 
     private fun resolveNode(ref: String, snapshotId: String): CollectedNode? =

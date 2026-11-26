@@ -470,6 +470,83 @@ class PhoneControlExecutorTest {
         assertEquals(r1.result!!["detail"], r2.result!!["detail"])
     }
 
+
+    @Test
+    fun launchAppDefaultsToVirtualDisplayWhenPrivilegedShellReadyAndRespectsExplicitFalse() = runTest {
+        val fake = FakeScreenPort()
+        val readyVirtualProvider = DeviceControlStateProvider {
+            sampleDeviceState().snapshot().copy(
+                virtualDisplayBackend = "builtin_wireless_adb",
+                virtualDisplayReady = true,
+                wirelessAdbPaired = true,
+            )
+        }
+        val executor = PhoneControlExecutor(
+            screenFactory = { fake },
+            masterEnabledProvider = { true },
+            safetyPolicyProvider = { SafetyGateConfig() },
+            deviceStateProvider = readyVirtualProvider,
+        )
+
+        val autoVirtual = executor.execute(
+            testCall(
+                callId = "act-launch-default",
+                op = "action",
+                args = buildJsonObject {
+                    put("action", "launch_app")
+                    putJsonObject("params") { put("app", "com.example.shop") }
+                },
+            ),
+        )
+        assertTrue(autoVirtual.ok)
+        assertEquals(listOf("com.example.shop" to true), fake.launchedApps)
+
+        val explicitFg = executor.execute(
+            testCall(
+                callId = "act-launch-fg",
+                op = "action",
+                args = buildJsonObject {
+                    put("action", "launch_app")
+                    putJsonObject("params") {
+                        put("app", "com.example.shop")
+                        put("prefer_virtual_display", false)
+                    }
+                },
+            ),
+        )
+        assertTrue(explicitFg.ok)
+        assertEquals(
+            listOf("com.example.shop" to true, "com.example.shop" to false),
+            fake.launchedApps,
+        )
+    }
+
+    @Test
+    fun takeoverAndPaymentGateBringBackgroundTaskToForeground() = runTest {
+        var movedToForeground = 0
+        val executor = PhoneControlExecutor(
+            screenFactory = { FakeScreenPort() },
+            masterEnabledProvider = { true },
+            safetyPolicyProvider = { SafetyGateConfig(blockRealPayment = true) },
+            deviceStateProvider = sampleDeviceState(),
+            onBringTaskToForeground = { movedToForeground++ },
+        )
+        val _ = executor.execute(
+            testCall(
+                callId = "s-fg",
+                op = "session",
+                args = buildJsonObject {
+                    put("task_id", "task-fg")
+                    put("status", "running")
+                    put("step", 3)
+                    put("summary", "Working")
+                },
+            ),
+        )
+        assertTrue(executor.requestTakeoverFromOverlay())
+        assertEquals(1, movedToForeground)
+    }
+
     private companion object {
         fun testCall(
             callId: String,

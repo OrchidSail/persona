@@ -2,46 +2,79 @@ package persona.platform.phonetools.control
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
+import android.view.Display
+import android.view.Surface
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import persona.platform.phonetools.control.shell.DisplayFrameGeometry
+import persona.platform.phonetools.control.shell.IPhoneControlShell
+import persona.platform.phonetools.control.shell.uprightDisplayFrame
 
 /**
- * Strictly lazy, zero-MediaProjection background [VirtualDisplay] controller.
+ * Strictly lazy, zero-MediaProjection background [VirtualDisplay] controller backed by the
+ * privileged uid-2000 [IPhoneControlShell] helper (built-in wireless ADB or Shizuku).
  *
- * Allocates zero resources (no HandlerThread, ImageReader, or VirtualDisplay) while remote control is off
- * or idle, and only creates a VirtualDisplay if an active task explicitly requests background off-screen launch.
- * Always released on terminal task completion, disconnect timeout, or master switch disable.
+ * When no privileged shell is active, [ensureCreated] returns null so the executor falls back
+ * cleanly to foreground accessibility instead of creating an unusable untrusted presentation display.
+ * Publishes throttled, deduplicated live preview bitmaps (~5fps, short side <= 320px) for the
+ * fixed-size mini-screen floating overlay while retaining full frames for JPEG grounding captures.
  */
-internal class PhoneControlVirtualDisplay(private val context: Context) {
+internal class PhoneControlVirtualDisplay(
+    private val context: Context,
+    private val shellProvider: () -> IPhoneControlShell? = { null },
+) {
     private val lock = Any()
     private val displayManager: DisplayManager?
         get() = context.getSystemService(DisplayManager::class.java)
+    private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
 
     private var frameThread: HandlerThread? = null
     private var frameHandler: Handler? = null
-    private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
-    private var latestBitmap: Bitmap? = null
-    private var lastFrameProcessMs = 0L
+    private var activeShell: IPhoneControlShell? = null
+    private var bufferWidth: Int = 0
+    private var bufferHeight: Int = 0
+    private var fullFrame: Bitmap? = null
+    private var hasFrame: Boolean = false
+    private var lastFrameProcessMs: Long = 0L
+    private var lastPreviewHash: Long = 0L
 
     private val _displayId = MutableStateFlow<Int?>(null)
     val displayId: StateFlow<Int?> = _displayId.asStateFlow()
 
+    private val _previewFrames = MutableStateFlow<Bitmap?>(null)
+    val previewFrames: StateFlow<Bitmap?> = _previewFrames.asStateFlow()
+
     val isActive: Boolean
         get() = _displayId.value != null
 
+    val isBackendAvailable: Boolean
+        get() = shellProvider() != null
+
+    val currentWidth: Int
+        get() = currentGeometry().width
+
+    val currentHeight: Int
+        get() = currentGeometry().height
+
     fun ensureCreated(): Int? = synchronized(lock) {
         if (!PhoneControlGateState.isMasterEnabled()) return null
-        virtualDisplay?.display?.displayId?.let { return it }
-        val dm = displayManager ?: return null
+        _displayId.value?.let { existingId ->
+            val sh = activeShell
+            if (sh != null && runCatching { sh.identity() }.isSuccess) {
+                return existingId
+            }
+            releaseLocked()
+        }
+        val shell = shellProvider() ?: return null
 
         val metrics = context.resources.displayMetrics
         val width = metrics.widthPixels.coerceIn(720, 1440)
@@ -50,57 +83,91 @@ internal class PhoneControlVirtualDisplay(private val context: Context) {
 
         ensureThreadLocked()
         val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        reader.setOnImageAvailableListener({ r -> captureFromReader(r) }, frameHandler)
+        val id = runCatching {
+            shell.createDisplay(reader.surface, width, height, dpi)
+        }.getOrDefault(-1)
 
-        val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION
-        val vd = runCatching {
-            dm.createVirtualDisplay(
-                "persona-phone-bg",
-                width,
-                height,
-                dpi,
-                reader.surface,
-                flags,
-            )
-        }.getOrNull()
-
-        if (vd == null) {
-            reader.close()
+        if (id <= Display.DEFAULT_DISPLAY) {
+            val _ = runCatching { reader.close() }
             tearDownThreadLocked()
             _displayId.value = null
             return null
         }
 
+        bufferWidth = width
+        bufferHeight = height
         imageReader = reader
-        virtualDisplay = vd
-        val id = vd.display?.displayId
+        activeShell = shell
+        hasFrame = false
+        lastPreviewHash = 0L
         _displayId.value = id
+        reader.setOnImageAvailableListener({ r -> captureFromReader(r) }, frameHandler)
         return id
+    }
+
+    fun topTaskPackage(): String? {
+        val id = _displayId.value ?: return null
+        val sh = synchronized(lock) { activeShell } ?: return null
+        return runCatching { sh.topTaskPackage(id) }.getOrNull()
+    }
+
+    fun bringTopTaskToMainDisplay(): Boolean {
+        val id = _displayId.value ?: return false
+        val sh = synchronized(lock) { activeShell } ?: return false
+        val taskId = runCatching { sh.topTaskId(id) }.getOrDefault(-1)
+        if (taskId <= 0) return false
+        return runCatching { sh.moveTask(taskId, Display.DEFAULT_DISPLAY) }.getOrDefault(false)
     }
 
     fun latestFrameJpeg(
         maxEdge: Int = ScreenshotEncoder.DEFAULT_MAX_EDGE,
         quality: Int = ScreenshotEncoder.DEFAULT_QUALITY,
     ): ScreenshotCaptureResult? {
-        val copy = synchronized(lock) {
-            latestBitmap?.takeUnless { it.isRecycled }?.copy(Bitmap.Config.ARGB_8888, false)
+        val upright = synchronized(lock) {
+            val bmp = fullFrame
+            if (!hasFrame || bmp == null || bmp.isRecycled) null
+            else uprightDisplayFrame(bmp, currentGeometry(), paint = paint)
         } ?: return null
         return try {
-            ScreenshotEncoder.encodeJpeg(copy, maxEdge, quality)
+            ScreenshotEncoder.encodeJpeg(upright, maxEdge, quality)
         } finally {
-            copy.recycle()
+            upright.recycle()
         }
     }
 
     fun release() = synchronized(lock) {
-        val _ = runCatching { virtualDisplay?.release() }
-        virtualDisplay = null
+        releaseLocked()
+    }
+
+    private fun releaseLocked() {
+        val id = _displayId.value
+        val sh = activeShell
+        if (id != null && sh != null) {
+            val _ = runCatching { sh.releaseDisplay(id) }
+        }
+        activeShell = null
+        _displayId.value = null
+        val _ = runCatching { imageReader?.setOnImageAvailableListener(null, null) }
         val _ = runCatching { imageReader?.close() }
         imageReader = null
-        _displayId.value = null
-        latestBitmap?.recycle()
-        latestBitmap = null
+        fullFrame?.recycle()
+        fullFrame = null
+        hasFrame = false
+        lastPreviewHash = 0L
+        _previewFrames.value = null
         tearDownThreadLocked()
+    }
+
+    private fun currentGeometry(): DisplayFrameGeometry {
+        val id = _displayId.value
+        val rotation = if (id != null) {
+            runCatching { displayManager?.getDisplay(id)?.rotation }.getOrNull() ?: Surface.ROTATION_0
+        } else {
+            Surface.ROTATION_0
+        }
+        val w = if (bufferWidth > 0) bufferWidth else context.resources.displayMetrics.widthPixels.coerceAtLeast(1)
+        val h = if (bufferHeight > 0) bufferHeight else context.resources.displayMetrics.heightPixels.coerceAtLeast(1)
+        return DisplayFrameGeometry(w, h, rotation)
     }
 
     private fun ensureThreadLocked() {
@@ -127,30 +194,53 @@ internal class PhoneControlVirtualDisplay(private val context: Context) {
         lastFrameProcessMs = now
         try {
             val plane = image.planes[0]
-            val pixelStride = plane.pixelStride
-            val rowStride = plane.rowStride
-            val rowPadding = rowStride - pixelStride * image.width
-            val paddedWidth = image.width + rowPadding / pixelStride
-            val padded = Bitmap.createBitmap(paddedWidth, image.height, Bitmap.Config.ARGB_8888)
-            val _ = plane.buffer.rewind()
-            padded.copyPixelsFromBuffer(plane.buffer)
-            val cropped = if (paddedWidth != image.width) {
-                Bitmap.createBitmap(padded, 0, 0, image.width, image.height).also { padded.recycle() }
-            } else {
-                padded
-            }
+            val strideWidth = plane.rowStride / plane.pixelStride
+            val geom = currentGeometry()
             synchronized(lock) {
-                latestBitmap?.recycle()
-                latestBitmap = cropped
+                if (_displayId.value == null) return
+                var bmp = fullFrame
+                if (bmp == null || bmp.isRecycled || bmp.width != strideWidth || bmp.height != bufferHeight) {
+                    bmp?.recycle()
+                    bmp = Bitmap.createBitmap(strideWidth, bufferHeight.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+                    fullFrame = bmp
+                }
+                val _ = plane.buffer.rewind()
+                bmp.copyPixelsFromBuffer(plane.buffer)
+                hasFrame = true
+                val sampleHash = sampleBitmapHash(bmp, bufferWidth, bufferHeight)
+                if (sampleHash != lastPreviewHash || _previewFrames.value == null) {
+                    lastPreviewHash = sampleHash
+                    val preview = uprightDisplayFrame(bmp, geom, geom.previewWidth(PREVIEW_SHORT_SIDE_PX), paint)
+                    _previewFrames.value = preview
+                }
             }
         } catch (_: Throwable) {
-            // Keep prior frame on transient ImageReader errors.
+            // Preserve prior frame on transient ImageReader errors.
         } finally {
             image.close()
         }
     }
 
+    private fun sampleBitmapHash(bmp: Bitmap, contentW: Int, contentH: Int): Long {
+        if (contentW <= 0 || contentH <= 0) return 0L
+        var h = -3750763034362895579L
+        val stepX = (contentW / 8).coerceAtLeast(1)
+        val stepY = (contentH / 8).coerceAtLeast(1)
+        var y = stepY / 2
+        while (y < contentH) {
+            var x = stepX / 2
+            while (x < contentW) {
+                val px = bmp.getPixel(x.coerceAtMost(bmp.width - 1), y.coerceAtMost(bmp.height - 1))
+                h = (h xor px.toLong()) * 1099511628211L
+                x += stepX
+            }
+            y += stepY
+        }
+        return h
+    }
+
     private companion object {
-        const val FRAME_MIN_INTERVAL_MS = 100L
+        const val FRAME_MIN_INTERVAL_MS = 180L
+        const val PREVIEW_SHORT_SIDE_PX = 320
     }
 }

@@ -46,6 +46,10 @@ data class PhoneControlRuntimeInfo(
     val overlayActive: Boolean = false,
     val virtualDisplayActive: Boolean = false,
     val residentConnection: Boolean = false,
+    val virtualDisplayBackend: String = "none",
+    val virtualDisplayReady: Boolean = false,
+    val wirelessAdbPaired: Boolean = false,
+    val shizukuReady: Boolean = false,
 ) {
     fun toWire(): JsonObject = buildJsonObject {
         put("interactive", interactive)
@@ -54,6 +58,10 @@ data class PhoneControlRuntimeInfo(
         put("overlay_active", overlayActive)
         put("virtual_display_active", virtualDisplayActive)
         put("resident_connection", residentConnection)
+        put("virtual_display_backend", virtualDisplayBackend)
+        put("virtual_display_ready", virtualDisplayReady)
+        put("wireless_adb_paired", wirelessAdbPaired)
+        put("shizuku_ready", shizukuReady)
     }
 }
 
@@ -129,14 +137,6 @@ fun buildPhoneControlRelayMeta(
     put("runtime", runtime.toWire())
 }
 
-/**
- * Phone-local safety gate switches; mirrored read-only to Hub and extensions.
- * Defaults:
- * - Notification/SMS OTP auto-login: ON by default.
- * - Real payment / fund transfer interception: ON by default (toggleable anytime on phone).
- * - Normal actions: always allowed directly.
- * - Biometrics / graphic slider CAPTCHAs: always require phone interaction.
- */
 data class SafetyGateConfig(
     val allowNotificationOtpAutoLogin: Boolean = true,
     val blockRealPayment: Boolean = true,
@@ -151,9 +151,6 @@ data class SafetyGateConfig(
     fun toJson(): JsonObject = toContract().toWire()
 }
 
-/**
- * Lightweight UI projection rendered inside the floating overlay window during active tasks.
- */
 data class OverlayTaskSummary(
     val taskId: String?,
     val status: String,
@@ -162,11 +159,9 @@ data class OverlayTaskSummary(
     val isPaused: Boolean = false,
     val isWaitingOnPhone: Boolean = false,
     val isActive: Boolean = false,
+    val usingVirtualDisplay: Boolean = false,
 )
 
-/**
- * Snapshot of on-phone floating overlay control flags propagated back to Hub.
- */
 data class OverlayControlState(
     val taskId: String? = null,
     val paused: Boolean = false,
@@ -235,6 +230,10 @@ data class DeviceControlSnapshot(
     val residentConnection: Boolean = false,
     val permissions: PhoneControlPermissions = PhoneControlPermissions(),
     val safetyPolicy: SafetyGateConfig = SafetyGateConfig(),
+    val virtualDisplayBackend: String = "none",
+    val virtualDisplayReady: Boolean = false,
+    val wirelessAdbPaired: Boolean = false,
+    val shizukuReady: Boolean = false,
 ) {
     val ready: Boolean
         get() = masterEnabled && permissions.accessibility && helperAvailable && userUnlocked && !deviceLocked && !keyguardShowing
@@ -264,6 +263,10 @@ data class DeviceControlSnapshot(
         overlayActive = overlayActive,
         virtualDisplayActive = virtualDisplayActive,
         residentConnection = residentConnection,
+        virtualDisplayBackend = virtualDisplayBackend,
+        virtualDisplayReady = virtualDisplayReady,
+        wirelessAdbPaired = wirelessAdbPaired,
+        shizukuReady = shizukuReady,
     )
 
     fun toDeviceJson(): JsonObject = buildJsonObject {
@@ -275,6 +278,10 @@ data class DeviceControlSnapshot(
         put("user_unlocked", userUnlocked)
         put("ready", ready)
         put("virtual_display_active", virtualDisplayActive)
+        put("virtual_display_backend", virtualDisplayBackend)
+        put("virtual_display_ready", virtualDisplayReady)
+        put("wireless_adb_paired", wirelessAdbPaired)
+        put("shizuku_ready", shizukuReady)
         put("overlay_active", overlayActive)
         put("resident_connection", residentConnection)
     }

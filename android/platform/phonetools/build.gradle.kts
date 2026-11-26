@@ -6,7 +6,13 @@ plugins {
 
 android {
     namespace = "persona.platform.phonetools"
-    defaultConfig.testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    defaultConfig {
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        consumerProguardFiles("consumer-rules.pro")
+    }
+    buildFeatures {
+        aidl = true
+    }
     testOptions { unitTests { isIncludeAndroidResources = true } }
 }
 
@@ -23,6 +29,8 @@ dependencies {
     implementation(libs.datastore.preferences)
     implementation(libs.androidx.work)
     implementation(libs.androidx.health.connect)
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.rules)
     androidTestImplementation(libs.androidx.test.ext.junit)

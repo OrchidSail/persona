@@ -55,6 +55,8 @@ class PhoneControlExecutor(
     private val onSessionLifecycle: (active: Boolean, terminal: Boolean) -> Unit = { _, _ -> },
     private val copy: OverlayCopy = OverlayCopy(),
     private val callGate: PhoneControlCallGate = PhoneControlCallGate(),
+    private val virtualDisplayActiveProvider: () -> Boolean = { false },
+    private val onBringTaskToForeground: () -> Unit = {},
 ) {
     private val gate = SafetyGatePolicy(safetyPolicyProvider)
     private val screenRef = AtomicReference<ScreenPort?>(null)
@@ -330,6 +332,7 @@ class PhoneControlExecutor(
         )
         when (val verdict = gate.evaluate(riskCtx)) {
             is GateDecision.RequirePhone -> {
+                onBringTaskToForeground()
                 _controlState.value = _controlState.value.copy(
                     taskId = taskId ?: _controlState.value.taskId,
                     takeoverRequested = false,
@@ -411,7 +414,8 @@ class PhoneControlExecutor(
                 if (app.contains("://")) {
                     return actionFailed("URI scheme deep links are forbidden; launch apps by package or app name only", snap?.topPackage)
                 }
-                val preferVirtual = params["prefer_virtual_display"]?.jsonPrimitive?.booleanOrNull ?: false
+                val preferVirtual = params["prefer_virtual_display"]?.jsonPrimitive?.booleanOrNull
+                    ?: deviceStateProvider.snapshot().virtualDisplayReady
                 port.launchApp(app, preferVirtualDisplay = preferVirtual)
             }
             "list_apps" -> {
@@ -585,6 +589,7 @@ class PhoneControlExecutor(
     fun requestTakeoverFromOverlay(): Boolean {
         val cur = _controlState.value
         if (cur.taskId == null) return false
+        onBringTaskToForeground()
         _controlState.value = cur.copy(takeoverRequested = true, resumedFromPhone = false)
         publishOverlay(
             taskId = cur.taskId,
@@ -693,6 +698,7 @@ class PhoneControlExecutor(
                 isPaused = isPaused,
                 isWaitingOnPhone = isWaitingOnPhone,
                 isActive = isActive,
+                usingVirtualDisplay = virtualDisplayActiveProvider(),
             ),
         )
     }

@@ -28,6 +28,8 @@ import persona.core.contracts.api.DeviceRelayTransport
 import persona.core.contracts.api.HubConnection
 import persona.platform.phonetools.PhoneToolSettings
 import persona.platform.phonetools.R
+import persona.platform.phonetools.control.shell.PrivilegedShellManager
+import persona.platform.phonetools.control.shell.PrivilegedShellRegistry
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -36,12 +38,13 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * Strictly enforces three zero-overhead states:
  * - State 0 (OFF / default): zero foreground service lease, zero VirtualDisplay, zero overlay,
- *   O(1) AtomicBoolean short-circuit in Accessibility and NotificationListener services.
- * - State 1 (ON, idle): advertises `device_relay_register` (channel `phone_control`) on `/api/v1/ws`;
- *   still zero foreground lease, zero VirtualDisplay, and zero overlay.
- * - State 2 (active task): acquires `HubService` keepalive lease and lazily mounts [TaskStatusOverlay].
- *   Terminal status releases lease and destroys overlay after 4s; prolonged disconnect (>30s) pauses
- *   the overlay and cleans up all resources 10s later.
+ *   zero wireless-ADB watchdog observers, and O(1) AtomicBoolean short-circuit in Accessibility
+ *   and NotificationListener services.
+ * - State 1 (ON, idle): advertises `device_relay_register` on `/api/v1/ws` and activates
+ *   [privilegedShell] watchdog when configured; still zero foreground lease, zero VirtualDisplay,
+ *   and zero overlay.
+ * - State 2 (active task): acquires `HubService` keepalive lease, creates privileged background
+ *   virtual display on demand, and mounts fixed-size live mini-screen [TaskStatusOverlay].
  */
 class PhoneControlRuntime(
     context: Context,
@@ -70,15 +73,21 @@ class PhoneControlRuntime(
     private val job = SupervisorJob(parentScope.coroutineContext[Job])
     private val scope = CoroutineScope(parentScope.coroutineContext + job + Dispatchers.Main.immediate)
 
+    val privilegedShell: PrivilegedShellManager = PrivilegedShellRegistry.get(appContext)
+
     private val resident = MutableStateFlow(false)
     private val permissionRevision = MutableStateFlow(0)
     private val overlayActiveState = MutableStateFlow(false)
     private val keepAliveActive = MutableStateFlow(false)
 
-    private val virtualDisplay = PhoneControlVirtualDisplay(appContext)
+    private val virtualDisplay = PhoneControlVirtualDisplay(
+        context = appContext,
+        shellProvider = { privilegedShell.currentShell() },
+    )
     private val inFlightJobs = ConcurrentHashMap<String, Job>()
 
     private var overlay: TaskStatusOverlay? = null
+    private var previewFeedJob: Job? = null
     private var terminalReleaseJob: Job? = null
     private var disconnectGraceJob: Job? = null
     private var lastRegisteredEnabled = false
@@ -107,6 +116,7 @@ class PhoneControlRuntime(
             val km = appContext.getSystemService(KeyguardManager::class.java)
             val um = appContext.getSystemService(UserManager::class.java)
             val perms = permissionsProvider()
+            val shellUi = privilegedShell.state.value
             return DeviceControlSnapshot(
                 masterEnabled = isEffectiveEnabled(),
                 interactive = pm?.isInteractive ?: true,
@@ -120,13 +130,22 @@ class PhoneControlRuntime(
                 residentConnection = resident.value,
                 permissions = perms,
                 safetyPolicy = currentSafetyConfig(),
+                virtualDisplayBackend = shellUi.backend,
+                virtualDisplayReady = shellUi.isReady,
+                wirelessAdbPaired = shellUi.wirelessPaired,
+                shizukuReady = shellUi.shizukuRunning && shellUi.shizukuPermissionGranted,
             )
         }
     }
 
     val executor: PhoneControlExecutor = PhoneControlExecutor(
         screenFactory = screenFactoryOverride ?: {
-            AndroidScreenController(appContext, virtualDisplay, PhoneControlGateState.notificationBuffer)
+            AndroidScreenController(
+                context = appContext,
+                virtualDisplay = virtualDisplay,
+                notifications = PhoneControlGateState.notificationBuffer,
+                shellProvider = { privilegedShell.currentShell() },
+            )
         },
         masterEnabledProvider = ::isEffectiveEnabled,
         safetyPolicyProvider = ::currentSafetyConfig,
@@ -134,6 +153,12 @@ class PhoneControlRuntime(
         onOverlayUpdate = overlayHandlerOverride ?: ::handleOverlayUpdate,
         onSessionLifecycle = ::handleSessionLifecycle,
         copy = overlayCopy,
+        virtualDisplayActiveProvider = { virtualDisplay.isActive },
+        onBringTaskToForeground = {
+            if (virtualDisplay.isActive) {
+                val _ = virtualDisplay.bringTopTaskToMainDisplay()
+            }
+        },
     )
 
     init {
@@ -142,12 +167,12 @@ class PhoneControlRuntime(
             otp = settings.allowNotificationOtpAutoLogin.value,
         )
 
-        // Sync process-wide O(1) gate state and clean up immediately whenever master switch turns OFF.
         scope.launch {
             combine(settings.remoteControlEnabled, settings.allowNotificationOtpAutoLogin) { master, otp ->
                 (!automation && master) to otp
             }.distinctUntilChanged().collect { (effectiveMaster, otp) ->
                 PhoneControlGateState.update(effectiveMaster, otp)
+                privilegedShell.setMasterActive(effectiveMaster)
                 if (!effectiveMaster) {
                     tearDownActiveSessionAndCalls(sendUnregister = lastRegisteredEnabled)
                 }
@@ -164,7 +189,6 @@ class PhoneControlRuntime(
                         }
                         return@collectLatest
                     }
-                    // Reconnected: cancel grace timer if active session survived the brief drop, and re-register.
                     coroutineScope {
                         launch {
                             combine(
@@ -176,6 +200,7 @@ class PhoneControlRuntime(
                                     permissionRevision,
                                     overlayActiveState,
                                     virtualDisplay.displayId,
+                                    privilegedShell.state,
                                     PhoneControlAccessibilityService.instance,
                                     PhoneControlNotificationListener.isConnected,
                                 ),
@@ -220,7 +245,6 @@ class PhoneControlRuntime(
                                     } catch (_: TimeoutCancellationException) {
                                         PhoneControlResult.error("timeout", "Phone control call timed out")
                                     } catch (cancelled: CancellationException) {
-                                        // Only emit cancelled result if this call was cancelled while runtime is still live.
                                         if (job.isActive) {
                                             val _ = transport.result(
                                                 CHANNEL,
@@ -258,6 +282,9 @@ class PhoneControlRuntime(
 
     fun refreshPermissions() {
         permissionRevision.value += 1
+        if (isEffectiveEnabled()) {
+            privilegedShell.refreshStatus()
+        }
     }
 
     private fun buildRegistrationOrNull(): DeviceRelayChannelRegistration? {
@@ -286,6 +313,7 @@ class PhoneControlRuntime(
 
     private fun handleOverlayUpdate(summary: OverlayTaskSummary) {
         if (!isEffectiveEnabled() || (!summary.isActive && summary.status == "idle")) {
+            stopPreviewFeed()
             overlay?.hide()
             overlayActiveState.value = false
             return
@@ -302,15 +330,33 @@ class PhoneControlRuntime(
             },
             onEmergencyStop = { val _ = executor.emergencyStopFromOverlay() },
             onAutoDismissed = {
+                stopPreviewFeed()
                 overlayActiveState.value = false
                 releaseKeepAliveLease()
             },
         ).also {
             overlay = it
             PhoneControlGateState.activeOverlay = it
+            startPreviewFeed(it)
         }
         overlayActiveState.value = summary.isActive
         current.update(summary)
+    }
+
+    private fun startPreviewFeed(target: TaskStatusOverlay) {
+        previewFeedJob?.cancel()
+        previewFeedJob = scope.launch {
+            combine(virtualDisplay.displayId, virtualDisplay.previewFrames) { vdId, frame ->
+                (vdId != null) to frame
+            }.collect { (isVirtual, frame) ->
+                target.updatePreviewFrame(frame, usingVirtualDisplay = isVirtual)
+            }
+        }
+    }
+
+    private fun stopPreviewFeed() {
+        previewFeedJob?.cancel()
+        previewFeedJob = null
     }
 
     private fun handleSessionLifecycle(active: Boolean, terminal: Boolean) {
@@ -326,6 +372,7 @@ class PhoneControlRuntime(
             terminalReleaseJob = scope.launch {
                 delay(terminalReleaseDelayMs)
                 if (!executor.hasActiveSession) {
+                    stopPreviewFeed()
                     overlay?.hide()
                     overlayActiveState.value = false
                     virtualDisplay.release()
@@ -347,6 +394,7 @@ class PhoneControlRuntime(
             delay(disconnectPauseLingerMs)
             if (connection.state.value != ConnectionState.Online) {
                 executor.resetSession()
+                stopPreviewFeed()
                 overlay?.hide()
                 overlayActiveState.value = false
                 virtualDisplay.release()
@@ -379,6 +427,7 @@ class PhoneControlRuntime(
         terminalReleaseJob?.cancel()
         terminalReleaseJob = null
         cancelDisconnectGraceTimer()
+        stopPreviewFeed()
         inFlightJobs.values.forEach { it.cancel(CancellationException("control_disabled")) }
         inFlightJobs.clear()
         executor.resetSession()
@@ -396,6 +445,7 @@ class PhoneControlRuntime(
 
     override fun close() {
         tearDownActiveSessionAndCalls(sendUnregister = lastRegisteredEnabled)
+        privilegedShell.setMasterActive(false)
         PhoneControlGateState.resetForShutdown()
         job.cancel()
         transport?.discardPending(CHANNEL)
@@ -413,6 +463,8 @@ class PhoneControlRuntime(
             "session",
             "otp_consume",
             "fill_verification_code",
+            "virtual_display_shell",
+            "mini_screen_overlay",
         )
     }
 }

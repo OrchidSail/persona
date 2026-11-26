@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="phonetools_overlay_bg">#F20F172A</color>
+    <color name="phonetools_overlay_bg">#F50F172A</color>
+    <color name="phonetools_overlay_screen_bg">#FF020617</color>
+    <color name="phonetools_overlay_badge_bg">#B30F172A</color>
     <color name="phonetools_overlay_stroke">#6694A3B8</color>
     <color name="phonetools_overlay_text">#FFF8FAFC</color>
     <color name="phonetools_overlay_text_secondary">#FFCBD5E1</color>

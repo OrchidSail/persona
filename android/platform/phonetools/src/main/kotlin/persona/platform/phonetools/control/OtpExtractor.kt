@@ -40,13 +40,13 @@ data class ExtractedOtp(
  */
 object OtpExtractor {
     private val OTP_CONTEXT_KEYWORDS = listOf(
-        "验证码", "校验码", "动态码", "确认码", "安全码", "登录码", "短信码", "取件码", "核销码", // i18n-ignore: matches real SMS OTP text
+        "验证码", "校验码", "动态码", "动态密码", "一次性密码", "确认码", "安全码", "登录码", "短信码", "取件码", "核销码", "驗證碼", "一次性密碼", // i18n-ignore: matches real SMS OTP text
         "verification code", "verify code", "security code", "login code", "passcode",
         "one-time", "otp", "2fa", "auth code", "confirm code", "code is", "code:", "code：", // i18n-ignore: matches real SMS OTP text
     )
 
     private val LABELED_CODE_REGEX = Regex(
-        """(?i)(?:验证码|校验码|动态码|确认码|安全码|登录码|短信码|取件码|核销码|verification\s*code|verify\s*code|security\s*code|login\s*code|one[-\s]?time\s*(?:password|code)|passcode|otp|code)\s*(?:为|是|:|：|is|#|\s){0,4}([0-9]{4,8})\b""", // i18n-ignore: matches real SMS OTP text
+        """(?i)(?:验证码|校验码|动态码|动态密码|一次性密码|驗證碼|一次性密碼|确认码|安全码|登录码|短信码|取件码|核销码|verification\s*code|verify\s*code|security\s*code|login\s*code|one[-\s]?time\s*(?:password|code)|passcode|otp|code)\s*(?:为|是|:|：|is|#|\s){0,4}([0-9]{4,8})\b""", // i18n-ignore: matches real SMS OTP text
     )
     private val STANDALONE_CODE_REGEX = Regex("""(?<![0-9A-Za-z])(?<![0-9]\.)([0-9]{4,8})(?![0-9A-Za-z])(?!\.[0-9])""")
     private val MONEY_NEAR_REGEX = Regex(
