@@ -81,67 +81,6 @@ internal data class ModelProfileDraft(
     val listedTierNames: Set<String> = emptySet(),
 )
 
-internal sealed interface ParsedProfileChange {
-    data class Purpose(val id: String) : ParsedProfileChange
-    data class Launcher(val launcher: String, val field: String) : ParsedProfileChange
-    data class Other(val raw: String) : ParsedProfileChange
-}
-
-internal data class ProfileApplyDrift(
-    val targetChanges: List<String>,
-    val activeDrift: List<String>,
-    val activeProfile: ModelProfile?,
-) {
-    val hasDrift: Boolean get() = targetChanges.isNotEmpty() || activeDrift.isNotEmpty()
-    val hasActiveDrift: Boolean get() = activeDrift.isNotEmpty()
-    val canCaptureActiveFirst: Boolean get() = activeProfile != null
-}
-
-internal sealed interface CaptureApplyResult {
-    data object CapturedAndApplied : CaptureApplyResult
-    data object CaptureConflict : CaptureApplyResult
-    data object CaptureFailed : CaptureApplyResult
-    data class ApplyFailedAfterCapture(val error: ResText) : CaptureApplyResult
-}
-
-internal fun parseProfileChange(change: String, knownPurposeIds: Set<String> = emptySet()): ParsedProfileChange {
-    if (change in knownPurposeIds || change in ModelProfileRules.CATEGORY_IDS) {
-        return ParsedProfileChange.Purpose(change)
-    }
-    val dot = change.lastIndexOf('.')
-    if (dot > 0 && dot < change.lastIndex) {
-        val launcher = change.substring(0, dot)
-        val field = change.substring(dot + 1)
-        if (field in ModelProfileRules.LAUNCHER_MODEL_FIELDS) {
-            return ParsedProfileChange.Launcher(launcher, field)
-        }
-    }
-    return ParsedProfileChange.Other(change)
-}
-
-internal fun describeProfileChange(
-    res: Resources,
-    change: String,
-    providers: List<ModelProvider>,
-    purposes: List<ModelPurpose>,
-): String = when (val parsed = parseProfileChange(change, purposes.mapTo(mutableSetOf()) { it.id })) {
-    is ParsedProfileChange.Purpose -> profilePurposeLabel(res, parsed.id, purposes)
-    is ParsedProfileChange.Launcher -> {
-        val launcherName = providers.firstOrNull { it.id == "launcher.${parsed.launcher}" }?.displayName ?: parsed.launcher
-        "$launcherName · ${launcherFieldDisplayLabel(res, parsed.field)}"
-    }
-    is ParsedProfileChange.Other -> parsed.raw
-}
-
-internal fun profileApplyDrift(profile: ModelProfile, activeProfile: ModelProfile?): ProfileApplyDrift {
-    val otherActive = activeProfile?.takeIf { it.id != profile.id }
-    return ProfileApplyDrift(
-        targetChanges = profile.changes,
-        activeDrift = otherActive?.changes.orEmpty(),
-        activeProfile = otherActive,
-    )
-}
-
 internal fun categoryIdsForProfile(profile: ModelProfile, catalogPurposeIds: List<String> = emptyList()): List<String> {
     val ordered = ModelProfileRules.CATEGORY_IDS.toMutableList()
     for (id in catalogPurposeIds) {
@@ -767,56 +706,6 @@ internal class ModelProfilesModel(private val api: ModelConfiguration) {
             }
         } finally {
             mutable.update { it.copy(busyAction = null) }
-        }
-    }
-
-    suspend fun capture(profile: ModelProfile, revision: Long): Boolean =
-        save(profile.id, ModelProfileSaveInput.capture(profile, revision))
-
-    suspend fun captureActiveAndApply(
-        activeProfile: ModelProfile,
-        targetProfile: ModelProfile,
-        revision: Long,
-    ): CaptureApplyResult {
-        if (state.value.busy) return CaptureApplyResult.CaptureFailed
-        mutable.update { it.copy(busy = true, actionError = null, conflict = false, conflictIsCapture = false) }
-        return try {
-            val capturedView = when (val result = api.saveProfile(activeProfile.id, ModelProfileSaveInput.capture(activeProfile, revision))) {
-                is ModelProfileSave.Saved -> result.view
-                ModelProfileSave.Conflict -> {
-                    mutable.update {
-                        it.copy(
-                            conflict = true,
-                            conflictIsCapture = true,
-                            actionError = ResText.of(R.string.settings_model_profiles_conflict_capture),
-                        )
-                    }
-                    return CaptureApplyResult.CaptureConflict
-                }
-            }
-            mutable.update { it.copy(view = capturedView, unsupported = false, error = null, actionError = null, conflict = false, conflictIsCapture = false) }
-            try {
-                val appliedView = api.applyProfile(targetProfile.id)
-                mutable.update { it.copy(view = appliedView, unsupported = false, error = null, actionError = null, conflict = false, conflictIsCapture = false) }
-                CaptureApplyResult.CapturedAndApplied
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                val err = ResText.of(
-                    R.string.settings_model_profiles_apply_failed_after_capture,
-                    activeProfile.displayName,
-                    failureReasonText(error),
-                )
-                mutable.update { it.copy(actionError = err) }
-                CaptureApplyResult.ApplyFailedAfterCapture(err)
-            }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Exception) {
-            mutable.update { it.copy(actionError = ResText.of(R.string.settings_src_not_saved, failureReasonText(error))) }
-            CaptureApplyResult.CaptureFailed
-        } finally {
-            mutable.update { it.copy(busy = false) }
         }
     }
 
