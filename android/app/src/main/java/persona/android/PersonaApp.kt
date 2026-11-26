@@ -123,6 +123,16 @@ class PersonaApp : Application() {
                 persona.platform.shortcuts.MainChatWidget.refresh(this@PersonaApp)
             }
         }
+        // Placed widgets follow AppStyleStore and the active persona package; redraw them when style, theme color, or
+        // the package's colours change.
+        scope.launch {
+            persona.platform.shortcuts.PersonaWidget
+                .appearanceChanges(appearance.style, appearance.color, personas.current)
+                .collect {
+                    persona.platform.shortcuts.PersonaWidget.refresh(this@PersonaApp)
+                    persona.platform.shortcuts.AskPersonaWidget.refresh(this@PersonaApp)
+                }
+        }
         // A tiered look moved to another tier: the new tier is downloaded whole before the face changes. The two events
         // are taken off the event flow first, so the download holds up no other live event (#4038).
         scope.launch {
