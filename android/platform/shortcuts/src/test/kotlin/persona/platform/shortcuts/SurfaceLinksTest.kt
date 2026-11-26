@@ -69,4 +69,17 @@ class SurfaceLinksTest {
         assertEquals("s1", inSession.data?.getQueryParameter("session"))
         assertEquals("q1", request(inSession))
     }
+
+    @Test fun mainChatLinkOpensExactMainConversationOrPersonaTab() {
+        val key = SessionKey("hub", "main-1")
+        val direct = SurfaceLinks.mainChat(context, key)
+        assertEquals("persona", direct.data?.getQueryParameter("tab"))
+        assertEquals("hub", direct.data?.getQueryParameter("machine"))
+        assertEquals("main-1", direct.data?.getQueryParameter("session"))
+
+        val fallback = SurfaceLinks.mainChat(context, null)
+        assertEquals(NotificationRoute(AppTab.Persona), fallback.data?.let(NotificationRoute::parse))
+        assertEquals(persona.core.navigation.AskPersonaLink, SurfaceLinks.ask(context).dataString)
+        assertEquals(persona.core.navigation.NewTodoLink, SurfaceLinks.newTodo(context).dataString)
+    }
 }

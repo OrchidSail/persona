@@ -9,15 +9,18 @@ import android.util.SizeF
 import android.util.TypedValue
 import android.view.Gravity
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import kotlin.math.ceil
 
 /**
  * Debug builds only: the home-screen widget hosted the way a launcher hosts it (AppWidgetHost, RemoteViews), at a few
- * sizes over the wallpaper, for captures without dragging it onto a home screen. Needs the bind permission once:
+ * sizes over the wallpaper, for captures without dragging it onto a home screen. Pass `--es debug.widget main` to
+ * preview [MainChatWidget] (`2×2` / `4×2` / `4×3`), or omit it for the existing [PersonaWidget]. Needs bind once:
  *
  *     adb shell appwidget grantbind --package <package> --user 0
  *     adb shell am start -n <package>/persona.platform.shortcuts.WidgetPreviewActivity
+ *     adb shell am start -n <package>/persona.platform.shortcuts.WidgetPreviewActivity --es debug.widget main
  */
 class WidgetPreviewActivity : Activity() {
     private lateinit var host: AppWidgetHost
@@ -25,20 +28,22 @@ class WidgetPreviewActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val mainChat = intent?.getStringExtra(EXTRA_WIDGET).equals(WIDGET_MAIN, ignoreCase = true)
+        val receiverClass = if (mainChat) MainChatWidgetReceiver::class.java else PersonaWidgetReceiver::class.java
+        val sizes = if (mainChat) MAIN_CHAT_SIZES else SIZES
         val manager = AppWidgetManager.getInstance(this)
-        val provider = ComponentName(this, PersonaWidgetReceiver::class.java)
+        val provider = ComponentName(this, receiverClass)
         val info = manager.installedProviders.firstOrNull { it.provider == provider }
         host = AppWidgetHost(this, HOST_ID)
         host.startListening()
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            fitsSystemWindows = true
         }
         fun dp(value: Float) = ceil(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, resources.displayMetrics)).toInt()
         if (info == null) {
             column.addView(TextView(this).apply { text = "找不到 Persona 小组件" })  // i18n-ignore: debug preview, developer-only
-        } else for ((width, height) in SIZES) {
+        } else for ((width, height) in sizes) {
             val id = host.allocateAppWidgetId()
             ids += id
             if (!manager.bindAppWidgetIdIfAllowed(id, provider)) {
@@ -58,7 +63,12 @@ class WidgetPreviewActivity : Activity() {
             })
             column.addView(view, LinearLayout.LayoutParams(dp(width), dp(height)).apply { topMargin = dp(16f) })
         }
-        setContentView(column)
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            fitsSystemWindows = true
+            addView(column)
+        }
+        setContentView(scroll)
     }
 
     override fun onDestroy() {
@@ -69,10 +79,14 @@ class WidgetPreviewActivity : Activity() {
 
     private companion object {
         const val HOST_ID = 0x4A57
+        const val EXTRA_WIDGET = "debug.widget"
+        const val WIDGET_MAIN = "main"
         /**
          * The smallest the widget can be, then the heights for one, two and three agents (WidgetLayout); two agents at
          * the width of two launcher cells on a phone, where fixed size buckets used to show none.
          */
         val SIZES = listOf(110f to 100f, 250f to 160f, 170f to 210f, 250f to 260f)
+        /** MainChatWidget preview sizes: minimum 2x2, compact 2x2, default 4x2, and large 4x3. */
+        val MAIN_CHAT_SIZES = listOf(110f to 100f, 140f to 140f, 290f to 150f, 290f to 250f)
     }
 }
