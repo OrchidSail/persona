@@ -468,11 +468,15 @@ func checkPushes(m *extension.Manifest, from extension.UIItem, v *extension.View
 // checkOpenURL holds what extension id's action opens to https; an inbox_item may also open its item's own source page
 // (extension.InboxSourceURL), that item's only, and any of its pages its own settings (extension.SettingsURL), its own
 // only.
+// space-conversations may also open one assistant conversation (spaceConversationLink).
 func checkOpenURL(id string, ui extension.UIItem, itemID, raw string) error {
 	if raw == "" || raw == extension.SettingsURL(id) {
 		return nil
 	}
 	if ui.Placement == "inbox_item" && itemID != "" && raw == extension.InboxSourceURL(itemID) {
+		return nil
+	}
+	if id == spacesMigrationID && spaceConversationLink(raw) {
 		return nil
 	}
 	if u, err := url.Parse(raw); err != nil || u.Scheme != "https" || u.Host == "" {
@@ -512,11 +516,18 @@ func (h *Manager) extensionUIRoutes(api *http.ServeMux) {
 				base = gw.base
 			}
 		}
-		writeJSON(w, map[string]any{"ui": uiPlacesOut(r, h.extensions.localizeUI(h.requestLang(r), h.extensions.uiPlaces(placement, base)))})
+		places := h.extensions.localizeUI(h.requestLang(r), h.extensions.uiPlaces(placement, base))
+		pagesOverview := r.URL.Query().Get("pages_overview") == "1"
+		places = append(places, h.pagesPlaces(r, placement, pagesOverview)...) // the assistant's pages, after the extensions' own (pages_hook.go)
+		writeJSON(w, map[string]any{"ui": uiPlacesOut(r, places)})
 	})
 	api.HandleFunc("POST /api/v1/extensions/{id}/-/ui/{ui}", func(w http.ResponseWriter, r *http.Request) {
 		if principalOf(r.Context()).Role != roleFull {
 			writeExtensionResponseErr(w, r, http.StatusForbidden, i18n.ErrEnglish("extension-status.read_only_device"))
+			return
+		}
+		if r.PathValue("id") == PagesExtension {
+			h.pagesUI(w, r) // the assistant's pages, never an extension's process
 			return
 		}
 		var in uiRequest
