@@ -1,8 +1,17 @@
 package persona.core.designsystem
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -10,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -136,6 +146,53 @@ class TouchTargetTest {
             clear.performTouchInput { click(Offset(width * point.x, height * point.y)) }
             rule.waitForIdle()
             assertEquals("a tap at $point of the clear button", "", query)
+        }
+    }
+
+    /**
+     * Tall bubbles (> 8192px) with asymmetric rounded corners (Brief user bubbles, Glass/Brief incoming bubbles)
+     * must still deliver real touch taps to controls at their bottom edge.
+     */
+    @Test fun tallAsymmetricBubblesDeliverBottomEdgeTapsAcrossStyles() {
+        var style by mutableStateOf(AppStyle.Brief)
+        var incoming by mutableStateOf(false)
+        var taps by mutableStateOf(0)
+        rule.setContent {
+            PersonaTheme(darkTheme = true, reduceMotion = true, style = style) {
+                val scroll = rememberScrollState()
+                LaunchedEffect(style, incoming) { scroll.scrollTo(scroll.maxValue) }
+                Column(Modifier.fillMaxWidth().height(900.dp).verticalScroll(scroll)) {
+                    val body: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit = {
+                        Spacer(Modifier.height(8600.dp))
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable(role = Role.Button) { taps++ }
+                                .height(Tokens.MinTouch.android)
+                                .testTag("tall-bubble-bottom-action"),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
+                            Text("Show less", style = PersonaTheme.type.caption, color = PersonaTheme.palette.accent)
+                        }
+                    }
+                    if (incoming) IncomingBubbleFrame(content = body) else UserBubbleFrame(content = body)
+                }
+            }
+        }
+        for (candidate in AppStyle.entries) {
+            for (isIncoming in listOf(false, true)) {
+                style = candidate
+                incoming = isIncoming
+                rule.waitForIdle()
+                val before = taps
+                rule.onNodeWithTag("tall-bubble-bottom-action").performTouchInput { click() }
+                rule.waitForIdle()
+                assertEquals(
+                    "tap missed bottom control in $candidate ${if (isIncoming) "IncomingBubbleFrame" else "UserBubbleFrame"}",
+                    before + 1,
+                    taps,
+                )
+            }
         }
     }
 }

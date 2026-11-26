@@ -7,11 +7,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.material3.Text
-import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -239,10 +239,10 @@ internal fun BubbleFold(
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .minimumInteractiveComponentSize()
                         .clip(RoundedCornerShape(Tokens.Radius.control))
                         .clickable(role = Role.Button) { open = !open }
-                        .padding(top = Tokens.Space.xs)
+                        .heightIn(min = Tokens.MinTouch.android)
+                        .padding(vertical = Tokens.Space.xs)
                         .testTag(if (open) "bubble-fold-collapse" else "bubble-fold-expand"),
                     horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
                     verticalAlignment = Alignment.CenterVertically,
