@@ -184,6 +184,6 @@
     <string name="phonetools_control_perms_section">Required permissions</string>
     <string name="phonetools_control_vd_section">Background virtual display</string>
     <string name="phonetools_control_safety_section">Safety &amp; login gates</string>
-    <string name="phonetools_data_section">Phone data</string>
+    <string name="phonetools_data_section">Data access</string>
     <string name="phonetools_overlay_preview_protected_placeholder">Protected screen — tap to bring forward</string>
 </resources>

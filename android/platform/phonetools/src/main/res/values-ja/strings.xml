@@ -183,6 +183,6 @@
     <string name="phonetools_control_perms_section">必要な権限</string>
     <string name="phonetools_control_vd_section">バックグラウンド仮想画面</string>
     <string name="phonetools_control_safety_section">安全とログイン</string>
-    <string name="phonetools_data_section">端末データ</string>
+    <string name="phonetools_data_section">データアクセス</string>
     <string name="phonetools_overlay_preview_protected_placeholder">保護画面 · タップで前面表示</string>
 </resources>

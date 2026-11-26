@@ -340,16 +340,16 @@ fun ExtensionPage(
                 if (onChannel != null) channelLink(detail, onChannel)
                 val pages = detail.ui.filter { auth?.page.isNullOrBlank() || it.id != auth.page }
                 if (onPage != null) extensionPages(pages, onPage)
-                if (hasModelRow) {
-                    val purpose = modelPurpose!!
-                    val catalog = modelCatalog!!
+                val currentCatalog = modelCatalog
+                val currentPurpose = modelPurpose
+                if (hasModelRow && currentCatalog != null && currentPurpose != null && onModel != null) {
                     item("extension-model") {
                         JGroupItem(GroupPosition.Single, Modifier.padding(top = Tokens.Space.s)) {
                             JRow(
                                 title = stringResource(R.string.settings_ext_model_title),
-                                subtitle = purposeSubtitle(res, purpose, catalog).ifBlank { stringResource(R.string.settings_ext_model_default) },
-                                subtitleLines = purposeSubtitleLines(purpose),
-                                onClick = { onModel?.invoke(purpose.id, manager) },
+                                subtitle = purposeSubtitle(res, currentPurpose, currentCatalog).ifBlank { stringResource(R.string.settings_ext_model_default) },
+                                subtitleLines = purposeSubtitleLines(currentPurpose),
+                                onClick = { onModel(currentPurpose.id, manager) },
                             )
                         }
                     }

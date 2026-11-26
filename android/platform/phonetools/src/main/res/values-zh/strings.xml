@@ -183,6 +183,6 @@
     <string name="phonetools_control_perms_section">所需权限</string>
     <string name="phonetools_control_vd_section">后台虚拟屏</string>
     <string name="phonetools_control_safety_section">安全与登录</string>
-    <string name="phonetools_data_section">手机数据</string>
+    <string name="phonetools_data_section">数据访问</string>
     <string name="phonetools_overlay_preview_protected_placeholder">页面受保护，点此拉到前台</string>
 </resources>
