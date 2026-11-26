@@ -33,6 +33,7 @@ import persona.core.contracts.api.ConnectionState
 import persona.core.contracts.api.DigitalAssistantModelCatalog
 import persona.core.contracts.api.DigitalAssistantModelChoice
 import persona.core.contracts.api.OutboxMessage
+import java.time.Instant
 import persona.core.domain.ComposerMessage
 import persona.core.hub.HubFailure
 import persona.feature.chat.ChatAppBindings
@@ -160,13 +161,17 @@ internal class AssistHubBridge(
                 } else {
                     session.sender.outbox
                 }
+                val assistantWithPinsFlow = combine(
+                    session.assistant.assistant,
+                    session.assistant.pinned,
+                ) { assistant, pinned -> assistant to pinned }
                 combine(
                     connStateFlow,
-                    session.assistant.assistant,
+                    assistantWithPinsFlow,
                     session.sessions.sessions,
                     chatFlow,
                     outboxFlow,
-                ) { connState, assistant, sessions, observedChat, outbox ->
+                ) { connState, (assistant, pinned), sessions, observedChat, outbox ->
                     val mainKey = assistant.mainSession
                     val activeKey = targetSessionOverride.value ?: mainKey
                     val mainRow = mainKey?.let { key ->
@@ -202,7 +207,7 @@ internal class AssistHubBridge(
                         activeTitle = activeTitle,
                         activeModelPick = activeRow?.modelPick,
                         activeWorking = activeWorking,
-                        conversations = selectOverlayConversations(assistant, sessions),
+                        conversations = selectOverlayConversations(assistant, sessions, pinned),
                         chatSnapshot = chat,
                         outbox = outbox,
                     )
@@ -374,6 +379,8 @@ internal class AssistHubBridge(
 }
 
 internal const val MAX_OVERLAY_CONVERSATIONS = 5
+internal const val OVERLAY_FALLBACK_RECENT_LIMIT = 2
+internal const val OVERLAY_FALLBACK_WINDOW_HOURS = 24L
 
 /** Origins of user-initiated assistant chats (matches AssistantData USER_ORIGINS without crossing feature boundaries). */
 private val OVERLAY_USER_ORIGINS = setOf("", "user", "channel")
@@ -398,13 +405,18 @@ private data class EligibleOverlayConversation(
  *   (`origin == "task"`) conversations (regardless of `recentTaskChats`, `conversationOrder`, or `leaders`).
  * - Prioritizes active permanent directions (`assistant.leaders`, preferring `directionNames[id]`),
  *   keeping user-promoted directions even if originally `spawned`, while skipping pure external entries.
- * - Fills remaining slots with user-initiated ordinary chats (`origin` in `""` / `"user"` / `"channel"`
- *   and blank `openedBy`), filtering out `inbox`, `spawned`, `lark_agent`, `extension`, `meeting`,
- *   and any unknown automatic origins, ordered by saved `conversationOrder` then newest `updated`.
+ * - Fills remaining slots with pinned user-initiated chats (`origin` in `""` / `"user"` / `"channel"`
+ *   and blank `openedBy`), hiding unpinned temporary/regular chats whenever any leader or pinned chat
+ *   exists; filters out `inbox`, `spawned`, `lark_agent`, `extension`, `meeting`, and unknown automatic
+ *   origins, ordered by saved `conversationOrder` then newest `updated`.
+ * - Falls back to at most 2 recent user-initiated chats updated within 24 hours only when both leaders
+ *   and pinned chats are empty.
  */
 internal fun selectOverlayConversations(
     assistant: AssistantSnapshot,
     sessions: List<Session>,
+    pinned: Set<SessionKey> = emptySet(),
+    now: Instant = Instant.now(),
     limit: Int = MAX_OVERLAY_CONVERSATIONS,
 ): List<AssistConversationOption> {
     if (limit <= 0) return emptyList()
@@ -467,7 +479,7 @@ internal fun selectOverlayConversations(
         .toList()
     val leaderKeys = leaderOptions.mapTo(HashSet()) { it.key }
 
-    val userRegular = eligible
+    val userRegularEntries = eligible
         .asSequence()
         .filter { entry ->
             entry.key !in leaderKeys &&
@@ -478,6 +490,21 @@ internal fun selectOverlayConversations(
             compareByDescending<EligibleOverlayConversation> { it.updated }
                 .thenBy { it.sessionId },
         )
+        .toList()
+
+    val savedOrder = assistant.conversationOrder
+    val orderedRegularEntries = if (savedOrder.isNullOrEmpty()) {
+        userRegularEntries
+    } else {
+        val byId = userRegularEntries.associateBy { it.sessionId }
+        val ordered = savedOrder.distinct().mapNotNull(byId::get)
+        val seen = ordered.mapTo(HashSet()) { it.sessionId }
+        ordered + userRegularEntries.filter { it.sessionId !in seen }
+    }
+
+    val pinnedRegularOptions = orderedRegularEntries
+        .asSequence()
+        .filter { it.key in pinned }
         .map { entry ->
             AssistConversationOption(
                 key = entry.key,
@@ -488,16 +515,25 @@ internal fun selectOverlayConversations(
         }
         .toList()
 
-    val savedOrder = assistant.conversationOrder
-    val orderedRegular = if (savedOrder.isNullOrEmpty()) {
-        userRegular
-    } else {
-        val byId = userRegular.associateBy { it.key.sessionId }
-        val pinned = savedOrder.distinct().mapNotNull(byId::get)
-        val seen = pinned.mapTo(HashSet()) { it.key.sessionId }
-        pinned + userRegular.filter { it.key.sessionId !in seen }
+    val prioritized = leaderOptions + pinnedRegularOptions
+    if (prioritized.isNotEmpty()) {
+        return prioritized.take(limit)
     }
-    return (leaderOptions + orderedRegular).take(limit)
+
+    val cutoff = now.minusSeconds(OVERLAY_FALLBACK_WINDOW_HOURS * 3600L)
+    return orderedRegularEntries
+        .asSequence()
+        .filter { entry -> entry.updated != null && !entry.updated.isBefore(cutoff) }
+        .take(minOf(limit, OVERLAY_FALLBACK_RECENT_LIMIT))
+        .map { entry ->
+            AssistConversationOption(
+                key = entry.key,
+                title = entry.regularTitle,
+                modelPick = entry.modelPick,
+                working = entry.working,
+            )
+        }
+        .toList()
 }
 
 internal fun mergeOutbox(

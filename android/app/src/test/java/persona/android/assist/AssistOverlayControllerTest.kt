@@ -15,6 +15,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.Instant
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import persona.core.contracts.Item
@@ -1389,7 +1390,11 @@ class AssistOverlayControllerTest {
             chatNewer.copy(status = "working"),
         )
 
-        val options = selectOverlayConversations(snapshot, liveSessions)
+        val options = selectOverlayConversations(
+            snapshot,
+            liveSessions,
+            pinned = setOf(chatOlder.key, chatNewer.key),
+        )
         assertEquals(listOf("conv-older", "conv-newer"), options.map { it.key.sessionId })
         assertEquals("Weekly Plan", options[0].title)
         assertFalse(options[0].working)
@@ -1447,7 +1452,11 @@ class AssistOverlayControllerTest {
             taskFromLiveOnly.copy(origin = "task"),
         )
 
-        val options = selectOverlayConversations(snapshot, liveSessions)
+        val options = selectOverlayConversations(
+            snapshot,
+            liveSessions,
+            pinned = setOf(taskFromRow.key, taskFromLiveOnly.key, taskCaseVariant.key, taskLeader.key, userChat.key),
+        )
         assertEquals(listOf("conv-user"), options.map { it.key.sessionId })
     }
 
@@ -1524,7 +1533,11 @@ class AssistOverlayControllerTest {
             openedByLive.copy(openedBy = "ext-mail"),
         )
 
-        val options = selectOverlayConversations(snapshot, liveSessions)
+        val options = selectOverlayConversations(
+            snapshot,
+            liveSessions,
+            pinned = snapshot.conversations.mapTo(HashSet()) { it.key },
+        )
         assertEquals(
             listOf("user-null", "user-blank", "user-explicit", "user-channel"),
             options.map { it.key.sessionId },
@@ -1614,16 +1627,133 @@ class AssistOverlayControllerTest {
             conversationOrder = listOf("reg-2"),
         )
 
-        val options = selectOverlayConversations(snapshot, emptyList())
+        val pinnedKeys = setOf(
+            SessionKey("m1", "reg-2"),
+            SessionKey("m1", "reg-5"),
+            SessionKey("m1", "reg-6"),
+            SessionKey("m1", "reg-1"),
+        )
+        val options = selectOverlayConversations(snapshot, emptyList(), pinned = pinnedKeys)
         assertEquals(MAX_OVERLAY_CONVERSATIONS, options.size)
         // Leaders come first in assistant.leaders order (spawned leader kept with directionName),
-        // followed by conversationOrder pinned user chat ("reg-2"), then newest user chats ("reg-6", "reg-5").
+        // followed by pinned user chats in conversationOrder ("reg-2") then recency ("reg-6", "reg-5");
+        // unpinned regular chats ("reg-3", "reg-4") remain hidden.
         assertEquals(
             listOf("lead-spawned", "lead-user", "reg-2", "reg-6", "reg-5"),
             options.map { it.key.sessionId },
         )
         assertEquals("Product Roadmap", options[0].title)
         assertEquals("Backend Architecture", options[1].title)
+    }
+
+
+    @Test
+    fun selectOverlayConversationsHidesUnpinnedRegularChatsWhenLeadersOrPinnedExist() {
+        val leader = Session(
+            machineId = "m1",
+            sessionId = "lead-1",
+            title = "Direction A",
+            origin = "user",
+            updatedAt = "2026-11-26T08:00:00Z",
+        )
+        val pinnedChat = Session(
+            machineId = "m1",
+            sessionId = "chat-pinned",
+            title = "Pinned Chat",
+            origin = "user",
+            updatedAt = "2026-11-26T09:00:00Z",
+        )
+        val unpinnedRecent = Session(
+            machineId = "m1",
+            sessionId = "chat-unpinned",
+            title = "Temp Chat",
+            origin = "user",
+            updatedAt = "2026-11-26T11:59:00Z",
+        )
+        val now = Instant.parse("2026-11-26T12:00:00Z")
+
+        val withLeaderOnly = selectOverlayConversations(
+            assistant = AssistantSnapshot(
+                mainSession = SessionKey("m1", "main-1"),
+                conversations = listOf(leader, unpinnedRecent),
+                leaders = listOf("lead-1"),
+            ),
+            sessions = emptyList(),
+            pinned = emptySet(),
+            now = now,
+        )
+        assertEquals(listOf("lead-1"), withLeaderOnly.map { it.key.sessionId })
+
+        val withPinnedOnly = selectOverlayConversations(
+            assistant = AssistantSnapshot(
+                mainSession = SessionKey("m1", "main-1"),
+                conversations = listOf(pinnedChat, unpinnedRecent),
+            ),
+            sessions = emptyList(),
+            pinned = setOf(pinnedChat.key),
+            now = now,
+        )
+        assertEquals(listOf("chat-pinned"), withPinnedOnly.map { it.key.sessionId })
+    }
+
+    @Test
+    fun selectOverlayConversationsFallsBackToTwoRecentUserChatsWithin24HoursWhenEmpty() {
+        val now = Instant.parse("2026-11-26T12:00:00Z")
+        val newest = Session(
+            machineId = "m1",
+            sessionId = "recent-1",
+            title = "Recent 1",
+            origin = "user",
+            updatedAt = "2026-11-26T11:00:00Z",
+        )
+        val second = Session(
+            machineId = "m1",
+            sessionId = "recent-2",
+            title = "Recent 2",
+            origin = "user",
+            updatedAt = "2026-11-25T12:00:00Z",
+        )
+        val thirdRecent = Session(
+            machineId = "m1",
+            sessionId = "recent-3",
+            title = "Recent 3",
+            origin = "user",
+            updatedAt = "2026-11-25T18:00:00Z",
+        )
+        val stale = Session(
+            machineId = "m1",
+            sessionId = "stale-old",
+            title = "Stale",
+            origin = "user",
+            updatedAt = "2026-11-25T11:59:59Z",
+        )
+        val noTimestamp = Session(
+            machineId = "m1",
+            sessionId = "no-ts",
+            title = "No Time",
+            origin = "user",
+            updatedAt = null,
+        )
+        val snapshot = AssistantSnapshot(
+            mainSession = SessionKey("m1", "main-1"),
+            conversations = listOf(newest, second, thirdRecent, stale, noTimestamp),
+            conversationOrder = listOf("stale-old", "recent-2"),
+        )
+
+        val fallback = selectOverlayConversations(snapshot, emptyList(), pinned = emptySet(), now = now)
+        assertEquals(OVERLAY_FALLBACK_RECENT_LIMIT, fallback.size)
+        assertEquals(listOf("recent-2", "recent-1"), fallback.map { it.key.sessionId })
+
+        val onlyStale = selectOverlayConversations(
+            assistant = AssistantSnapshot(
+                mainSession = SessionKey("m1", "main-1"),
+                conversations = listOf(stale, noTimestamp),
+            ),
+            sessions = emptyList(),
+            pinned = emptySet(),
+            now = now,
+        )
+        assertTrue(onlyStale.isEmpty())
     }
 
     @Test
