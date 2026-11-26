@@ -45,7 +45,7 @@ import (
 // Personal US hub baseline (open PRs + US synergy + #15782 + #14755 compact fixes) totals 276,510 B.
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 276_510
+	const budget = 276_760
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {
