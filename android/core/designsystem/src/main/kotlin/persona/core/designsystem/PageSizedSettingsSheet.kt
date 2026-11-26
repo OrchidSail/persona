@@ -28,6 +28,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.focusTarget
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -108,6 +109,8 @@ internal fun JSettingsPresentationFrame(
                         if (pageSized) Modifier.testTag("settings-page-card")
                             .clip(PersonaTheme.shapes.panelShape)
                             .background(container)
+                            // Stop taps and drags on non-interactive chrome (Brief/Board top bars) from falling through to the scrim.
+                            .pointerInput(Unit) {}
                         else Modifier,
                     )
                     .onFocusChanged {
