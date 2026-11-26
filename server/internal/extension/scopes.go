@@ -32,6 +32,8 @@ const (
 	ScopeTodosWrite              = extwire.ScopeTodosWrite
 	ScopeTasksSchedule           = extwire.ScopeTasksSchedule
 	ScopeDecisionsRaise          = extwire.ScopeDecisionsRaise
+	ScopeBotsFeishuIdentity      = extwire.ScopeBotsFeishuIdentity
+	ScopeBotsFeishuHandoff       = extwire.ScopeBotsFeishuHandoff
 	ScopeLeadersRead             = extwire.ScopeLeadersRead
 	ScopeLeadersWrite            = extwire.ScopeLeadersWrite
 	ScopeAssistantDispatchPolicy = extwire.ScopeAssistantDispatchPolicy
@@ -50,7 +52,7 @@ const (
 // HubScopes are the scopes, in the order the install screen lists them.
 var HubScopes = []string{ScopeKBRead, ScopeKBWrite, ScopeSentRead, ScopeInboxRead, ScopeInboxWrite, ScopeAgentsRead, ScopeAgentsControl,
 	ScopeAgentsArchiveIdle, ScopeAgentsPermissionMode, ScopeMachinesRead, ScopeMachinesPair, ScopeBrowserRun, ScopeNotify, ScopePushGrading, ScopeAssistantAsk, ScopeSpaces, ScopeAssistantRead, ScopeAssistantMemoryRead, ScopeAssistantEntriesRead,
-	ScopeTodosRead, ScopeTodosWrite, ScopeTasksSchedule, ScopeDecisionsRaise, ScopeLeadersRead, ScopeLeadersWrite, ScopeAssistantDispatchPolicy, ScopeAssistantStartDefaults, ScopeDispatchGuard, ScopeModels,
+	ScopeTodosRead, ScopeTodosWrite, ScopeTasksSchedule, ScopeDecisionsRaise, ScopeBotsFeishuIdentity, ScopeBotsFeishuHandoff, ScopeLeadersRead, ScopeLeadersWrite, ScopeAssistantDispatchPolicy, ScopeAssistantStartDefaults, ScopeDispatchGuard, ScopeModels,
 	ScopeTranscription, ScopeMarketRefreshOwn, ScopeAssistantEvents, ScopeLarkMessagesRead}
 
 // InEveryScope says whether a token of every scope (an extension granted the hub's full token the old way, hub_api,
@@ -63,13 +65,15 @@ var HubScopes = []string{ScopeKBRead, ScopeKBWrite, ScopeSentRead, ScopeInboxRea
 // browser.run (which runs scripts in a paired computer's browser),
 // tasks.schedule (which assigns target computers for pending tasks),
 // device.relay:<channel> (which communicates with paired devices on a named channel),
-// market.refresh_own (which spends the source marketplace's API quota), and
-// lark.messages.read (which receives newly synced Lark message metadata events).
+// market.refresh_own (which spends the source marketplace's API quota),
+// lark.messages.read (which receives newly synced Lark message metadata events), and
+// bots.feishu.handoff (which makes the bot write in a group and can interrupt the owner).
+// bots.feishu.identity stays in every scope: it names the bot and holds no secret.
 func InEveryScope(s string) bool {
 	if strings.HasPrefix(s, ScopeDeviceRelayPrefix) {
 		return false
 	}
-	return s != ScopeAgentsArchiveIdle && s != ScopeAgentsPermissionMode && s != ScopePushGrading && s != ScopeAssistantStartDefaults && s != ScopeDecisionsRaise && s != ScopeDispatchGuard && s != ScopeMachinesPair && s != ScopeBrowserRun && s != ScopeMarketRefreshOwn && s != ScopeSpaces && s != ScopeTasksSchedule && s != ScopeLarkMessagesRead
+	return s != ScopeAgentsArchiveIdle && s != ScopeAgentsPermissionMode && s != ScopePushGrading && s != ScopeAssistantStartDefaults && s != ScopeDecisionsRaise && s != ScopeDispatchGuard && s != ScopeMachinesPair && s != ScopeBrowserRun && s != ScopeMarketRefreshOwn && s != ScopeSpaces && s != ScopeTasksSchedule && s != ScopeLarkMessagesRead && s != ScopeBotsFeishuHandoff
 }
 
 // EveryScope is the scopes of a token of every scope (InEveryScope), in HubScopes' order.
@@ -98,6 +102,8 @@ var scopeTitles = map[string]string{
 	ScopeTodosWrite:              "scope_todos_write",
 	ScopeTasksSchedule:           "scope_tasks_schedule",
 	ScopeDecisionsRaise:          "scope_decisions_raise",
+	ScopeBotsFeishuIdentity:      "scope_bots_feishu_identity",
+	ScopeBotsFeishuHandoff:       "scope_bots_feishu_handoff",
 	ScopeLeadersRead:             "scope_leaders_read",
 	ScopeLeadersWrite:            "scope_leaders_write",
 	ScopeAssistantDispatchPolicy: "scope_assistant_dispatch_policy",
