@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nwverse/persona/server/internal/apierr"
+	"github.com/nwverse/persona/server/internal/assistant/supervisionrole"
 	"github.com/nwverse/persona/server/internal/i18n"
 	"github.com/nwverse/persona/server/internal/identity"
 	"github.com/nwverse/persona/server/internal/kb"
@@ -116,6 +117,24 @@ type Settings struct {
 	WorkGuide              *bool    `json:"work_guide,omitempty"`
 	// TodosV2 enables the unified experimental New To-dos & Tasks experience (#14538, #14584). nil is off (the default).
 	TodosV2 *bool `json:"todos_v2,omitempty"`
+	// TodosV2AutoSeen controls whether autonomously completed to-dos auto-clear unseen badges under todos_v2=true (#16098):
+	// "off", "subtasks" (part_of children only), or "all_autonomous" (default when empty).
+	TodosV2AutoSeen string `json:"todos_v2_auto_seen,omitempty"`
+	// TodosV2PendingReviewSLAHours controls how many hours pending_review stays quiet in working under todos_v2=true
+	// before escalating to needs_you (#16098): 0 (off — immediate needs_you), 12, 24 (default when nil), or 48.
+	TodosV2PendingReviewSLAHours *int `json:"todos_v2_pending_review_sla_hours,omitempty"`
+	// TodosV2CanWaitSLAHours controls how many hours non-critical can_wait decisions wait under todos_v2=true
+	// before aging into active needs_you (#16098): 0 (off — never auto-escalate), 24, 48 (default when nil), or 72.
+	TodosV2CanWaitSLAHours *int `json:"todos_v2_can_wait_sla_hours,omitempty"`
+	// TodosV2FoldChildren controls whether non-urgent child tasks fold under their top-level parent goal in board
+	// projection under todos_v2=true (#16098). nil is true (the default).
+	TodosV2FoldChildren *bool `json:"todos_v2_fold_children,omitempty"`
+	// TodosV2QuietHours is an optional 24-hour local-time quiet window ("HH:MM-HH:MM") under todos_v2=true during
+	// which routine non-card, non-P0, non-notify_user pushes downgrade to LevelP2 (#16433). Empty disables it.
+	TodosV2QuietHours string `json:"todos_v2_quiet_hours,omitempty"`
+	// TodosV2DigestWindowMinutes is an optional burst-coalescing window in minutes under todos_v2=true (#16433):
+	// 0 (default, disabled), 30, 60, or 120.
+	TodosV2DigestWindowMinutes *int `json:"todos_v2_digest_window_minutes,omitempty"`
 	// IntegrationsV2 enables the unified experimental Integrations & Extensions experience (#14802, #14805). nil is off (the default).
 	IntegrationsV2 *bool `json:"integrations_v2,omitempty"`
 	// LabsSeen is the set of experiment IDs acknowledged on any client of this assistant.
@@ -367,9 +386,69 @@ func (s *Service) updateSettingsSaveChecked(ctx context.Context, fn func(*Settin
 	return v, nil
 }
 
+const (
+	todosV2AutoSeenOff           = "off"
+	todosV2AutoSeenSubtasks      = "subtasks"
+	todosV2AutoSeenAllAutonomous = "all_autonomous"
+
+	todosV2DefaultPendingReviewSLAHours = 24
+	todosV2DefaultCanWaitSLAHours       = 48
+	todosV2DefaultDigestWindowMinutes   = 0
+)
+
+var (
+	todosV2AutoSeenModes           = []string{todosV2AutoSeenOff, todosV2AutoSeenSubtasks, todosV2AutoSeenAllAutonomous}
+	todosV2PendingReviewSLAOptions = []int{0, 12, 24, 48}
+	todosV2CanWaitSLAOptions       = []int{0, 24, 48, 72}
+	todosV2DigestWindowOptions     = []int{0, 30, 60, 120}
+)
+
 func (v Settings) workGuideOn() bool      { return v.WorkGuide != nil && *v.WorkGuide }
 func (v Settings) todosV2On() bool        { return v.TodosV2 != nil && *v.TodosV2 }
 func (v Settings) integrationsV2On() bool { return v.IntegrationsV2 != nil && *v.IntegrationsV2 }
+
+func (v Settings) todosV2AutoSeenMode() string {
+	if slices.Contains(todosV2AutoSeenModes, v.TodosV2AutoSeen) {
+		return v.TodosV2AutoSeen
+	}
+	return todosV2AutoSeenAllAutonomous
+}
+
+func (v Settings) todosV2PendingReviewSLAHours() int {
+	if v.TodosV2PendingReviewSLAHours != nil && slices.Contains(todosV2PendingReviewSLAOptions, *v.TodosV2PendingReviewSLAHours) {
+		return *v.TodosV2PendingReviewSLAHours
+	}
+	return todosV2DefaultPendingReviewSLAHours
+}
+
+func (v Settings) todosV2CanWaitSLAHours() int {
+	if v.TodosV2CanWaitSLAHours != nil && slices.Contains(todosV2CanWaitSLAOptions, *v.TodosV2CanWaitSLAHours) {
+		return *v.TodosV2CanWaitSLAHours
+	}
+	return todosV2DefaultCanWaitSLAHours
+}
+
+func (v Settings) todosV2FoldChildrenOn() bool {
+	return v.TodosV2FoldChildren == nil || *v.TodosV2FoldChildren
+}
+
+func (v Settings) todosV2QuietHours() string {
+	raw := strings.TrimSpace(v.TodosV2QuietHours)
+	if raw == "" {
+		return ""
+	}
+	if _, ok := parseTodosV2QuietHours(raw); !ok {
+		return ""
+	}
+	return raw
+}
+
+func (v Settings) todosV2DigestWindowMinutes() int {
+	if v.TodosV2DigestWindowMinutes != nil && slices.Contains(todosV2DigestWindowOptions, *v.TodosV2DigestWindowMinutes) {
+		return *v.TodosV2DigestWindowMinutes
+	}
+	return todosV2DefaultDigestWindowMinutes
+}
 
 // integrationsV2On reports whether assistant.integrations_v2 is enabled (off by default).
 // Uses settingsLastGood so hot receive/routing paths never trigger a hub hello RPC.
@@ -790,8 +869,9 @@ func stateDirOn(home, dataDir, name string) string {
 }
 
 type assistantView struct {
-	WorkspaceNamingVersion  string                `json:"workspace_naming_version"`
-	EffectiveWorkspaceRules workspacenaming.Rules `json:"effective_workspace_rules"`
+	WorkspaceNamingVersion  string                 `json:"workspace_naming_version"`
+	EffectiveWorkspaceRules workspacenaming.Rules  `json:"effective_workspace_rules"`
+	SystemDefaults          *workspacenaming.Rules `json:"system_defaults,omitempty"`
 	Settings
 	Manager                string             `json:"manager"`
 	PermissionDefaults     permissionDefaults `json:"permission_defaults"`
@@ -824,11 +904,17 @@ type assistantView struct {
 	MainBackgroundFolded    bool `json:"main_background_folded"`
 	FoldRoutineRelayReplies bool `json:"fold_routine_relay_replies"`
 	// RecentTaskChats is in effect, like DoneNeedsDelivery.
-	RecentTaskChats bool     `json:"recent_task_chats"`
-	WorkGuide       bool     `json:"work_guide"`
-	TodosV2         bool     `json:"todos_v2"`
-	IntegrationsV2  bool     `json:"integrations_v2"`
-	LabsSeen        []string `json:"labs_seen"`
+	RecentTaskChats              bool     `json:"recent_task_chats"`
+	WorkGuide                    bool     `json:"work_guide"`
+	TodosV2                      bool     `json:"todos_v2"`
+	TodosV2AutoSeen              string   `json:"todos_v2_auto_seen"`
+	TodosV2PendingReviewSLAHours int      `json:"todos_v2_pending_review_sla_hours"`
+	TodosV2CanWaitSLAHours       int      `json:"todos_v2_can_wait_sla_hours"`
+	TodosV2FoldChildren          bool     `json:"todos_v2_fold_children"`
+	TodosV2QuietHours            string   `json:"todos_v2_quiet_hours"`
+	TodosV2DigestWindowMinutes   int      `json:"todos_v2_digest_window_minutes"`
+	IntegrationsV2               bool     `json:"integrations_v2"`
+	LabsSeen                     []string `json:"labs_seen"`
 	// MeetingAttendanceDefault is in effect (off until changed).
 	MeetingAttendanceDefault      string   `json:"meeting_attendance_default"`
 	MeetingTranscriptionDefault   string   `json:"meeting_transcription_default"`
@@ -889,7 +975,7 @@ func (s *Service) view(ctx context.Context, withArchived bool, space ...string) 
 	}
 	v.Launcher = s.launcherNow(ctx)
 	effectiveRules, _ := workspacenaming.Effective(v.WorkspaceRules, workspacenaming.Rules{})
-	out := assistantView{WorkspaceNamingVersion: workspacenaming.Version, EffectiveWorkspaceRules: effectiveRules, Settings: v, Manager: s.managerIdentity(), PermissionDefaults: s.permissionDefaults(), Conversations: []proto.Session{}, NotesEffective: s.notes(ctx), MainTasksQuiet: quietOn(v.MainTasksQuiet),
+	out := assistantView{WorkspaceNamingVersion: workspacenaming.Version, EffectiveWorkspaceRules: effectiveRules, SystemDefaults: new(workspacenaming.Defaults()), Settings: v, Manager: s.managerIdentity(), PermissionDefaults: s.permissionDefaults(), Conversations: []proto.Session{}, NotesEffective: s.notes(ctx), MainTasksQuiet: quietOn(v.MainTasksQuiet),
 		StartRequestedTasks: quietOn(v.StartRequestedTasks), RecordingDays: recordingDaysOf(v), MinutesDays: kb.MinutesDaysFor(minutesDaysSetting(v), recordingDaysOf(v)),
 		IdleAutoCompact: s.idleAutoCompact(ctx), IdleAutoCompactMinutes: s.idleAutoCompactMinutes(ctx), IdleAutoCompactTokens: s.idleAutoCompactTokens(ctx),
 		CacheKeepalive: cacheKeepaliveOf(v).Enabled, CacheKeepaliveMinutes: cacheKeepaliveOf(v).IntervalMinutes, CacheKeepaliveMax: cacheKeepaliveOf(v).MaxRequests,
@@ -897,17 +983,23 @@ func (s *Service) view(ctx context.Context, withArchived bool, space ...string) 
 		Dashboards:                  v.Dashboards != nil && *v.Dashboards,
 		MeetingTranscriptionDefault: meetingTranscriptionDefaultOf(v), MeetingGlossary: meetingGlossaryOf(v),
 		MeetingTranscriptionExtension: meetingTranscriptionExtensionOf(v), MeetingTranscriptionReady: s.transcriptionReadyNow(),
-		TaskWorkspacePreference: s.taskWorkspacePreference(ctx),
-		ReadonlyMode:            readonlyModeOf(v),
-		MainBackgroundFolded:    quietOn(v.MainBackgroundFolded),
-		FoldRoutineRelayReplies: v.foldRoutineRelayReplies(),
-		WorkGuide:               v.workGuideOn(),
-		TodosV2:                 v.todosV2On(),
-		IntegrationsV2:          v.integrationsV2On(),
-		LabsSeen:                append([]string{}, v.LabsSeen...),
-		RecentTaskChats:         v.RecentTaskChats != nil && *v.RecentTaskChats,
-		DeliveryGate:            deliveryGateOf(v),
-		DoneNeedsDelivery:       deliveryGateOf(v) == deliveryGateLive, IdleCloseHours: int(s.idleCloseAfter(ctx) / time.Hour),
+		TaskWorkspacePreference:      s.taskWorkspacePreference(ctx),
+		ReadonlyMode:                 readonlyModeOf(v),
+		MainBackgroundFolded:         quietOn(v.MainBackgroundFolded),
+		FoldRoutineRelayReplies:      v.foldRoutineRelayReplies(),
+		WorkGuide:                    v.workGuideOn(),
+		TodosV2:                      v.todosV2On(),
+		TodosV2AutoSeen:              v.todosV2AutoSeenMode(),
+		TodosV2PendingReviewSLAHours: v.todosV2PendingReviewSLAHours(),
+		TodosV2CanWaitSLAHours:       v.todosV2CanWaitSLAHours(),
+		TodosV2FoldChildren:          v.todosV2FoldChildrenOn(),
+		TodosV2QuietHours:            v.todosV2QuietHours(),
+		TodosV2DigestWindowMinutes:   v.todosV2DigestWindowMinutes(),
+		IntegrationsV2:               v.integrationsV2On(),
+		LabsSeen:                     append([]string{}, v.LabsSeen...),
+		RecentTaskChats:              v.RecentTaskChats != nil && *v.RecentTaskChats,
+		DeliveryGate:                 deliveryGateOf(v),
+		DoneNeedsDelivery:            deliveryGateOf(v) == deliveryGateLive, IdleCloseHours: int(s.idleCloseAfter(ctx) / time.Hour),
 		ArchiveClosedDays:            int(s.archiveClosedAfter(ctx) / (24 * time.Hour)),
 		ReviewSamplePercent:          s.reviewSamplePercent(ctx),
 		InterjectBackground:          v.InterjectBackground != nil && *v.InterjectBackground,
@@ -1089,7 +1181,7 @@ func (s *Service) warm(launcher string) {
 	// The spare is adopted only by a new conversation in the same profile (node/assistant_spare.go), and a new one is
 	// started in the main chat's, on a carried pick too (startMain, startOn).
 	profiled := s.withNewConversationProfile(ctx, machine, params)
-	ctx = context.WithValue(ctx, supervisionStartup{}, true)
+	ctx = context.WithValue(ctx, supervisionStartup{}, supervisionrole.RoleMain())
 	err = s.call(ctx, machine, DeviceAssistantWarm, params, nil)
 	if profiled && (nodeOutdated(err) || profileRefused(err)) { // as startOn: an old node, or another agent than Claude Code
 		delete(params, "config_dir")
