@@ -195,6 +195,35 @@ class ExtensionUiStateTest {
         assertEquals(1, api.renders.size)
     }
 
+    @Test fun phoneConnectorSettingsLinkIsStrictlyWhitelisted() = runBlocking {
+        val allowed = "persona://settings/connectors/phone"
+        assertTrue(ExtensionViewText.isPhoneConnectorSettings(allowed))
+        assertTrue(ExtensionViewText.opens("persona-phone", allowed))
+        listOf(
+            "persona://settings/connectors/phone/",
+            "persona://settings/connectors/phone?tab=safety",
+            "persona://settings/connectors/phone#top",
+            "persona://settings/connectors/phone/extra",
+            "persona://settings/connectors/phone/../mail",
+            "persona://settings/connectors/mail",
+            "persona://user@settings/connectors/phone",
+            "jarvis://settings/connectors/phone",
+            "http://settings/connectors/phone",
+            "javascript:alert(1)",
+            "intent://settings/connectors/phone",
+        ).forEach { bad ->
+            assertFalse(bad, ExtensionViewText.isPhoneConnectorSettings(bad))
+            assertFalse(bad, ExtensionViewText.opens("persona-phone", bad))
+        }
+        val api = FakeUi()
+        val model = ExtensionViewModel(api, "persona-phone", "persona-phone")
+        model.load()
+        api.answer = ExtensionUiResult(openUrl = allowed)
+        assertEquals(allowed, model.press(ExtensionViewAction("open-phone")).openUrl)
+        api.answer = ExtensionUiResult(openUrl = "persona://settings/connectors/mail")
+        assertNull(model.press(ExtensionViewAction("open-bad")).openUrl)
+    }
+
     /** Set Up with … (#5308): `persona://ask` is taken only on the subscription pages, and refused everywhere else. */
     @Test fun askIsTakenOnlyOnTheSubscriptionPages() = runBlocking {
         val good = "persona://ask?text=Help%20me"

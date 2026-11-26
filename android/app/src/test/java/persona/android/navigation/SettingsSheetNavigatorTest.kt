@@ -74,4 +74,31 @@ class SettingsSheetNavigatorTest {
         assertEquals(listOf(AgentsRoute, chat), agents)
         assertEquals(listOf(AssistantRoute), home)
     }
+
+    @Test fun openingPhoneToolsFromExtensionUiStaysInsideSettingsSheetAndPopsBack() {
+        val pages = mutableListOf<NavKey>(
+            SettingsRoute,
+            ExtensionUiRoute("persona-phone", "persona-phone", "Phone Control"),
+        )
+        val outside = object : Navigator {
+            override fun navigate(key: NavKey) = error("Phone tools settings must stay inside the sheet")
+            override fun selectTab(tab: AppTab) = error("Unexpected primary tab")
+            override fun back() = Unit
+        }
+        val sheet = SettingsSheetNavigator(pages, { error("Closed before returning to Settings") }, outside)
+        sheet.navigate(persona.platform.phonetools.PhoneToolsRoute)
+        assertEquals(
+            listOf(
+                SettingsRoute,
+                ExtensionUiRoute("persona-phone", "persona-phone", "Phone Control"),
+                persona.platform.phonetools.PhoneToolsRoute,
+            ),
+            pages,
+        )
+        sheet.back()
+        assertEquals(
+            listOf(SettingsRoute, ExtensionUiRoute("persona-phone", "persona-phone", "Phone Control")),
+            pages,
+        )
+    }
 }

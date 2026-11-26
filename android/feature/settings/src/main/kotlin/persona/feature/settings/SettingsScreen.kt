@@ -307,19 +307,26 @@ private fun SettingsContent(
                 )
             }
         }
+        val visibleHubConnectors = connectorRows.filterIsInstance<ConnectorRow.Hub>().map { it.connector }
         connectorRows.filterIsInstance<ConnectorRow.Hub>().forEach { row ->
             val c = row.connector
             item {
                 JGroupItem(connectorPosition(row)) {
                     JRow(
-                        title = connectorTitle(c, hubConnectors, LocalManagerRoster.current),
+                        title = connectorTitle(c, visibleHubConnectors, LocalManagerRoster.current),
                         leadingIcon = PhIcons.PlugsConnected,
                         subtitle = listOfNotNull(c.account, c.via).joinToString(" · ").ifEmpty { ConnectorText.state(c) },
                         value = ConnectorText.summary(c),
                         onClick = {
-                            onNavigate?.invoke(persona.core.navigation.ConnectorRoute(c.id, c.manager)) ?: run {
-                                connectorManager = c.manager
-                                page = "connector/${c.id}"
+                            onNavigate?.invoke(connectorDestination(c)) ?: run {
+                                if (ConnectorText.isExtensionManagedOnly(c)) {
+                                    extension = c.extensionId!!.trim()
+                                    extensionManager = c.manager
+                                    page = "plugins"
+                                } else {
+                                    connectorManager = c.manager
+                                    page = "connector/${c.id}"
+                                }
                             }
                         },
                     )

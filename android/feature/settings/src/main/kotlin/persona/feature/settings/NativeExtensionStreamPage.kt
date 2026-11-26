@@ -84,6 +84,7 @@ internal fun NativeExtensionStreamPage(adapter: NativeExtensionStreamAdapter, ti
     /** False at a regular-width sidebar root: the shell's sidebar button replaces Back (iOS sidebarRootPage). A stream pop still calls [onBack]. */
     showBack: Boolean = true,
     onPush: (persona.core.contracts.api.ExtensionViewPush) -> Unit = {},
+    onPhoneSettings: (() -> Unit)? = null,
     presentations: kotlinx.coroutines.flow.Flow<NativeStreamPresentation>? = null) {
     val session = adapter.session
     val native by session.state.collectAsState()
@@ -103,6 +104,7 @@ internal fun NativeExtensionStreamPage(adapter: NativeExtensionStreamAdapter, ti
     }
     val push by rememberUpdatedState(onPush)
     val back by rememberUpdatedState(onBack)
+    val phoneSettings by rememberUpdatedState(onPhoneSettings)
     LaunchedEffect(session, presentations, adapter.shown) {
         if (!adapter.shown) return@LaunchedEffect
         presentations?.collect { presentation ->
@@ -112,7 +114,12 @@ internal fun NativeExtensionStreamPage(adapter: NativeExtensionStreamAdapter, ti
                 if (tree === presentation.tree) done(nativeStreamTargetResult(presentation))
             }
             result.toast?.let { feedback?.notice(it) }
-            result.openUrl?.takeIf(ExtensionViewText::isHttps)?.let { runCatching { uri.openUri(it) } }
+            result.openUrl?.let { url ->
+                when {
+                    ExtensionViewText.isPhoneConnectorSettings(url) -> phoneSettings?.invoke()
+                    ExtensionViewText.isHttps(url) -> { val _ = runCatching { uri.openUri(url) } }
+                }
+            }
             result.push?.let { push(persona.core.contracts.api.ExtensionViewPush(ui = it.ui, state = it.state, title = it.title)) }
             if (result.pop == true) back()
         }

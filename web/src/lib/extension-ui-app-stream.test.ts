@@ -223,8 +223,17 @@ describe("actual app UI stream adapter contract", () => {
     f.receipt(replay); expect(f.effects).toHaveLength(1);
     expect(f.effects).toMatchObject([{ event: { action: "save", value: { saved: "native" } }, version: 2 }]);
   });
+  it("accepts whitelisted persona://settings/connectors/phone receipt URLs while rejecting other persona:// URLs", async () => {
+    const f = fixture(); await f.open();
+    const event = f.page.session.event("button", "save", "press", null);
+    const request = f.sent.at(-1)!; f.delta(); f.receipt(request, { open_url: "persona://settings/connectors/phone" });
+    await event; await tick();
+    expect(f.failures).toEqual([]);
+    expect(f.effects).toMatchObject([{ r: { open_url: "persona://settings/connectors/phone" } }]);
+    f.page.dispose();
+  });
   it("rejects result-derived views and credentials before any effects", async () => {
-    for (const result of [{ toast: "Wrong", view: {} }, { open_url: "https://user:pass@example.com" }, { push: { state: "é".repeat(9000) } }]) {
+    for (const result of [{ toast: "Wrong", view: {} }, { open_url: "https://user:pass@example.com" }, { open_url: "persona://settings/connectors/mail" }, { push: { state: "é".repeat(9000) } }]) {
       const f = fixture(); await f.open();
       const event = f.page.session.event("button", "save", "press", null).catch(() => {});
       const request = f.sent.at(-1)!; f.delta(); f.receipt(request, result);

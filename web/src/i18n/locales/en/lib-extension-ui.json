@@ -1,4 +1,5 @@
 {
   "not_a_number": "Must be a number",
+  "phone_settings_android_only": "Open this on your Android phone to manage local permissions and safety gates",
   "unreadable_view": "Can't read the extension's view"
 }

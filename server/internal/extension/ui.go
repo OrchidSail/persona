@@ -196,13 +196,14 @@ type UIParams struct {
 	Placement    string            `json:"placement"`
 	Size         string            `json:"size"`
 	// UIVersion is what the app that asks draws (UIVersion at most): a plugin may draw an older app something it knows.
-	UIVersion int          `json:"ui_version"`
-	TZ        string       `json:"tz,omitempty"`     // the user's time zone ("Asia/Shanghai"); "" when unknown
-	Locale    string       `json:"locale,omitempty"` // the app's language ("zh-Hans-CN")
-	Platform  string       `json:"platform,omitempty"`
-	Machine   *UIMachine   `json:"machine,omitempty"`
-	Launcher  *UILauncher  `json:"launcher,omitempty"`
-	Item      *UIInboxItem `json:"item,omitempty"`
+	UIVersion      int          `json:"ui_version"`
+	TZ             string       `json:"tz,omitempty"`     // the user's time zone ("Asia/Shanghai"); "" when unknown
+	Locale         string       `json:"locale,omitempty"` // the app's language ("zh-Hans-CN")
+	Platform       string       `json:"platform,omitempty"`
+	ViewerDeviceID string       `json:"viewer_device_id,omitempty"` // authenticated viewing device id (dev_<12hex>), omitted when unknown
+	Machine        *UIMachine   `json:"machine,omitempty"`
+	Launcher       *UILauncher  `json:"launcher,omitempty"`
+	Item           *UIInboxItem `json:"item,omitempty"`
 }
 
 // BadgeEvent is ui.badge, sent by a plugin: the badge on its nav_page's entry (no text clears it).
@@ -334,6 +335,10 @@ func InboxSourceURL(itemID string) string {
 func SettingsURL(id string) string {
 	return "persona://settings/extensions/" + url.PathEscape(id)
 }
+
+// PhoneConnectorSettingsURL opens the local "This phone" settings page on mobile clients so extensions can link
+// directly to local permissions and safety gates without leaving the whitelisted persona:// routes.
+const PhoneConnectorSettingsURL = "persona://settings/connectors/phone"
 
 // Limits of a View.
 const (

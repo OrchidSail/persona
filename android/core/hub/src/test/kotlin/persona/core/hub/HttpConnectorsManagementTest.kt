@@ -57,15 +57,19 @@ class HttpConnectorsManagementTest {
                 """{"connectors":[
                 {"id":"mail","name":"邮箱","status":"ok"},
                 {"id":"lark","name":"飞书","status":"ok"},
-                {"id":"github","name":"GitHub","status":"ok","account":"octocat"}
+                {"id":"github","name":"GitHub","status":"ok","account":"octocat"},
+                {"id":"personaphone","name":"Phone Control","status":"ok","extension_id":"persona-phone","capabilities":["status","tools","actions"]}
             ]}""",
             ),
         )
         val list = api.connectors(all = true)
         assertEquals("/api/v1/connectors?all=1", (server.takeRequest().path).zhAny())
-        assertEquals(3, list.size)
+        assertEquals(4, list.size)
         assertEquals("GitHub", (list[2].name).zhAny())
         assertEquals("octocat", (list[2].account).zhAny())
+        assertEquals(null, list[2].extensionId)
+        assertEquals("persona-phone", list[3].extensionId)
+        assertEquals(listOf("status", "tools", "actions"), list[3].capabilities)
     }
 
     @Test

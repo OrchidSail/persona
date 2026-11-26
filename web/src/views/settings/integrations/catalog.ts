@@ -212,7 +212,7 @@ export function buildIntegrationCatalog(input: IntegrationCatalogInput): Integra
     const matchedConnectors: HubConnector[] = [];
     for (const c of input.connectors) {
       if (claimedConnectors.has(c.id)) continue;
-      if (contribConnectors.includes(c.id) || (!RESERVED_BUILTIN_CONNECTORS.has(c.id) && c.id === ext.id)) {
+      if (contribConnectors.includes(c.id) || c.extension_id === ext.id || (!RESERVED_BUILTIN_CONNECTORS.has(c.id) && c.id === ext.id)) {
         matchedConnectors.push(c);
         claimedConnectors.add(c.id);
       }

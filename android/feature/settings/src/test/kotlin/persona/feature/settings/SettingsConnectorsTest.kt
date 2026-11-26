@@ -88,4 +88,79 @@ class SettingsConnectorsTest {
         assertEquals(listOf(ConnectorRow.Phone, ConnectorRow.Mail, github),
             connectorRows(hub, lark = persona.core.contracts.LarkFeatures.of(setOf("client_ops")).chats))
     }
+
+    @Test
+    fun extensionManagedToolsOnlyConnectorIsDeduplicatedWithoutHidingInteractiveConnectors() {
+        val phoneExt = HubConnector(
+            id = "personaphone",
+            name = "Phone Control",
+            status = "ok",
+            extensionId = "persona-phone",
+            capabilities = listOf("status", "tools", "actions"),
+            manager = "work",
+        )
+        val toolsOnlyExt = HubConnector(
+            id = "toolsonly",
+            name = "Tools Only",
+            status = "ok",
+            extensionId = "tools-only",
+            capabilities = listOf("status", "tools"),
+        )
+        val whatsapp = HubConnector(
+            id = "whatsapp",
+            name = "WhatsApp",
+            status = "not_signed_in",
+            extensionId = "whatsapp",
+            capabilities = listOf("status", "tools", "actions", "login", "inbox", "archive"),
+        )
+        val wechat = HubConnector(
+            id = "wechat",
+            name = "WeChat",
+            status = "ok",
+            extensionId = "wechat",
+            capabilities = listOf("status", "login"),
+        )
+        val startingExt = HubConnector(
+            id = "startingext",
+            name = "Starting",
+            status = "error",
+            extensionId = "starting-ext",
+            capabilities = emptyList(),
+        )
+        val legacyNoExtId = HubConnector(
+            id = "legacyphone",
+            name = "Legacy Phone",
+            status = "ok",
+            capabilities = listOf("status", "tools", "actions"),
+        )
+        val github = HubConnector(
+            id = "github",
+            name = "GitHub",
+            status = "ok",
+            capabilities = listOf("status", "tools", "actions", "login", "inbox", "archive", "options"),
+        )
+
+        assertTrue(ConnectorText.isExtensionManagedOnly(phoneExt))
+        assertTrue(ConnectorText.isExtensionManagedOnly(toolsOnlyExt))
+        assertEquals(false, ConnectorText.isExtensionManagedOnly(whatsapp))
+        assertEquals(false, ConnectorText.isExtensionManagedOnly(wechat))
+        assertEquals(false, ConnectorText.isExtensionManagedOnly(startingExt))
+        assertEquals(false, ConnectorText.isExtensionManagedOnly(legacyNoExtId))
+        assertEquals(false, ConnectorText.isExtensionManagedOnly(github))
+
+        val rows = connectorRows(listOf(phoneExt, toolsOnlyExt, whatsapp, wechat, startingExt, legacyNoExtId, github), lark = false)
+        assertEquals(
+            listOf("whatsapp", "wechat", "startingext", "legacyphone", "github"),
+            rows.filterIsInstance<ConnectorRow.Hub>().map { it.connector.id },
+        )
+        // Compatibility destination redirects extension-managed-only connectors straight to ExtensionRoute.
+        assertEquals(
+            persona.core.navigation.ExtensionRoute("persona-phone", manager = "work"),
+            connectorDestination(phoneExt),
+        )
+        assertEquals(
+            persona.core.navigation.ConnectorRoute("whatsapp", null),
+            connectorDestination(whatsapp),
+        )
+    }
 }

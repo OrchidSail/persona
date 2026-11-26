@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -55,6 +56,11 @@ func (h *Manager) pageOpen(ctx context.Context, who extwire.UIPrincipal, req wir
 	_, err := h.withUI(ctx, req.Extension, req.Contribution, in, func(p *extension.Extension, hp *hubExtension, item extension.UIItem, slot extension.UISlot, params extension.UIParams) (extension.ActionResult, error) {
 		if !extension.FullPage(item.Placement) {
 			return extension.ActionResult{}, pageError("negotiation")
+		}
+		if params.ViewerDeviceID == "" && !who.Paired && who.Role == roleFull {
+			if id := strings.TrimSpace(who.Principal); strings.HasPrefix(id, "dev_") {
+				params.ViewerDeviceID = id
+			}
 		}
 		s, reused, err := h.pageReserveOpen(who, req, hp.proc, slot, params)
 		if err != nil {

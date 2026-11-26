@@ -317,3 +317,22 @@ func TestRunSkipsTheGate(t *testing.T) {
 		t.Fatalf("ran while signed out: %+v %v", res, c.did)
 	}
 }
+
+func TestInfoExtensionIDJSON(t *testing.T) {
+	extInfo := Info{ID: "personaphone", Name: "Phone Control", Status: StateOK, Capabilities: []string{"status", "tools", "actions"}, ExtensionID: "persona-phone", Enabled: true}
+	raw, err := json.Marshal(extInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"extension_id":"persona-phone"`) {
+		t.Fatalf("expected extension_id in JSON: %s", raw)
+	}
+	builtinInfo := Info{ID: "github", Name: "GitHub", Status: StateOK, Capabilities: []string{"status", "login"}, Enabled: true}
+	rawBuiltin, err := json.Marshal(builtinInfo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rawBuiltin), "extension_id") {
+		t.Fatalf("expected empty extension_id to be omitted for backward compatibility: %s", rawBuiltin)
+	}
+}

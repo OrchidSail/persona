@@ -252,6 +252,20 @@ func (h *Manager) uiParams(item extension.UIItem, slot extension.UISlot, in uiRe
 	return out
 }
 
+// viewerDeviceID returns the authenticated viewing device's credential id (dev_<12hex>, matching
+// device.relay.devices) for UIParams, or "" when the caller is not a signed-in full-access device.
+func viewerDeviceID(ctx context.Context) string {
+	p := principalOf(ctx)
+	if p.Paired || p.Extension != "" || p.Role != roleFull {
+		return ""
+	}
+	id := strings.TrimSpace(p.ID)
+	if !strings.HasPrefix(id, "dev_") {
+		return ""
+	}
+	return id
+}
+
 // withUI checks the same contribution, context and permissions for every UI path.
 // The callback runs while temporary gateway capabilities remain scoped and live.
 func (h *Manager) withUI(ctx context.Context, id, uiID string, in uiRequest, call func(*extension.Extension, *hubExtension, extension.UIItem, extension.UISlot, extension.UIParams) (extension.ActionResult, error)) (extension.ActionResult, error) {
@@ -279,6 +293,7 @@ func (h *Manager) withUI(ctx context.Context, id, uiID string, in uiRequest, cal
 		return res, errUseWidget
 	}
 	params := h.uiParams(*item, slot, in)
+	params.ViewerDeviceID = viewerDeviceID(ctx)
 	// Older clients may send their system locale in the body. The request's UI language wins when supplied.
 	if l := in.lang; i18n.Valid(l) && !uiLocaleMatches(l, params.Locale) {
 		params.Locale = string(l)
@@ -467,10 +482,10 @@ func checkPushes(m *extension.Manifest, from extension.UIItem, v *extension.View
 
 // checkOpenURL holds what extension id's action opens to https; an inbox_item may also open its item's own source page
 // (extension.InboxSourceURL), that item's only, and any of its pages its own settings (extension.SettingsURL), its own
-// only.
+// only, or the local phone connector settings page (extension.PhoneConnectorSettingsURL).
 // space-conversations may also open one assistant conversation (spaceConversationLink).
 func checkOpenURL(id string, ui extension.UIItem, itemID, raw string) error {
-	if raw == "" || raw == extension.SettingsURL(id) {
+	if raw == "" || raw == extension.SettingsURL(id) || raw == extension.PhoneConnectorSettingsURL {
 		return nil
 	}
 	if ui.Placement == "inbox_item" && itemID != "" && raw == extension.InboxSourceURL(itemID) {

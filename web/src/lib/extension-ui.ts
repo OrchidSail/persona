@@ -660,6 +660,7 @@ export function outcome(
   const track = r.open_url ? extensionTrackRoute(r.open_url) : undefined;
   const source = !!item && !!r.open_url && inboxSourceItem(r.open_url) === item;
   const settings = r.open_url ? extensionSettingsHref(r.open_url) : undefined;
+  const phoneSettings = !!r.open_url && isPhoneConnectorSettingsURL(r.open_url);
   const ask = extension === SUBSCRIPTIONS_UI && r.open_url ? askText(r.open_url) : undefined;
   const push = readPush(r.push);
   const pop = r.pop === true && !push;
@@ -668,7 +669,7 @@ export function outcome(
     ...(r.items?.length ? { items: r.items } : {}),
     // UI version 5: lines for a diff, or components in place, say enough
     reload: !r.view && !r.toast && !r.open_url && !push && !pop && !r.items?.length && !r.lines,
-    toast: r.toast || undefined,
+    toast: phoneSettings ? t("lib-extension-ui.phone_settings_android_only") : r.toast || undefined,
     url,
     ...(source ? { source: true as const } : {}),
     ...(settings ? { settings } : {}),
@@ -783,6 +784,14 @@ export function extensionSettingsHref(url: string): string | undefined {
   }
   if (!id || id.startsWith("-") || id.includes("/")) return undefined;
   return `/settings?tab=extensions&extension=${encodeURIComponent(id)}`;
+}
+
+/**
+ * Exact whitelist for the local "This phone" settings link (`persona://settings/connectors/phone`),
+ * which manages phone-local permissions and safety gates on Android.
+ */
+export function isPhoneConnectorSettingsURL(url: string): boolean {
+  return url === "persona://settings/connectors/phone";
 }
 
 // ── reading what the hub sent (UI version 2) ─────────────
