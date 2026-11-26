@@ -254,17 +254,32 @@ func (n *Node) stopWithCause(ctx context.Context, id string, retire bool, cause 
 // stoppable checks that session id's agent may be stopped now (retire: only a still one) and holds its typing lock
 // (unlock releases it) when ok; ok false with no error when it is not running.
 func (n *Node) stoppable(id string, retire bool) (unlock func(), a host.Agent, ok bool, err error) {
-	if !validID(id) && !n.agyPaneRow(id) {
-		return nil, a, false, fmt.Errorf("invalid session id %q", id)
-	}
 	no := func(code, why string) (func(), host.Agent, bool, error) {
 		if retire {
 			code = notRetirable // what hubs before #4754 know
 		}
 		return nil, a, false, refusal(code, why, nil)
 	}
+	h, _, known := n.runtimes.belongs(id)
+	if !validID(id) && !n.agyPaneRow(id) {
+		if h != nil || known {
+			if n.isAssistantSession(id) || n.runtimeAssistant(id) {
+				return no(notRetirable, "assistant conversations are not stopped")
+			}
+			return no(noTerminal, "this session belongs to another tool")
+		}
+		if runtimeSessionID(id) {
+			if label, pending := n.pendingRuntimeForStop(id); pending {
+				return nil, a, false, errRuntimeAway(label)
+			}
+			if n.knownRuntimePrefix(id) {
+				return nil, a, false, nil
+			}
+		}
+		return nil, a, false, fmt.Errorf("invalid session id %q", id)
+	}
 	_, terminalOnly := n.terminalOnly(id)
-	switch h, _, known := n.runtimes.belongs(id); {
+	switch {
 	case n.isAssistantSession(id) || n.runtimeAssistant(id):
 		return no(notRetirable, "assistant conversations are not stopped")
 	case n.externalCodex(id) || h != nil || known || terminalOnly:
@@ -671,4 +686,27 @@ func (n *Node) newTab(ctx context.Context, launch host.Launcher, cwd, ws, tabNam
 func (n *Node) agyPaneRow(id string) bool {
 	a, ok := n.agent(id)
 	return ok && a.Agent == agyAgent && a.PaneID != "" && id == otherSession(a)
+}
+
+// pendingRuntimeForStop reports whether a runtime matching id's prefix is still starting up or has not pushed its
+// initial session list yet, so stop fails closed with runtime_away instead of assuming the session is already gone.
+func (n *Node) pendingRuntimeForStop(id string) (string, bool) {
+	if n.runtimes != nil {
+		if label, pending := n.runtimes.unlistedRuntimeByPrefix(id); pending {
+			return label, true
+		}
+	}
+	if rtID, pending := n.pendingAutoCompanionRuntime(id); pending {
+		return rtID, true
+	}
+	return "", false
+}
+
+// knownRuntimePrefix reports whether id carries the prefix of a connected runtime or a built-in companion runtime
+// (agy / opencode), distinguishing vanished runtime session IDs after a reboot from malformed session IDs.
+func (n *Node) knownRuntimePrefix(id string) bool {
+	if strings.HasPrefix(id, agyRuntimeID+"-") || strings.HasPrefix(id, opencodeRuntimeID+"-") {
+		return true
+	}
+	return n.runtimes != nil && n.runtimes.hasReadyRuntimePrefix(id)
 }
