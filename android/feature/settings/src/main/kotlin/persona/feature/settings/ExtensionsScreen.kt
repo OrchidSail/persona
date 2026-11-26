@@ -33,6 +33,8 @@ import persona.core.contracts.api.HubLauncher
 import persona.core.contracts.api.ExtensionDetail
 import persona.core.contracts.api.ExtensionField
 import persona.core.contracts.api.ExtensionManagement
+import persona.core.contracts.api.ModelCatalog
+import persona.core.contracts.api.ModelConfiguration
 import persona.core.contracts.api.ExtensionSecret
 import persona.core.contracts.api.ExtensionSecretUser
 import persona.core.contracts.api.HandoffRule
@@ -179,6 +181,10 @@ fun ExtensionPage(
     onSubscriptions: (() -> Unit)? = null,
     /** What it may read of personal information (#13500), the default manager's; null, or another manager's page: left out. */
     trust: persona.core.contracts.api.ExtensionTrustSource? = null,
+    /** Hub model configuration so extensions with `models` permission expose their model/provider directly here. */
+    models: ModelConfiguration? = null,
+    /** Opens the extension's own Hub model purpose (`extension.<id>`) to pick a provider, model and effort. */
+    onModel: ((String, String?) -> Unit)? = null,
 ) {
     val subscriptionCounts = rememberSubscriptionCounts(extensions.takeIf { manager == null && onSubscriptions != null }) { it.extension == extensionId }
     val owner = remember(extensions, extensionId, manager) { ExtensionOwners.of(manager) }
@@ -294,6 +300,25 @@ fun ExtensionPage(
         }
         catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() } // the connector's page says what is wrong
     }
+    val extensionModelPurposeId = "extension.$extensionId"
+    var modelCatalog by remember(models, extensionId, owner) { mutableStateOf<ModelCatalog?>(null) }
+    val modelPurpose = remember(modelCatalog, extensionModelPurposeId) {
+        modelCatalog?.purposes?.firstOrNull { it.id == extensionModelPurposeId }
+    }
+    LaunchedEffect(models, extensionId, owner, detail?.extension?.enabled) {
+        if (models == null || detail?.extension?.enabled == false) {
+            modelCatalog = null
+            return@LaunchedEffect
+        }
+        modelCatalog = try {
+            models.forManager(owner).catalog()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+    }
+    val hasModelRow = onModel != null && modelPurpose != null && detail?.extension?.enabled != false
     val hasForm = detail != null && !detail.readOnly && detail.form.isNotEmpty()
     val fixedSecrets = detail?.secrets.orEmpty().filterNot { it.isEntrySecret }
     // A form of machine lists only saves each switch at once: nothing waits for "Save".
@@ -315,6 +340,20 @@ fun ExtensionPage(
                 if (onChannel != null) channelLink(detail, onChannel)
                 val pages = detail.ui.filter { auth?.page.isNullOrBlank() || it.id != auth.page }
                 if (onPage != null) extensionPages(pages, onPage)
+                if (hasModelRow) {
+                    val purpose = modelPurpose!!
+                    val catalog = modelCatalog!!
+                    item("extension-model") {
+                        JGroupItem(GroupPosition.Single, Modifier.padding(top = Tokens.Space.s)) {
+                            JRow(
+                                title = stringResource(R.string.settings_ext_model_title),
+                                subtitle = purposeSubtitle(res, purpose, catalog).ifBlank { stringResource(R.string.settings_ext_model_default) },
+                                subtitleLines = purposeSubtitleLines(purpose),
+                                onClick = { onModel?.invoke(purpose.id, manager) },
+                            )
+                        }
+                    }
+                }
                 if (onSubscriptions != null) subscriptionsEntry(subscriptionCounts, onSubscriptions)
                 if (connectors != null) connectorInbox(hubConnectors, onConnector) { c, on ->
                     scope.launch {
@@ -336,7 +375,7 @@ fun ExtensionPage(
                     secretsAvailable = referencesAllowed != null)
                 if (!detail.readOnly && fixedSecrets.isNotEmpty()) secrets(fixedSecrets, state, available = referencesAllowed != null,
                     onEdit = { secret -> scope.launch { recheckReferences(); editingSecret = EditingSecret(secret, secret.label) } })
-                if (!hasForm && fixedSecrets.isEmpty() && auth == null && (onPage == null || pages.isEmpty()) && hubConnectors.isEmpty() &&
+                if (!hasForm && !hasModelRow && fixedSecrets.isEmpty() && auth == null && (onPage == null || pages.isEmpty()) && hubConnectors.isEmpty() &&
                     (onChannel == null || detail.extension.contributes.orEmpty()["channel"].isNullOrEmpty()))
                     item("configuration-empty") { Note(stringResource(R.string.settings_extension_empty)) }
                 if (waitsForSave) item("configuration-save") {

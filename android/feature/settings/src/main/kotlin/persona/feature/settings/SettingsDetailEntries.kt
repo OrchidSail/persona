@@ -51,7 +51,9 @@ fun EntryProviderScope<NavKey>.settingsDetailEntries(navigator: Navigator, servi
             onUpgrade = { market, id -> navigator.navigate(ExtensionCatalogRoute(market, id, manager = manager)) },
             connectors = services.connectors.takeUnless { demo }, onConnector = { navigator.navigate(ConnectorRoute(it, manager)) },
             onSubscriptions = { navigator.navigate(subscriptionsRoute(subscriptionsTitle, extension = route.extensionId)) },
-            trust = services.extensionTrust.takeUnless { demo })
+            trust = services.extensionTrust.takeUnless { demo },
+            models = services.models.takeUnless { demo },
+            onModel = { purposeId, owner -> navigator.navigate(ModelPurposeRoute(purposeId, owner)) })
     }
     entry<ConnectorRoute> { route ->
         val subscriptionsTitle = stringResource(R.string.settings_subscriptions_title)
@@ -69,6 +71,9 @@ fun EntryProviderScope<NavKey>.settingsDetailEntries(navigator: Navigator, servi
             onConversation = { machine, session -> navigator.navigate(persona.core.navigation.ChatRoute(machine, session)) },
             onPhoneSettings = {
                 openPhoneSettings?.invoke(navigator) ?: navigator.navigate(persona.core.navigation.SettingsPageRoute(persona.core.navigation.SettingsPage.PhoneData))
+            },
+            onModelPurpose = { purposeId ->
+                navigator.navigate(ModelPurposeRoute(purposeId, route.manager))
             })
     }
     // The market of the current assistant's Extensions (docs/assistant/managers.md "Clients"): what it installs is that one's.

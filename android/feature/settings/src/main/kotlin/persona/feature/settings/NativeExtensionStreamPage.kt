@@ -85,6 +85,7 @@ internal fun NativeExtensionStreamPage(adapter: NativeExtensionStreamAdapter, ti
     showBack: Boolean = true,
     onPush: (persona.core.contracts.api.ExtensionViewPush) -> Unit = {},
     onPhoneSettings: (() -> Unit)? = null,
+    onModelPurpose: ((String) -> Unit)? = null,
     presentations: kotlinx.coroutines.flow.Flow<NativeStreamPresentation>? = null) {
     val session = adapter.session
     val native by session.state.collectAsState()
@@ -105,6 +106,7 @@ internal fun NativeExtensionStreamPage(adapter: NativeExtensionStreamAdapter, ti
     val push by rememberUpdatedState(onPush)
     val back by rememberUpdatedState(onBack)
     val phoneSettings by rememberUpdatedState(onPhoneSettings)
+    val modelPurpose by rememberUpdatedState(onModelPurpose)
     LaunchedEffect(session, presentations, adapter.shown) {
         if (!adapter.shown) return@LaunchedEffect
         presentations?.collect { presentation ->
@@ -117,6 +119,7 @@ internal fun NativeExtensionStreamPage(adapter: NativeExtensionStreamAdapter, ti
             result.openUrl?.let { url ->
                 when {
                     ExtensionViewText.isPhoneConnectorSettings(url) -> phoneSettings?.invoke()
+                    ExtensionViewText.modelPurpose(url) != null -> ExtensionViewText.modelPurpose(url)?.let { modelPurpose?.invoke(it) }
                     ExtensionViewText.isHttps(url) -> { val _ = runCatching { uri.openUri(url) } }
                 }
             }

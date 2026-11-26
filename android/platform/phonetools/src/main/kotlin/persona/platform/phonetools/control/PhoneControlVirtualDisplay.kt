@@ -53,6 +53,9 @@ internal class PhoneControlVirtualDisplay(
     private val _previewFrames = MutableStateFlow<Bitmap?>(null)
     val previewFrames: StateFlow<Bitmap?> = _previewFrames.asStateFlow()
 
+    private val _previewFrameProtected = MutableStateFlow(false)
+    val previewFrameProtected: StateFlow<Boolean> = _previewFrameProtected.asStateFlow()
+
     val isActive: Boolean
         get() = _displayId.value != null
 
@@ -83,25 +86,29 @@ internal class PhoneControlVirtualDisplay(
 
         ensureThreadLocked()
         val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        bufferWidth = width
+        bufferHeight = height
+        imageReader = reader
+        hasFrame = false
+        lastPreviewHash = 0L
+        _previewFrameProtected.value = false
+        // Register listener BEFORE creating the virtual display so the very first rendered frame is never missed.
+        reader.setOnImageAvailableListener({ r -> captureFromReader(r) }, frameHandler)
         val id = runCatching {
             shell.createDisplay(reader.surface, width, height, dpi)
         }.getOrDefault(-1)
 
         if (id <= Display.DEFAULT_DISPLAY) {
+            val _ = runCatching { reader.setOnImageAvailableListener(null, null) }
             val _ = runCatching { reader.close() }
+            imageReader = null
             tearDownThreadLocked()
             _displayId.value = null
             return null
         }
 
-        bufferWidth = width
-        bufferHeight = height
-        imageReader = reader
         activeShell = shell
-        hasFrame = false
-        lastPreviewHash = 0L
         _displayId.value = id
-        reader.setOnImageAvailableListener({ r -> captureFromReader(r) }, frameHandler)
         return id
     }
 
@@ -155,6 +162,7 @@ internal class PhoneControlVirtualDisplay(
         hasFrame = false
         lastPreviewHash = 0L
         _previewFrames.value = null
+        _previewFrameProtected.value = false
         tearDownThreadLocked()
     }
 
@@ -207,7 +215,8 @@ internal class PhoneControlVirtualDisplay(
                 val _ = plane.buffer.rewind()
                 bmp.copyPixelsFromBuffer(plane.buffer)
                 hasFrame = true
-                val sampleHash = sampleBitmapHash(bmp, bufferWidth, bufferHeight)
+                val (sampleHash, mostlyBlack) = sampleBitmapHashAndBlack(bmp, bufferWidth, bufferHeight)
+                _previewFrameProtected.value = mostlyBlack
                 if (sampleHash != lastPreviewHash || _previewFrames.value == null) {
                     lastPreviewHash = sampleHash
                     val preview = uprightDisplayFrame(bmp, geom, geom.previewWidth(PREVIEW_SHORT_SIDE_PX), paint)
@@ -221,22 +230,29 @@ internal class PhoneControlVirtualDisplay(
         }
     }
 
-    private fun sampleBitmapHash(bmp: Bitmap, contentW: Int, contentH: Int): Long {
-        if (contentW <= 0 || contentH <= 0) return 0L
+    private fun sampleBitmapHashAndBlack(bmp: Bitmap, contentW: Int, contentH: Int): Pair<Long, Boolean> {
+        if (contentW <= 0 || contentH <= 0) return 0L to false
         var h = -3750763034362895579L
         val stepX = (contentW / 8).coerceAtLeast(1)
         val stepY = (contentH / 8).coerceAtLeast(1)
+        var nonBlack = 0
+        var total = 0
         var y = stepY / 2
         while (y < contentH) {
             var x = stepX / 2
             while (x < contentW) {
                 val px = bmp.getPixel(x.coerceAtMost(bmp.width - 1), y.coerceAtMost(bmp.height - 1))
                 h = (h xor px.toLong()) * 1099511628211L
+                val r = (px ushr 16) and 0xFF
+                val g = (px ushr 8) and 0xFF
+                val b = px and 0xFF
+                if (r > 8 || g > 8 || b > 8) nonBlack++
+                total++
                 x += stepX
             }
             y += stepY
         }
-        return h
+        return h to (total > 0 && nonBlack == 0)
     }
 
     private companion object {

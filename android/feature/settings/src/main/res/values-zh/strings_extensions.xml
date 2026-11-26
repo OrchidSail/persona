@@ -448,4 +448,6 @@
     <string name="settings_ext_entry_remove_title">移除「%1$s」？</string>
     <string name="settings_ext_entry_remove_body">保存时将删除此条目及其已保存的密钥。</string>
     <string name="settings_ext_entry_remove_confirm">移除条目</string>
+    <string name="settings_ext_model_title">使用的模型</string>
+    <string name="settings_ext_model_default">复用 Hub 已配置的模型供应商</string>
 </resources>

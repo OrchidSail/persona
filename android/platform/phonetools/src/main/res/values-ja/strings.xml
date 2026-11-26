@@ -112,7 +112,7 @@
     <string name="phonetools_control_gate_otp_detail">SMS や通知の認証コードを自動入力し、生のコードはログと返信から常にマスクします。オフにするとログイン確認時に端末で一時停止します。</string>
     <string name="phonetools_control_gate_payment_title">実際の支払い・送金確認をブロック</string>
     <string name="phonetools_control_gate_payment_detail">支払いや送金の確認ボタンを押す前に必ず一時停止し、端末での確認を求めます（遠隔回避不可）。オフにすると支払いタップを許可します。</string>
-    <string name="phonetools_control_safety_footnote">生体認証や画像・スライダー CAPTCHA は常に端末での手動操作が必要です。URI スキームのディープリンクは常にブロックされます。</string>
+    <string name="phonetools_control_safety_footnote">生体認証やスライダー認証は常にこの端末上で手動完了します。</string>
     <string name="phonetools_overlay_status_running">実行中</string>
     <string name="phonetools_overlay_status_queued">待機中</string>
     <string name="phonetools_overlay_status_paused">一時停止</string>
@@ -122,13 +122,13 @@
     <string name="phonetools_overlay_status_failed">失敗</string>
     <string name="phonetools_overlay_status_cancelled">中止</string>
     <string name="phonetools_overlay_status_idle">待機</string>
-    <string name="phonetools_overlay_title_plain">Persona %1$s</string>
-    <string name="phonetools_overlay_title_with_step">Persona %1$s · ステップ %2$d</string>
+    <string name="phonetools_overlay_title_plain">%1$s</string>
+    <string name="phonetools_overlay_title_with_step">%1$s · #%2$d</string>
     <string name="phonetools_overlay_action_pause">一時停止</string>
     <string name="phonetools_overlay_action_resume">再開</string>
-    <string name="phonetools_overlay_action_takeover">手動操作</string>
-    <string name="phonetools_overlay_action_return_control">操作を戻す</string>
-    <string name="phonetools_overlay_action_stop">緊急停止</string>
+    <string name="phonetools_overlay_action_takeover">手動</string>
+    <string name="phonetools_overlay_action_return_control">戻す</string>
+    <string name="phonetools_overlay_action_stop">停止</string>
     <string name="phonetools_overlay_reading">画面を読み取り中…</string>
     <string name="phonetools_overlay_paused_msg">オーバーレイから一時停止しました</string>
     <string name="phonetools_overlay_resumed_msg">再開しました</string>
@@ -180,4 +180,9 @@
     <string name="phonetools_control_vd_err_connect">ローカルのワイヤレスデバッグに接続できません。オンになっているか確認して再試行してください。</string>
     <string name="phonetools_control_vd_err_helper">バックグラウンドヘルパーの引き継ぎが完了しませんでした。再試行または再ペアリングしてください。</string>
     <string name="phonetools_control_vd_err_unknown">バックグラウンドヘルパーの起動に失敗しました。もう一度お試しください。</string>
+    <string name="phonetools_control_perms_section">必要な権限</string>
+    <string name="phonetools_control_vd_section">バックグラウンド仮想画面</string>
+    <string name="phonetools_control_safety_section">安全とログイン</string>
+    <string name="phonetools_data_section">端末データ</string>
+    <string name="phonetools_overlay_preview_protected_placeholder">保護画面 · タップで前面表示</string>
 </resources>

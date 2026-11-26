@@ -12,6 +12,8 @@ import android.os.Looper
 import android.provider.Settings
 import android.text.TextUtils
 import android.util.TypedValue
+import android.hardware.display.DisplayManager
+import android.view.Display
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -49,6 +51,7 @@ class TaskStatusOverlay(
     private val onTakeoverOrResumePhone: () -> Unit,
     private val onEmergencyStop: () -> Unit,
     private val onAutoDismissed: () -> Unit = {},
+    private val onBringToForeground: () -> Unit = {},
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val gestureDepth = AtomicInteger(0)
@@ -69,6 +72,9 @@ class TaskStatusOverlay(
 
     @Volatile
     private var latestPreviewBitmap: Bitmap? = null
+
+    @Volatile
+    private var latestPreviewProtected: Boolean = false
 
     private var statusDotView: View? = null
     private var statusTitleView: TextView? = null
@@ -122,12 +128,13 @@ class TaskStatusOverlay(
      * Updates the mini-screen bitmap in place without touching WindowManager layout params,
      * keeping the floating window completely steady while live frames stream at ~5fps.
      */
-    fun updatePreviewFrame(bitmap: Bitmap?, usingVirtualDisplay: Boolean) {
+    fun updatePreviewFrame(bitmap: Bitmap?, usingVirtualDisplay: Boolean, protectedFrame: Boolean = false) {
         usingVirtualDisplayMode = usingVirtualDisplay
         latestPreviewBitmap = bitmap
+        latestPreviewProtected = protectedFrame
         val _ = mainHandler.post {
             if (!isShowing) return@post
-            bindPreviewOnMain(bitmap, usingVirtualDisplay)
+            bindPreviewOnMain(bitmap, usingVirtualDisplay, protectedFrame)
         }
     }
 
@@ -180,52 +187,58 @@ class TaskStatusOverlay(
         if (isShowing) return
         val canAppOverlay = runCatching { Settings.canDrawOverlays(context) }.getOrDefault(false)
         val a11yService = PhoneControlAccessibilityService.instance.value
-        val hostContext: Context
-        val windowType: Int
-        when {
-            canAppOverlay -> {
-                hostContext = context
-                windowType = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        val candidates = buildList<Pair<Context, Int>> {
+            if (canAppOverlay) {
+                val appOverlayCtx = resolveAppOverlayContext()
+                add(appOverlayCtx to WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
             }
-            a11yService != null -> {
-                hostContext = a11yService
-                windowType = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+            if (a11yService != null) {
+                add(a11yService to WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
             }
-            else -> return
         }
+        if (candidates.isEmpty()) return
 
-        val wm = hostContext.getSystemService(WindowManager::class.java) ?: return
-        val container = buildOverlayView(hostContext)
         val initialWidth = if (minimized) dimenPx(R.dimen.phonetools_overlay_pill_width) else fixedCardWidthPx
         val initialHeight = if (minimized) dimenPx(R.dimen.phonetools_overlay_pill_height) else computeExpandedCardHeightPx()
-        val params = WindowManager.LayoutParams(
-            initialWidth,
-            initialHeight,
-            windowType,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT,
-        ).apply {
-            gravity = Gravity.TOP or Gravity.END
-            x = dimenPx(R.dimen.phonetools_overlay_margin_end)
-            y = dimenPx(R.dimen.phonetools_overlay_margin_top)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+
+        var mountedWm: WindowManager? = null
+        var mountedRoot: LinearLayout? = null
+        var mountedParams: WindowManager.LayoutParams? = null
+        for ((hostContext, windowType) in candidates) {
+            val wm = hostContext.getSystemService(WindowManager::class.java) ?: continue
+            val container = buildOverlayView(hostContext)
+            val params = WindowManager.LayoutParams(
+                initialWidth,
+                initialHeight,
+                windowType,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT,
+            ).apply {
+                gravity = Gravity.TOP or Gravity.END
+                x = dimenPx(R.dimen.phonetools_overlay_margin_end)
+                y = dimenPx(R.dimen.phonetools_overlay_margin_top)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+            }
+            attachEdgeDragBehavior(container, params, wm)
+            if (runCatching { wm.addView(container, params) }.isSuccess) {
+                mountedWm = wm
+                mountedRoot = container
+                mountedParams = params
+                break
             }
         }
+        if (mountedWm == null || mountedRoot == null || mountedParams == null) return
 
-        attachEdgeDragBehavior(container, params, wm)
-
-        val added = runCatching { wm.addView(container, params) }.isSuccess
-        if (!added) return
-
-        windowManager = wm
-        rootView = container
-        layoutParams = params
+        windowManager = mountedWm
+        rootView = mountedRoot
+        layoutParams = mountedParams
         isShowing = true
         applyMinimizedStateOnMain(relayout = false)
-        bindPreviewOnMain(latestPreviewBitmap, usingVirtualDisplayMode)
+        bindPreviewOnMain(latestPreviewBitmap, usingVirtualDisplayMode, latestPreviewProtected)
         bindSummaryOnMain(lastSummary)
     }
 
@@ -243,6 +256,32 @@ class TaskStatusOverlay(
         minimized = false
         usingVirtualDisplayMode = false
         latestPreviewBitmap = null
+        latestPreviewProtected = false
+    }
+
+    private fun resolveAppOverlayContext(): Context {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val dm = context.getSystemService(DisplayManager::class.java)
+            val display = dm?.getDisplay(Display.DEFAULT_DISPLAY)
+            if (display != null) {
+                return runCatching {
+                    context.createDisplayContext(display)
+                        .createWindowContext(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null)
+                }.getOrDefault(context)
+            }
+        }
+        return context
+    }
+
+    internal fun buildOverlayViewForTest(ctx: Context, summary: OverlayTaskSummary, frame: Bitmap?, protectedFrame: Boolean = false): LinearLayout {
+        lastSummary = summary
+        usingVirtualDisplayMode = summary.usingVirtualDisplay
+        latestPreviewBitmap = frame
+        latestPreviewProtected = protectedFrame
+        val view = buildOverlayView(ctx)
+        bindPreviewOnMain(frame, summary.usingVirtualDisplay, protectedFrame)
+        bindSummaryOnMain(summary)
+        return view
     }
 
     private fun cancelPendingDismissOnMain() {
@@ -423,6 +462,11 @@ class TaskStatusOverlay(
         previewModeBadgeView = modeBadge
         previewFrame.addView(modeBadge)
 
+        previewFrame.setOnClickListener {
+            if (usingVirtualDisplayMode) {
+                onBringToForeground()
+            }
+        }
         previewContainer = previewFrame
         root.addView(previewFrame)
 
@@ -495,7 +539,8 @@ class TaskStatusOverlay(
         gravity = Gravity.CENTER
         setTextColor(colorRes(R.color.phonetools_overlay_text))
         setTextSize(TypedValue.COMPLEX_UNIT_PX, context.resources.getDimension(R.dimen.phonetools_overlay_button_text))
-        isSingleLine = true
+        setTypeface(typeface, android.graphics.Typeface.BOLD)
+        includeFontPadding = false
         maxLines = 1
         ellipsize = TextUtils.TruncateAt.END
         val padH = dimenPx(R.dimen.phonetools_overlay_chip_padding_horizontal)
@@ -531,11 +576,16 @@ class TaskStatusOverlay(
         val _ = runCatching { wm.updateViewLayout(view, params) }
     }
 
-    private fun bindPreviewOnMain(bitmap: Bitmap?, isVirtual: Boolean) {
+    private fun bindPreviewOnMain(bitmap: Bitmap?, isVirtual: Boolean, protectedFrame: Boolean = false) {
         previewModeBadgeView?.text = context.getString(
             if (isVirtual) R.string.phonetools_overlay_mode_background else R.string.phonetools_overlay_mode_foreground,
         )
-        if (isVirtual && bitmap != null && !bitmap.isRecycled) {
+        if (isVirtual && protectedFrame) {
+            previewImageView?.setImageBitmap(null)
+            previewImageView?.visibility = View.GONE
+            previewPlaceholderView?.visibility = View.VISIBLE
+            previewPlaceholderView?.text = context.getString(R.string.phonetools_overlay_preview_protected_placeholder)
+        } else if (isVirtual && bitmap != null && !bitmap.isRecycled) {
             previewImageView?.setImageBitmap(bitmap)
             previewImageView?.visibility = View.VISIBLE
             previewPlaceholderView?.visibility = View.GONE

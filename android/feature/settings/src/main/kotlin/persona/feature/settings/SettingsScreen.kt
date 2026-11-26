@@ -517,7 +517,9 @@ private fun SettingsPageContent(
                 machines = services.sessions.machines,
                 launchers = services.providers.takeUnless { services.demo }?.let { p -> { p.launchers() } },
                 onUpgrade = onNavigate?.let { navigate -> { market, ext -> navigate(persona.core.navigation.ExtensionCatalogRoute(market, ext, manager = extensionManager)) } },
-                trust = services.extensionTrust.takeUnless { services.demo }) }
+                trust = services.extensionTrust.takeUnless { services.demo },
+                models = services.models.takeUnless { services.demo },
+                onModel = { purposeId, owner -> onNavigate?.invoke(persona.core.navigation.ModelPurposeRoute(purposeId, owner)) ?: run { purposeManager = owner; purpose = purposeId; page = "models" } }) }
             ?: ExtensionsPage(mine.extensions.takeUnless { services.demo }, back,
                 onExtension = { id, manager -> onNavigate?.invoke(persona.core.navigation.ExtensionRoute(id, manager = manager)) ?: run { extension = id; extensionManager = manager } },
                 onMarket = onNavigate?.let { navigate -> { navigate(persona.core.navigation.ExtensionMarketRoute) } },

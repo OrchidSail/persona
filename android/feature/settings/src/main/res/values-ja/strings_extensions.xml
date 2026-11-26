@@ -448,4 +448,6 @@
     <string name="settings_ext_entry_remove_title">「%1$s」を削除しますか？</string>
     <string name="settings_ext_entry_remove_body">保存すると、この項目と保存済みのシークレットが削除されます。</string>
     <string name="settings_ext_entry_remove_confirm">項目を削除</string>
+    <string name="settings_ext_model_title">使用モデル</string>
+    <string name="settings_ext_model_default">Hub のモデルプロバイダーを再利用</string>
 </resources>

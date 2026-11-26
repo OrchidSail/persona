@@ -415,16 +415,46 @@ internal class AndroidScreenController(
         return a11y.swipe(activeDisplayId, x1.toFloat(), y1.toFloat(), x2.toFloat(), y2.toFloat(), durationMs)
     }
 
-    private fun resolveNode(ref: String, snapshotId: String): CollectedNode? =
-        nodeCache[snapshotId]?.firstOrNull { it.element.ref == ref }
+    private fun resolveNode(ref: String, snapshotId: String): CollectedNode? {
+        val trimmed = ref.trim()
+        if (trimmed.isEmpty()) return null
+        val withAt = if (trimmed.startsWith("@")) trimmed else "@$trimmed"
+        val withoutAt = trimmed.removePrefix("@")
+        val nodes = nodeCache[snapshotId] ?: nodeCache.values.firstOrNull() ?: return null
+        return nodes.firstOrNull { it.element.ref == trimmed }
+            ?: nodes.firstOrNull {
+                it.element.ref.equals(withAt, ignoreCase = true) ||
+                    it.element.ref.equals(withoutAt, ignoreCase = true) ||
+                    it.element.ref.removePrefix("@").equals(withoutAt, ignoreCase = true)
+            }
+    }
 
-    private fun resolveEditableNode(ref: String?, snapshotId: String?): AccessibilityNodeInfo? =
+    private fun resolveEditableNode(ref: String?, snapshotId: String?): AccessibilityNodeInfo? {
         if (ref != null && snapshotId != null) {
-            resolveNode(ref, snapshotId)?.node
-        } else {
-            nodeCache.values.firstOrNull()?.firstOrNull { it.element.editable && it.element.focused }?.node
-                ?: nodeCache.values.firstOrNull()?.firstOrNull { it.element.editable }?.node
+            val matched = resolveNode(ref, snapshotId)?.node
+            if (matched != null) {
+                if (matched.isEditable) return matched
+                findEditableDescendant(matched)?.let { return it }
+            }
         }
+        val nodes = snapshotId?.let { nodeCache[it] } ?: nodeCache.values.firstOrNull()
+        return nodes?.firstOrNull { it.element.editable && it.element.focused }?.node
+            ?: nodes?.firstOrNull { it.element.editable }?.node
+    }
+
+    private fun findEditableDescendant(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var visited = 0
+        while (queue.isNotEmpty() && visited++ < 32) {
+            val cur = queue.removeFirst()
+            if (cur.isEditable) return cur
+            for (i in 0 until cur.childCount) {
+                cur.getChild(i)?.let { queue.add(it) }
+            }
+        }
+        return null
+    }
 
     private fun findClickableAncestor(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         var cur: AccessibilityNodeInfo? = node

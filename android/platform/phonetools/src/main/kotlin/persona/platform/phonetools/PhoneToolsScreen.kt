@@ -60,6 +60,7 @@ import persona.core.designsystem.PersonaTheme
 import persona.core.designsystem.Status
 import persona.core.designsystem.Tokens
 import persona.core.designsystem.dense
+import persona.core.designsystem.rowPadding
 import persona.core.navigation.Navigator
 import persona.platform.phonetools.control.PhoneControlAccessibilityService
 import persona.platform.phonetools.control.PhoneControlNotificationListener
@@ -112,6 +113,9 @@ fun PhoneToolsScreen(runtime: PhoneToolsRuntime, navigator: Navigator) {
                 onError = { error = it },
                 onClearError = { error = null },
             )
+        }
+        item(key = "phone_data_section_header") {
+            JSectionHeader(stringResource(R.string.phonetools_data_section), sub = true)
         }
         items(PhoneSource.entries, key = { it.name }) { source ->
             val status = remember(revision, source, healthGranted) {
@@ -235,6 +239,7 @@ private fun PhoneControlSection(
             statusTone = Status.Unread
         }
     }
+    val contentInset = rowPadding
     Column(Modifier.fillMaxWidth()) {
         JSectionHeader(stringResource(R.string.phonetools_control_section_title), sub = true)
         JGroupItem(GroupPosition.Single, Modifier.padding(bottom = Tokens.Space.m)) {
@@ -255,13 +260,20 @@ private fun PhoneControlSection(
                     }
                 },
             )
-            Column(
-                Modifier.fillMaxWidth().padding(horizontal = Tokens.Space.l).padding(bottom = Tokens.Space.l),
-                verticalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = contentInset).padding(bottom = Tokens.Space.m),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 JTag(statusText, status = statusTone)
-                if (remoteControlEnabled) {
-                    JDivider()
+            }
+        }
+        if (remoteControlEnabled) {
+            JSectionHeader(stringResource(R.string.phonetools_control_perms_section), sub = true)
+            JGroupItem(GroupPosition.Single, Modifier.padding(bottom = Tokens.Space.m)) {
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = contentInset, vertical = Tokens.Space.m),
+                    verticalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+                ) {
                     ControlPermissionRow(
                         title = stringResource(R.string.phonetools_control_perm_a11y_title),
                         detail = stringResource(R.string.phonetools_control_perm_a11y_detail),
@@ -304,6 +316,7 @@ private fun PhoneControlSection(
                         },
                     )
                     if (!snapshot.permissions.batteryOptimizationIgnored) {
+                        JDivider()
                         JNotice(
                             text = stringResource(R.string.phonetools_control_bg_notice),
                             status = Status.NeedsYou,
@@ -320,8 +333,18 @@ private fun PhoneControlSection(
                     }
                 }
             }
-            if (remoteControlEnabled) {
-                JDivider()
+
+            JSectionHeader(stringResource(R.string.phonetools_control_vd_section), sub = true)
+            JGroupItem(GroupPosition.Single, Modifier.padding(bottom = Tokens.Space.m)) {
+                BackgroundVirtualDisplaySubsection(
+                    runtime = runtime,
+                    onError = onError,
+                    onClearError = onClearError,
+                )
+            }
+
+            JSectionHeader(stringResource(R.string.phonetools_control_safety_section), sub = true)
+            JGroupItem(GroupPosition.Single, Modifier.padding(bottom = Tokens.Space.m)) {
                 JSwitchRow(
                     title = stringResource(R.string.phonetools_control_gate_otp_title),
                     checked = allowOtp,
@@ -357,15 +380,9 @@ private fun PhoneControlSection(
                         }
                     },
                 )
-                JDivider()
-                BackgroundVirtualDisplaySubsection(
-                    runtime = runtime,
-                    onError = onError,
-                    onClearError = onClearError,
-                )
                 Text(
                     text = stringResource(R.string.phonetools_control_safety_footnote),
-                    modifier = Modifier.padding(horizontal = Tokens.Space.l).padding(bottom = Tokens.Space.l),
+                    modifier = Modifier.padding(horizontal = contentInset).padding(bottom = Tokens.Space.m),
                     style = PersonaTheme.type.caption,
                     color = PersonaTheme.palette.ink3,
                 )
@@ -428,7 +445,7 @@ private fun BackgroundVirtualDisplaySubsection(
     }
 
     Column(
-        Modifier.fillMaxWidth().padding(horizontal = Tokens.Space.l, vertical = Tokens.Space.m),
+        Modifier.fillMaxWidth().padding(horizontal = rowPadding, vertical = Tokens.Space.m),
         verticalArrangement = Arrangement.spacedBy(Tokens.Space.s),
     ) {
         Text(

@@ -69,6 +69,9 @@ class PhoneControlExecutor(
     @Volatile
     private var lastKnownStep: Int = 0
 
+    @Volatile
+    private var broughtForegroundForWait: Boolean = false
+
     private val _controlState = MutableStateFlow(OverlayControlState())
     val controlState: StateFlow<OverlayControlState> = _controlState.asStateFlow()
 
@@ -543,6 +546,15 @@ class PhoneControlExecutor(
         val terminal = status in TERMINAL_STATUSES
         val ctrlSnapshot = _controlState.value
 
+        if (status == "waiting_on_phone") {
+            if (!broughtForegroundForWait) {
+                broughtForegroundForWait = true
+                onBringTaskToForeground()
+            }
+        } else if (status.isNotEmpty()) {
+            broughtForegroundForWait = false
+        }
+
         if (status.isNotEmpty()) {
             publishOverlay(
                 taskId = taskId,
@@ -656,6 +668,7 @@ class PhoneControlExecutor(
     private fun clearSessionResources() {
         _controlState.value = OverlayControlState()
         lastKnownStep = 0
+        broughtForegroundForWait = false
         clearCachesAndVirtualDisplay()
     }
 

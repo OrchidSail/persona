@@ -120,6 +120,7 @@ fun ExtensionUiPage(extensions: ExtensionManagement?, extensionId: String, uiId:
                     onPush: (ExtensionUiRoute) -> Unit = {}, manager: String? = null, onAsk: ((String) -> Unit)? = null,
                     onConversation: ((String, String) -> Unit)? = null,
                     onPhoneSettings: (() -> Unit)? = null,
+                    onModelPurpose: ((String) -> Unit)? = null,
                     notificationActionToken: String? = null,
                     notificationIntent: Intent? = null,
                     notificationStore: ExtensionNotificationActionStore = ExtensionNotificationActionStore.shared,
@@ -198,7 +199,7 @@ fun ExtensionUiPage(extensions: ExtensionManagement?, extensionId: String, uiId:
         // The bar hides Back at a regular-width root; a stream pop still leaves the page (onBack).
         NativeExtensionStreamPage(adapter, title, onBack, showBack = barBack != null, onPush = { push ->
             ExtensionViewText.pushed(extensionId, uiId, title, depth, push, binding?.manager ?: pageManager)?.let(onPush)
-        }, onPhoneSettings = onPhoneSettings, presentations = owned?.presentations)
+        }, onPhoneSettings = onPhoneSettings, onModelPurpose = onModelPurpose, presentations = owned?.presentations)
         return
     }
     if (extensions == null) {
@@ -218,6 +219,9 @@ fun ExtensionUiPage(extensions: ExtensionManagement?, extensionId: String, uiId:
     val handle = rememberExtensionView(model, appLink = { url ->
         if (ExtensionViewText.isPhoneConnectorSettings(url) && onPhoneSettings != null) {
             onPhoneSettings()
+            true
+        } else if (ExtensionViewText.modelPurpose(url) != null && onModelPurpose != null) {
+            onModelPurpose(ExtensionViewText.modelPurpose(url)!!)
             true
         } else {
             val conversation = if (extensionId == "space-conversations") ExtensionViewText.spaceConversation(url) else null

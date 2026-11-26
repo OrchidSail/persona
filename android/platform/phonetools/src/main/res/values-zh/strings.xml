@@ -112,7 +112,7 @@
     <string name="phonetools_control_gate_otp_detail">自动读取并填入短信或通知验证码，原始验证码始终从日志与回复中脱敏；关闭后登录验证码步骤将暂停等待手机端操作。</string>
     <string name="phonetools_control_gate_payment_title">拦截真实付款与转账确认</string>
     <string name="phonetools_control_gate_payment_detail">遇到支付、转账或收银台确认按钮时强制暂停并弹出悬浮窗交由手机本人操作（不可远程绕过）；关闭后将放行支付点击。</string>
-    <string name="phonetools_control_safety_footnote">生物识别（指纹/面容）与图形滑块验证码始终在手机端人工完成；禁止 URI Scheme 深度链接跳转。</string>
+    <string name="phonetools_control_safety_footnote">生物识别（指纹/面容）与图形滑块验证码始终由本机人工完成。</string>
     <string name="phonetools_overlay_status_running">运行中</string>
     <string name="phonetools_overlay_status_queued">排队中</string>
     <string name="phonetools_overlay_status_paused">已暂停</string>
@@ -122,13 +122,13 @@
     <string name="phonetools_overlay_status_failed">失败</string>
     <string name="phonetools_overlay_status_cancelled">已取消</string>
     <string name="phonetools_overlay_status_idle">空闲</string>
-    <string name="phonetools_overlay_title_plain">Persona %1$s</string>
-    <string name="phonetools_overlay_title_with_step">Persona %1$s · 第 %2$d 步</string>
+    <string name="phonetools_overlay_title_plain">%1$s</string>
+    <string name="phonetools_overlay_title_with_step">%1$s · 第%2$d步</string>
     <string name="phonetools_overlay_action_pause">暂停</string>
     <string name="phonetools_overlay_action_resume">继续</string>
-    <string name="phonetools_overlay_action_takeover">人工接管</string>
-    <string name="phonetools_overlay_action_return_control">交回控制</string>
-    <string name="phonetools_overlay_action_stop">急停</string>
+    <string name="phonetools_overlay_action_takeover">接管</string>
+    <string name="phonetools_overlay_action_return_control">交回</string>
+    <string name="phonetools_overlay_action_stop">停止</string>
     <string name="phonetools_overlay_reading">正在读取当前屏幕…</string>
     <string name="phonetools_overlay_paused_msg">已在悬浮窗暂停</string>
     <string name="phonetools_overlay_resumed_msg">已恢复执行</string>
@@ -180,4 +180,9 @@
     <string name="phonetools_control_vd_err_connect">无法连接本机无线调试，请确认无线调试已开启后重试。</string>
     <string name="phonetools_control_vd_err_helper">后台助手未能完成交接，请点重试或重新配对。</string>
     <string name="phonetools_control_vd_err_unknown">后台助手启动失败，请重试。</string>
+    <string name="phonetools_control_perms_section">所需权限</string>
+    <string name="phonetools_control_vd_section">后台虚拟屏</string>
+    <string name="phonetools_control_safety_section">安全与登录</string>
+    <string name="phonetools_data_section">手机数据</string>
+    <string name="phonetools_overlay_preview_protected_placeholder">页面受保护，点此拉到前台</string>
 </resources>

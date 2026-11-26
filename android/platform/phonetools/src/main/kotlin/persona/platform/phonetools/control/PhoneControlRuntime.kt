@@ -334,10 +334,17 @@ class PhoneControlRuntime(
                 overlayActiveState.value = false
                 releaseKeepAliveLease()
             },
+            onBringToForeground = {
+                if (virtualDisplay.isActive) {
+                    val _ = virtualDisplay.bringTopTaskToMainDisplay()
+                }
+            },
         ).also {
             overlay = it
             PhoneControlGateState.activeOverlay = it
-            startPreviewFeed(it)
+        }
+        if (summary.isActive && previewFeedJob?.isActive != true) {
+            startPreviewFeed(current)
         }
         overlayActiveState.value = summary.isActive
         current.update(summary)
@@ -346,10 +353,14 @@ class PhoneControlRuntime(
     private fun startPreviewFeed(target: TaskStatusOverlay) {
         previewFeedJob?.cancel()
         previewFeedJob = scope.launch {
-            combine(virtualDisplay.displayId, virtualDisplay.previewFrames) { vdId, frame ->
-                (vdId != null) to frame
-            }.collect { (isVirtual, frame) ->
-                target.updatePreviewFrame(frame, usingVirtualDisplay = isVirtual)
+            combine(
+                virtualDisplay.displayId,
+                virtualDisplay.previewFrames,
+                virtualDisplay.previewFrameProtected,
+            ) { vdId, frame, isProtected ->
+                Triple(vdId != null, frame, isProtected)
+            }.collect { (isVirtual, frame, isProtected) ->
+                target.updatePreviewFrame(frame, usingVirtualDisplay = isVirtual, protectedFrame = isProtected)
             }
         }
     }

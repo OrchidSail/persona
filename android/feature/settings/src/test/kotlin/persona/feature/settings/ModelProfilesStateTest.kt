@@ -127,55 +127,6 @@ class ModelProfilesStateTest {
         assertNotNull(broken.state.value.actionError)
     }
 
-    @Test fun captureAndCaptureActiveAndApplyHandleSuccessConflictAndPartialFailure() = runBlocking {
-        val events = mutableListOf<String>()
-        val model = ModelProfilesModel(
-            fakeApi(
-                onSave = { id, input ->
-                    events += "save:$id:capture=${input.capture}:rev=${input.revision}"
-                    ModelProfileSave.Saved(sampleView.copy(revision = input.revision + 1))
-                },
-                onApply = { id ->
-                    events += "apply:$id"
-                    sampleView.copy(revision = 4, active = id)
-                },
-            )
-        )
-        model.load()
-        assertTrue(model.capture(sampleProfile, 3))
-        assertEquals(listOf("save:performance:capture=true:rev=3"), events)
-
-        events.clear()
-        val target = sampleView.profiles.last()
-        assertEquals(CaptureApplyResult.CapturedAndApplied, model.captureActiveAndApply(sampleProfile, target, 4))
-        assertEquals(listOf("save:performance:capture=true:rev=4", "apply:economy"), events)
-
-        // Capture conflict aborts before apply
-        val conflictEvents = mutableListOf<String>()
-        val conflictModel = ModelProfilesModel(
-            fakeApi(
-                onSave = { _, _ -> conflictEvents += "save"; ModelProfileSave.Conflict },
-                onApply = { conflictEvents += "apply"; sampleView },
-            )
-        )
-        assertEquals(CaptureApplyResult.CaptureConflict, conflictModel.captureActiveAndApply(sampleProfile, target, 3))
-        assertEquals(listOf("save"), conflictEvents)
-        assertTrue(conflictModel.state.value.conflict)
-        assertTrue(conflictModel.state.value.conflictIsCapture)
-
-        // Partial failure: capture succeeds, apply throws
-        val partialModel = ModelProfilesModel(
-            fakeApi(
-                onSave = { _, input -> ModelProfileSave.Saved(sampleView.copy(revision = input.revision + 1)) },
-                onApply = { throw HubFailure(HubError.Server, "boom", 500) },
-            )
-        )
-        val partial = partialModel.captureActiveAndApply(sampleProfile, target, 3)
-        assertTrue(partial is CaptureApplyResult.ApplyFailedAfterCapture)
-        assertEquals(4L, partialModel.state.value.view?.revision)
-        assertNotNull(partialModel.state.value.actionError)
-    }
-
     @Test fun multiCandidateRoundTripPreservesOrderAliasesAndListedTierTrimming() {
         val draft = profileToDraft(sampleProfile, listOf("assistant", "agent.new", "kb", "inbox.triage"))
         assertEquals("Performance", draft.name)

@@ -109,9 +109,24 @@ internal object ExtensionViewText {
         return uri.rawPath == "/connectors/phone"
     }
 
-    /** Which `open_url` a button may bring back: https, this phone's local settings link, and on the subscription pages also Set Up with …. */
+    /** Parses `persona://open/settings?tab=models&item=extension.<id>` so an extension UI page can jump straight to its own Hub model purpose. */
+    fun modelPurpose(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return null
+        if (!uri.scheme.equals("persona", ignoreCase = true)) return null
+        if (!uri.host.equals("open", ignoreCase = true) || uri.rawPath != "/settings") return null
+        val params = uri.rawQuery.orEmpty().split('&').mapNotNull { part ->
+            val idx = part.indexOf('=')
+            if (idx <= 0) null else (decodeQuery(part.substring(0, idx)) ?: "") to (decodeQuery(part.substring(idx + 1)) ?: "")
+        }.toMap()
+        if (params["tab"] != "models") return null
+        val item = params["item"]?.trim().orEmpty()
+        return item.takeIf { it.startsWith("extension.") && it.length > "extension.".length }
+    }
+
+    /** Which `open_url` a button may bring back: https, this phone's local settings link, its own model purpose link, and on the subscription pages also Set Up with …. */
     fun opens(extension: String, url: String?): Boolean =
-        isHttps(url) || isPhoneConnectorSettings(url) || askFrom(extension, url) != null || extension == "space-conversations" && spaceConversation(url) != null
+        isHttps(url) || isPhoneConnectorSettings(url) || modelPurpose(url) != null || askFrom(extension, url) != null || extension == "space-conversations" && spaceConversation(url) != null
 
     /** A query component, with `+` kept (the pages percent-encode; they do not use form encoding). */
     private fun decodeQuery(raw: String): String? =
