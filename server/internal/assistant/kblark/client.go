@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nwverse/persona/server/internal/larkcli"
+	"github.com/nwverse/persona/server/internal/modules/lark/larkcli"
 )
 
 const (

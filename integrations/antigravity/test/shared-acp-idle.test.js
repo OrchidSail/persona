@@ -152,7 +152,7 @@ test('configured native default applies after shared worker idle retirement when
   const calls = () => readFileSync(join(home, 'calls.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse)
   await until('initial ACP worker started', () => calls().some((entry) => entry.method === 'session/set_model'))
 
-  await delay(450)
+  await delay(650)
   await node.peer.call('session.send', { session_id: session.session_id, text: 'Continue with configured default' })
   await until('prompt runs after shared worker retirement', () => calls().some((entry) => entry.method === 'session/prompt'))
   const requests = calls().slice(calls().findLastIndex((entry) => entry.method === 'initialize'))

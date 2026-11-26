@@ -6,6 +6,7 @@ import persona.core.designsystem.*
 import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import persona.core.designsystem.icons.PersonaIcons
 import persona.core.designsystem.icons.PhIcons
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -35,7 +36,7 @@ internal sealed interface AgentOperationDialog {
 internal fun workspaceCopyPathAction(workspace: AgentWorkspace?): JAction? {
     val path = workspace?.cwd?.takeIf(String::isNotBlank) ?: return null
     val copy = rememberCopy()
-    return JAction(stringResource(R.string.agents_copy_workspace_path), PhIcons.Copy, onClick = { copy(path, null) })
+    return JAction(stringResource(R.string.agents_copy_workspace_path), PersonaIcons.copy, onClick = { copy(path, null) })
 }
 
 @Composable

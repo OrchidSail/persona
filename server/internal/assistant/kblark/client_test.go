@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nwverse/persona/server/internal/larkcli"
+	"github.com/nwverse/persona/server/internal/modules/lark/larkcli"
 )
 
 // stubCLI writes a fake lark-cli that answers each command with the given JSON and exits 0; fail, when set, is what it

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/nwverse/persona/server/internal/kb"
-	"github.com/nwverse/persona/server/internal/larkcli"
+	"github.com/nwverse/persona/server/internal/modules/lark/larkcli"
 )
 
 // TestRealImportWithTheOwnersLogin imports into a temporary data directory through the real lark-cli login. It never

@@ -7,7 +7,7 @@ import (
 	"github.com/nwverse/persona/server/internal/assistant/kblark"
 	"github.com/nwverse/persona/server/internal/assistantwire"
 	"github.com/nwverse/persona/server/internal/kb"
-	"github.com/nwverse/persona/server/internal/larkcli"
+	"github.com/nwverse/persona/server/internal/modules/lark/larkcli"
 )
 
 const (

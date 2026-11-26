@@ -14,7 +14,7 @@ import (
 
 	"github.com/nwverse/persona/server/internal/assistant/kblark"
 	"github.com/nwverse/persona/server/internal/kb"
-	"github.com/nwverse/persona/server/internal/larkcli"
+	"github.com/nwverse/persona/server/internal/modules/lark/larkcli"
 )
 
 // TestRealLarkImportShowsOnTheRoutes imports through the real lark-cli into a temporary knowledge base, then reads it
