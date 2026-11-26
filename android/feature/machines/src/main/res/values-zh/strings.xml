@@ -289,4 +289,13 @@
     <string name="machines_tokens_now">现在</string>
     <string name="machines_tokens_cache_hit_rate">缓存命中率</string>
     <string name="machines_tokens_per_minute">%1$s/分</string>
+    <!-- Remove paired computer -->
+    <string name="machines_remove">移除电脑</string>
+    <string name="machines_removing">正在移除…</string>
+    <string name="machines_remove_title">移除「%1$s」？</string>
+    <string name="machines_remove_body">这会将「%1$s」从电脑列表移除，并立即撤销它的 Persona Link 配对凭据。电脑上正在运行的 Agent 不会被停止，浏览器登录态和应用授权也不会被清理。以后如需重新连接，需要重新配对。</string>
+    <string name="machines_remove_confirm">移除电脑</string>
+    <string name="machines_notice_removed">已移除 %1$s</string>
+    <string name="machines_notice_removed_restart">已移除 %1$s，重启 hub 后将从列表彻底消失。</string>
+    <string name="machines_notice_remove_failed">没能移除电脑：%1$s</string>
 </resources>

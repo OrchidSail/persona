@@ -232,6 +232,7 @@ internal fun mergedMachineManagement(
     override suspend fun reconnect(machineId: String) = routes.on(machineId) { it.reconnect(machineId) }
     override suspend fun startLinkSwitch(machineId: String) = routes.on(machineId) { it.startLinkSwitch(machineId) }
     override suspend fun rename(machineId: String, name: String) = routes.on(machineId) { it.rename(machineId, name) }
+    override suspend fun remove(machineId: String) = routes.on(machineId) { it.remove(machineId) }
     override suspend fun deploy(machineId: String) = routes.on(machineId) { it.deploy(machineId) }
     override suspend fun herdr(machineId: String) = routes.on(machineId) { it.herdr(machineId) }
     override suspend fun startHerdr(machineId: String) = routes.on(machineId) { it.startHerdr(machineId) }

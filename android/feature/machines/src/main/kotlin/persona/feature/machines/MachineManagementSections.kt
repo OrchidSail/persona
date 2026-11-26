@@ -13,12 +13,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import persona.core.contracts.Machine
 import persona.core.contracts.api.AgentLauncher
 import persona.core.contracts.isTraeCliId
 import persona.core.designsystem.*
+import persona.core.designsystem.icons.PersonaIcons
 import persona.core.designsystem.icons.PhIcons
 import persona.core.domain.engines.Engines
 
@@ -84,6 +86,8 @@ internal fun LazyListScope.machineControls(
     move: MachineMoveRow? = null,
     /** Rename, on a hub that renames computers (feature `machine_rename`); null: no row. */
     rename: MachineRenameRow? = null,
+    /** Remove computer, on a hub that supports `machine_remove` for eligible computers; null: no row. */
+    remove: MachineRemoveRow? = null,
 ) {
     val rows = 1 + (if (rename != null) 1 else 0) + (if (botmux != null) 1 else 0) + (if (move != null) 1 else 0) + (if (canReconnect) 1 else 0)
     val first = if (rename != null) 1 else 0
@@ -126,13 +130,79 @@ internal fun LazyListScope.machineControls(
                 else stringResource(R.string.machines_ssh_note, machine.sshHost?.takeIf { it.isNotBlank() } ?: machine.id))
         }
     }
+    if (remove != null) item("remove") {
+        JGroupItem(GroupPosition.Single) {
+            JRow(
+                stringResource(if (remove.busy) R.string.machines_removing else R.string.machines_remove),
+                modifier = Modifier.testTag("machine-remove-row"),
+                leadingIcon = PersonaIcons.delete,
+                destructive = true,
+                enabled = remove.enabled && !remove.busy,
+                onClick = remove.onClick,
+                chevron = false,
+                trailing = if (remove.busy) ({ JSpinner() }) else null,
+            )
+        }
+    }
 }
 
 /** The hub's feature for renaming computers (docs/protocol/protocol.md "Renaming a computer"). */
 internal const val MachineRenameFeature = "machine_rename"
 
+/** The hub's feature for removing paired computers (docs/protocol/protocol.md "Removing a computer"). */
+internal const val MachineRemoveFeature = "machine_remove"
+
+/**
+ * Whether Remove computer is offered for [machine]: the owning hub advertises `machine_remove` and the computer is
+ * managed by this hub (not configured only on a member hub, `kind != "hub"`, matching web `canRemove`).
+ */
+internal fun canRemoveMachine(
+    machine: Machine,
+    selectedHubFeatures: Set<String>,
+    machineHubSupportsFeature: Boolean = false,
+): Boolean {
+    val supported = if (persona.core.contracts.GroupKeys.namespaceOf(machine.id) != null) {
+        machineHubSupportsFeature
+    } else {
+        MachineRemoveFeature in selectedHubFeatures || machineHubSupportsFeature
+    }
+    return supported && machine.kind != "hub"
+}
+
 /** The Rename row: whether a rename is on its way. */
 internal data class MachineRenameRow(val busy: Boolean, val onClick: () -> Unit)
+
+/** The Remove computer row: whether removal is in flight or blocked by an active Link switch. */
+internal data class MachineRemoveRow(val busy: Boolean, val enabled: Boolean = true, val onClick: () -> Unit)
+
+/**
+ * Irreversible confirmation before removing a paired computer (docs/protocol/protocol.md "Removing a computer",
+ * DESIGN_SYSTEM.md §4.4). Keeps CUA / browser login cleanup explicitly scoped to Web.
+ */
+@Composable
+internal fun RemoveMachineDialog(
+    machine: Machine,
+    busy: Boolean,
+    error: UiText?,
+    onRemove: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    JDialog(
+        onDismiss = { if (!busy) onDismiss() },
+        title = stringResource(R.string.machines_remove_title, machine.displayName),
+        text = stringResource(R.string.machines_remove_body, machine.displayName),
+        destructive = true,
+        confirm = stringResource(R.string.machines_remove_confirm) to onRemove,
+        confirmEnabled = !busy,
+        confirmLoading = busy,
+        dismissEnabled = !busy,
+        content = error?.let { reason ->
+            {
+                JInlineStatus(reason.text(), tone = InlineTone.Failed)
+            }
+        },
+    )
+}
 
 /**
  * Rename: what the hub calls the computer (docs/protocol/protocol.md "Renaming a computer"); empty is its id again.

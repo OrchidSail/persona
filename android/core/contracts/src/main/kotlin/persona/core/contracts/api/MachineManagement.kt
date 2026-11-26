@@ -52,6 +52,12 @@ interface MachineManagement {
      */
     suspend fun rename(machineId: String, name: String): String = throw UnsupportedOperationException("machine rename")
 
+    /**
+     * `DELETE /api/v1/machines/{id}` (hubs with feature `machine_remove`, docs/protocol/protocol.md "Removing a computer"):
+     * revokes the computer's Persona Link credentials and removes it from the hub or its manager's list.
+     */
+    suspend fun remove(machineId: String): MachineRemoveResult = throw UnsupportedOperationException("machine remove")
+
     /** `POST /api/v1/machines/{id}/deploy`: the hub installs its own personad there; progress comes with `machines`. */
     suspend fun deploy(machineId: String)
 
@@ -144,6 +150,11 @@ interface MachineManagement {
      */
     suspend fun moveToManager(machineId: String, manager: String): MachineMove = throw UnsupportedOperationException("managers")
 }
+
+/** What `DELETE /api/v1/machines/{id}` answers: whether a hub restart is still needed to drop a `hub.json` entry. */
+data class MachineRemoveResult(
+    val restartRequired: Boolean = false,
+)
 
 /** What `POST /api/v1/managers/{id}/machines` answers: the computer, the manager that has it now and the one before. */
 @Serializable

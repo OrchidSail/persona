@@ -254,6 +254,29 @@ class HttpAssistantManagement private constructor(
         require(session.sessionId.isNotBlank())
         assistant("POST", "conversations", session.sessionId, "unarchive", body = buildJsonObject { })
     }
+    override suspend fun deleteConversation(session: SessionKey) {
+        require(session.machineId.isNotBlank() && session.sessionId.isNotBlank())
+        val answer = try {
+            request(
+                "DELETE",
+                listOf("api", "v1", "assistant", "conversations", session.sessionId),
+                body = buildJsonObject { put("machine_id", session.machineId) },
+            )
+        } catch (failure: HubFailure) {
+            // Another device already deleted it: authoritative tombstone, never inferred from a generic 404.
+            if (failure.code == "conversation_deleted") return
+            val code = failure.code
+            if ((failure.status == 400 || failure.status == 409) && !code.isNullOrBlank()) {
+                throw AssistantRefused(code, failure.message)
+            }
+            throw failure
+        }
+        val ok = (answer["ok"] as? JsonPrimitive)?.booleanOrNull == true
+        val deleted = (answer["deleted"] as? JsonPrimitive)?.booleanOrNull == true
+        if (!ok || !deleted) {
+            throw HubFailure(HubError.Protocol, "hub did not confirm conversation deletion", retryable = false)
+        }
+    }
     override suspend fun setConversationTags(session: SessionKey, tags: List<String>) {
         require(session.sessionId.isNotBlank())
         assistant("PUT", "conversations", session.sessionId, "tags", body = buildJsonObject {
@@ -271,7 +294,7 @@ class HttpAssistantManagement private constructor(
     override suspend fun archivedConversations(): List<Session> {
         val out = request("GET", listOf("api", "v1", "assistant"), query = mapOf("archived" to "1"))
         val machine = (out["machine_id"] as? JsonPrimitive)?.contentOrNull.orEmpty()
-        return out.list<Session>("conversations").filter { it.archived && it.space.isNullOrBlank() }
+        return out.list<Session>("conversations").filter { it.archived && !it.deleted && it.space.isNullOrBlank() }
             .map { it.copy(machineId = it.machineId.ifEmpty { machine }) }
             .sortedByDescending { it.updated }
     }

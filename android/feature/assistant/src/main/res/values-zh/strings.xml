@@ -278,4 +278,11 @@
     <string name="assistant_starred_unstarred">已取消收藏</string>
     <string name="assistant_starred_undo">撤销</string>
     <string name="assistant_starred_action_failed">收藏状态更新失败</string>
+    <!-- Permanent conversation deletion -->
+    <string name="assistant_delete_menu">删除…</string>
+    <string name="assistant_delete_title">删除「%1$s」？</string>
+    <string name="assistant_delete_body">此操作会永久移除 Persona 中的此对话及其消息，且无法撤销。关联任务、Agent、已保存的知识和电脑上的对话记录文件会保留。</string>
+    <string name="assistant_delete_confirm">删除对话</string>
+    <string name="assistant_deleted">已删除</string>
+    <string name="assistant_delete_unavailable">此对话正在运行或等待回复，暂时无法删除。</string>
 </resources>

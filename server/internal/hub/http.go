@@ -60,9 +60,10 @@ func (h *Hub) routes() http.Handler {
 	}
 	h.recoveryRoutes(api)
 	h.machineRoutes(api)
-	// Confirm / reject / rename a computer (machine_trust.go, machine_rename.go).
+	// Confirm / reject / rename / remove a computer (machine_trust.go, machine_rename.go, machine_remove.go).
 	h.machineTrustRoutes(api)
 	h.machineRenameRoutes(api)
+	h.machineRemoveRoutes(api)
 	h.deviceRoutesRelayed(api) // the manager's own: reconnect, engine, herdr, deploy, claude-dirs (devices_routes.go)
 	h.sharingRoutes(api)
 	h.fileRoutes(api)

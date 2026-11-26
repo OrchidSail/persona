@@ -69,6 +69,7 @@ class RealAssistantRepository(
         val machine = data.string("machine_id")
         val main = data.string("main")
         val conversations = data.array("conversations").map { JsonCodec.decodeFromJsonElement<Session>(it) }
+            .filterNot { it.deleted }
         (conversations.map { it.sessionId } + main).filter { it.isNotEmpty() }
             .forEach { noteConversation(it, request) }
         return AssistantSnapshot(
@@ -203,13 +204,17 @@ class RealAssistantRepository(
                     if (restoredScope != request.key || current.value.managerId != request.owner) return@withLock null
                     // A space's chat (health or a domain space, docs/assistant/health.md): never on the assistant's own list.
                     val owned = updates.filter { choice.owns(it.manager) && !it.isSpace }
-                    val byKey = owned.associateBy { it.key }
+                    val deletedKeys = owned.filter { it.deleted }.mapTo(HashSet()) { it.key }
+                    val activeOwned = owned.filterNot { it.deleted }
+                    val byKey = activeOwned.associateBy { it.key }
                     val before = current.value
                     // A summary row (paged lists) leaves the launcher, the permission mode, the compaction and the
                     // other chat details out: they stay as the conversation had them (#5055); its model_pick is its own.
                     current.update { snapshot ->
-                        snapshot.copy(conversations = (snapshot.conversations.map { byKey[it.key]?.keepingDetails(it) ?: it } +
-                            owned.filter { it.assistant == true }).distinctBy { it.key })
+                        snapshot.copy(conversations = (snapshot.conversations
+                            .filterNot { it.deleted || it.key in deletedKeys }
+                            .map { byKey[it.key]?.keepingDetails(it) ?: it } +
+                            activeOwned.filter { it.assistant == true }).distinctBy { it.key })
                     }
                     cached[request.key] = current.value
                     request.takeIf { mayBeNewBackgroundSupervisor(before, owned) }
@@ -429,7 +434,9 @@ class RealAssistantRepository(
  */
 internal fun spaceConversationsOf(data: JsonObject, space: String): List<Session> {
     val machine = data.string("machine_id")
-    return data.array("conversations").map { JsonCodec.decodeFromJsonElement<Session>(it) }.map {
+    return data.array("conversations").map { JsonCodec.decodeFromJsonElement<Session>(it) }
+        .filterNot { it.deleted }
+        .map {
         it.copy(space = it.space ?: space, machineId = it.machineId.ifEmpty { machine })
     }
 }

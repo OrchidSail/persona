@@ -52,6 +52,16 @@ internal class ConversationHistory(private val management: AssistantManagement?,
         private set
     /** The conversation the rename dialog is open on. */
     var renaming: Session? by mutableStateOf(null)
+    /** The conversation the permanent-delete confirmation dialog is open on. */
+    var deleting: Session? by mutableStateOf(null)
+        private set
+    var deleteBusy: Boolean by mutableStateOf(false)
+        private set
+    var deleteError: String? by mutableStateOf(null)
+        private set
+    /** Permanently deleted here: hidden from all lists immediately while the hub refresh catches up. */
+    var deleted: Set<SessionKey> by mutableStateOf(emptySet())
+        private set
     var archivedOpen: Boolean by mutableStateOf(false)
     /** Whether the controlled filter bar shows its add/remove/reset/done controls. */
     var editingTagFilters: Boolean by mutableStateOf(false)
@@ -59,9 +69,9 @@ internal class ConversationHistory(private val management: AssistantManagement?,
         private set
     private val tagFilterLock = Mutex()
 
-    /** The archived conversations to show: the last read, less those being brought back and those [open] lists again. */
+    /** The archived conversations to show: the last read, less deleted tombstones, restoring ones, and open ones. */
     fun shownArchived(open: Set<SessionKey>): List<Session> =
-        archived.orEmpty().filter { it.key !in restoring && it.key !in open }
+        archived.orEmpty().filter { !it.deleted && it.key !in deleted && it.key !in restoring && it.key !in open }
 
     /** [sessions] with the titles renamed here. */
     fun titled(sessions: List<Session>): List<Session> =
@@ -194,6 +204,91 @@ internal class ConversationHistory(private val management: AssistantManagement?,
         restoring = restoring - key
         return result
     }
+
+    /** Opens the permanent-delete confirmation dialog for [session]. */
+    fun requestDelete(session: Session) {
+        if (deleteBusy) return
+        deleteError = null
+        deleting = session
+    }
+
+    /** Dismisses the permanent-delete confirmation dialog when no deletion is in flight. */
+    fun dismissDelete() {
+        if (deleteBusy) return
+        deleteError = null
+        deleting = null
+    }
+
+    /** Closes the confirmation dialog when another device already deleted the target conversation. */
+    fun acknowledgeExternalDeletion(key: SessionKey) {
+        deleted = deleted + key
+        archived = archived?.filterNot { it.key == key }
+        if (deleting?.key == key && !deleteBusy) {
+            deleteError = null
+            deleting = null
+        }
+    }
+
+    /**
+     * Permanently deletes the currently armed conversation after re-checking hard protections (main, background
+     * supervisor, busy state) against [latestConversations]. Prevents re-entry while in flight.
+     */
+    suspend fun confirmDelete(
+        latestConversations: List<Session>,
+        supported: Boolean,
+        main: SessionKey?,
+        builtIn: String?,
+        unavailableMessage: String,
+        errorMessage: (Exception) -> String,
+        onConfirmed: (SessionKey) -> Unit = {},
+    ): ConversationDeleteOutcome {
+        val target = deleting ?: return ConversationDeleteOutcome.Ignored
+        if (deleteBusy) return ConversationDeleteOutcome.Ignored
+        val current = latestConversations.firstOrNull { it.key == target.key }
+            ?: archived?.firstOrNull { it.key == target.key }
+            ?: target
+        if (current.deleted) {
+            acknowledgeExternalDeletion(current.key)
+            onConfirmed(current.key)
+            return ConversationDeleteOutcome.Deleted(current.key)
+        }
+        if (!conversationDeleteAllowed(current, supported, main, builtIn)) {
+            deleteError = unavailableMessage
+            return ConversationDeleteOutcome.Failed(unavailableMessage)
+        }
+        val api = management ?: run {
+            deleteError = unavailableMessage
+            return ConversationDeleteOutcome.Failed(unavailableMessage)
+        }
+        deleteBusy = true
+        deleteError = null
+        return try {
+            api.deleteConversation(current.key)
+            deleted = deleted + current.key
+            archived = archived?.filterNot { it.key == current.key }
+            deleting = null
+            deleteError = null
+            onConfirmed(current.key)
+            assistantAttempt { repository.refresh() }
+            loadArchived()
+            ConversationDeleteOutcome.Deleted(current.key)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            val message = errorMessage(error)
+            deleteError = message
+            ConversationDeleteOutcome.Failed(message)
+        } finally {
+            deleteBusy = false
+        }
+    }
+}
+
+/** Result of confirming permanent deletion in [ConversationHistory.confirmDelete]. */
+internal sealed interface ConversationDeleteOutcome {
+    data object Ignored : ConversationDeleteOutcome
+    data class Deleted(val key: SessionKey) : ConversationDeleteOutcome
+    data class Failed(val message: String) : ConversationDeleteOutcome
 }
 
 /** The conversations [conversations] lists open (not archived): an archived one listed again has been brought back. */
@@ -212,12 +307,17 @@ internal fun rememberConversationHistory(management: AssistantManagement?, repos
 internal fun ConversationHistoryDialogs(
     history: ConversationHistory, conversations: List<Session>, scope: CoroutineScope, onOpen: (SessionKey) -> Unit,
     notice: (String) -> Unit, failure: (Exception) -> Unit, customizedTagFilters: Boolean = false,
+    mainSession: SessionKey? = null,
+    builtInSupervisor: String? = null,
+    deleteSupported: Boolean = false,
+    onDeleted: (SessionKey) -> Unit = {},
+    showDeleteDialog: Boolean = true,
 ) {
     val resources = androidx.compose.ui.platform.LocalResources.current
     val haptics = rememberHaptics()
     val words = conversationWords()
     val open = remember(conversations) { openKeys(conversations) }
-    val known = remember(conversations, history.archived, history.restoring) {
+    val known = remember(conversations, history.archived, history.restoring, history.deleted) {
         (conversations + history.shownArchived(open)).distinctBy { it.key }
     }
     LaunchedEffect(history, open) { history.loadArchived() }
@@ -260,7 +360,78 @@ internal fun ConversationHistoryDialogs(
                     .onFailure { (it as? Exception)?.let(failure) }
             }
         },
-        onEditTags = if (history.canEditTags) ({ history.editingTags = it }) else null)
+        onEditTags = if (history.canEditTags) ({ history.editingTags = it }) else null,
+        canDelete = { session -> conversationDeleteAllowed(session, deleteSupported, mainSession, builtInSupervisor) },
+        onDelete = if (deleteSupported) ({ history.requestDelete(it) }) else null,
+    )
+    if (showDeleteDialog) ConversationDeleteDialogHost(
+        history = history,
+        conversations = conversations,
+        scope = scope,
+        mainSession = mainSession,
+        builtInSupervisor = builtInSupervisor,
+        deleteSupported = deleteSupported,
+        onDeleted = onDeleted,
+        notice = notice,
+    )
+}
+
+/**
+ * Shared confirmation dialog host for permanently deleting an assistant conversation. Mounted after any sheet so the
+ * confirmation always renders on top, whether triggered from the drawer, archived sheet, or title menu.
+ */
+@Composable
+internal fun ConversationDeleteDialogHost(
+    history: ConversationHistory,
+    conversations: List<Session>,
+    scope: CoroutineScope,
+    mainSession: SessionKey?,
+    builtInSupervisor: String?,
+    deleteSupported: Boolean,
+    onDeleted: (SessionKey) -> Unit,
+    notice: (String) -> Unit,
+) {
+    val resources = androidx.compose.ui.platform.LocalResources.current
+    val haptics = rememberHaptics()
+    val words = conversationWords()
+    val deletingTarget = history.deleting
+    val externallyDeleted = deletingTarget != null && conversations.any { it.key == deletingTarget.key && it.deleted }
+    LaunchedEffect(externallyDeleted, deletingTarget?.key) {
+        if (externallyDeleted && deletingTarget != null) {
+            history.acknowledgeExternalDeletion(deletingTarget.key)
+            onDeleted(deletingTarget.key)
+        }
+    }
+    history.deleting?.let { session ->
+        DeleteConversationDialog(
+            title = session.conversationTitle(words),
+            busy = history.deleteBusy,
+            error = history.deleteError,
+            onConfirm = {
+                val unavailable = resources.getString(R.string.assistant_delete_unavailable)
+                scope.launch {
+                    val outcome = history.confirmDelete(
+                        latestConversations = conversations,
+                        supported = deleteSupported,
+                        main = mainSession,
+                        builtIn = builtInSupervisor,
+                        unavailableMessage = unavailable,
+                        errorMessage = { error ->
+                            (error as? persona.core.contracts.api.AssistantRefused)?.message?.takeIf { it.isNotBlank() }
+                                ?: operationFeedback(error).text.resolve(resources)
+                        },
+                        onConfirmed = { key ->
+                            haptics(Haptic.Tap)
+                            onDeleted(key)
+                            notice(resources.getString(R.string.assistant_deleted))
+                        },
+                    )
+                    if (outcome is ConversationDeleteOutcome.Failed || outcome is ConversationDeleteOutcome.Ignored) Unit
+                }
+            },
+            onDismiss = history::dismissDelete,
+        )
+    }
 }
 
 /**
@@ -282,14 +453,17 @@ internal fun RenameConversationDialog(session: Session, onDismiss: () -> Unit, o
 
 /**
  * Archived (iOS `ArchivedConversationsView`): the conversations archived from the list (or by Persona), newest first. A tap
- * opens one; a swipe left, its Unarchive or a long press brings it back into the list. Nothing here deletes. The rows are
- * the Agents archive's (`AgentArchivesScreen`): the title (on Glass a hub title's day and kind quiet before its topic), when
- * as the history says it ([historyTime]), and the action at the end.
+ * opens one; a swipe left or Unarchive brings it back into the list; long press also offers Delete… when the hub advertises
+ * `assistant_conversation_delete` and the conversation is eligible. The rows are the Agents archive's (`AgentArchivesScreen`):
+ * the title (on Glass a hub title's day and kind quiet before its topic), when as the history says it ([historyTime]), and
+ * the action at the end.
  */
 @Composable
 internal fun ArchivedConversationsSheet(
     sessions: List<Session>, onDismiss: () -> Unit, onOpen: (Session) -> Unit, onUnarchive: (Session) -> Unit,
     onEditTags: ((Session) -> Unit)? = null,
+    canDelete: (Session) -> Boolean = { false },
+    onDelete: ((Session) -> Unit)? = null,
 ) {
     val words = conversationWords()
     val resources = androidx.compose.ui.platform.LocalResources.current
@@ -321,6 +495,15 @@ internal fun ArchivedConversationsSheet(
                 add(JAction(stringResource(R.string.assistant_edit_tags_menu), PersonaIcons.edit, onClick = { menu = null; edit(session) }))
             }
             add(JAction(unarchive, PersonaIcons.unarchive, onClick = { onUnarchive(session) }))
+            if (onDelete != null && canDelete(session)) {
+                add(JAction(
+                    stringResource(R.string.assistant_delete_menu),
+                    PersonaIcons.delete,
+                    destructive = true,
+                    separatorBefore = true,
+                    onClick = { menu = null; onDelete(session) },
+                ))
+            }
         }, onDismiss = { menu = null }, title = session.conversationTitle(words))
     }
 }

@@ -169,6 +169,7 @@ private class RoutedAssistantManagement(
     override suspend fun compactConversation(session: SessionKey) = api().compactConversation(session)
     override suspend fun archiveConversation(session: SessionKey) = api().archiveConversation(session)
     override suspend fun unarchiveConversation(session: SessionKey) = api().unarchiveConversation(session)
+    override suspend fun deleteConversation(session: SessionKey) = api().deleteConversation(session)
     override suspend fun setConversationTags(session: SessionKey, tags: List<String>) = api().setConversationTags(session, tags)
     override suspend fun archivedConversations() = api().archivedConversations()
     override suspend fun searchChats(query: String, limit: Int) = api().searchChats(query, limit)

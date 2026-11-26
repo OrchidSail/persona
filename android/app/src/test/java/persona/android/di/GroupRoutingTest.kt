@@ -469,6 +469,8 @@ class GroupRoutingTest {
         override suspend fun startLinkSwitch(machineId: String) =
             MachineLinkSwitch(available = false, phase = "checking").also { calls += "link switch $machineId" }
         override suspend fun deploy(machineId: String) { calls += "deploy $machineId" }
+        override suspend fun remove(machineId: String) =
+            MachineRemoveResult(restartRequired = hub == "work").also { calls += "remove $machineId" }
         override suspend fun herdr(machineId: String) = HerdrState(false, false, true).also { calls += "herdr $machineId" }
         override suspend fun startHerdr(machineId: String) = HerdrState(false, true, true).also { calls += "start herdr $machineId" }
         override suspend fun setEngine(machineId: String, engine: String) = Machine(machineId, "").also { calls += "engine $machineId $engine" }
@@ -518,18 +520,44 @@ class GroupRoutingTest {
         assertEquals(HerdrState(false, false, true), managed.herdr("macbook~g0a1b2c3d"))
         assertEquals(HerdrState(false, true, true), managed.startHerdr("macbook~g0a1b2c3d"))
         val changed = managed.setEngine("macbook~g0a1b2c3d", "orca")
+        assertEquals(MachineRemoveResult(restartRequired = true), managed.remove("macbook~g0a1b2c3d"))
         assertEquals(listOf("reconnect macbook", "link switch macbook", "deploy macbook", "launchers macbook", "settings macbook",
             "quota macbook cc_main true", "set macbook model", "codex settings macbook", "set codex macbook model",
             "agy settings macbook", "set agy macbook toolPermission",
-            "herdr macbook", "start herdr macbook", "engine macbook orca"), work.calls)
+            "herdr macbook", "start herdr macbook", "engine macbook orca", "remove macbook"), work.calls)
         // the machine it hands back is the merged list's, so the page finds it again
         assertEquals("macbook~g0a1b2c3d", changed.id)
         // the primary group's machine with the same plain id stays on the primary hub, unchanged
         managed.reconnect("macbook")
-        assertEquals(listOf("reconnect macbook"), home.calls)
+        assertEquals(MachineRemoveResult(restartRequired = false), managed.remove("macbook"))
+        assertEquals(listOf("reconnect macbook", "remove macbook"), home.calls)
         assertEquals("macbook", managed.setEngine("macbook", "herdr").id)
         val plain = FakeMachines("solo")
         assertSame(plain, plain.inGroup(primary))
+    }
+
+    @Test fun anotherGroupsAssistantDeleteReachesItsHubWithPlainSessionKey() = runBlocking<Unit> {
+        val deleted = mutableListOf<SessionKey>()
+        val source = object : AssistantManagement {
+            override suspend fun warm() = Unit
+            override suspend fun endConversation(session: SessionKey) = Unit
+            override suspend fun archiveConversation(session: SessionKey) = Unit
+            override suspend fun deleteConversation(session: SessionKey) { deleted += session }
+            override suspend fun tasks(): List<ScheduledTask> = emptyList()
+            override suspend fun saveTask(task: ScheduledTask): ScheduledTask = task
+            override suspend fun deleteTask(id: String) = Unit
+            override suspend fun runTask(id: String): SessionKey = error("unused")
+            override suspend fun freshTask(id: String): ScheduledTask = error("unused")
+            override suspend fun runs(): List<Run> = emptyList()
+            override suspend fun notes() = AssistantNotes()
+            override suspend fun setNotes(text: String) = Unit
+            override suspend fun memory(): List<MemoryFile> = emptyList()
+            override suspend fun saveMemory(name: String, content: String) = Unit
+            override suspend fun deleteMemory(name: String) = Unit
+        }
+        source.inGroup(other).deleteConversation(SessionKey("macbook~g0a1b2c3d", "side-1"))
+        assertEquals(listOf(SessionKey("macbook", "side-1")), deleted)
+        assertSame(source, source.inGroup(primary))
     }
 
     @Test fun selfCheckAndBrowserReachTheMachinesGroupAndUsageEveryGroupsHub() = runBlocking<Unit> {

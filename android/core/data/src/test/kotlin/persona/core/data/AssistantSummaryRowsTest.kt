@@ -36,6 +36,7 @@ class AssistantSummaryRowsTest {
                 add(JsonCodec.parseToJsonElement("""{"machine_id":"mac","session_id":"c1","assistant":true,"launcher":"team",
                     "permission_mode":"plan","effort":"high","model":"sonnet","compaction":{"state":"done"},
                     "model_pick":{"launcher":"team","model":"sonnet"}}"""))
+                add(JsonCodec.parseToJsonElement("""{"machine_id":"mac","session_id":"gone","assistant":true,"deleted":true}"""))
             })
         }
         override suspend fun createConversation(main: Boolean) = create(null)
@@ -96,5 +97,20 @@ class AssistantSummaryRowsTest {
         repository.startConversation()
         assertEquals(listOf(ModelPick("team", "sonnet", "low"), null), transport.created)
         repository.assistant.first { it.conversations.any { c -> c.sessionId == "n1" } }
+    }
+
+    @Test fun deletedTombstonesAreDroppedOnDecodeAndLiveSessionUpdates() = runTest {
+        val transport = Transport()
+        val sessions = Sessions()
+        val connection = object : InboxAssistantConnection { override val current = MutableStateFlow<InboxAssistantTransport?>(transport) }
+        val repository = RealAssistantRepository(connection, sessions, backgroundScope)
+        runCurrent()
+        repository.refresh()
+        runCurrent()
+        assertEquals(listOf("c1"), repository.assistant.value.conversations.map { it.sessionId })
+
+        sessions.sessions.value = listOf(JsonCodec.decodeFromString("""{"machine_id":"mac","session_id":"c1","assistant":true,"deleted":true}"""))
+        runCurrent()
+        assertEquals(emptyList<String>(), repository.assistant.value.conversations.map { it.sessionId })
     }
 }

@@ -288,6 +288,7 @@ internal fun MachineManagement.inGroup(names: GroupNames): MachineManagement {
         override suspend fun reconnect(machineId: String) = source.reconnect(names.rawMachine(machineId))
         override suspend fun startLinkSwitch(machineId: String) = source.startLinkSwitch(names.rawMachine(machineId))
         override suspend fun rename(machineId: String, name: String) = source.rename(names.rawMachine(machineId), name)
+        override suspend fun remove(machineId: String) = source.remove(names.rawMachine(machineId))
         override suspend fun deploy(machineId: String) = source.deploy(names.rawMachine(machineId))
         override suspend fun herdr(machineId: String) = source.herdr(names.rawMachine(machineId))
         override suspend fun startHerdr(machineId: String) = source.startHerdr(names.rawMachine(machineId))
@@ -359,6 +360,7 @@ internal fun AssistantManagement.inGroup(names: GroupNames): AssistantManagement
         override suspend fun compactConversation(session: SessionKey) = source.compactConversation(names.raw(session))
         override suspend fun archiveConversation(session: SessionKey) = source.archiveConversation(names.raw(session))
         override suspend fun unarchiveConversation(session: SessionKey) = source.unarchiveConversation(names.raw(session))
+        override suspend fun deleteConversation(session: SessionKey) = source.deleteConversation(names.raw(session))
         override suspend fun setConversationTags(session: SessionKey, tags: List<String>) = source.setConversationTags(names.raw(session), tags)
         override suspend fun archivedConversations() = source.archivedConversations().map(names::session)
         override suspend fun searchChats(query: String, limit: Int) = source.searchChats(query, limit)?.let { answer ->

@@ -245,10 +245,11 @@ class AssistantManagementTest {
             assertEquals("POST", unarchive.method)
             assertEquals("/api/v1/assistant/conversations/side-1/unarchive", unarchive.requestUrl?.encodedPath)
 
-            // Only the archived ones, never a health chat, each on the list's machine when it names none, newest first.
+            // Only the archived ones, never a health chat or deleted tombstone, each on the list's machine when it names none, newest first.
             server.enqueue(MockResponse().setBody("""{"machine_id":"hub","main":"main","conversations":[
                 {"machine_id":"hub","session_id":"main","assistant":true,"updated_at":"2026-11-12T09:00:00Z"},
                 {"session_id":"old","assistant":true,"archived":true,"updated_at":"2026-11-10T09:00:00Z"},
+                {"machine_id":"hub","session_id":"gone","assistant":true,"archived":true,"deleted":true,"updated_at":"2026-11-12T08:30:00Z"},
                 {"machine_id":"hub","session_id":"health","assistant":true,"archived":true,"space":"health","updated_at":"2026-11-12T08:00:00Z"},
                 {"machine_id":"hub","session_id":"new","assistant":true,"archived":true,"updated_at":"2026-11-11T09:00:00Z"}]}"""))
             val archived = api.archivedConversations()
@@ -258,6 +259,55 @@ class AssistantManagementTest {
             assertEquals("1", list.requestUrl?.queryParameter("archived"))
             assertEquals("the assistant shown", "work", list.requestUrl?.queryParameter(ManagerQuery))
             assertEquals(listOf(SessionKey("hub", "new"), SessionKey("hub", "old")), archived.map { it.key })
+        }
+    }
+
+    @Test fun deleteConversationSendsMachineIdAcceptsDeletedTombstoneAndMapsRefusals() = runBlocking {
+        MockWebServer().use { server ->
+            var current = true
+            val api = HttpAssistantManagement(server.url("/").toString(), "test-token", OkHttpClient()) { current }
+                .forManager("work")
+            val target = SessionKey("mac/1", "chat/1")
+
+            server.enqueue(MockResponse().setBody("""{"ok":true,"deleted":true}"""))
+            api.deleteConversation(target)
+            val delete = server.takeRequest()
+            assertEquals("DELETE", delete.method)
+            assertEquals("/api/v1/assistant/conversations/chat%2F1", delete.requestUrl?.encodedPath)
+            assertEquals("work", delete.requestUrl?.queryParameter(ManagerQuery))
+            assertEquals("work", delete.getHeader(ManagerHeader))
+            assertEquals("""{"machine_id":"mac/1"}""", delete.body.readUtf8())
+
+            // Already-deleted tombstone is treated as idempotent success.
+            server.enqueue(MockResponse().setResponseCode(410).setBody("""{"code":"conversation_deleted","error":"Already deleted"}"""))
+            api.deleteConversation(target)
+            server.takeRequest()
+
+            // A 404 without conversation_deleted stays a real HubFailure.
+            server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"not found"}"""))
+            assertEquals(404, (runCatching { api.deleteConversation(target) }.exceptionOrNull() as HubFailure).status)
+            server.takeRequest()
+
+            // An unconfirmed 200 without ok && deleted is a protocol error.
+            server.enqueue(MockResponse().setBody("""{"ok":true,"deleted":false}"""))
+            assertEquals(HubError.Protocol, (runCatching { api.deleteConversation(target) }.exceptionOrNull() as HubFailure).kind)
+            server.takeRequest()
+
+            // Busy and protected refusals preserve code and message via AssistantRefused.
+            server.enqueue(MockResponse().setResponseCode(409).setBody("""{"code":"conversation_busy","error":"Conversation is still running"}"""))
+            val busy = runCatching { api.deleteConversation(target) }.exceptionOrNull() as AssistantRefused
+            assertEquals("conversation_busy" to "Conversation is still running", busy.code to busy.message)
+            server.takeRequest()
+
+            server.enqueue(MockResponse().setResponseCode(400).setBody("""{"code":"conversation_protected","error":"Main conversation cannot be deleted"}"""))
+            val guarded = runCatching { api.deleteConversation(target) }.exceptionOrNull() as AssistantRefused
+            assertEquals("conversation_protected" to "Main conversation cannot be deleted", guarded.code to guarded.message)
+            server.takeRequest()
+
+            // Stale pairing guard stops requests before sending.
+            current = false
+            assertTrue(runCatching { api.deleteConversation(target) }.exceptionOrNull() is CancellationException)
+            assertEquals(6, server.requestCount)
         }
     }
 

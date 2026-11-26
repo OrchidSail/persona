@@ -278,4 +278,11 @@
     <string name="assistant_starred_unstarred">スターを外しました</string>
     <string name="assistant_starred_undo">元に戻す</string>
     <string name="assistant_starred_action_failed">スターの更新に失敗しました</string>
+    <!-- Permanent conversation deletion -->
+    <string name="assistant_delete_menu">削除…</string>
+    <string name="assistant_delete_title">「%1$s」を削除しますか？</string>
+    <string name="assistant_delete_body">この会話とメッセージを Persona から完全に削除します。元に戻すことはできません。関連タスク、Agent、保存済みの知識、コンピューター上の会話記録ファイルは保持されます。</string>
+    <string name="assistant_delete_confirm">会話を削除</string>
+    <string name="assistant_deleted">削除しました</string>
+    <string name="assistant_delete_unavailable">この会話は処理中または応答待ちのため、削除できません。</string>
 </resources>

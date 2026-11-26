@@ -45,14 +45,18 @@ internal fun MachinesScreen(
     adds: Boolean = false,
     /** The hub adds computers from the phone (machines_add): the + and "Add a computer" open its page, else the help dialog. */
     canAdd: Boolean = false,
+    /** Invoked after a computer is removed so app-level machine filters can clear a stale selection. */
+    onMachineRemoved: (String) -> Unit = {},
 ) {
     val state by model.state.collectAsStateWithLifecycle()
     val roster = LocalManagerRoster.current
     val managerGroup = LocalManagerGroup.current
     var choosingManager by remember(machineId) { mutableStateOf(false) }
     var renaming by remember(machineId) { mutableStateOf(false) }
+    var removing by remember(machineId) { mutableStateOf(false) }
+    val hubFeatures = LocalHubFeatures.current
     // The hub renames computers (feature machine_rename); a linked hub's computer is renamed on that hub.
-    val renames = MachineRenameFeature in LocalHubFeatures.current
+    val renames = MachineRenameFeature in hubFeatures
     val allMachines by model.sessions.machines.collectAsStateWithLifecycle()
     val sessions by model.sessions.sessions.collectAsStateWithLifecycle()
     // The list is the current assistant's computers (docs/assistant/managers.md "Clients"); one computer's page is
@@ -124,6 +128,27 @@ internal fun MachinesScreen(
     val addComputer = { if (adds && canAdd) navigator.navigate(AddComputerRoute()) else addComputerHelp = true }
     val confirmComputer: (String) -> Unit = { id -> navigator.navigate(AddComputerRoute(confirm = id)) }
     if (renaming && actions != null && machine != null) RenameMachineDialog(machine, onRename = { actions.rename(machine.id, it) }, onDismiss = { renaming = false })
+    if (removing && actions != null && machine != null) {
+        RemoveMachineDialog(
+            machine = machine,
+            busy = acting.removing,
+            error = acting.removeError,
+            onRemove = {
+                actions.remove(machine.id, machine.displayName) {
+                    removing = false
+                    onMachineRemoved(machine.id)
+                    model.refresh()
+                    navigator.back()
+                }
+            },
+            onDismiss = {
+                if (!acting.removing) {
+                    actions.clearRemoveError()
+                    removing = false
+                }
+            },
+        )
+    }
     if (choosingManager && actions != null && machineId != null) roster?.let { r ->
         val current = r.ownerOf(machines.firstOrNull { it.id == machineId }?.manager)
         MoveToManagerSheet(r, current, onMove = { m -> actions.moveTo(machineId, m.id, m.shownName) }, onDismiss = { choosingManager = false })
@@ -198,7 +223,13 @@ internal fun MachinesScreen(
                 onEngine = { navigator.navigate(EngineRoute(machine.id)) }, onReconnect = { actions.reconnect(machine.id) },
                 botmux = acting.botmux, botmuxSaving = acting.botmuxSaving, onBotmux = { actions.setBotmux(machine.id, it) },
                 move = owner?.let { id -> MachineMoveRow(roster?.manager(id)?.shownName ?: id, acting.moving) { choosingManager = true } },
-                rename = MachineRenameRow(acting.renaming) { renaming = true }.takeIf { renames && machine.kind != "hub" })
+                rename = MachineRenameRow(acting.renaming) { renaming = true }.takeIf { renames && machine.kind != "hub" },
+                remove = MachineRemoveRow(acting.removing, enabled = !linkSwitchBusy) {
+                    actions.clearRemoveError()
+                    removing = true
+                }.takeIf {
+                    canRemoveMachine(machine, hubFeatures, model.sessions.supportsFeature(machine.id, MachineRemoveFeature))
+                })
             item("sessions-title") { JSectionHeader(stringResource(R.string.machines_sessions_title), count = agents.size) }
             if (agents.isEmpty()) item("no-sessions") { JNotice(stringResource(R.string.machines_no_sessions)) }
             val shownAgents = visibleMachineAgents(agents, allAgents)

@@ -289,4 +289,13 @@
     <string name="machines_tokens_now">現在</string>
     <string name="machines_tokens_cache_hit_rate">キャッシュヒット率</string>
     <string name="machines_tokens_per_minute">%1$s/分</string>
+    <!-- Remove paired computer -->
+    <string name="machines_remove">コンピューターを削除</string>
+    <string name="machines_removing">削除中…</string>
+    <string name="machines_remove_title">「%1$s」を削除しますか？</string>
+    <string name="machines_remove_body">「%1$s」をコンピューター一覧から削除し、Persona Link のペアリング認証を直ちに無効にします。コンピューター上で実行中の Agent は停止されず、ブラウザのログイン状態やアプリ権限も変更されません。再度接続するには新しくペアリングしてください。</string>
+    <string name="machines_remove_confirm">コンピューターを削除</string>
+    <string name="machines_notice_removed">%1$s を削除しました</string>
+    <string name="machines_notice_removed_restart">%1$s を削除しました。一覧から完全に消すにはハブを再起動してください。</string>
+    <string name="machines_notice_remove_failed">コンピューターを削除できませんでした：%1$s</string>
 </resources>

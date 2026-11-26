@@ -90,7 +90,7 @@ internal fun AssistantConversationOrigin.accessibilityLabel(resources: android.c
 internal fun recentConversations(snapshot: AssistantSnapshot, limit: Int = RECENT_LIMIT): List<Session> {
     val leaders = snapshot.leaders.toSet()
     return snapshot.conversations.distinctBy { it.key }
-        .filter { it.key != snapshot.mainSession && it.sessionId !in leaders && !it.archived &&
+        .filter { !it.deleted && it.key != snapshot.mainSession && it.sessionId !in leaders && !it.archived &&
             (snapshot.recentTaskChats == true || (it.sessionId != snapshot.backgroundSupervisor &&
                 automaticConversationOrigin(it.origin) != AssistantConversationOrigin.Task)) }
         .map { it to it.updated }
@@ -122,7 +122,7 @@ internal fun conversationGroups(
     // by its name too, and never a direction whatever the leaders say.
     val background = filtered.backgroundSupervisor?.takeIf(String::isNotBlank)
     val matches = filtered.conversations.distinctBy { it.key }.filter {
-        !it.archived && (query.isBlank() || it.conversationTitle(words).contains(query.trim(), ignoreCase = true) ||
+        !it.deleted && !it.archived && (query.isBlank() || it.conversationTitle(words).contains(query.trim(), ignoreCase = true) ||
                 it.lastText.orEmpty().contains(query.trim(), ignoreCase = true) ||
                 (it.sessionId == background && words.background.contains(query.trim(), ignoreCase = true)))
     }.map { it to it.updated } // each time parsed once, not on every comparison
@@ -134,7 +134,7 @@ internal fun conversationGroups(
     val externalDirections = mutableMapOf<String, ExternalDirection>()
     val directions = filtered.leaders.filter { it != background }.mapNotNull { id ->
         val conversation = filtered.conversations.firstOrNull {
-            it.sessionId == id && it.key != filtered.mainSession && !it.archived
+            !it.deleted && it.sessionId == id && it.key != filtered.mainSession && !it.archived
         }
         when {
             conversation != null -> conversation
