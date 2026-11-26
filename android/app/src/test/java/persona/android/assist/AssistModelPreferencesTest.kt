@@ -82,7 +82,7 @@ class AssistModelPreferencesTest {
         val groups = buildDigitalAssistantModelGroups(launchers, models)
         assertEquals(3, groups.size)
 
-        assertEquals("Claude", groups[0].title)
+        assertEquals("Claude Code", groups[0].title)
         assertEquals(2, groups[0].options.size)
         assertEquals(ModelPick("claude", "claude-haiku-4-5"), groups[0].options[0].pick)
         assertEquals("Haiku 4.5", groups[0].options[0].modelLabel)
