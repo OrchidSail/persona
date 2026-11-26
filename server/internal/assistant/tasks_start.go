@@ -756,8 +756,11 @@ func (s *Service) stopContinuedTaskAgents(ctx context.Context, todo Todo) ([]Tod
 		if !s.todoAgentStopped(ctx, a) {
 			cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 			err := s.call(cctx, a.MachineID, deviceSessionStop, map[string]any{"session_id": a.SessionID}, nil)
+			if isNoTerminalStopError(err) {
+				err = s.call(cctx, a.MachineID, "session.close", map[string]any{"session_id": a.SessionID}, nil)
+			}
 			cancel()
-			if err != nil {
+			if err != nil && !s.isStopMissingSessionError(ctx, a, err) {
 				return nil, fmt.Errorf("continues: cannot stop agent %s/%s on to-do %s: %w", a.MachineID, a.SessionID, todo.ID, err)
 			}
 			s.endSessionCards(a.MachineID, a.SessionID)
@@ -765,6 +768,56 @@ func (s *Service) stopContinuedTaskAgents(ctx context.Context, todo Todo) ([]Tod
 		stopped = append(stopped, a)
 	}
 	return stopped, nil
+}
+
+func isNoTerminalStopError(err error) bool {
+	var re *rpc.Error
+	return errors.As(err, &re) && re.Code == "no_terminal"
+}
+
+// isStopMissingSessionError reports whether an online node explicitly answered that the old session id no longer
+// exists (for example, a runtime session id such as agy-<uuid> after the machine rebooted). Offline, timeout,
+// transport, refusal, and safety/approval errors always return false (fail closed), as does any session still
+// reported live in the node's session list.
+func (s *Service) isStopMissingSessionError(ctx context.Context, a TodoAgent, err error) bool {
+	if err == nil ||
+		errors.Is(err, ErrNoDevice) ||
+		errors.Is(err, apierr.ErrOffline) ||
+		errors.Is(err, rpc.ErrClosed) ||
+		errors.Is(err, rpc.ErrNotSent) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled) {
+		return false
+	}
+	var re *rpc.Error
+	if !errors.As(err, &re) {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(re.Message))
+	missing := false
+	switch re.Code {
+	case "not_found", "session_not_found":
+		missing = true
+	case "", "error", "invalid_params", "invalid_session":
+		missing = strings.Contains(msg, "invalid session id") ||
+			strings.Contains(msg, "session not found") ||
+			strings.Contains(msg, "no such session")
+	default:
+		return false
+	}
+	if !missing {
+		return false
+	}
+	list, serr := s.sessions(ctx, a.MachineID)
+	if serr != nil {
+		return false
+	}
+	for _, c := range list {
+		if c.SessionID == a.SessionID {
+			return c.Archived || switchStopped(c)
+		}
+	}
+	return true
 }
 
 // todoAgentReleaser is the store's letting go of one agent link (released_at only); a store without it keeps that in

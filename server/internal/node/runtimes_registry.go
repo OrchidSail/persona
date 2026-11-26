@@ -1118,3 +1118,49 @@ func (b *runtimeRegistry) rowOf(id string) (proto.Session, *runtimeConn, bool) {
 	s, ok := h.row(id)
 	return s, h, ok
 }
+
+// unlistedRuntimeByPrefix reports a ready runtime matching id's "<runtime>-" prefix that has not pushed its first
+// runtime.sessions list yet.
+func (b *runtimeRegistry) unlistedRuntimeByPrefix(id string) (string, bool) {
+	if b == nil || id == "" {
+		return "", false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var first *runtimeConn
+	var label string
+	for _, h := range b.conns {
+		h.mu.Lock()
+		pending := h.ready && !h.sessionsListed && h.hello.Runtime != "" && strings.HasPrefix(id, h.hello.Runtime+"-")
+		name := h.hello.Name
+		if name == "" {
+			name = h.hello.Runtime
+		}
+		h.mu.Unlock()
+		if pending && (first == nil || h.serial < first.serial) {
+			first, label = h, name
+		}
+	}
+	if first == nil {
+		return "", false
+	}
+	return label, true
+}
+
+// hasReadyRuntimePrefix reports whether any ready connected runtime uses id's "<runtime>-" prefix.
+func (b *runtimeRegistry) hasReadyRuntimePrefix(id string) bool {
+	if b == nil || id == "" {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, h := range b.conns {
+		h.mu.Lock()
+		match := h.ready && h.hello.Runtime != "" && strings.HasPrefix(id, h.hello.Runtime+"-")
+		h.mu.Unlock()
+		if match {
+			return true
+		}
+	}
+	return false
+}
