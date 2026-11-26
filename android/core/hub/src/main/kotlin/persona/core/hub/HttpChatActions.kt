@@ -67,13 +67,23 @@ class HttpChatActions internal constructor(
                 }
                 is ChatAction.Rename -> buildJsonObject { put("title", action.title.trim()) }
                 is ChatAction.Modes -> buildJsonObject {
-                    action.launcher?.let { put("launcher", it) }
-                    action.from?.let { put("from", it) }
-                    action.model?.let { put("model", it) }
-                    action.permissionMode?.let { put("permission_mode", it) }
-                    action.effort?.let { put("effort", it) }
-                    action.ultracode?.let { put("ultracode", it) }
-                    action.dismissUltracodeLost?.let { put("ultracode_dismiss_lost", it) }
+                    action.serviceTier?.let { tier ->
+                        require(tier.isNotBlank()) { "service_tier must be non-empty" }
+                        require(
+                            action.launcher == null && action.from == null && action.model == null &&
+                                action.permissionMode == null && action.effort == null &&
+                                action.ultracode == null && action.dismissUltracodeLost == null
+                        ) { "service_tier must be sent alone in its own request" }
+                        put("service_tier", tier)
+                    } ?: run {
+                        action.launcher?.let { put("launcher", it) }
+                        action.from?.let { put("from", it) }
+                        action.model?.let { put("model", it) }
+                        action.permissionMode?.let { put("permission_mode", it) }
+                        action.effort?.let { put("effort", it) }
+                        action.ultracode?.let { put("ultracode", it) }
+                        action.dismissUltracodeLost?.let { put("ultracode_dismiss_lost", it) }
+                    }
                 }
                 else -> buildJsonObject { }
             }
@@ -83,8 +93,9 @@ class HttpChatActions internal constructor(
                 else -> api("sessions", session.machineId, session.sessionId, kind(action))
             }
             val method = when (action) { is ChatAction.Mute -> "PUT"; ChatAction.Delete -> "DELETE"; else -> "POST" }
+            val send = if (action is ChatAction.Modes && action.serviceTier != null) slow else request
             sent = true
-            request(path, method,
+            send(path, method,
                 if (action == ChatAction.Delete) null else payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).use {
                 if (!it.isSuccessful) throw HubFailure.from(it)
             }
@@ -421,5 +432,6 @@ internal fun modesApplied(current: Session, action: ChatAction.Modes): Boolean {
         (action.effort == null || current.effort == action.effort) &&
         // a queued switch went through too: the node applies it after the turn
         (action.ultracode == null || current.ultracode == action.ultracode || current.ultracodePending) &&
-        (action.dismissUltracodeLost == null || current.ultracodeLostAt == null)
+        (action.dismissUltracodeLost == null || current.ultracodeLostAt == null) &&
+        (action.serviceTier == null || current.serviceTier == action.serviceTier)
 }

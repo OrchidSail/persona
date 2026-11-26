@@ -7,11 +7,23 @@ import persona.feature.assistant.R
 import persona.core.contracts.Machine
 import persona.core.contracts.api.AssistantConfig
 import persona.core.contracts.api.AssistantConfigUpdate
+import persona.core.contracts.api.AssistantGovernanceBounds
 import persona.core.contracts.api.AssistantManagement
 import persona.core.contracts.api.AssistantRefused
 import persona.core.contracts.api.AssistantSkills
+import persona.core.contracts.api.DefaultRepositoryProviders
+import persona.core.contracts.api.DirectionLeader
+import persona.core.contracts.api.DirectionNotesConflictException
+import persona.core.contracts.api.DirectionNotesResult
 import persona.core.contracts.api.MemoryFile
+import persona.core.contracts.api.RepositoryBinding
+import persona.core.contracts.api.RepositoryCatalog
+import persona.core.contracts.api.RepositoryInput
+import persona.core.contracts.api.RepositoryPreview
+import persona.core.contracts.api.RepositoryProvider
+import persona.core.contracts.api.RepositoryRemoval
 import persona.core.contracts.api.SavedPlace
+import persona.core.contracts.api.TaskTrustKind
 import persona.core.contracts.parseTime
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
@@ -39,6 +51,23 @@ internal interface AssistantSettingsApi {
     suspend fun savePlace(place: SavedPlace): SavedPlace = throw UnsupportedOperationException("Saved places unavailable")
     suspend fun deletePlace(id: String): Unit = throw UnsupportedOperationException("Saved places unavailable")
     suspend fun skills(): AssistantSkills = throw UnsupportedOperationException("Skills unavailable")
+    suspend fun taskTrust(): List<TaskTrustKind> = throw UnsupportedOperationException("Task trust unavailable")
+    suspend fun revokeTaskTrust(key: String): Unit = throw UnsupportedOperationException("Task trust unavailable")
+    suspend fun leaders(): List<DirectionLeader> = throw UnsupportedOperationException("Leaders unavailable")
+    suspend fun updateDirectionNotes(id: String, notes: String, notesAt: String?): DirectionNotesResult =
+        throw UnsupportedOperationException("Direction notes unavailable")
+    suspend fun repositories(): RepositoryCatalog = throw UnsupportedOperationException("Repositories unavailable")
+    suspend fun repositoryProviders(): List<RepositoryProvider> = DefaultRepositoryProviders
+    suspend fun previewRepository(url: String, provider: String = ""): RepositoryPreview =
+        throw UnsupportedOperationException("Repositories unavailable")
+    suspend fun createRepository(input: RepositoryInput): RepositoryBinding =
+        throw UnsupportedOperationException("Repositories unavailable")
+    suspend fun updateRepository(id: String, input: RepositoryInput): RepositoryBinding =
+        throw UnsupportedOperationException("Repositories unavailable")
+    suspend fun deleteRepository(id: String): RepositoryRemoval =
+        throw UnsupportedOperationException("Repositories unavailable")
+    suspend fun restoreRepository(id: String, receipt: String): RepositoryBinding =
+        throw UnsupportedOperationException("Repositories unavailable")
 }
 
 internal fun AssistantManagement.settingsApi(): AssistantSettingsApi {
@@ -53,6 +82,18 @@ internal fun AssistantManagement.settingsApi(): AssistantSettingsApi {
         override suspend fun savePlace(place: SavedPlace) = management.savePlace(place)
         override suspend fun deletePlace(id: String) = management.deletePlace(id)
         override suspend fun skills() = management.skills()
+        override suspend fun taskTrust() = management.taskTrust()
+        override suspend fun revokeTaskTrust(key: String) = management.revokeTaskTrust(key)
+        override suspend fun leaders() = management.leaders()
+        override suspend fun updateDirectionNotes(id: String, notes: String, notesAt: String?) =
+            management.updateDirectionNotes(id, notes, notesAt)
+        override suspend fun repositories() = management.repositories()
+        override suspend fun repositoryProviders() = management.repositoryProviders()
+        override suspend fun previewRepository(url: String, provider: String) = management.previewRepository(url, provider)
+        override suspend fun createRepository(input: RepositoryInput) = management.createRepository(input)
+        override suspend fun updateRepository(id: String, input: RepositoryInput) = management.updateRepository(id, input)
+        override suspend fun deleteRepository(id: String) = management.deleteRepository(id)
+        override suspend fun restoreRepository(id: String, receipt: String) = management.restoreRepository(id, receipt)
     }
 }
 
@@ -153,6 +194,43 @@ internal data class SkillsState(
     val empty: Boolean get() = !loading && (failed || list != null) && list?.skills.isNullOrEmpty()
 }
 
+internal data class TaskTrustState(
+    val kinds: List<TaskTrustKind>? = null,
+    val supported: Boolean = false,
+    val loading: Boolean = false,
+    val failed: Boolean = false,
+)
+
+internal data class DirectionNotesConflict(
+    val leaderId: String,
+    val currentNotes: String,
+    val currentNotesAt: String?,
+)
+
+internal data class DirectionNotesState(
+    val leaders: List<DirectionLeader>? = null,
+    val supported: Boolean = false,
+    val loading: Boolean = false,
+    val failed: Boolean = false,
+    val conflict: DirectionNotesConflict? = null,
+)
+
+internal data class RemovedRepositoryUndo(
+    val id: String,
+    val displayName: String,
+    val receipt: String,
+)
+
+internal data class RepositoriesState(
+    val catalog: RepositoryCatalog? = null,
+    val providers: List<RepositoryProvider> = DefaultRepositoryProviders,
+    val supported: Boolean = false,
+    val loading: Boolean = false,
+    val failed: Boolean = false,
+    val error: String? = null,
+    val undo: RemovedRepositoryUndo? = null,
+)
+
 internal data class AssistantSettingsUiState(
     val config: AssistantConfig? = null,
     val loading: Boolean = false,
@@ -163,7 +241,10 @@ internal data class AssistantSettingsUiState(
     val memory: MemoryState = MemoryState(),
     val places: PlacesState = PlacesState(),
     val skills: SkillsState = SkillsState(),
-    val followPhone: Boolean = true
+    val followPhone: Boolean = true,
+    val taskTrust: TaskTrustState = TaskTrustState(),
+    val directionNotes: DirectionNotesState = DirectionNotesState(),
+    val repositories: RepositoriesState = RepositoriesState(),
 ) {
     val permissionSupported: Boolean get() = !loading && !loadFailed &&
         config?.permissionDefaults?.supports(config.manager) == true
@@ -568,6 +649,503 @@ internal class AssistantSettingsState(
         return deleted
     }
 
+    // ------------------------------------------------------------------ High-frequency governance (W-E02)
+
+    private suspend fun updateGovernanceConfig(
+        requireOwnerMatch: Boolean = false,
+        optimistic: (AssistantConfig) -> AssistantConfig,
+        rollback: (AssistantConfig) -> AssistantConfig,
+        update: AssistantConfigUpdate,
+        verify: (AssistantConfig) -> Boolean = { true },
+    ): Boolean {
+        val current = state.value.config ?: return false
+        if (state.value.busy) return false
+        val owner = current.manager?.takeIf(String::isNotBlank)
+        if (requireOwnerMatch && owner == null) return false
+        set { copy(config = optimistic(current)) }
+        val ok = perform(SettingsText(R.string.assistant_settings_save_failed), preferMessage = true) {
+            val updated = api.updateConfig(update)
+            if (requireOwnerMatch) {
+                check(updated.manager == owner) { "Assistant identity changed" }
+            }
+            check(verify(updated)) { "The hub did not save the setting" }
+            set { copy(config = updated) }
+        }
+        if (!ok) set { copy(config = this.config?.let(rollback)) }
+        return ok
+    }
+
+    suspend fun setReadonlyMode(mode: String): Boolean {
+        val config = state.value.config ?: return false
+        val was = config.readonlyMode ?: return false
+        if (was == mode || mode !in AssistantGovernanceBounds.READONLY_MODES) return false
+        return updateGovernanceConfig(
+            requireOwnerMatch = true,
+            optimistic = { it.copy(readonlyMode = mode) },
+            rollback = { it.copy(readonlyMode = was) },
+            update = AssistantConfigUpdate(readonlyMode = mode),
+            verify = { it.readonlyMode == mode },
+        )
+    }
+
+    suspend fun setStartRequestedTasks(on: Boolean): Boolean {
+        val config = state.value.config ?: return false
+        val was = config.startRequestedTasks ?: return false
+        if (was == on) return false
+        return updateGovernanceConfig(
+            optimistic = { it.copy(startRequestedTasks = on) },
+            rollback = { it.copy(startRequestedTasks = was) },
+            update = AssistantConfigUpdate(startRequestedTasks = on),
+            verify = { it.startRequestedTasks == null || it.startRequestedTasks == on },
+        )
+    }
+
+    suspend fun setDeliveryGate(gate: String): Boolean {
+        val config = state.value.config ?: return false
+        val was = config.effectiveDeliveryGate ?: return false
+        if (was == gate || gate !in AssistantGovernanceBounds.DELIVERY_GATES) return false
+        return updateGovernanceConfig(
+            optimistic = { it.copy(deliveryGate = gate) },
+            rollback = { it.copy(deliveryGate = config.deliveryGate, doneNeedsDelivery = config.doneNeedsDelivery) },
+            update = AssistantConfigUpdate(deliveryGate = gate),
+            verify = { it.effectiveDeliveryGate == null || it.effectiveDeliveryGate == gate },
+        )
+    }
+
+    suspend fun setTaskWorkspacePreference(pref: String): Boolean {
+        val config = state.value.config ?: return false
+        val was = config.taskWorkspacePreference ?: return false
+        if (was == pref || pref !in AssistantGovernanceBounds.WORKSPACE_PREFERENCES) return false
+        return updateGovernanceConfig(
+            optimistic = { it.copy(taskWorkspacePreference = pref) },
+            rollback = { it.copy(taskWorkspacePreference = was) },
+            update = AssistantConfigUpdate(taskWorkspacePreference = pref),
+            verify = { it.taskWorkspacePreference == null || it.taskWorkspacePreference == pref },
+        )
+    }
+
+    suspend fun setAutoSupervisionMessages(on: Boolean): Boolean {
+        val config = state.value.config ?: return false
+        val was = config.autoSupervisionMessages ?: return false
+        if (was == on) return false
+        return updateGovernanceConfig(
+            optimistic = { it.copy(autoSupervisionMessages = on) },
+            rollback = { it.copy(autoSupervisionMessages = was) },
+            update = AssistantConfigUpdate(autoSupervisionMessages = on),
+            verify = { it.autoSupervisionMessages == null || it.autoSupervisionMessages == on },
+        )
+    }
+
+    suspend fun setTaskLessons(on: Boolean, expectedOwner: String? = null): Boolean {
+        val config = state.value.config ?: return false
+        val was = config.taskLessons ?: return false
+        if (was == on) return false
+        if (expectedOwner != null && config.manager != expectedOwner) return false
+        return updateGovernanceConfig(
+            requireOwnerMatch = !config.manager.isNullOrBlank(),
+            optimistic = { it.copy(taskLessons = on) },
+            rollback = { it.copy(taskLessons = was) },
+            update = AssistantConfigUpdate(taskLessons = on),
+            verify = { it.taskLessons == null || it.taskLessons == on },
+        )
+    }
+
+    suspend fun setAgentTasks(on: Boolean): Boolean {
+        val config = state.value.config ?: return false
+        val was = config.agentTasks ?: return false
+        if (was == on) return false
+        return updateGovernanceConfig(
+            optimistic = { it.copy(agentTasks = on) },
+            rollback = { it.copy(agentTasks = was) },
+            update = AssistantConfigUpdate(agentTasks = on),
+            verify = { it.agentTasks == null || it.agentTasks == on },
+        )
+    }
+
+    suspend fun setFoldRoutineRelayReplies(on: Boolean): Boolean {
+        val config = state.value.config ?: return false
+        val was = config.foldRoutineRelayReplies ?: return false
+        if (was == on) return false
+        return updateGovernanceConfig(
+            optimistic = { it.copy(foldRoutineRelayReplies = on) },
+            rollback = { it.copy(foldRoutineRelayReplies = was) },
+            update = AssistantConfigUpdate(foldRoutineRelayReplies = on),
+            verify = { it.foldRoutineRelayReplies == null || it.foldRoutineRelayReplies == on },
+        )
+    }
+
+    suspend fun setClaudeInteractive(on: Boolean): Boolean {
+        val config = state.value.config ?: return false
+        val was = config.claudeInteractive ?: return false
+        if (was == on) return false
+        return updateGovernanceConfig(
+            optimistic = { it.copy(claudeInteractive = on) },
+            rollback = { it.copy(claudeInteractive = was) },
+            update = AssistantConfigUpdate(claudeInteractive = on),
+            verify = { it.claudeInteractive == null || it.claudeInteractive == on },
+        )
+    }
+
+    suspend fun setInboxSignals(on: Boolean): Boolean {
+        val config = state.value.config ?: return false
+        val was = config.inboxSignals ?: return false
+        if (was == on) return false
+        return updateGovernanceConfig(
+            optimistic = { it.copy(inboxSignals = on) },
+            rollback = { it.copy(inboxSignals = was) },
+            update = AssistantConfigUpdate(inboxSignals = on),
+            verify = { it.inboxSignals == null || it.inboxSignals == on },
+        )
+    }
+
+    suspend fun setInboxTodoForward(on: Boolean): Boolean {
+        val config = state.value.config ?: return false
+        val was = config.inboxTodoForward ?: return false
+        if (was == on) return false
+        return updateGovernanceConfig(
+            optimistic = { it.copy(inboxTodoForward = on) },
+            rollback = { it.copy(inboxTodoForward = was) },
+            update = AssistantConfigUpdate(inboxTodoForward = on),
+            verify = { it.inboxTodoForward == null || it.inboxTodoForward == on },
+        )
+    }
+
+    suspend fun setAgentAutoNaming(
+        enabled: Boolean? = null,
+        max: Int? = null,
+        intervalHours: Int? = null,
+    ): Boolean {
+        val config = state.value.config ?: return false
+        if (max != null && max !in AssistantGovernanceBounds.AUTO_NAMING_MAX) return false
+        if (intervalHours != null && intervalHours !in AssistantGovernanceBounds.AUTO_NAMING_INTERVAL_HOURS) return false
+        val wasEnabled = config.agentAutoNaming
+        val wasMax = config.agentAutoNamingMax
+        val wasInterval = config.agentAutoNamingIntervalHours
+        if (enabled == null && max == null && intervalHours == null) return false
+        return updateGovernanceConfig(
+            requireOwnerMatch = !config.manager.isNullOrBlank(),
+            optimistic = {
+                it.copy(
+                    agentAutoNaming = enabled ?: it.agentAutoNaming,
+                    agentAutoNamingMax = max ?: it.agentAutoNamingMax,
+                    agentAutoNamingIntervalHours = intervalHours ?: it.agentAutoNamingIntervalHours,
+                )
+            },
+            rollback = {
+                it.copy(
+                    agentAutoNaming = wasEnabled,
+                    agentAutoNamingMax = wasMax,
+                    agentAutoNamingIntervalHours = wasInterval,
+                )
+            },
+            update = AssistantConfigUpdate(
+                agentAutoNaming = enabled,
+                agentAutoNamingMax = max,
+                agentAutoNamingIntervalHours = intervalHours,
+            ),
+            verify = { updated ->
+                (enabled == null || updated.agentAutoNaming == enabled) &&
+                    (max == null || updated.agentAutoNamingMax == max) &&
+                    (intervalHours == null || updated.agentAutoNamingIntervalHours == intervalHours)
+            },
+        )
+    }
+
+    suspend fun setCacheKeepalive(
+        enabled: Boolean? = null,
+        minutes: Int? = null,
+        max: Int? = null,
+    ): Boolean {
+        val config = state.value.config ?: return false
+        if (minutes != null && minutes !in AssistantGovernanceBounds.CACHE_KEEPALIVE_MINUTES) return false
+        if (max != null && max !in AssistantGovernanceBounds.CACHE_KEEPALIVE_MAX) return false
+        val wasEnabled = config.cacheKeepalive
+        val wasMinutes = config.cacheKeepaliveMinutes
+        val wasMax = config.cacheKeepaliveMax
+        if (enabled == null && minutes == null && max == null) return false
+        return updateGovernanceConfig(
+            optimistic = {
+                it.copy(
+                    cacheKeepalive = enabled ?: it.cacheKeepalive,
+                    cacheKeepaliveMinutes = minutes ?: it.cacheKeepaliveMinutes,
+                    cacheKeepaliveMax = max ?: it.cacheKeepaliveMax,
+                )
+            },
+            rollback = {
+                it.copy(
+                    cacheKeepalive = wasEnabled,
+                    cacheKeepaliveMinutes = wasMinutes,
+                    cacheKeepaliveMax = wasMax,
+                )
+            },
+            update = AssistantConfigUpdate(
+                cacheKeepalive = enabled,
+                cacheKeepaliveMinutes = minutes,
+                cacheKeepaliveMax = max,
+            ),
+            verify = { updated ->
+                (enabled == null || updated.cacheKeepalive == null || updated.cacheKeepalive == enabled) &&
+                    (minutes == null || updated.cacheKeepaliveMinutes == null || updated.cacheKeepaliveMinutes == minutes) &&
+                    (max == null || updated.cacheKeepaliveMax == null || updated.cacheKeepaliveMax == max)
+            },
+        )
+    }
+
+    suspend fun setIdleCloseHours(hours: Int): Boolean {
+        val config = state.value.config ?: return false
+        val was = config.idleCloseHours ?: return false
+        if (was == hours || hours !in AssistantGovernanceBounds.IDLE_CLOSE_HOURS) return false
+        return updateGovernanceConfig(
+            optimistic = { it.copy(idleCloseHours = hours) },
+            rollback = { it.copy(idleCloseHours = was) },
+            update = AssistantConfigUpdate(idleCloseHours = hours),
+            verify = { it.idleCloseHours == null || it.idleCloseHours == hours },
+        )
+    }
+
+    suspend fun setArchiveClosedDays(days: Int): Boolean {
+        val config = state.value.config ?: return false
+        val was = config.archiveClosedDays ?: return false
+        if (was == days || days !in AssistantGovernanceBounds.ARCHIVE_CLOSED_DAYS) return false
+        return updateGovernanceConfig(
+            optimistic = { it.copy(archiveClosedDays = days) },
+            rollback = { it.copy(archiveClosedDays = was) },
+            update = AssistantConfigUpdate(archiveClosedDays = days),
+            verify = { it.archiveClosedDays == null || it.archiveClosedDays == days },
+        )
+    }
+
+    // ------------------------------------------------------------------ Task trust
+
+    suspend fun loadTaskTrust() {
+        set { copy(taskTrust = taskTrust.copy(loading = true, failed = false)) }
+        try {
+            val kinds = api.taskTrust()
+            set { copy(taskTrust = TaskTrustState(kinds = kinds, supported = true)) }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: UnsupportedOperationException) {
+            set { copy(taskTrust = TaskTrustState(supported = false)) }
+        } catch (_: Exception) {
+            set { copy(taskTrust = taskTrust.copy(loading = false, failed = true)) }
+        }
+    }
+
+    suspend fun revokeTaskTrust(kind: TaskTrustKind): Boolean {
+        if (kind.key.isBlank() || state.value.busy) return false
+        val before = state.value.taskTrust.kinds
+        set { copy(taskTrust = taskTrust.copy(kinds = taskTrust.kinds?.filterNot { it.key == kind.key })) }
+        val ok = perform(SettingsText(R.string.assistant_settings_delete_failed), preferMessage = true) {
+            api.revokeTaskTrust(kind.key)
+            done(SettingsText(R.string.assistant_governance_task_trust_revoked))
+        }
+        if (!ok) {
+            set { copy(taskTrust = taskTrust.copy(kinds = before)) }
+            loadTaskTrust()
+        }
+        return ok
+    }
+
+    // ------------------------------------------------------------------ Direction notes
+
+    suspend fun loadLeaders() {
+        set { copy(directionNotes = directionNotes.copy(loading = true, failed = false)) }
+        try {
+            val active = api.leaders().filter { it.id.isNotBlank() && !it.ended }
+            set { copy(directionNotes = DirectionNotesState(leaders = active, supported = true)) }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: UnsupportedOperationException) {
+            set { copy(directionNotes = DirectionNotesState(supported = false)) }
+        } catch (_: Exception) {
+            set { copy(directionNotes = directionNotes.copy(loading = false, failed = true)) }
+        }
+    }
+
+    fun clearDirectionConflict() = set { copy(directionNotes = directionNotes.copy(conflict = null)) }
+
+    suspend fun saveDirectionNotes(
+        leaderId: String,
+        notes: String,
+        expectedNotesAt: String?,
+        forceOverwrite: Boolean = false,
+    ): Boolean {
+        if (leaderId.isBlank() || notes.codePointCount(0, notes.length) > AssistantGovernanceBounds.DIRECTION_NOTES_MAX) return false
+        if (state.value.busy) return false
+        val conflictAt = state.value.directionNotes.conflict?.takeIf { it.leaderId == leaderId }?.currentNotesAt
+        set { copy(busy = true, notice = null, directionNotes = directionNotes.copy(conflict = null)) }
+        return try {
+            val at = if (forceOverwrite) {
+                conflictAt ?: state.value.directionNotes.leaders?.firstOrNull { it.id == leaderId }?.notesAt
+            } else expectedNotesAt
+            val saved = api.updateDirectionNotes(leaderId, notes, at)
+            set {
+                val updated = directionNotes.leaders.orEmpty().map { leader ->
+                    if (leader.id == leaderId) leader.copy(notes = saved.notes, notesAt = saved.notesAt) else leader
+                }
+                copy(
+                    directionNotes = directionNotes.copy(leaders = updated, conflict = null),
+                    notice = SettingsNotice(SettingsText(R.string.assistant_governance_direction_notes_saved), error = false),
+                )
+            }
+            true
+        } catch (error: CancellationException) {
+            throw error
+        } catch (conflict: DirectionNotesConflictException) {
+            set {
+                val synced = directionNotes.leaders.orEmpty().map { leader ->
+                    if (leader.id == leaderId) leader.copy(notes = conflict.currentNotes, notesAt = conflict.currentNotesAt) else leader
+                }
+                copy(
+                    directionNotes = directionNotes.copy(
+                        leaders = synced,
+                        conflict = DirectionNotesConflict(leaderId, conflict.currentNotes, conflict.currentNotesAt),
+                    ),
+                )
+            }
+            false
+        } catch (error: Exception) {
+            val text = error.message?.trim()?.takeIf { it.isNotEmpty() }?.let(SettingsText::plain)
+                ?: SettingsText(R.string.assistant_settings_save_failed)
+            set { copy(notice = SettingsNotice(text, error = true)) }
+            false
+        } finally {
+            set { copy(busy = false) }
+        }
+    }
+
+    // ------------------------------------------------------------------ Repositories CRUD
+
+    suspend fun loadRepositories() {
+        set { copy(repositories = repositories.copy(loading = true, failed = false)) }
+        try {
+            val catalog = api.repositories()
+            val providers = runCatching { api.repositoryProviders() }.getOrDefault(DefaultRepositoryProviders)
+            set {
+                copy(
+                    repositories = repositories.copy(
+                        catalog = catalog,
+                        providers = providers,
+                        supported = true,
+                        loading = false,
+                        failed = false,
+                        error = null,
+                    ),
+                )
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: UnsupportedOperationException) {
+            set { copy(repositories = RepositoriesState(supported = false)) }
+        } catch (error: Exception) {
+            val reason = error.message?.trim()?.ifEmpty { null }
+            set {
+                copy(
+                    repositories = repositories.copy(
+                        loading = false,
+                        failed = true,
+                        error = reason ?: repositories.error,
+                    ),
+                )
+            }
+        }
+    }
+
+    suspend fun previewRepository(url: String, provider: String = ""): Result<RepositoryPreview> = try {
+        Result.success(api.previewRepository(url, provider))
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        Result.failure(error)
+    }
+
+    suspend fun saveRepository(id: String?, input: RepositoryInput): RepositoryBinding? {
+        if (state.value.busy) return null
+        val invalid = validateRepositoryInput(input)
+        if (invalid != null) {
+            set { copy(notice = SettingsNotice(SettingsText(invalid), error = true)) }
+            return null
+        }
+        var saved: RepositoryBinding? = null
+        val ok = perform(SettingsText(R.string.assistant_settings_save_failed), preferMessage = true) {
+            val result = if (id.isNullOrBlank()) api.createRepository(input) else api.updateRepository(id, input)
+            saved = result
+            set {
+                val cur = repositories.catalog ?: RepositoryCatalog()
+                val next = if (cur.repositories.any { it.id == result.id }) {
+                    cur.repositories.map { if (it.id == result.id) result else it }
+                } else {
+                    cur.repositories + result
+                }
+                copy(
+                    repositories = repositories.copy(
+                        catalog = cur.copy(repositories = next),
+                        supported = true,
+                        failed = false,
+                        error = null,
+                        undo = null,
+                    ),
+                )
+            }
+            done(SettingsText(R.string.assistant_governance_repositories_saved, result.displayName))
+        }
+        if (ok) quietly { loadRepositories() }
+        return if (ok) saved else null
+    }
+
+    suspend fun deleteRepository(repo: RepositoryBinding): Boolean {
+        if (repo.id.isBlank() || state.value.busy) return false
+        val before = state.value.repositories.catalog
+        set {
+            val cur = repositories.catalog
+            copy(
+                repositories = repositories.copy(
+                    catalog = cur?.copy(repositories = cur.repositories.filterNot { it.id == repo.id }),
+                ),
+            )
+        }
+        var receipt = ""
+        val deleted = perform(SettingsText(R.string.assistant_settings_delete_failed), preferMessage = true) {
+            val removal = api.deleteRepository(repo.id)
+            receipt = removal.receipt
+            set {
+                copy(
+                    repositories = repositories.copy(
+                        undo = receipt.takeIf(String::isNotBlank)?.let { RemovedRepositoryUndo(repo.id, repo.displayName, it) },
+                    ),
+                )
+            }
+            done(SettingsText(R.string.assistant_governance_repositories_removed, repo.displayName))
+        }
+        if (!deleted) {
+            set { copy(repositories = repositories.copy(catalog = before)) }
+            loadRepositories()
+        } else {
+            quietly { loadRepositories() }
+        }
+        return deleted
+    }
+
+    suspend fun undoDeleteRepository(): Boolean {
+        val pending = state.value.repositories.undo ?: return false
+        if (state.value.busy) return false
+        var restored: RepositoryBinding? = null
+        val ok = perform(SettingsText(R.string.assistant_settings_save_failed), preferMessage = true) {
+            val binding = api.restoreRepository(pending.id, pending.receipt)
+            restored = binding
+            set {
+                val cur = repositories.catalog ?: RepositoryCatalog()
+                val next = cur.repositories.filterNot { it.id == binding.id } + binding
+                copy(repositories = repositories.copy(catalog = cur.copy(repositories = next), undo = null))
+            }
+            done(SettingsText(R.string.assistant_governance_repositories_restored, restored?.displayName ?: pending.displayName))
+        }
+        if (ok) quietly { loadRepositories() }
+        return ok
+    }
+
+    fun dismissRepositoryUndo() = set { copy(repositories = repositories.copy(undo = null)) }
+
     private fun done(text: SettingsText) = set { copy(notice = SettingsNotice(text, error = false)) }
 
     private suspend fun perform(
@@ -692,4 +1270,35 @@ internal fun zoneMatches(zone: String, query: String, locale: Locale): Boolean {
     val q = query.trim()
     return q.isEmpty() || zone.contains(q, ignoreCase = true) || zone.replace('_', ' ').contains(q, ignoreCase = true) ||
         zoneName(zone, locale)?.contains(q, ignoreCase = true) == true || zoneOffset(zone)?.contains(q, ignoreCase = true) == true
+}
+
+/** Splits comma- or newline-separated repository aliases, trimming and deduplicating case-insensitively. */
+internal fun parseRepositoryAliases(raw: String): List<String> {
+    val seen = linkedSetOf<String>()
+    val out = mutableListOf<String>()
+    raw.split(',', '，', '\n').forEach { part ->
+        val cleaned = part.trim()
+        if (cleaned.isNotEmpty() && seen.add(cleaned.lowercase(Locale.ROOT))) {
+            out += cleaned
+        }
+    }
+    return out
+}
+
+/** Client-side validation matching server `repositoryInput.details`; returns an error string resource or null when valid. */
+@StringRes
+internal fun validateRepositoryInput(input: RepositoryInput): Int? {
+    if (input.url.trim().isEmpty()) return R.string.assistant_governance_repositories_url_required
+    val nameLen = input.name.trim().let { it.codePointCount(0, it.length) }
+    val purposeLen = input.purpose.trim().let { it.codePointCount(0, it.length) }
+    val aliases = input.aliases.map(String::trim).filter(String::isNotEmpty)
+    if (nameLen > AssistantGovernanceBounds.REPOSITORY_NAME_MAX ||
+        purposeLen > AssistantGovernanceBounds.REPOSITORY_PURPOSE_MAX ||
+        aliases.size > AssistantGovernanceBounds.REPOSITORY_ALIASES_MAX ||
+        aliases.any { it.codePointCount(0, it.length) > AssistantGovernanceBounds.REPOSITORY_ALIAS_MAX } ||
+        input.taskWorkflow.trim() !in AssistantGovernanceBounds.TASK_WORKFLOWS
+    ) {
+        return R.string.assistant_governance_repositories_validation_metadata
+    }
+    return null
 }

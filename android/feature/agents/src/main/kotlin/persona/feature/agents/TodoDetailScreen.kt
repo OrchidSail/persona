@@ -47,6 +47,7 @@ import persona.core.domain.sort.slotLabel
 import persona.core.domain.tasks.TasksStore
 import persona.core.domain.tasks.TaskState
 import persona.core.domain.tasks.TodoDecisionsSource
+import persona.core.domain.tasks.TodoRepositoriesSource
 import persona.core.domain.tasks.checksAsOpen
 import persona.core.domain.tasks.planTaskOf
 import persona.core.domain.tasks.retryLauncher
@@ -90,16 +91,22 @@ fun TodoDetailScreen(
     pending: List<Interaction> = emptyList(),
     /** Where the Decisions section reads and records (#1618); the hub's store unless a test passes its own. */
     decisions: TodoDecisionsSource? = tasks,
+    /** Where the Repositories & Links section reads and writes (W-D04); the hub's store unless a test passes its own. */
+    repositoriesSource: TodoRepositoriesSource? = tasks,
 ) {
     val cards = remember(pending) { pending.firstBySession() }
     val todo = todos.firstOrNull { it.id == todoId }
     val scope = rememberCoroutineScope()
     val res = agentResources()
     val decisionsState = remember(decisions) { TodoDecisionsState(decisions) }
+    val repositoriesState = remember(repositoriesSource) { TodoRepositoriesState(repositoriesSource) }
     // The hub moves the to-do's updated_at when a decision is written, here or anywhere (an answered card too).
     LaunchedEffect(decisionsState, todoId, todo?.updatedAt) {
         decisionsState.select(todoId)
         decisionsState.load()
+    }
+    LaunchedEffect(repositoriesState, todo?.id, todo?.updatedAt) {
+        todo?.let { repositoriesState.load(it) }
     }
 
     if (todo == null) {
@@ -171,6 +178,15 @@ fun TodoDetailScreen(
                 onError(res.getString(R.string.agents_todo_decision_failed, e.message.orEmpty()))
             }
         }
+    }
+
+    if (repositoriesState.editing) {
+        TodoRepositoriesEditorSheet(
+            state = repositoriesState,
+            todo = todo,
+            onDismiss = { repositoriesState.editing = false },
+            onError = onError,
+        )
     }
 
     if (menuOpen) {
@@ -515,6 +531,14 @@ fun TodoDetailScreen(
             }
             // Decisions made on it, under the notes as on iOS and the web (#1618)
             todoDecisionsSection(decisionsState, todo, sessionLookup, now)
+
+            // Bound repositories and Issue/PR links (W-D04), with older-hub read-only prUrl fallback
+            todoRepositoriesSection(
+                state = repositoriesState,
+                todo = todo,
+                onRetry = { scope.launch { repositoriesState.load(todo) } },
+                onEdit = { scope.launch { repositoriesState.openEditor(todo) } },
+            )
 
             // Projects (workspaces linked as a whole, iOS TodoSpacesSection)
             val spaces = todo.spaces.orEmpty().takeIf { tasks?.spacesSupported != false }.orEmpty()

@@ -3,8 +3,10 @@ package persona.feature.assistant.proactive
 import persona.core.contracts.Machine
 import persona.core.contracts.SessionKey
 import persona.core.contracts.parseTime
+import persona.core.contracts.api.CronPreview
 import persona.core.contracts.api.Run
 import persona.core.contracts.api.ScheduledTask
+import persona.core.contracts.api.TaskStartGrant
 import java.io.IOException
 import java.time.Instant
 import java.time.ZoneId
@@ -86,6 +88,19 @@ private class FakeHub(
 
     override suspend fun runs() = runs
     override suspend fun assistantMachine() = "server"
+    var timezone: String? = "Asia/Shanghai"
+    val revoked = mutableListOf<Pair<String, String?>>()
+    override suspend fun assistantTimezone(): String? = timezone
+    override suspend fun previewCron(expression: String): CronPreview =
+        CronPreview(cron = expression, text = "Preview $expression", timezone = timezone.orEmpty(), nextRuns = listOf("2026-11-03T01:00:00Z"))
+    override suspend fun revokeTaskStartGrant(id: String, kind: String?): ScheduledTask {
+        revoked += id to kind
+        val task = table.first { it.id == id }
+        val remaining = if (kind == null) emptyList() else task.startGrant?.kinds.orEmpty().filterNot { it == kind }
+        val updated = task.copy(startGrant = remaining.takeIf { it.isNotEmpty() }?.let(::TaskStartGrant))
+        table = table.map { if (it.id == id) updated else it }
+        return updated
+    }
 }
 
 private val byPersona = ScheduledTask(
@@ -533,6 +548,40 @@ class ProactiveStoreTest {
         assertEquals(listOf("2", "3", "1"), store.state.value.runList!!.map { it.id })
         assertEquals(listOf("3", "1"), store.state.value.runsOf("morning")!!.map { it.id })
     }
+
+    @Test fun cronTasksClassifyAsRepeatingAndSwitchCleanly() = runTest {
+        val cronTask = ScheduledTask(
+            id = "cron_1", title = "Build patrol", prompt = "Check CI",
+            repeats = ScheduledTask.CRON, cron = "0 9 * * 1-5", cronText = "Weekdays at 9:00",
+            nextRuns = listOf("2026-11-03T01:00:00Z"),
+            startGrant = TaskStartGrant(listOf("mac|/repo|edit", "box|/docs|readonly")),
+            enabled = true,
+        )
+        val hub = FakeHub(listOf(cronTask))
+        val store = ProactiveStore(hub, this, say)
+        store.refresh()
+        assertEquals(listOf("cron_1"), store.state.value.repeating!!.map { it.id })
+        assertTrue(store.state.value.oneOff!!.isEmpty())
+        assertEquals("Asia/Shanghai", store.state.value.assistantTimezone)
+
+        // Switching from cron to daily clears cron on the task and emits explicit empty cron in editable().
+        val opened = cronTask.draft()
+        assertEquals(TaskRepeat.Cron, opened.repeat)
+        assertEquals("0 9 * * 1-5", opened.cron)
+        val switched = opened.repeating(TaskRepeat.Daily, Instant.parse("2026-11-02T02:00:00Z"), ZoneId.of("Asia/Shanghai"))
+        assertTrue(store.save(TaskChange.Edit("cron_1", opened, switched)).isSuccess)
+        val written = hub.writes.single()
+        assertEquals(ScheduledTask.DAILY, written.repeats)
+        assertNull(written.cron)
+        assertEquals("", written.editable()["cron"].toString().trim('"'))
+
+        // Revoking one start-grant kind removes only that entry in store state.
+        hub.table = listOf(cronTask)
+        store.loadTasks()
+        assertTrue(store.revokeStartGrant("cron_1", "mac|/repo|edit").isSuccess)
+        assertEquals(listOf("cron_1" to "mac|/repo|edit"), hub.revoked)
+        assertEquals(listOf("box|/docs|readonly"), store.state.value.task("cron_1")?.startGrant?.kinds)
+    }
 }
 
 @RunWith(AndroidJUnit4::class)
@@ -676,5 +725,26 @@ class ProactiveTextTest {
         assertFalse(TaskDraft("巡检", "看", TaskRepeat.Interval, everyMinutes = 2).valid)
         assertEquals(TaskDraft("周报", "起草周报", TaskRepeat.Daily, null, "17:00", listOf(5), DefaultInterval, true), byPersona.draft())
         assertEquals(TaskDraft("巡检", "看看服务", TaskRepeat.Interval, parseTime(patrol.at), "09:00", emptyList(), 30, true, permissionMode = "auto"), patrol.draft())
+        assertTrue(TaskDraft("巡检", "看", TaskRepeat.Cron, cron = "  0  9 * * 1-5 ").sameAs(TaskDraft("巡检", "看", TaskRepeat.Cron, cron = "0 9 * * 1-5")))
+        assertFalse(TaskDraft("巡检", "看", TaskRepeat.Cron, cron = "   ").valid)
+        assertTrue(TaskDraft("巡检", "看", TaskRepeat.Cron, cron = DefaultCron).valid)
+    }
+
+    @Test fun cronRuleAndStartGrantParsingWorkWithGroupedMachines() {
+        val cronWithText = ScheduledTask(id = "c1", repeats = ScheduledTask.CRON, cron = "0 9 * * 1-5", cronText = "每个工作日 09:00")
+        assertEquals("每个工作日 09:00 · 0 9 * * 1-5", say.rule(cronWithText, now, zone))
+        val cronExprOnly = ScheduledTask(id = "c2", repeats = ScheduledTask.CRON, cron = "0 9 * * 1-5")
+        assertEquals("Cron 0 9 * * 1-5", say.rule(cronExprOnly, now, zone))
+
+        val parsed = parseStartGrantKinds(listOf("mac|/repo/app|edit", "box|/srv/docs|readonly", "legacy"))
+        assertEquals(3, parsed.size)
+        assertFalse(parsed[0].readonly)
+        assertEquals("mac", parsed[0].machine)
+        assertEquals("/repo/app", parsed[0].cwd)
+        assertTrue(parsed[1].readonly)
+        val machines = listOf(Machine("mac~g0a1b2c3d", name = "Work Mac"))
+        assertEquals("Work Mac · /repo/app", grantPlace(parsed[0], machines))
+        assertEquals("box · /srv/docs", grantPlace(parsed[1], machines))
+        assertEquals("legacy", grantPlace(parsed[2], machines))
     }
 }

@@ -351,6 +351,13 @@ class HttpAssistantManagement private constructor(
         request("POST", listOf("api", "v1", "assistant", "tasks", taskId(id), "run"), buildJsonObject { }, runHttp).session()
     override suspend fun freshTask(id: String): ScheduledTask =
         assistant("POST", "tasks", taskId(id), "fresh", body = buildJsonObject { }).task()
+    override suspend fun previewCron(expression: String): CronPreview = JsonCodec.decodeFromJsonElement(
+        request("GET", listOf("api", "v1", "assistant", "tasks", "cron"), query = mapOf("cron" to expression))
+    )
+    override suspend fun revokeTaskStartGrant(id: String, kind: String?): ScheduledTask {
+        val body = kind?.takeIf(String::isNotBlank)?.let { buildJsonObject { put("kind", it) } }
+        return assistant("DELETE", "tasks", taskId(id), "start-grant", body = body).task()
+    }
     override suspend fun runs(): List<Run> = assistant("GET", "runs").list("runs")
     override suspend fun notes(): AssistantNotes = JsonCodec.decodeFromJsonElement(assistant())
     override suspend fun setNotes(text: String) { assistant("PUT", body = buildJsonObject { put("notes", text) }) }
@@ -403,5 +410,104 @@ class HttpAssistantManagement private constructor(
         require(days in 1..7) { "days is 1 to 7" }
         val answer = request("GET", listOf("api", "v1", "usage", "hours"), query = mapOf("days" to days.toString()))
         return JsonCodec.decodeFromJsonElement(answer.getValue("usage"))
+    }
+
+    override suspend fun taskTrust(): List<TaskTrustKind> = try {
+        request("GET", listOf("api", "v1", "task-trust")).list("kinds")
+    } catch (failure: HubFailure) {
+        if (failure.status == 404 || failure.status == 405) throw GovernanceUnsupportedException("Task trust unavailable") else throw failure
+    }
+
+    override suspend fun revokeTaskTrust(key: String) {
+        require(key.isNotBlank())
+        request("DELETE", listOf("api", "v1", "task-trust"), query = mapOf("key" to key))
+    }
+
+    override suspend fun leaders(): List<DirectionLeader> = try {
+        assistant("GET", "leaders").list("leaders")
+    } catch (failure: HubFailure) {
+        if (failure.status == 404 || failure.status == 405) throw GovernanceUnsupportedException("Leaders unavailable") else throw failure
+    }
+
+    override suspend fun updateDirectionNotes(id: String, notes: String, notesAt: String?): DirectionNotesResult {
+        require(id.isNotBlank() && '/' !in id && '\\' !in id)
+        checkScope()
+        val url = base.newBuilder().apply {
+            listOf("api", "v1", "assistant", "directions", id, "notes").forEach(::addPathSegment)
+            pinnedManager?.let { setQueryParameter(ManagerQuery, it) }
+        }.build().withRequestManager()
+        val payload = buildJsonObject {
+            put("notes", notes)
+            put("notes_at", notesAt?.let(::JsonPrimitive) ?: JsonNull)
+        }.toString().toRequestBody("application/json".toMediaType())
+        val req = Request.Builder().url(url).header("Authorization", "Bearer $token")
+            .apply { pinnedManager?.takeIf(String::isNotBlank)?.let { header(ManagerHeader, it) } }
+            .put(payload).build()
+        return http.newCall(req).awaitResponse().use { response ->
+            checkScope()
+            val text = response.body?.string().orEmpty()
+            if (response.code == 409) {
+                val obj = runCatching { JsonCodec.parseToJsonElement(text).jsonObject }.getOrNull()
+                if ((obj?.get("code") as? JsonPrimitive)?.contentOrNull == "notes_changed") {
+                    val msg = (obj["error"] as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
+                        ?: "Direction notes changed elsewhere"
+                    val curNotes = (obj["notes"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+                    val curAt = (obj["notes_at"] as? JsonPrimitive)?.contentOrNull
+                    throw DirectionNotesConflictException(msg, curNotes, curAt)
+                }
+            }
+            if (!response.isSuccessful) {
+                val parsed = runCatching { JsonCodec.parseToJsonElement(text).jsonObject }.getOrNull()
+                val msg = (parsed?.get("error") as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank)
+                    ?: "HTTP ${response.code}"
+                val code = (parsed?.get("code") as? JsonPrimitive)?.contentOrNull
+                throw HubFailure(HubError.Protocol, msg, status = response.code, code = code)
+            }
+            val obj = if (text.isBlank()) buildJsonObject { } else JsonCodec.parseToJsonElement(text).jsonObject
+            JsonCodec.decodeFromJsonElement(obj)
+        }
+    }
+
+    override suspend fun repositories(): RepositoryCatalog = try {
+        JsonCodec.decodeFromJsonElement(assistant("GET", "repositories"))
+    } catch (failure: HubFailure) {
+        if (failure.status == 404 || failure.status == 405) throw GovernanceUnsupportedException("Repositories unavailable") else throw failure
+    }
+
+    override suspend fun repositoryProviders(): List<RepositoryProvider> = try {
+        assistant("GET", "repositories", "providers").list<RepositoryProvider>("providers")
+            .ifEmpty { DefaultRepositoryProviders }
+    } catch (failure: HubFailure) {
+        if (failure.status == 404 || failure.status == 405) DefaultRepositoryProviders else throw failure
+    }
+
+    override suspend fun previewRepository(url: String, provider: String): RepositoryPreview {
+        val body = buildJsonObject {
+            put("url", url.trim())
+            put("provider", provider.trim())
+        }
+        return JsonCodec.decodeFromJsonElement(assistant("POST", "repositories", "preview", body = body))
+    }
+
+    private fun repoId(id: String): String {
+        require(id.isNotBlank() && id != "." && id != ".." && '/' !in id && '\\' !in id)
+        return id
+    }
+
+    override suspend fun createRepository(input: RepositoryInput): RepositoryBinding =
+        JsonCodec.decodeFromJsonElement(assistant("POST", "repositories", body = input.toJson()).getValue("repository"))
+
+    override suspend fun updateRepository(id: String, input: RepositoryInput): RepositoryBinding =
+        JsonCodec.decodeFromJsonElement(assistant("PUT", "repositories", repoId(id), body = input.toJson()).getValue("repository"))
+
+    override suspend fun deleteRepository(id: String): RepositoryRemoval =
+        JsonCodec.decodeFromJsonElement(assistant("DELETE", "repositories", repoId(id)))
+
+    override suspend fun restoreRepository(id: String, receipt: String): RepositoryBinding {
+        require(receipt.isNotBlank())
+        return JsonCodec.decodeFromJsonElement(
+            assistant("POST", "repositories", repoId(id), "restore", body = buildJsonObject { put("receipt", receipt) })
+                .getValue("repository"),
+        )
     }
 }

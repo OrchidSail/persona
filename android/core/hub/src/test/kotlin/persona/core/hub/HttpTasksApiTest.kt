@@ -8,6 +8,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.mockwebserver.MockResponse
 import persona.core.hub.ProtocolCompatibilityMockServer as MockWebServer
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -658,6 +659,111 @@ class HttpTasksApiTest {
             val freshReq = server.takeRequest()
             assertEquals("/api/v1/todos?compact=1", freshReq.path)
             assertEquals("\"etag-1\"", freshReq.getHeader("If-None-Match"))
+        }
+    }
+
+    @Test fun todoRepositoryBindingsStrictNonNullJsonAndOlderHubFallback() = runBlocking {
+        MockWebServer().use { server ->
+            val tasksApi = api(server)
+
+            // 404 without task_repositories_not_found falls back to null (older hub).
+            server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"not found"}"""))
+            assertNull(tasksApi.todoRepositories("todo_1"))
+            server.takeRequest()
+
+            // 404 WITH code task_repositories_not_found rethrows as HubFailure.
+            server.enqueue(MockResponse().setResponseCode(404).setBody("""{"code":"task_repositories_not_found","error":"no such todo"}"""))
+            val missing = runCatching { tasksApi.todoRepositories("todo_gone") }.exceptionOrNull() as HubFailure
+            assertEquals("task_repositories_not_found", missing.code)
+            server.takeRequest()
+
+            // 200 GET decodes full TaskRepositorySet including requested_ref, snapshot, links, and link_kinds.
+            server.enqueue(MockResponse().setBody("""{
+                "schema_version":1,
+                "manager":"work",
+                "todo_id":"todo_1",
+                "revision":3,
+                "repositories":[{
+                    "repo_id":"repo_1",
+                    "directory_alias":"app",
+                    "requested_ref":{"kind":"branch","value":"main"},
+                    "source_snapshot":{
+                        "identity":{"provider":"github","instance_url":"https://github.com","path":"acme/app","canonical_url":"https://github.com/acme/app"},
+                        "clone_url":"https://github.com/acme/app.git",
+                        "transport_origin":"https://github.com/acme/app.git",
+                        "catalog_revision":7
+                    },
+                    "links":[{"kind":"pull_request","number":"12","canonical_url":"https://github.com/acme/app/pull/12","title":"Fix bug","role":"delivery"}],
+                    "catalog_state":"present",
+                    "provider_state":"available"
+                }]
+            }"""))
+            val set = tasksApi.todoRepositories("todo_1")!!
+            assertEquals(3L, set.revision)
+            assertEquals("app", set.repositories.single().directoryAlias)
+            assertEquals("branch", set.repositories.single().requestedRef.kind)
+            assertEquals("Fix bug", set.repositories.single().links.single().title)
+            server.takeRequest()
+
+            // PUT /repositories emits strictly non-null JSON with dual CAS and exclusive url vs kind+number.
+            server.enqueue(MockResponse().setBody("""{"schema_version":1,"manager":"work","todo_id":"todo_1","revision":4,"repositories":[]}"""))
+            val updated = tasksApi.setTodoRepositories(
+                todoId = "todo_1",
+                expectedRevision = 3,
+                expectedCatalogRevision = 7,
+                repositories = listOf(
+                    persona.core.contracts.api.TaskRepositoryInput(
+                        repoId = "repo_1",
+                        directoryAlias = null,
+                        requestedRef = persona.core.contracts.api.RequestedRef(kind = "default", value = "ignored"),
+                        links = listOf(
+                            persona.core.contracts.api.RepositoryLinkInput(url = "https://github.com/acme/app/pull/12", kind = "pull_request", number = "12", role = "delivery"),
+                            persona.core.contracts.api.RepositoryLinkInput(kind = "issue", number = "99", role = "reference"),
+                        ),
+                    ),
+                ),
+            )
+            assertEquals(4L, updated.revision)
+            val putReq = server.takeRequest()
+            assertEquals("PUT", putReq.method)
+            assertEquals("/api/v1/todos/todo_1/repositories", putReq.path)
+            val putRaw = putReq.body.readUtf8()
+            assertFalse("Payload must never contain JSON null: $putRaw", putRaw.contains("null"))
+            val putObj = persona.core.contracts.JsonCodec.parseToJsonElement(putRaw) as kotlinx.serialization.json.JsonObject
+            assertEquals("3", putObj["expected_revision"].toString())
+            assertEquals("7", putObj["expected_catalog_revision"].toString())
+            val repo0 = (putObj["repositories"] as kotlinx.serialization.json.JsonArray)[0] as kotlinx.serialization.json.JsonObject
+            assertFalse(repo0.containsKey("directory_alias"))
+            val refObj = repo0["requested_ref"] as kotlinx.serialization.json.JsonObject
+            assertFalse(refObj.containsKey("value"))
+            val links = repo0["links"] as kotlinx.serialization.json.JsonArray
+            val link0 = links[0] as kotlinx.serialization.json.JsonObject
+            assertTrue(link0.containsKey("url"))
+            assertFalse(link0.containsKey("kind"))
+            assertFalse(link0.containsKey("number"))
+            val link1 = links[1] as kotlinx.serialization.json.JsonObject
+            assertFalse(link1.containsKey("url"))
+            assertEquals("\"issue\"", link1["kind"].toString())
+            assertEquals("\"99\"", link1["number"].toString())
+
+            // PUT /repositories/{repoId}/links sends expected_revision + non-null links.
+            server.enqueue(MockResponse().setBody("""{"schema_version":1,"manager":"work","todo_id":"todo_1","revision":5,"repositories":[]}"""))
+            assertEquals(5L, tasksApi.setTodoRepositoryLinks("todo_1", "repo_1", 4, listOf(
+                persona.core.contracts.api.RepositoryLinkInput(kind = "pull_request", number = "12", role = "delivery"),
+            )).revision)
+            val linksReq = server.takeRequest()
+            assertEquals("PUT", linksReq.method)
+            assertEquals("/api/v1/todos/todo_1/repositories/repo_1/links", linksReq.path)
+            assertFalse(linksReq.body.readUtf8().contains("null"))
+
+            // TodoPRStatus decodes title alongside existing status fields.
+            val pr = persona.core.contracts.JsonCodec.decodeFromString(
+                persona.core.contracts.TodoPRStatus.serializer(),
+                """{"url":"https://github.com/acme/app/pull/12","state":"open","draft":true,"conflicts":true,"title":"Add parity"}""",
+            )
+            assertEquals("Add parity", pr.title)
+            assertTrue(pr.draft)
+            assertTrue(pr.conflicts)
         }
     }
 }

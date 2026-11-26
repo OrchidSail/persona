@@ -553,6 +553,14 @@ data class ModeChange(
     @WireTime val at: String = "",
 )
 
+/** One advertised Codex speed tier (`proto.ServiceTier`, e.g. `default`, `priority`). */
+@Serializable
+data class ServiceTier(
+    val id: String = "",
+    val name: String = "",
+    val description: String? = null,
+)
+
 /** Hub hello feature advertising cross-machine subagent folding, orphan filtering, and parent_machine_id queries. */
 const val SESSIONS_CROSS_MACHINE_HIERARCHY = "sessions_cross_machine_hierarchy"
 
@@ -570,6 +578,8 @@ data class Session(
     @SerialName("agent_name") val agentName: String? = null,
     @SerialName("started_by_persona") val startedByPersona: Boolean = false,
     val effort: String? = null,
+    @SerialName("service_tier") val serviceTier: String? = null,
+    @SerialName("service_tiers") val serviceTiers: List<ServiceTier> = emptyList(),
     @SerialName("space_kind") val spaceKind: String? = null,
     @SerialName("space_index") val spaceIndex: Int? = null,
     @SerialName("slot_id") val slotId: String? = null,

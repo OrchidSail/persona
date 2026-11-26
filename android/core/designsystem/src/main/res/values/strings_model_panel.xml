@@ -26,4 +26,8 @@
     <string name="designsystem_modelpanel_use_typed">Use “%1$s”</string>
     <string name="designsystem_modelpanel_use_typed_note">Not in the list; uses this ID as typed</string>
     <string name="designsystem_modelpanel_configure">Configure models</string>
+    <string name="designsystem_modelpanel_speed">Speed</string>
+    <string name="designsystem_modelpanel_speed_standard">Standard</string>
+    <string name="designsystem_modelpanel_fast_short">Fast</string>
+    <string name="designsystem_modelpanel_fast">Fast · priority speed · uses more quota</string>
 </resources>

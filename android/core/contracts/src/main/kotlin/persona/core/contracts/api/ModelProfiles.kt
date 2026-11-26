@@ -5,7 +5,9 @@ package persona.core.contracts.api
 import kotlinx.serialization.KeepGeneratedSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import persona.core.contracts.WireSerializer
@@ -44,6 +46,25 @@ data class ModelProfileLauncherModels(
             sonnetModel == null && haikuModel == null && fableModel == null && effort == null
 }
 
+/** One ordered fallback candidate inside an Agent preset (`ModelTier.candidates`). */
+@KeepGeneratedSerializer
+@Serializable(with = ModelProfileTierCandidateSerializer::class)
+data class ModelProfileTierCandidate(
+    @SerialName("launcher") val launcher: String = "",
+    @SerialName("model") val model: String? = null,
+    @SerialName("effort") val effort: String? = null,
+    @SerialName("speed") val speed: String? = null,
+    @SerialName("permission_mode") val permissionMode: String? = null,
+) {
+    fun toJson(): JsonObject = buildJsonObject {
+        put("launcher", launcher)
+        model?.takeIf(String::isNotBlank)?.let { put("model", it) }
+        effort?.takeIf(String::isNotBlank)?.let { put("effort", it) }
+        speed?.trim()?.takeIf { it.isNotEmpty() && it != "standard" }?.let { put("speed", it) }
+        permissionMode?.takeIf(String::isNotBlank)?.let { put("permission_mode", it) }
+    }
+}
+
 @KeepGeneratedSerializer
 @Serializable(with = ModelProfileTierSerializer::class)
 data class ModelProfileTier(
@@ -53,7 +74,21 @@ data class ModelProfileTier(
     @SerialName("speed") val speed: String? = null,
     @SerialName("permission_mode") val permissionMode: String? = null,
     @SerialName("description") val description: String? = null,
+    @SerialName("candidates") val candidates: List<ModelProfileTierCandidate>? = null,
+    @SerialName("aliases") val aliases: List<String>? = null,
 ) {
+    /** Effective ordered candidate chain: explicit [candidates] when present, else the flat single candidate. */
+    fun effectiveCandidates(): List<ModelProfileTierCandidate> =
+        candidates?.takeIf { it.isNotEmpty() } ?: listOf(
+            ModelProfileTierCandidate(
+                launcher = launcher,
+                model = model,
+                effort = effort,
+                speed = speed,
+                permissionMode = permissionMode,
+            )
+        )
+
     fun toJson(): JsonObject = buildJsonObject {
         put("launcher", launcher)
         model?.takeIf(String::isNotBlank)?.let { put("model", it) }
@@ -61,8 +96,58 @@ data class ModelProfileTier(
         speed?.trim()?.takeIf { it.isNotEmpty() && it != "standard" }?.let { put("speed", it) }
         permissionMode?.takeIf(String::isNotBlank)?.let { put("permission_mode", it) }
         description?.takeIf(String::isNotBlank)?.let { put("description", it) }
+        candidates?.takeIf { it.isNotEmpty() }?.let { list ->
+            put("candidates", JsonArray(list.map(ModelProfileTierCandidate::toJson)))
+        }
+        aliases?.map(String::trim)?.filter(String::isNotEmpty)?.takeIf { it.isNotEmpty() }?.let { list ->
+            put("aliases", JsonArray(list.map(::JsonPrimitive)))
+        }
     }
 }
+
+/** 7-day dry-run comparison shown on inactive profiles (`ModelProfile.trial`). */
+@KeepGeneratedSerializer
+@Serializable(with = ModelProfileTrialSerializer::class)
+data class ModelProfileTrial(
+    @SerialName("days") val days: Int = 7,
+    @SerialName("dispatches") val dispatches: Int = 0,
+    @SerialName("would_switch") val wouldSwitch: Int = 0,
+)
+
+@KeepGeneratedSerializer
+@Serializable(with = ModelProfileCandidateHeadroomSerializer::class)
+data class ModelProfileCandidateHeadroom(
+    @SerialName("known") val known: Boolean = false,
+    @SerialName("percent") val percent: Double = 0.0,
+    @SerialName("stale") val stale: Boolean = false,
+    @SerialName("recovers_at") val recoversAt: String? = null,
+)
+
+@KeepGeneratedSerializer
+@Serializable(with = ModelProfileCandidateStatsSerializer::class)
+data class ModelProfileCandidateStats(
+    @SerialName("n") val n: Int = 0,
+    @SerialName("minutes_p50") val minutesP50: Double? = null,
+    @SerialName("first_pass") val firstPass: Double? = null,
+)
+
+@KeepGeneratedSerializer
+@Serializable(with = ModelProfileCandidateStatusSerializer::class)
+data class ModelProfileCandidateStatus(
+    @SerialName("index") val index: Int = 0,
+    @SerialName("launcher") val launcher: String = "",
+    @SerialName("model") val model: String? = null,
+    @SerialName("headroom") val headroom: ModelProfileCandidateHeadroom = ModelProfileCandidateHeadroom(),
+    @SerialName("stats") val stats: ModelProfileCandidateStats = ModelProfileCandidateStats(),
+)
+
+/** Live headroom and 14-day trial stats for a profile's candidates (`GET /api/v1/model-profiles/{id}/candidates`). */
+@KeepGeneratedSerializer
+@Serializable(with = ModelProfileCandidatesViewSerializer::class)
+data class ModelProfileCandidatesView(
+    @SerialName("days") val days: Int = 14,
+    @SerialName("tiers") val tiers: Map<String, List<ModelProfileCandidateStatus>> = emptyMap(),
+)
 
 @KeepGeneratedSerializer
 @Serializable(with = ProfileActorSerializer::class)
@@ -94,6 +179,7 @@ data class ModelProfile(
     @SerialName("updated_at") val updatedAt: String? = null,
     @SerialName("active") val active: Boolean = false,
     @SerialName("changes") val changes: List<String> = emptyList(),
+    @SerialName("trial") val trial: ModelProfileTrial? = null,
 ) {
     val displayName: String get() = name.ifBlank { id }
 }
@@ -101,9 +187,11 @@ data class ModelProfile(
 @KeepGeneratedSerializer
 @Serializable(with = ModelProfileUndoSerializer::class)
 data class ModelProfileUndo(
+    @SerialName("id") val id: String? = null,
     @SerialName("to") val to: String? = null,
     @SerialName("at") val at: String? = null,
     @SerialName("changes") val changes: List<String> = emptyList(),
+    @SerialName("redo") val redo: Boolean = false,
 )
 
 @KeepGeneratedSerializer
@@ -114,13 +202,15 @@ data class ModelProfilesView(
     @SerialName("at") val at: String? = null,
     @SerialName("by") val by: ProfileActor? = null,
     @SerialName("rollback") val rollback: ModelProfileUndo? = null,
+    @SerialName("rollbacks") val rollbacks: List<ModelProfileUndo> = emptyList(),
     @SerialName("profiles") val profiles: List<ModelProfile> = emptyList(),
     @SerialName("events") val events: List<ModelProfileEvent> = emptyList(),
 )
 
 /**
- * Payload for `PUT /api/v1/model-profiles/{id}`. Strictly matches the server's `modelProfileInput`
- * (`DisallowUnknownFields`) and never emits credentials or `config_dir`.
+ * Payload for `PUT /api/v1/model-profiles/{id}`. Matches the server's `modelProfileInput`
+ * (including `capture: true` to snapshot live purpose and launcher bindings while preserving tiers)
+ * and never emits credentials or `config_dir`.
  */
 data class ModelProfileSaveInput(
     val revision: Long,
@@ -134,7 +224,9 @@ data class ModelProfileSaveInput(
     fun toJson(): JsonObject = buildJsonObject {
         put("revision", revision)
         put("name", name)
-        description.takeIf(String::isNotEmpty)?.let { put("description", it) }
+        if (!capture || description.isNotEmpty()) {
+            put("description", description)
+        }
         purposes?.takeIf { it.isNotEmpty() }?.let { map ->
             put("purposes", buildJsonObject {
                 map.forEach { (id, binding) ->
@@ -173,6 +265,14 @@ data class ModelProfileSaveInput(
                 description = description?.trim().orEmpty(),
                 capture = true,
             )
+
+        /** Snapshot live purpose and launcher bindings into [profile] without altering its tiers. */
+        fun capture(profile: ModelProfile, revision: Long): ModelProfileSaveInput = ModelProfileSaveInput(
+            revision = revision,
+            name = profile.name,
+            description = profile.description.orEmpty(),
+            capture = true,
+        )
     }
 }
 
@@ -183,7 +283,13 @@ sealed interface ModelProfileSave {
 }
 
 object ModelProfileLauncherModelsSerializer : WireSerializer<ModelProfileLauncherModels>(ModelProfileLauncherModels.generatedSerializer())
+object ModelProfileTierCandidateSerializer : WireSerializer<ModelProfileTierCandidate>(ModelProfileTierCandidate.generatedSerializer())
 object ModelProfileTierSerializer : WireSerializer<ModelProfileTier>(ModelProfileTier.generatedSerializer())
+object ModelProfileTrialSerializer : WireSerializer<ModelProfileTrial>(ModelProfileTrial.generatedSerializer())
+object ModelProfileCandidateHeadroomSerializer : WireSerializer<ModelProfileCandidateHeadroom>(ModelProfileCandidateHeadroom.generatedSerializer())
+object ModelProfileCandidateStatsSerializer : WireSerializer<ModelProfileCandidateStats>(ModelProfileCandidateStats.generatedSerializer())
+object ModelProfileCandidateStatusSerializer : WireSerializer<ModelProfileCandidateStatus>(ModelProfileCandidateStatus.generatedSerializer())
+object ModelProfileCandidatesViewSerializer : WireSerializer<ModelProfileCandidatesView>(ModelProfileCandidatesView.generatedSerializer())
 object ProfileActorSerializer : WireSerializer<ProfileActor>(ProfileActor.generatedSerializer())
 object ModelProfileEventSerializer : WireSerializer<ModelProfileEvent>(ModelProfileEvent.generatedSerializer())
 object ModelProfileSerializer : WireSerializer<ModelProfile>(ModelProfile.generatedSerializer())

@@ -25,6 +25,8 @@ data class PanelModel(
     val custom: Boolean = false,
     /** It stands for whatever its provider runs when no model is given (a launcher's default entry). */
     val providerDefault: Boolean = false,
+    /** Supports Codex Fast (`service_tier = "priority"`). */
+    val fast: Boolean = false,
 )
 
 /** Why a provider's rows can't be picked here, in the words the UI gives each. */
@@ -214,13 +216,13 @@ object ModelPanel {
         val now = runsNow(provider, model, current)
         val effort = if (now) takes(model, current?.effort) ?: (if (state.starting) null else takes(model, override?.effort))
             else takes(model, override?.effort) ?: takes(model, current?.effort)
-        val fast = if (now) current?.fast else override?.fast
+        val fast = if (!model.fast) null else if (now) current?.fast else override?.fast
         return PanelConfig(provider.id, model.id, effort, fast).clean()
     }
 
     /** A saved copy as it applies to the model now: an effort it no longer takes is left out. A list not read yet keeps the copy. */
     fun copySetup(copy: PanelConfig, model: PanelModel, listed: Boolean): PanelConfig =
-        if (!listed) copy.clean() else PanelConfig(copy.provider, model.id, takes(model, copy.effort), copy.fast).clean()
+        if (!listed) copy.clean() else PanelConfig(copy.provider, model.id, takes(model, copy.effort), if (model.fast) copy.fast else null).clean()
 
     /** The effort a setup runs at: its own, else the model's default (the row and the slider show this). */
     fun shownEffort(setup: PanelConfig, model: PanelModel): String = setup.effort ?: model.defaultEffort.orEmpty()
@@ -249,7 +251,7 @@ object ModelPanel {
     fun rowCustomizable(row: PanelRow, state: PanelState, live: Boolean): Boolean = when {
         row.kind == PanelRow.Kind.Recent || row.kind == PanelRow.Kind.Typed -> false
         row.kind == PanelRow.Kind.Model && row.current && live -> true
-        else -> rowBlock(row.provider, state) == null && row.model.efforts.isNotEmpty()
+        else -> rowBlock(row.provider, state) == null && (row.model.efforts.isNotEmpty() || row.model.fast)
     }
 
     /** The search (every word, any case) over the model's names, folded aliases, description and provider's name. */

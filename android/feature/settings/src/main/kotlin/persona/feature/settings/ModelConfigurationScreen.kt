@@ -70,11 +70,16 @@ private fun ModelConfigurationDetails(models: ModelConfiguration?, onBack: () ->
     var confirmingApply by rememberSaveable(owner) { mutableStateOf(false) }
     var editRevision by rememberSaveable(owner) { mutableLongStateOf(0L) }
     var editSyncKey by rememberSaveable(owner) { mutableIntStateOf(0) }
+    var candidatesView by remember(owner) { mutableStateOf<persona.core.contracts.api.ModelProfileCandidatesView?>(null) }
     // "New model provider" opens over this page (`debug.newProvider` opens it for captures).
     var adding by remember { mutableStateOf<String?>(if (providers != null) NewProviderPreview.take() else null) }
     LaunchedEffect(model, profilesModel) {
         val _ = launch { model.load() }
         val _ = launch { val _ = profilesModel.load() }
+    }
+    LaunchedEffect(selectedProfileId, editingProfile, profilesModel) {
+        val pid = selectedProfileId
+        candidatesView = if (pid != null && editingProfile) profilesModel.loadCandidates(pid) else null
     }
     if (adding != null && providers != null) {
         NewProviderPage(providers, onBack = { adding = null }, onSaved = { adding = null; val _ = scope.launch { model.load() } },
@@ -93,9 +98,11 @@ private fun ModelConfigurationDetails(models: ModelConfiguration?, onBack: () ->
                 revision = editRevision,
                 syncKey = editSyncKey,
                 catalog = state.catalog,
+                candidatesView = candidatesView,
                 busyAction = profilesState.busyAction,
                 error = profilesState.actionError ?: profilesState.error,
                 conflict = profilesState.conflict,
+                conflictIsCapture = profilesState.conflictIsCapture,
                 onSave = { input ->
                     val _ = scope.launch {
                         if (profilesModel.save(selectedProfile.id, input)) {

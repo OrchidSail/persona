@@ -23,7 +23,8 @@ class ModelProfilesScreenTest {
     @get:Rule val rule = createAndroidComposeRule<ComponentActivity>()
 
     private val providers = listOf(
-        ModelProvider("launcher.claude", "Claude Code", kind = "launcher"),
+        ModelProvider("launcher.claude", "Claude Code", kind = "launcher", agent = "claude"),
+        ModelProvider("launcher.codex", "Codex", kind = "launcher", agent = "codex"),
         ModelProvider("api.fast", "Fast API", kind = "api", api = "responses"),
     )
     private val purposes = listOf(
@@ -31,7 +32,7 @@ class ModelProfilesScreenTest {
         ModelPurpose("agent.new", "New agent", "Agents", effective = ModelBinding(provider = "launcher.claude", model = "sonnet")),
     )
 
-    @Test fun profilesSectionSwitchesEditsAndRollsBack() {
+    @Test fun profilesSectionSwitchesEditsCapturesAndRollsBack() {
         var currentView = ModelProfilesView(
             revision = 2,
             active = "performance",
@@ -42,7 +43,19 @@ class ModelProfilesScreenTest {
                     name = "Performance",
                     description = "Strong models for complex tasks",
                     purposes = mapOf("assistant" to ModelBinding(provider = "launcher.claude", model = "opus", effort = "high")),
-                    tiers = mapOf("strong" to ModelProfileTier(launcher = "claude", model = "opus", effort = "high", description = "Complex work")),
+                    tiers = mapOf(
+                        "core" to ModelProfileTier(
+                            launcher = "claude",
+                            model = "opus",
+                            effort = "high",
+                            description = "Complex work",
+                            aliases = listOf("strong"),
+                            candidates = listOf(
+                                ModelProfileTierCandidate(launcher = "claude", model = "opus", effort = "high"),
+                                ModelProfileTierCandidate(launcher = "codex", model = "gpt-5", effort = "medium"),
+                            ),
+                        ),
+                    ),
                     active = true,
                     changes = emptyList(),
                 ),
@@ -51,9 +64,31 @@ class ModelProfilesScreenTest {
                     name = "Economy",
                     description = "Lower cost models",
                     purposes = mapOf("assistant" to ModelBinding(provider = "launcher.claude", model = "sonnet", effort = "medium")),
-                    tiers = mapOf("standard" to ModelProfileTier(launcher = "claude", model = "sonnet", description = "Routine work")),
+                    tiers = mapOf(
+                        "dev" to ModelProfileTier(
+                            launcher = "claude",
+                            model = "sonnet",
+                            description = "Routine work",
+                            aliases = listOf("standard"),
+                        ),
+                    ),
                     active = false,
                     changes = listOf("assistant"),
+                    trial = ModelProfileTrial(days = 7, dispatches = 15, wouldSwitch = 6),
+                ),
+            ),
+        )
+        val candidatesResponse = ModelProfileCandidatesView(
+            days = 14,
+            tiers = mapOf(
+                "dev" to listOf(
+                    ModelProfileCandidateStatus(
+                        index = 0,
+                        launcher = "claude",
+                        model = "sonnet",
+                        headroom = ModelProfileCandidateHeadroom(known = true, percent = 84.0, stale = false),
+                        stats = ModelProfileCandidateStats(n = 10, minutesP50 = 3.5, firstPass = 0.8),
+                    ),
                 ),
             ),
         )
@@ -71,6 +106,7 @@ class ModelProfilesScreenTest {
             override suspend fun save(purpose: ModelPurpose, draft: ModelConfigurationDraft) = ModelPurposeSave.Conflict
             override suspend fun providerModels(provider: String, refresh: Boolean, machine: String?): ProviderModels? = null
             override suspend fun profiles(): ModelProfilesView = currentView
+            override suspend fun profileCandidates(id: String): ModelProfileCandidatesView = candidatesResponse
             override suspend fun applyProfile(id: String): ModelProfilesView {
                 applied += id
                 currentView = currentView.copy(
@@ -88,7 +124,13 @@ class ModelProfilesScreenTest {
                 savedInputs += id to input
                 currentView = currentView.copy(
                     revision = currentView.revision + 1,
-                    profiles = currentView.profiles.map { if (it.id == id) it.copy(name = input.name, description = input.description) else it },
+                    profiles = currentView.profiles.map {
+                        if (it.id == id) it.copy(
+                            name = input.name,
+                            description = input.description,
+                            tiers = input.tiers ?: it.tiers,
+                        ) else it
+                    },
                 )
                 return ModelProfileSave.Saved(currentView)
             }
@@ -103,27 +145,38 @@ class ModelProfilesScreenTest {
         }
         rule.waitForIdle()
 
-        // Profiles and Rollback are rendered
+        // Profiles, inactive trial summary, and Rollback are rendered
         rule.onNodeWithTag("model-profile-row-performance").assertIsDisplayed()
         rule.onNodeWithTag("model-profile-row-economy").assertIsDisplayed()
+        rule.onNodeWithText("Last 7 days: 15 dispatched, 6 would have switched", substring = true).assertIsDisplayed()
         rule.onNodeWithTag("model-profile-rollback").assertIsDisplayed()
 
-        // Open Economy profile detail, inspect, then edit and save
+        // Open Economy profile detail: check trial card, aliases, capture button, then capture from current
         rule.onNodeWithTag("model-profile-row-economy").performClick()
         rule.waitForIdle()
-        rule.onNodeWithText("standard").assertIsDisplayed()
+        rule.onNodeWithTag("model-profile-trial-card").assertIsDisplayed()
+        rule.onNodeWithText("Aliases: standard", substring = true).assertIsDisplayed()
+        rule.onNodeWithTag("model-profile-capture-button").performClick()
+        rule.waitForIdle()
+        assertEquals(1, savedInputs.size)
+        assertTrue(savedInputs.last().second.capture)
+        assertNull("capture must omit tiers so server preserves them", savedInputs.last().second.tiers)
+
+        // Open editor: candidate headroom/stats & aliases visible; add candidate and save
         rule.onNodeWithTag("model-profile-edit-button").performClick()
         rule.waitForIdle()
-
-        rule.onNode(hasSetTextAction() and hasText("Economy")).performTextReplacement("Economy Plus")
+        rule.onNodeWithTag("cand-status-tier-0-dev-cand-0-0").assertIsDisplayed()
+        rule.onNodeWithText("Headroom 84%", substring = true).assertIsDisplayed()
+        rule.onNodeWithTag("tier-aliases-tier-0-dev").assertIsDisplayed()
+        rule.onNodeWithTag("tier-add-candidate-tier-0-dev").performClick()
         rule.waitForIdle()
         rule.onNodeWithTag("model-profile-save-button").performClick()
         rule.waitForIdle()
 
-        assertEquals(1, savedInputs.size)
-        assertEquals("economy", savedInputs.single().first)
-        assertEquals("Economy Plus", savedInputs.single().second.name)
-        assertEquals(2L, savedInputs.single().second.revision)
+        assertEquals(2, savedInputs.size)
+        val savedDev = savedInputs.last().second.tiers!!.getValue("dev")
+        assertEquals(2, savedDev.candidates?.size)
+        assertEquals(listOf("standard"), savedDev.aliases)
 
         // Apply Economy Plus profile from detail page (drift exists -> confirm -> apply directly)
         rule.onNodeWithTag("model-profile-apply-button").performClick()
@@ -135,7 +188,7 @@ class ModelProfilesScreenTest {
         rule.onNodeWithTag("model-profile-apply-direct").performClick()
         rule.waitForIdle()
         assertEquals(listOf("economy"), applied)
-        assertTrue("catalog should refresh after save/apply", catalogReads >= 3)
+        assertTrue("catalog should refresh after save/apply", catalogReads >= 4)
 
         // Trigger rollback from main page
         rule.onAllNodesWithText(rule.activity.getString(R.string.settings_model_profiles_rollback)).onLast().assertIsDisplayed().performClick()

@@ -24,10 +24,12 @@ import persona.core.domain.models.AgentModelPanel
 import persona.core.domain.models.ModelList
 import persona.core.domain.sort.canChangeEffortOnly
 import persona.core.domain.sort.canChangeModes
+import persona.core.domain.sort.canChangeServiceTier
 import persona.core.domain.sort.canSend
 import persona.core.domain.sort.canSwitchListedModes
 import persona.core.domain.sort.canTerminal
 import persona.core.domain.sort.canTypeClaudeCommands
+import persona.core.domain.sort.hasFastServiceTier
 import persona.core.domain.sort.hasSource
 import persona.core.domain.sort.listedModes
 
@@ -353,6 +355,9 @@ internal fun chatModeHint(session: Session?, resources: Resources, includeModes:
     session?.effort?.takeIf { includeModes && it != "high" }?.let {
         resources.getString(R.string.chat_modes_effort_hint, SessionModes.effortLabel(it, resources))
     },
+    session?.takeIf { includeModes && it.serviceTier == "priority" }?.let {
+        resources.getString(persona.core.designsystem.R.string.designsystem_modelpanel_fast_short)
+    },
     session?.takeIf { includeModes && Ultracode.on(it) }?.let { Ultracode.NAME },
     // a restart into Allow Everything waits for the turn: said here, the mode above stays the one it runs in (#6513)
     session?.takeIf { includeModes }?.let { SessionModes.pendingNote(it, resources) },
@@ -384,6 +389,7 @@ internal fun ChatModeBar(
     onOpenHandled: () -> Unit = {},
     /** The computer's launchers and their models (the hub's `launchers/{name}/models`); null: no model list is offered. */
     creation: (() -> AgentCreationService?)? = null,
+    onFastChanged: () -> Unit = {},
 ) {
     var open by remember { mutableStateOf(false) }
     LaunchedEffect(openRequested) { if (openRequested) { open = true; onOpenHandled() } }
@@ -394,7 +400,9 @@ internal fun ChatModeBar(
     val listsModels = session != null && creation != null && SessionModes.listsModels(session)
     // The two modes a provider lists (#8261): a switch of their own, beside its efforts and models.
     val listedModes = session?.canSwitchListedModes == true
-    val editable = session != null && state.available && online && (session.canChangeModes || effortOnly || listsModels || listedModes)
+    val canFast = session?.canChangeServiceTier == true
+    val editable = session != null && state.available && online && (session.canChangeModes || effortOnly || listsModels || listedModes || canFast)
+    var fastBusy by remember(session?.key) { mutableStateOf(false) }
     // The launcher's own models, read again each time the sheet opens, as Glass's pill reads them for its panel.
     val scope = rememberCoroutineScope()
     val lists = remember(session?.key) { ModelLists(scope) { operationFeedback(it).text.resolve(resources) } }
@@ -424,7 +432,7 @@ internal fun ChatModeBar(
     }
     if (open) JSheet(onDismiss = { open = false }, title = stringResource(R.string.chat_modes_title), scrollable = true) {
         Column(verticalArrangement = Arrangement.spacedBy(Tokens.Space.s)) {
-            if (!editable) Text(stringResource(if (session?.canChangeModes == false && !effortOnly && !listsModels && !listedModes) R.string.chat_modes_locked else R.string.chat_modes_offline),
+            if (!editable) Text(stringResource(if (session?.canChangeModes == false && !effortOnly && !listsModels && !listedModes && !canFast) R.string.chat_modes_locked else R.string.chat_modes_offline),
                 style = PersonaTheme.type.caption, color = PersonaTheme.palette.ink2)
             if (session != null) {
                 // Claude Code's permission modes, for an agent that takes them: not a Paseo provider whose model is all
@@ -466,6 +474,27 @@ internal fun ChatModeBar(
                         titleAccessory = if (effortOnly && option.id == Ultracode.CODEX_ULTRA) {
                             { JIcon(WorkflowIcon, null, size = Tokens.Space.m, tint = PersonaTheme.palette.ai) }
                         } else null)
+                }
+                // Codex Fast speed toggle (`service_tier = "priority"` / `"default"`): sent alone, never optimistically flipped.
+                if (session.hasFastServiceTier) {
+                    JSwitchRow(
+                        title = stringResource(persona.core.designsystem.R.string.designsystem_modelpanel_fast_short),
+                        checked = session.serviceTier == "priority",
+                        onCheckedChange = { on ->
+                            if (!fastBusy) {
+                                fastBusy = true
+                                state.run(session, ChatAction.Modes(serviceTier = if (on) "priority" else "default")) { ok ->
+                                    fastBusy = false
+                                    if (ok) onFastChanged()
+                                }
+                            }
+                        },
+                        modifier = Modifier.testTag("chat-modes-fast-switch"),
+                        subtitle = stringResource(persona.core.designsystem.R.string.designsystem_modelpanel_fast),
+                        leadingIcon = FastModeIcon,
+                        enabled = editable && !fastBusy,
+                        subtitleLines = Int.MAX_VALUE,
+                    )
                 }
                 // Applies at once, its own request (never with the effort); the sheet stays open to show what the node says.
                 if (ultracodeOffered) {

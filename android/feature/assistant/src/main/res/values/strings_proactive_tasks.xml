@@ -70,4 +70,22 @@
     <string name="assistant_proactive_inbox_every_note">Every run adds a row to your Inbox, so you can follow up. Tapping it opens that chat.</string>
     <string name="assistant_proactive_inbox_worthy_mark">Inbox: if worth a look</string>
     <string name="assistant_proactive_inbox_every_mark">Inbox: every time</string>
+    <string name="assistant_proactive_repeat_cron">Cron</string>
+    <string name="assistant_proactive_cron_label">Cron expression</string>
+    <string name="assistant_proactive_cron_rule">Cron %1$s</string>
+    <string name="assistant_proactive_cron_rule_text">%1$s · %2$s</string>
+    <string name="assistant_proactive_cron_empty">Enter a cron expression, like 0 9 * * 1-5</string>
+    <string name="assistant_proactive_cron_checking">Checking…</string>
+    <string name="assistant_proactive_cron_next">Next runs (%1$s)</string>
+    <string name="assistant_proactive_cron_hint">Minute, hour, day of month, month, day of week, in %1$s. When both day fields are set, a day matching either runs.</string>
+    <string name="assistant_proactive_cron_hint_named">Minute, hour, day of month, month, day of week, in %1$s time. When both day fields are set, a day matching either runs.</string>
+    <string name="assistant_proactive_cron_hint_zone">your time zone</string>
+    <string name="assistant_proactive_cron_example_workhours">Work hours, every 30 min</string>
+    <string name="assistant_proactive_cron_example_weekdays">Weekdays at 9:00</string>
+    <string name="assistant_proactive_cron_example_monthly">1st of the month at 10:00</string>
+    <string name="assistant_proactive_start_grant_title">Starts without asking</string>
+    <string name="assistant_proactive_start_grant_readonly">Read-only</string>
+    <string name="assistant_proactive_start_grant_edit">Can edit files</string>
+    <string name="assistant_proactive_start_grant_remove">Remove</string>
+    <string name="assistant_proactive_start_grant_note">Tasks of these kinds that this scheduled task hands out start without your OK, unless that run read mail, Inbox or web pages. Changing its instructions or where it runs clears this list.</string>
 </resources>

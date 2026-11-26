@@ -54,7 +54,7 @@
     <string name="settings_model_profiles_add_tier">添加预设</string>
     <string name="settings_model_profiles_remove">移除</string>
     <string name="settings_model_profiles_tier_name">预设名称</string>
-    <string name="settings_model_profiles_tier_name_placeholder">如 strong、standard、fast</string>
+    <string name="settings_model_profiles_tier_name_placeholder">例如：dev、core、deploy</string>
     <string name="settings_model_profiles_tier_launcher">启动器</string>
     <string name="settings_model_profiles_tier_launcher_placeholder">选择启动器</string>
     <string name="settings_model_profiles_tier_speed">启动速度</string>
@@ -99,4 +99,23 @@
     <string name="settings_model_profiles_field_haiku_model">Haiku 模型</string>
     <string name="settings_model_profiles_field_fable_model">Fable 模型</string>
     <string name="settings_model_profiles_field_effort">思考档位</string>
+    <string name="settings_model_profiles_tier_aliases_inline">别名：%1$s</string>
+    <string name="settings_model_profiles_tier_candidates_count">候选顺序（%1$d/%2$d）</string>
+    <string name="settings_model_profiles_add_candidate">添加候选</string>
+    <string name="settings_model_profiles_tier_candidate_index">候选 #%1$d</string>
+    <string name="settings_model_profiles_tier_candidate_where">%1$s 第 %2$d 项</string>
+    <string name="settings_model_profiles_candidate_move_up">上移</string>
+    <string name="settings_model_profiles_candidate_move_down">下移</string>
+    <string name="settings_model_profiles_candidate_headroom">余量 %1$d%%</string>
+    <string name="settings_model_profiles_candidate_headroom_unknown">余量未知</string>
+    <string name="settings_model_profiles_candidate_stale">已过期</string>
+    <string name="settings_model_profiles_candidate_stats">近 %1$d 天：用时 p50 %2$s 分 · 一次过 %3$d%% · n=%4$d</string>
+    <string name="settings_model_profiles_candidate_no_data">暂无数据</string>
+    <string name="settings_model_profiles_trial_summary">近 %1$d 天派活 %2$d 件，%3$d 件会换渠道</string>
+    <string name="settings_model_profiles_trial_definition">统计口径：同一次派活里，按此未启用档位试算选出的启动器或模型与实际派出的不同。</string>
+    <string name="settings_model_profiles_err_tier_candidates_empty">预设「%1$s」至少需要 1 个候选。</string>
+    <string name="settings_model_profiles_err_tier_candidates_limit">预设「%1$s」最多允许 %2$d 个候选。</string>
+    <string name="settings_model_profiles_err_tier_candidate_launcher">预设「%1$s」第 %2$d 个候选必须选择启动器。</string>
+    <string name="settings_model_profiles_err_tier_candidate_model">预设「%1$s」第 %2$d 个候选的模型 ID「%3$s」格式无效。</string>
+    <string name="settings_model_profiles_err_tier_candidate_speed">预设「%1$s」第 %2$d 个候选不支持速度「%3$s」。</string>
 </resources>

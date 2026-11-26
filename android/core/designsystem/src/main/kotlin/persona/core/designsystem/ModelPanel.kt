@@ -83,9 +83,12 @@ fun JModelPanel(
     onPick: (PanelConfig) -> Unit,
     onDismiss: () -> Unit,
     picking: Boolean = false,
+    fastBusy: Boolean = false,
     header: (@Composable () -> Unit)? = null,
     /** An effort set on the model that runs, applied at once (the page stays open); null: its effort goes with a pick. */
     onApplyCurrent: ((String) -> Unit)? = null,
+    /** Codex Fast (`service_tier`) toggled on the current model (never optimistically mutated on live sessions). */
+    onApplyCurrentFast: ((Boolean) -> Unit)? = null,
     currentExtra: (@Composable () -> Unit)? = null,
     onReload: ((String) -> Unit)? = null,
     onConfigure: (() -> Unit)? = null,
@@ -103,8 +106,20 @@ fun JModelPanel(
     JSheet(onDismiss = onDismiss, showDragHandle = true, contentPadding = Tokens.Space.flush) {
         val open = customizing?.let { key -> rows.firstOrNull { it.key == key } }
         if (open != null) {
-            SetupPage(open, state, prefs, onPrefs, words, live = onApplyCurrent != null && open.current, onApplyCurrent = onApplyCurrent,
-                extra = if (open.current) currentExtra else null, onBack = { customizing = null })
+            SetupPage(
+                row = open,
+                state = state,
+                prefs = prefs,
+                onPrefs = onPrefs,
+                words = words,
+                liveEffort = onApplyCurrent != null && open.current,
+                liveFast = onApplyCurrentFast != null && open.current,
+                fastBusy = fastBusy,
+                onApplyCurrent = onApplyCurrent,
+                onApplyCurrentFast = onApplyCurrentFast,
+                extra = if (open.current) currentExtra else null,
+                onBack = { customizing = null },
+            )
             return@JSheet
         }
         header?.invoke()
@@ -127,7 +142,7 @@ fun JModelPanel(
             Rail(providers, view, query.isNotBlank(), onView = { view = it; query = "" })
             Box(Modifier.width(Tokens.Size.line).fillMaxHeight().background(PersonaTheme.palette.line))
             ModelList(sections, view, query, state, prefs, onPrefs, words, picking, onPick,
-                onCustomize = { customizing = it.key }, live = onApplyCurrent != null, onReload = onReload,
+                onCustomize = { customizing = it.key }, live = onApplyCurrent != null || onApplyCurrentFast != null, onReload = onReload,
                 modifier = Modifier.weight(1f), catalog = if (refreshFailure != null) cached?.copy(failure = null) else catalog,
                 onRetryCatalog = onRetryCatalog)
         }
@@ -271,7 +286,8 @@ private fun ModelRow(
     val off = block != null || picking
     val name = if (row.kind == PanelRow.Kind.Typed) stringResource(R.string.designsystem_modelpanel_use_typed, row.model.id) else row.model.name
     val effort = row.model.efforts.takeIf { it.isNotEmpty() }?.let { ModelPanel.shownEffort(row.setup, row.model) }?.takeIf(String::isNotEmpty)
-    val setupWords = listOfNotNull(words.engine(row.provider.engine), effort?.let(words.effort)).joinToString(" · ")
+    val fastLabel = stringResource(R.string.designsystem_modelpanel_fast_short).takeIf { row.setup.fast == true }
+    val setupWords = listOfNotNull(words.engine(row.provider.engine), effort?.let(words.effort), fastLabel).joinToString(" · ")
     Row(Modifier.fillMaxWidth().padding(horizontal = Tokens.Space.xs).clip(RoundedCornerShape(Tokens.Radius.control))
         .then(if (row.current) Modifier.background(palette.surfaceStrong) else Modifier)
         .clickable(enabled = !off, role = Role.Button, onClick = onPick)
@@ -289,6 +305,7 @@ private fun ModelRow(
             modifier = Modifier.semantics { contentDescription = setupWords }) {
             words.mark(row.provider.engine)?.let { JAgentMark(it, size = Tokens.Size.markXS) }
             effort?.let { Text(words.effort(it), style = PersonaTheme.type.micro, color = palette.ink3, maxLines = 1, softWrap = false) }
+            if (row.setup.fast == true) JIcon(PhIcons.Lightning, null, size = Tokens.Size.markXS, tint = palette.ink2, selected = true)
         }
         if (row.kind != PanelRow.Kind.Typed) JIconButton(PhIcons.Star,
             stringResource(if (starred) R.string.designsystem_modelpanel_remove_favorite else R.string.designsystem_modelpanel_save_favorite),
@@ -308,13 +325,24 @@ private const val DIMMED = 0.5f
  */
 @Composable
 private fun SetupPage(
-    row: PanelRow, state: PanelState, prefs: PanelPrefs, onPrefs: (PanelPrefs) -> Unit, words: ModelPanelWords, live: Boolean,
-    onApplyCurrent: ((String) -> Unit)?, extra: (@Composable () -> Unit)?, onBack: () -> Unit,
+    row: PanelRow,
+    state: PanelState,
+    prefs: PanelPrefs,
+    onPrefs: (PanelPrefs) -> Unit,
+    words: ModelPanelWords,
+    liveEffort: Boolean,
+    liveFast: Boolean,
+    fastBusy: Boolean,
+    onApplyCurrent: ((String) -> Unit)?,
+    onApplyCurrentFast: ((Boolean) -> Unit)?,
+    extra: (@Composable () -> Unit)?,
+    onBack: () -> Unit,
 ) {
     val palette = PersonaTheme.palette
     val model: PanelModel = row.model
     val override = prefs.overrides[PanelPrefs.overrideKey(row.provider.id, model.id)]
     val shown = ModelPanel.shownEffort(row.setup, model)
+    val live = liveEffort || liveFast
     Column(Modifier.padding(horizontal = pagePadding).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(Tokens.Space.m)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             JIconButton(PhIcons.CaretLeft, stringResource(R.string.designsystem_back), onBack)
@@ -334,7 +362,7 @@ private fun SetupPage(
                 JSlider(index.toFloat(), { value ->
                     val effort = model.efforts[value.toInt().coerceIn(0, model.efforts.lastIndex)]
                     if (effort == shown) return@JSlider
-                    if (live) onApplyCurrent?.invoke(effort)
+                    if (liveEffort) onApplyCurrent?.invoke(effort)
                     else onPrefs(prefs.setOverride(row.provider.id, model.id, PanelOverride(effort = effort)))
                 }, valueRange = 0f..model.efforts.lastIndex.toFloat(), step = 1f,
                     contentDescription = stringResource(R.string.designsystem_modelpanel_effort))
@@ -343,6 +371,24 @@ private fun SetupPage(
                     Text(stringResource(R.string.designsystem_modelpanel_smarter), style = PersonaTheme.type.micro, color = palette.ink3)
                 }
             }
+        }
+        if (model.fast) {
+            JSwitchRow(
+                title = stringResource(R.string.designsystem_modelpanel_fast_short),
+                checked = row.setup.fast == true,
+                onCheckedChange = { enabled ->
+                    if (liveFast) {
+                        onApplyCurrentFast?.invoke(enabled)
+                    } else {
+                        onPrefs(prefs.setOverride(row.provider.id, model.id, PanelOverride(fast = enabled)))
+                    }
+                },
+                modifier = Modifier.testTag("model-panel-fast-switch"),
+                subtitle = stringResource(R.string.designsystem_modelpanel_fast),
+                leadingIcon = PhIcons.Lightning,
+                enabled = !fastBusy && (!live || onApplyCurrentFast != null),
+                subtitleLines = Int.MAX_VALUE,
+            )
         }
         extra?.invoke()
         JDivider()

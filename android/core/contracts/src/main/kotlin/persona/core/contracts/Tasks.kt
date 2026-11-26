@@ -336,6 +336,7 @@ data class TodoPRStatus(
     val checks: String = "",
     val conflicts: Boolean = false,
     @WireTime @SerialName("checked_at") val checkedAt: String? = null,
+    val title: String? = null,
 )
 
 /**

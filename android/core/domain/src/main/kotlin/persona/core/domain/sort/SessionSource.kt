@@ -61,6 +61,10 @@ val Session.canSwitchListedModes: Boolean get() = isLive && canSend && listedMod
  * `capabilities.modes` (such as Antigravity) changes both and is not effort-only.
  */
 val Session.canChangeEffortOnly: Boolean get() = isLive && !isClaude && !assistant && !canChangeModes && canSend && efforts.isNotEmpty()
+/** Live session advertising Codex Fast (`service_tiers` contains `"priority"`). */
+val Session.hasFastServiceTier: Boolean get() = serviceTiers.any { it.id == "priority" }
+/** Live Codex session (Agent or Assistant) whose speed tier (`service_tier`) can be toggled now. */
+val Session.canChangeServiceTier: Boolean get() = isLive && canSend && hasFastServiceTier
 /** /model and /clear are typed into Claude's pane: Claude in a terminal engine, not Persona's conversations. */
 val Session.canTypeClaudeCommands: Boolean get() = canChangeModes && !assistant && !paneId.isNullOrBlank() && canTerminal
 /**

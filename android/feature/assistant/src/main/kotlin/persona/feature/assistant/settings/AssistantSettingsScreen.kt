@@ -41,7 +41,10 @@ object AssistantSettingsPreview {
     @Volatile var open: String? = null
 }
 
-private enum class SettingsPart { Home, Notes, Memory, MemoryFile, Places, PlaceEditor, Proactive, Skills, Prompts }
+private enum class SettingsPart {
+    Home, Notes, Memory, MemoryFile, Places, PlaceEditor, Proactive, Skills, Prompts,
+    TaskTrust, DirectionNotes, DirectionNotesEditor, Repositories, RepositoryEditor,
+}
 private enum class SettingsSheet { Machine, Zone }
 
 /**
@@ -109,6 +112,8 @@ private fun AssistantSettingsDetails(
     }) }
     var memoryName by rememberSaveable { mutableStateOf<String?>(null) }
     var placeId by rememberSaveable { mutableStateOf<String?>(null) }
+    var leaderId by rememberSaveable { mutableStateOf<String?>(null) }
+    var repoId by rememberSaveable { mutableStateOf<String?>(null) }
     var sheet by remember { mutableStateOf(when (preview) {
         "machine" -> SettingsSheet.Machine
         "timezone" -> SettingsSheet.Zone
@@ -117,6 +122,9 @@ private fun AssistantSettingsDetails(
     LaunchedEffect(controller) {
         controller.loadMemory()
         controller.loadPlaces()
+        controller.loadTaskTrust()
+        controller.loadLeaders()
+        controller.loadRepositories()
     }
     androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
         scope.launch { controller.load() }
@@ -149,6 +157,8 @@ private fun AssistantSettingsDetails(
             SettingsPart.Home -> onBack()
             SettingsPart.MemoryFile -> part = SettingsPart.Memory
             SettingsPart.PlaceEditor -> part = SettingsPart.Places
+            SettingsPart.DirectionNotesEditor -> { controller.clearDirectionConflict(); part = SettingsPart.DirectionNotes }
+            SettingsPart.RepositoryEditor -> part = SettingsPart.Repositories
             else -> part = SettingsPart.Home
         }
     }
@@ -161,6 +171,9 @@ private fun AssistantSettingsDetails(
             controller.load()
             controller.loadMemory()
             controller.loadPlaces()
+            controller.loadTaskTrust()
+            controller.loadLeaders()
+            controller.loadRepositories()
         }
     }
     var standingCount by remember { mutableIntStateOf(0) }
@@ -174,6 +187,26 @@ private fun AssistantSettingsDetails(
             0
         }
     }
+    val governanceActions = GovernanceActions(
+        onOpenTaskTrust = { scope.launch { controller.loadTaskTrust() }; part = SettingsPart.TaskTrust },
+        onOpenDirectionNotes = { scope.launch { controller.loadLeaders() }; part = SettingsPart.DirectionNotes },
+        onOpenRepositories = { scope.launch { controller.loadRepositories() }; part = SettingsPart.Repositories },
+        onReadonlyMode = { mode -> scope.launch { val _ = controller.setReadonlyMode(mode) } },
+        onStartRequestedTasks = { on -> scope.launch { val _ = controller.setStartRequestedTasks(on) } },
+        onDeliveryGate = { gate -> scope.launch { val _ = controller.setDeliveryGate(gate) } },
+        onWorkspacePreference = { pref -> scope.launch { val _ = controller.setTaskWorkspacePreference(pref) } },
+        onAutoSupervisionMessages = { on -> scope.launch { val _ = controller.setAutoSupervisionMessages(on) } },
+        onTaskLessons = { on -> scope.launch { val _ = controller.setTaskLessons(on, expectedOwner = owner) } },
+        onAgentTasks = { on -> scope.launch { val _ = controller.setAgentTasks(on) } },
+        onFoldRoutineRelayReplies = { on -> scope.launch { val _ = controller.setFoldRoutineRelayReplies(on) } },
+        onClaudeInteractive = { on -> scope.launch { val _ = controller.setClaudeInteractive(on) } },
+        onInboxSignals = { on -> scope.launch { val _ = controller.setInboxSignals(on) } },
+        onInboxTodoForward = { on -> scope.launch { val _ = controller.setInboxTodoForward(on) } },
+        onAgentAutoNaming = { en, max, interval -> scope.launch { val _ = controller.setAgentAutoNaming(en, max, interval) } },
+        onCacheKeepalive = { en, mins, max -> scope.launch { val _ = controller.setCacheKeepalive(en, mins, max) } },
+        onIdleCloseHours = { hrs -> scope.launch { val _ = controller.setIdleCloseHours(hrs) } },
+        onArchiveClosedDays = { days -> scope.launch { val _ = controller.setArchiveClosedDays(days) } },
+    )
     when (part) {
         SettingsPart.Home -> SettingsHome(shown, machine, machineName, controller.phoneZone, onBack, ::refresh,
             open = { part = it }, sheet = { sheet = it }, follow = { scope.launch { controller.setFollowPhone(it) } },
@@ -191,7 +224,8 @@ private fun AssistantSettingsDetails(
             supervisorModel = onModelConfiguration?.let { open -> { open(BackgroundSupervisor.PURPOSE, owner) } },
             onStandingAuthorizations = onStandingAuthorizations, standingCount = standingCount,
             owner = owner, permission = { scope.launch { controller.setDefaultPermission(it) } },
-            showSavedPrompts = savedPrompts != null, managers = managers, preview = preview)
+            showSavedPrompts = savedPrompts != null, managers = managers, preview = preview,
+            governance = governanceActions)
         SettingsPart.Prompts -> {
             if (savedPrompts != null) key(savedPrompts) { SavedPromptsPage(savedPrompts) { part = SettingsPart.Home } }
             else JListPage(title = stringResource(R.string.assistant_saved_prompts_title), onBack = { part = SettingsPart.Home }) {
@@ -224,6 +258,42 @@ private fun AssistantSettingsDetails(
         // Keeps its own sub-pages and back; back on its first page returns here (the handler above).
         SettingsPart.Proactive -> AssistantProactiveScreen(onBack = { part = SettingsPart.Home }, onOpenConversation = onOpenConversation,
             onModelConfiguration = onModelConfiguration?.let { open -> { purpose -> open(purpose, owner) } }, management = management, machines = machines)
+        SettingsPart.TaskTrust -> TaskTrustPart(
+            state = shown,
+            machines = machines,
+            onBack = { part = SettingsPart.Home },
+            onRefresh = { scope.launch { controller.loadTaskTrust() } },
+            onRevoke = { kind -> controller.revokeTaskTrust(kind) },
+        )
+        SettingsPart.DirectionNotes -> DirectionNotesListPart(
+            state = shown,
+            onBack = { part = SettingsPart.Home },
+            onRefresh = { scope.launch { controller.loadLeaders() } },
+            onOpen = { id -> leaderId = id; controller.clearDirectionConflict(); part = SettingsPart.DirectionNotesEditor },
+        )
+        SettingsPart.DirectionNotesEditor -> DirectionNotesEditorPart(
+            state = shown,
+            leaderId = leaderId,
+            onBack = { part = SettingsPart.DirectionNotes },
+            onSave = { id, text, notesAt, overwrite -> controller.saveDirectionNotes(id, text, notesAt, overwrite) },
+            onClearConflict = controller::clearDirectionConflict,
+        )
+        SettingsPart.Repositories -> RepositoriesListPart(
+            state = shown,
+            onBack = { part = SettingsPart.Home },
+            onRefresh = { scope.launch { controller.loadRepositories() } },
+            onAdd = { repoId = null; part = SettingsPart.RepositoryEditor },
+            onEdit = { id -> repoId = id; part = SettingsPart.RepositoryEditor },
+            onUndo = { controller.undoDeleteRepository() },
+        )
+        SettingsPart.RepositoryEditor -> RepositoryEditorPart(
+            state = shown,
+            repoId = repoId,
+            onBack = { part = SettingsPart.Repositories },
+            onPreview = { url, prov -> controller.previewRepository(url, prov) },
+            onSave = { id, input -> controller.saveRepository(id, input) },
+            onDelete = { repo -> controller.deleteRepository(repo) },
+        )
     }
     when (sheet) {
         SettingsSheet.Machine -> MachineSheet(machines, state.config?.machineId, onDismiss = { sheet = null }) {
@@ -309,6 +379,7 @@ private fun SettingsHome(
     showSavedPrompts: Boolean = false,
     managers: HubManagers? = null,
     preview: String? = null,
+    governance: GovernanceActions? = null,
 ) {
     val roster = LocalManagerRoster.current
     val manager = roster?.manager(owner)?.takeUnless { it.isInstalling }
@@ -509,6 +580,10 @@ private fun SettingsHome(
                 item("owner-approval-phrases") {
                     OwnerApprovalPhrasesEditor(config, state.busy, ownerApprovalPhrases)
                 }
+            }
+
+            if (governance != null) {
+                assistantGovernanceSections(state, config, owner, governance)
             }
 
             item("zone") { JSectionHeader(stringResource(R.string.assistant_settings_zone)) }

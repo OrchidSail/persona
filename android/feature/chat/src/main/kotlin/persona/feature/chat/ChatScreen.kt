@@ -56,6 +56,7 @@ import persona.core.domain.sort.READ_ONLY
 import persona.core.domain.sort.canApprove
 import persona.core.domain.sort.canChangeEffortOnly
 import persona.core.domain.sort.canChangeModes
+import persona.core.domain.sort.canChangeServiceTier
 import persona.core.domain.sort.canContinueCodex
 import persona.core.domain.sort.canSwitchListedModes
 import persona.core.domain.sort.canInterrupt
@@ -1258,6 +1259,17 @@ private fun ChatPage(
                                         onNotice = { notice = it }, modifier = pillModifier, enabled = online, onOverlay = { pillOverlay = it },
                                         onConfigure = chrome.onFixModel?.let { fix -> { fix(persona.core.designsystem.ReadinessActionId.EditProvider, null, switchSession?.manager) } },
                                         onEffort = { effort -> switchSession?.let { controls.run(it, ChatAction.Modes(effort = effort)) } },
+                                        onServiceTier = { tier, done ->
+                                            val target = switchSession
+                                            if (target == null) done(false) else controls.run(target, ChatAction.Modes(serviceTier = tier)) { ok ->
+                                                done(ok)
+                                                if (ok) scope.launch {
+                                                    try { pageSession.refreshDetail() }
+                                                    catch (cancelled: CancellationException) { throw cancelled }
+                                                    catch (_: Exception) { }
+                                                }
+                                            }
+                                        },
                                         openRequested = openModes || openModelRoutePicker,
                                         onOpenHandled = { openModes = false; openModelRoutePicker = false },
                                         clearRequested = clearModelPick, onClearHandled = { clearModelPick = false },
@@ -1318,7 +1330,8 @@ private fun ChatPage(
                                             }, onOverlay = { pillOverlay = it },
                                             switchObservation = pageSession.switchObservation,
                                             openRequested = openModes, onOpenHandled = { openModes = false },
-                                            onConfigure = chrome.onFixModel?.let { fix -> { fix(persona.core.designsystem.ReadinessActionId.EditProvider, null, switchSession.manager) } })
+                                            onConfigure = chrome.onFixModel?.let { fix -> { fix(persona.core.designsystem.ReadinessActionId.EditProvider, null, switchSession.manager) } },
+                                            onFastChanged = { scope.launch { try { pageSession.refreshDetail() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { } } })
                                         else renderPersonaModelPill(width, Modifier)
                                     }),
                                     accessory = {

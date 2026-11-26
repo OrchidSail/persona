@@ -7,17 +7,23 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import persona.core.contracts.Machine
 import persona.core.contracts.SessionKey
+import persona.core.contracts.api.CronPreview
 import persona.core.contracts.api.ScheduledTask
 import persona.core.contracts.parseTime
 import persona.core.designsystem.*
+import persona.core.designsystem.icons.PersonaIcons
 import persona.core.designsystem.icons.PhIcons
 import persona.feature.assistant.R
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
@@ -27,17 +33,25 @@ private val DraftSaver = Saver<TaskDraft?, Any>(
     save = { draft ->
         draft?.let {
             arrayListOf<Any>(it.title, it.prompt, it.repeat.name, it.at?.toEpochMilli() ?: -1L, it.time, it.weekdays.joinToString(","),
-                it.everyMinutes, it.enabled, it.continues, it.permissionMode, it.push, it.inbox)
+                it.everyMinutes, it.enabled, it.continues, it.permissionMode, it.push, it.inbox, it.cron)
         }
     },
     restore = { saved ->
         (saved as? List<*>)?.let { values ->
             TaskDraft(
-                values[0] as String, values[1] as String, TaskRepeat.valueOf(values[2] as String),
-                (values[3] as Long).takeIf { it >= 0 }?.let(Instant::ofEpochMilli), values[4] as String,
-                (values[5] as String).split(",").mapNotNull { it.toIntOrNull() }, values[6] as Int, values[7] as Boolean,
-                values[8] as Boolean, values[9] as String, values.getOrNull(10) as? String ?: "",
-                values.getOrNull(11) as? String ?: "",
+                title = values[0] as String,
+                prompt = values[1] as String,
+                repeat = TaskRepeat.valueOf(values[2] as String),
+                at = (values[3] as Long).takeIf { it >= 0 }?.let(Instant::ofEpochMilli),
+                time = values[4] as String,
+                weekdays = (values[5] as String).split(",").mapNotNull { it.toIntOrNull() },
+                everyMinutes = values[6] as Int,
+                cron = values.getOrNull(12) as? String ?: "",
+                enabled = values[7] as Boolean,
+                continues = values[8] as Boolean,
+                permissionMode = values[9] as String,
+                push = values.getOrNull(10) as? String ?: "",
+                inbox = values.getOrNull(11) as? String ?: "",
             )
         }
     },
@@ -66,6 +80,7 @@ internal fun TaskEditorPage(
     /** Starts a run on the screen's scope: it carries on, and opens the conversation, even if this page is left. */
     onRunNow: (String) -> Unit,
     onModelConfiguration: ((String) -> Unit)? = null,
+    machines: List<Machine> = emptyList(),
 ) {
     val isNew = id == null
     val features = LocalHubFeatures.current
@@ -87,12 +102,59 @@ internal fun TaskEditorPage(
     var askDelete by remember { mutableStateOf(false) }
     var askBypass by remember { mutableStateOf(false) }
     var choosingMode by remember { mutableStateOf(false) }
+    var cronPreview by remember { mutableStateOf<CronPreview?>(null) }
+    var cronChecking by remember { mutableStateOf(false) }
+    var cronError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val running = id != null && state.running(id)
     val busy = saving || running
+    val hasCron = ScheduledTask.CRON_FEATURE in features || task?.repeat == TaskRepeat.Cron || draft.repeat == TaskRepeat.Cron
+    val normalizedCron = remember(draft.cron) { normalizeCron(draft.cron) }
+    val say = rememberProactiveText()
+    LaunchedEffect(draft.repeat, normalizedCron, store, task?.id, task?.cron, task?.cronText, task?.nextRuns) {
+        if (draft.repeat != TaskRepeat.Cron) {
+            cronPreview = null
+            cronChecking = false
+            cronError = null
+            return@LaunchedEffect
+        }
+        if (normalizedCron.isEmpty()) {
+            cronPreview = null
+            cronChecking = false
+            cronError = null
+            return@LaunchedEffect
+        }
+        val savedCron = task?.takeIf { it.repeat == TaskRepeat.Cron }
+        if (savedCron != null && normalizeCron(savedCron.cron.orEmpty()) == normalizedCron &&
+            (!savedCron.cronText.isNullOrBlank() || savedCron.nextRuns.isNotEmpty())
+        ) {
+            cronPreview = CronPreview(
+                cron = normalizedCron,
+                text = savedCron.cronText.orEmpty(),
+                timezone = state.assistantTimezone.orEmpty(),
+                nextRuns = savedCron.nextRuns,
+            )
+            cronChecking = false
+            cronError = null
+            return@LaunchedEffect
+        }
+        cronChecking = true
+        cronError = null
+        delay(300)
+        val result = store.previewCron(normalizedCron)
+        cronChecking = false
+        result.onSuccess { preview ->
+            cronPreview = preview
+            cronError = null
+        }.onFailure { error ->
+            cronPreview = null
+            cronError = failureReason(say, error)
+        }
+    }
     // A one-off has to be in the future (the hub refuses one that is already due); one left from before stays savable.
     val inTime = draft.repeat != TaskRepeat.Once || draft.at?.isAfter(now) == true || (task != null && draft.at == baseline.at)
-    val canSave = draft.valid && inTime
+    val cronValid = draft.repeat != TaskRepeat.Cron || cronError == null
+    val canSave = draft.valid && inTime && cronValid
     fun edit(next: TaskDraft) {
         if (edited == null) editedFrom = baseline
         edited = next
@@ -141,7 +203,6 @@ internal fun TaskEditorPage(
         }
     }
 
-    val say = rememberProactiveText()
     val title = when {
         isNew -> stringResource(R.string.assistant_proactive_new_routine)
         else -> task?.displayTitle(say) ?: stringResource(R.string.assistant_proactive_routine)
@@ -155,12 +216,14 @@ internal fun TaskEditorPage(
                     if (!canSave) Text(
                         when {
                             !inTime -> stringResource(R.string.assistant_proactive_pick_time)
+                            draft.repeat == TaskRepeat.Cron && !draft.timed -> stringResource(R.string.assistant_proactive_cron_empty)
+                            draft.repeat == TaskRepeat.Cron && cronError != null -> cronError!!
                             !draft.timed && draft.repeat == TaskRepeat.Daily -> stringResource(R.string.assistant_proactive_time_format)
                             !draft.timed -> stringResource(R.string.assistant_proactive_pick_time)
                             draft.repeat == TaskRepeat.Once -> stringResource(R.string.assistant_proactive_fill_in_prompt)
                             else -> stringResource(R.string.assistant_proactive_fill_in)
                         },
-                        style = PersonaTheme.type.caption, color = PersonaTheme.palette.ink2,
+                        style = PersonaTheme.type.caption, color = if (cronError != null && draft.repeat == TaskRepeat.Cron) PersonaTheme.palette.danger.dot else PersonaTheme.palette.ink2,
                     )
                     JButton(if (isNew) stringResource(R.string.assistant_proactive_add) else stringResource(R.string.assistant_proactive_save), ::save, Modifier.fillMaxWidth(), enabled = canSave && !running,
                         loading = saving, loadingText = stringResource(R.string.assistant_proactive_saving))
@@ -199,13 +262,36 @@ internal fun TaskEditorPage(
         }
         item("when-header") { JSectionHeader(stringResource(R.string.assistant_proactive_when)) }
         item("when") {
+            val repeats = if (hasCron) TaskRepeat.entries else listOf(TaskRepeat.Once, TaskRepeat.Daily, TaskRepeat.Interval)
+            val labels = repeats.map { repeat ->
+                stringResource(when (repeat) {
+                    TaskRepeat.Once -> R.string.assistant_proactive_repeat_once
+                    TaskRepeat.Daily -> R.string.assistant_proactive_every_day
+                    TaskRepeat.Interval -> R.string.assistant_proactive_repeat_interval
+                    TaskRepeat.Cron -> R.string.assistant_proactive_repeat_cron
+                })
+            }
+            val selectedRepeat = repeats.indexOf(draft.repeat).coerceAtLeast(0)
             JCard {
-                val repeats = TaskRepeat.entries
-                JSegmented(
-                    listOf(JSegment(stringResource(R.string.assistant_proactive_repeat_once)), JSegment(stringResource(R.string.assistant_proactive_every_day)),
-                        JSegment(stringResource(R.string.assistant_proactive_repeat_interval))),
-                    repeats.indexOf(draft.repeat), { if (!busy) edit(draft.repeating(repeats[it], now, zone)) }, Modifier.fillMaxWidth(),
-                )
+                if (repeats.size > 3 && LocalDensity.current.fontScale >= LargeTextScale) {
+                    Column {
+                        labels.forEachIndexed { index, label ->
+                            JGroupItem(GroupPosition.of(index, labels.size)) {
+                                JRow(enabled = !busy, selected = index == selectedRepeat, chevron = false, role = Role.RadioButton,
+                                    onClick = { edit(draft.repeating(repeats[index], now, zone)) }) {
+                                    JRadio(index == selectedRepeat, null, enabled = !busy)
+                                    Spacer(Modifier.width(Tokens.Space.s))
+                                    Text(label, Modifier.weight(1f), style = PersonaTheme.type.body, color = PersonaTheme.palette.ink)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    JSegmented(
+                        labels.map(::JSegment),
+                        selectedRepeat, { if (!busy) edit(draft.repeating(repeats[it], now, zone)) }, Modifier.fillMaxWidth(),
+                    )
+                }
                 Spacer(Modifier.height(Tokens.Space.l))
                 when (draft.repeat) {
                     TaskRepeat.Once -> OncePicker(draft.at, now, zone, { edit(draft.copy(at = it)) })
@@ -215,14 +301,31 @@ internal fun TaskEditorPage(
                         WeekdayPicker(draft.weekdays, { edit(draft.copy(weekdays = it)) })
                     }
                     TaskRepeat.Interval -> IntervalPicker(draft.everyMinutes, { edit(draft.copy(everyMinutes = it)) })
+                    TaskRepeat.Cron -> CronPicker(
+                        expression = draft.cron,
+                        preview = cronPreview,
+                        checking = cronChecking,
+                        error = cronError,
+                        timezone = cronPreview?.timezone?.ifBlank { null } ?: state.assistantTimezone,
+                        zone = zone,
+                        say = say,
+                        enabled = !busy,
+                        onChange = { edit(draft.copy(cron = it)) },
+                    )
                 }
             }
             val next = parseTime(task?.nextRun)?.takeIf { !dirty && draft.enabled && task?.enabled == true }
+            val cronZoneName = cronPreview?.timezone?.ifBlank { null } ?: state.assistantTimezone
             SectionNote(next?.let { stringResource(R.string.assistant_proactive_next_run, say.moment(it, now, zone), say.until(it, now, zone)) }
                 ?: when (draft.repeat) {
                     TaskRepeat.Once -> stringResource(R.string.assistant_proactive_once_note)
                     TaskRepeat.Daily -> stringResource(R.string.assistant_proactive_rule_note, say.sentence(draft.time, draft.weekdays))
                     TaskRepeat.Interval -> stringResource(R.string.assistant_proactive_interval_note, say.every(draft.everyMinutes))
+                    TaskRepeat.Cron -> if (!cronZoneName.isNullOrBlank()) {
+                        stringResource(R.string.assistant_proactive_cron_hint_named, cronZoneName)
+                    } else {
+                        stringResource(R.string.assistant_proactive_cron_hint, stringResource(R.string.assistant_proactive_cron_hint_zone))
+                    }
                 })
         }
         item("prompt-header") { JSectionHeader(stringResource(R.string.assistant_proactive_what)) }
@@ -232,6 +335,19 @@ internal fun TaskEditorPage(
                 supportingText = stringResource(R.string.assistant_proactive_prompt_note))
         }
         runsWithSection(draft, isNew, task, busy, onModelConfiguration, onChooseMode = { choosingMode = true })
+        if (task != null) {
+            val grants = parseStartGrantKinds(task.startGrant?.kinds.orEmpty())
+            if (grants.isNotEmpty()) {
+                startGrantSection(
+                    taskId = task.id,
+                    grants = grants,
+                    machines = machines,
+                    busy = busy,
+                    state = state,
+                    onRevoke = { rawKind -> scope.launch { val _ = store.revokeStartGrant(task.id, rawKind) } },
+                )
+            }
+        }
         // A hub without "Push when done" would not keep it; one already set on the task still shows, to be turned back.
         if (ScheduledTask.PUSH_FEATURE in features || task?.pushesOnlyAsked == true) pushSection(draft, busy, onPush = { edit(draft.pushing(it)) })
         // The Inbox choice is independent of push; a task with an existing value can still turn it off on an older hub.
@@ -442,4 +558,131 @@ private fun androidx.compose.foundation.lazy.LazyListScope.conversationSection(
             else -> R.string.assistant_proactive_conversation_first_note
         }))
     }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun CronPicker(
+    expression: String,
+    preview: CronPreview?,
+    checking: Boolean,
+    error: String?,
+    timezone: String?,
+    zone: ZoneId,
+    say: ProactiveText,
+    enabled: Boolean,
+    onChange: (String) -> Unit,
+) {
+    val palette = PersonaTheme.palette
+    val normalized = normalizeCron(expression)
+    val previewZone = remember(timezone, zone) {
+        timezone?.takeIf { it.isNotBlank() }?.let { runCatching { ZoneId.of(it) }.getOrNull() } ?: zone
+    }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Tokens.Space.m)) {
+        JTextField(
+            value = expression,
+            onValueChange = onChange,
+            modifier = Modifier.fillMaxWidth().testTag("cron-expression-field"),
+            label = stringResource(R.string.assistant_proactive_cron_label),
+            placeholder = DefaultCron,
+            singleLine = true,
+            enabled = enabled,
+            isError = error != null,
+            autofill = false,
+            monospace = true,
+        )
+        FlowRow(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+            verticalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+        ) {
+            CronExamples.forEach { example ->
+                JChip(
+                    text = stringResource(example.labelRes),
+                    selected = normalized == example.expression,
+                    onClick = { if (enabled) onChange(example.expression) },
+                    modifier = Modifier.testTag("cron-example-${example.expression}"),
+                )
+            }
+        }
+        when {
+            checking -> Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+                modifier = Modifier.testTag("cron-preview-checking"),
+            ) {
+                JSpinner(Modifier.size(Tokens.Space.Standard.l))
+                Text(stringResource(R.string.assistant_proactive_cron_checking), style = PersonaTheme.type.caption, color = palette.ink2)
+            }
+            error != null -> Text(
+                error,
+                style = PersonaTheme.type.caption,
+                color = palette.danger.dot,
+                modifier = Modifier.testTag("cron-preview-error"),
+            )
+            preview != null -> Column(
+                Modifier.fillMaxWidth().testTag("cron-preview"),
+                verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+            ) {
+                if (preview.text.isNotBlank()) {
+                    Text(preview.text, style = PersonaTheme.type.body, color = palette.ink, modifier = Modifier.testTag("cron-preview-text"))
+                }
+                val runs = preview.nextRuns.take(5)
+                if (runs.isNotEmpty()) {
+                    val zoneLabel = timezone?.takeIf { it.isNotBlank() } ?: previewZone.id
+                    Text(
+                        stringResource(R.string.assistant_proactive_cron_next, zoneLabel),
+                        style = PersonaTheme.type.caption,
+                        color = palette.ink2,
+                    )
+                    runs.forEach { iso ->
+                        Text(
+                            say.formatCronNextRun(iso, previewZone),
+                            style = PersonaTheme.type.code,
+                            color = palette.ink2,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun androidx.compose.foundation.lazy.LazyListScope.startGrantSection(
+    taskId: String,
+    grants: List<ParsedStartGrant>,
+    machines: List<Machine>,
+    busy: Boolean,
+    state: ProactiveState,
+    onRevoke: (String) -> Unit,
+) {
+    item("start-grant-header") { JSectionHeader(stringResource(R.string.assistant_proactive_start_grant_title)) }
+    grants.forEachIndexed { index, grant ->
+        item("start-grant-$index-${grant.raw}") {
+            val revoking = state.revokingGrant(taskId, grant.raw)
+            JGroupItem(GroupPosition.of(index, grants.size)) {
+                JRow(
+                    title = grantPlace(grant, machines),
+                    subtitle = stringResource(if (grant.readonly) R.string.assistant_proactive_start_grant_readonly else R.string.assistant_proactive_start_grant_edit),
+                    leadingIcon = PersonaIcons.folder,
+                    chevron = false,
+                    trailing = {
+                        if (revoking) {
+                            JSpinner(Modifier.size(Tokens.Space.Standard.xl))
+                        } else {
+                            JButton(
+                                text = stringResource(R.string.assistant_proactive_start_grant_remove),
+                                onClick = { onRevoke(grant.raw) },
+                                modifier = Modifier.testTag("start-grant-remove-${grant.raw}"),
+                                kind = JButtonKind.Destructive,
+                                size = JButtonSize.Small,
+                                enabled = !busy && !state.revokingAnyGrant(taskId),
+                            )
+                        }
+                    },
+                )
+            }
+        }
+    }
+    item("start-grant-note") { SectionNote(stringResource(R.string.assistant_proactive_start_grant_note)) }
 }

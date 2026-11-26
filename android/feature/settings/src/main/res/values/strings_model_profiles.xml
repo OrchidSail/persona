@@ -54,7 +54,7 @@
     <string name="settings_model_profiles_add_tier">Add preset</string>
     <string name="settings_model_profiles_remove">Remove</string>
     <string name="settings_model_profiles_tier_name">Preset name</string>
-    <string name="settings_model_profiles_tier_name_placeholder">e.g. strong, standard, fast</string>
+    <string name="settings_model_profiles_tier_name_placeholder">e.g. dev, core, deploy</string>
     <string name="settings_model_profiles_tier_launcher">Launcher</string>
     <string name="settings_model_profiles_tier_launcher_placeholder">Select launcher</string>
     <string name="settings_model_profiles_tier_speed">Start speed</string>
@@ -99,4 +99,23 @@
     <string name="settings_model_profiles_field_haiku_model">Haiku model</string>
     <string name="settings_model_profiles_field_fable_model">Fable model</string>
     <string name="settings_model_profiles_field_effort">Thinking effort</string>
+    <string name="settings_model_profiles_tier_aliases_inline">Aliases: %1$s</string>
+    <string name="settings_model_profiles_tier_candidates_count">Candidates (%1$d/%2$d)</string>
+    <string name="settings_model_profiles_add_candidate">Add candidate</string>
+    <string name="settings_model_profiles_tier_candidate_index">Candidate #%1$d</string>
+    <string name="settings_model_profiles_tier_candidate_where">%1$s #%2$d</string>
+    <string name="settings_model_profiles_candidate_move_up">Up</string>
+    <string name="settings_model_profiles_candidate_move_down">Down</string>
+    <string name="settings_model_profiles_candidate_headroom">Headroom %1$d%%</string>
+    <string name="settings_model_profiles_candidate_headroom_unknown">Headroom unknown</string>
+    <string name="settings_model_profiles_candidate_stale">Stale</string>
+    <string name="settings_model_profiles_candidate_stats">Last %1$dd: %2$sm p50 · %3$d%% first-pass · n=%4$d</string>
+    <string name="settings_model_profiles_candidate_no_data">No data yet</string>
+    <string name="settings_model_profiles_trial_summary">Last %1$d days: %2$d dispatched, %3$d would have switched</string>
+    <string name="settings_model_profiles_trial_definition">Counts dispatches where this inactive profile would have picked a different launcher or model than the active one.</string>
+    <string name="settings_model_profiles_err_tier_candidates_empty">Preset \"%1$s\" needs at least one candidate.</string>
+    <string name="settings_model_profiles_err_tier_candidates_limit">Preset \"%1$s\" allows at most %2$d candidates.</string>
+    <string name="settings_model_profiles_err_tier_candidate_launcher">Preset \"%1$s\" candidate #%2$d requires a launcher.</string>
+    <string name="settings_model_profiles_err_tier_candidate_model">Invalid model ID \"%3$s\" for preset \"%1$s\" candidate #%2$d.</string>
+    <string name="settings_model_profiles_err_tier_candidate_speed">Unsupported speed \"%3$s\" for preset \"%1$s\" candidate #%2$d.</string>
 </resources>

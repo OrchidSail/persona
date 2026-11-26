@@ -201,6 +201,101 @@ class GroupRoutingTest {
         assertEquals(listOf("edits macbook", "rename macbook ~/a b", "move macbook /w ~/a ~/folder KeepBoth", "trash macbook ~/a", "restore macbook t1"), calls)
     }
 
+    @Test fun assistantManagementInGroupForwardsCronStartGrantAndGovernanceRoutes() = runBlocking<Unit> {
+        val calls = mutableListOf<String>()
+        val source = object : AssistantManagement {
+            override suspend fun warm() = Unit
+            override suspend fun endConversation(session: SessionKey) = Unit
+            override suspend fun tasks(): List<ScheduledTask> = emptyList()
+            override suspend fun saveTask(task: ScheduledTask) = task
+            override suspend fun deleteTask(id: String) = Unit
+            override suspend fun runTask(id: String) = SessionKey("mac", "s1")
+            override suspend fun freshTask(id: String) = ScheduledTask(id = id)
+            override suspend fun runs(): List<Run> = emptyList()
+            override suspend fun notes() = AssistantNotes()
+            override suspend fun setNotes(text: String) = Unit
+            override suspend fun memory(): List<MemoryFile> = emptyList()
+            override suspend fun saveMemory(name: String, content: String) = Unit
+            override suspend fun deleteMemory(name: String) = Unit
+            override suspend fun previewCron(expression: String): CronPreview {
+                calls += "cron:$expression"
+                return CronPreview(cron = expression, text = "ok")
+            }
+            override suspend fun revokeTaskStartGrant(id: String, kind: String?): ScheduledTask {
+                calls += "grant:$id:$kind"
+                return ScheduledTask(id = id, machineId = "mac", startGrant = TaskStartGrant(listOf("mac|/repo|edit")))
+            }
+            override suspend fun taskTrust(): List<TaskTrustKind> {
+                calls += "trust"
+                return listOf(TaskTrustKind(key = "mac|/repo|edit", machine = "mac", cwd = "/repo"))
+            }
+            override suspend fun revokeTaskTrust(key: String) { calls += "revokeTrust:$key" }
+            override suspend fun leaders(): List<DirectionLeader> {
+                calls += "leaders"
+                return listOf(DirectionLeader(id = "d1", name = "Core"))
+            }
+            override suspend fun updateDirectionNotes(id: String, notes: String, notesAt: String?): DirectionNotesResult {
+                calls += "notes:$id"
+                return DirectionNotesResult(notes = notes, notesAt = "2026-11-02T00:00:00Z")
+            }
+            override suspend fun repositories(): RepositoryCatalog {
+                calls += "repos"
+                return RepositoryCatalog(manager = "assistant", catalogRevision = 3)
+            }
+            override suspend fun repositoryProviders(): List<RepositoryProvider> {
+                calls += "providers"
+                return DefaultRepositoryProviders
+            }
+            override suspend fun previewRepository(url: String, provider: String): RepositoryPreview {
+                calls += "preview:$url"
+                return RepositoryPreview(identity = RepositoryIdentity(canonicalUrl = url))
+            }
+            override suspend fun createRepository(input: RepositoryInput): RepositoryBinding {
+                calls += "create:${input.url}"
+                return RepositoryBinding(id = "r1", canonicalUrl = input.url)
+            }
+            override suspend fun updateRepository(id: String, input: RepositoryInput): RepositoryBinding {
+                calls += "update:$id"
+                return RepositoryBinding(id = id, canonicalUrl = input.url)
+            }
+            override suspend fun deleteRepository(id: String): RepositoryRemoval {
+                calls += "delete:$id"
+                return RepositoryRemoval(receipt = "rcpt")
+            }
+            override suspend fun restoreRepository(id: String, receipt: String): RepositoryBinding {
+                calls += "restore:$id:$receipt"
+                return RepositoryBinding(id = id)
+            }
+        }
+
+        val wrapped = source.inGroup(other)
+        assertEquals("0 9 * * 1-5", wrapped.previewCron("0 9 * * 1-5").cron)
+        val granted = wrapped.revokeTaskStartGrant("t1", "mac|/repo|edit")
+        assertEquals("mac~g0a1b2c3d", granted.machineId)
+        assertEquals(listOf("mac|/repo|edit"), granted.startGrant?.kinds)
+        val trust = wrapped.taskTrust().single()
+        assertEquals("mac~g0a1b2c3d", trust.machine)
+        assertEquals("mac|/repo|edit", trust.key)
+        wrapped.revokeTaskTrust("mac|/repo|edit")
+        assertEquals("d1", wrapped.leaders().single().id)
+        assertEquals("hi", wrapped.updateDirectionNotes("d1", "hi", null).notes)
+        assertEquals(3L, wrapped.repositories().catalogRevision)
+        assertEquals(2, wrapped.repositoryProviders().size)
+        assertEquals("https://github.com/a/b", wrapped.previewRepository("https://github.com/a/b").identity.canonicalUrl)
+        assertEquals("r1", wrapped.createRepository(RepositoryInput("https://github.com/a/b")).id)
+        assertEquals("r1", wrapped.updateRepository("r1", RepositoryInput("https://github.com/a/b")).id)
+        assertEquals("rcpt", wrapped.deleteRepository("r1").receipt)
+        assertEquals("r1", wrapped.restoreRepository("r1", "rcpt").id)
+        assertEquals(
+            listOf(
+                "cron:0 9 * * 1-5", "grant:t1:mac|/repo|edit", "trust", "revokeTrust:mac|/repo|edit",
+                "leaders", "notes:d1", "repos", "providers", "preview:https://github.com/a/b",
+                "create:https://github.com/a/b", "update:r1", "delete:r1", "restore:r1:rcpt",
+            ),
+            calls,
+        )
+    }
+
     @Test fun theMergedFilesSendEditsToTheMachinesGroup() = runBlocking<Unit> {
         val home = mutableListOf<String>()
         val work = mutableListOf<String>()

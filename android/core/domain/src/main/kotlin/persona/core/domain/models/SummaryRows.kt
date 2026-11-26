@@ -18,6 +18,8 @@ fun Session.keepingDetails(old: Session?): Session {
         bypassAvailable = if (permissionMode == null) old.bypassAvailable else bypassAvailable,
         effort = effort ?: old.effort,
         efforts = efforts.ifEmpty { old.efforts },
+        serviceTier = serviceTier ?: old.serviceTier,
+        serviceTiers = serviceTiers.ifEmpty { old.serviceTiers },
         ultracode = ultracode ?: old.ultracode,
         background = background ?: old.background,
         subagents = subagents ?: old.subagents,

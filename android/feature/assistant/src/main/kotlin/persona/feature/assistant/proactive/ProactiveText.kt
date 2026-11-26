@@ -8,6 +8,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import persona.core.contracts.GroupKeys
 import persona.core.contracts.Machine
 import persona.core.contracts.SessionKey
 import persona.core.contracts.parseTime
@@ -90,12 +91,26 @@ internal class ProactiveText(private val res: Resources, val locale: Locale) {
         else -> string(R.string.assistant_proactive_interval_hours_minutes, minutes / 60, minutes % 60)
     }
 
-    /** A task's rule in words: "Every weekday 9:00 AM", "Every 30 min", or for a one-off when it runs ("Tomorrow 09:00"). */
+    /** A task's rule in words: "Every weekday 9:00 AM", "Every 30 min", cron summary, or for a one-off when it runs ("Tomorrow 09:00"). */
     fun rule(task: ScheduledTask, now: Instant, zone: ZoneId): String = when (task.repeat) {
         TaskRepeat.Daily -> sentence(task.time.orEmpty().ifBlank { "09:00" }, task.weekdays)
         TaskRepeat.Interval -> every(task.everyMinutes.takeIf { it > 0 } ?: DefaultInterval)
         TaskRepeat.Once -> parseTime(task.at)?.let { moment(it, now, zone) } ?: string(R.string.assistant_proactive_repeat_once)
+        TaskRepeat.Cron -> {
+            val expr = task.cron?.trim().orEmpty()
+            val human = task.cronText?.trim().orEmpty()
+            when {
+                human.isNotEmpty() && expr.isNotEmpty() -> string(R.string.assistant_proactive_cron_rule_text, human, expr)
+                human.isNotEmpty() -> human
+                expr.isNotEmpty() -> string(R.string.assistant_proactive_cron_rule, expr)
+                else -> string(R.string.assistant_proactive_repeat_cron)
+            }
+        }
     }
+
+    /** Formats a cron preview next-run ISO timestamp in [zone], falling back to the raw string if unparseable. */
+    fun formatCronNextRun(iso: String, zone: ZoneId): String =
+        parseTime(iso)?.let { LocalizedFormats.format(it, LocalizedFormats.MONTH_DAY_TIME, locale, zone) } ?: iso
 
     /** "09:00" → "9:00 AM", "21:30" → "9:30 PM", "00:15" → "12:15 AM" (Chinese splits the day into more parts). */
     fun clock(time: String): String {
@@ -291,7 +306,40 @@ internal fun ScheduledTask.displayTitle(say: ProactiveText): String =
         ?: say.string(if (repeat == TaskRepeat.Once) R.string.assistant_proactive_followup else R.string.assistant_proactive_routine)
 
 internal fun machineName(id: String?, machines: List<Machine>): String? =
-    id?.takeIf { it.isNotBlank() }?.let { machine -> machines.firstOrNull { it.id == machine }?.displayName ?: machine }
+    id?.takeIf { it.isNotBlank() }?.let { machine ->
+        machines.firstOrNull { it.id == machine || GroupKeys.raw(it.id) == machine }?.displayName ?: machine
+    }
+
+/** One parsed `start_grant.kinds` entry (`machine|cwd|readonly|edit`). [raw] is always sent back verbatim on revoke. */
+internal data class ParsedStartGrant(
+    val raw: String,
+    val machine: String,
+    val cwd: String,
+    val readonly: Boolean,
+)
+
+internal fun parseStartGrantKinds(kinds: List<String>): List<ParsedStartGrant> =
+    kinds.mapNotNull { entry ->
+        val trimmed = entry.trim()
+        if (trimmed.isEmpty()) return@mapNotNull null
+        val first = trimmed.indexOf('|')
+        val last = trimmed.lastIndexOf('|')
+        if (first > 0 && last > first) {
+            val machine = trimmed.substring(0, first)
+            val cwd = trimmed.substring(first + 1, last)
+            val mode = trimmed.substring(last + 1)
+            ParsedStartGrant(raw = entry, machine = machine, cwd = cwd, readonly = mode == "readonly")
+        } else {
+            ParsedStartGrant(raw = entry, machine = "", cwd = trimmed, readonly = false)
+        }
+    }
+
+/** Display title for a pre-authorized start-grant target: `"MacBook · /repo"` or the non-empty part. */
+internal fun grantPlace(grant: ParsedStartGrant, machines: List<Machine>): String {
+    val host = machineName(grant.machine, machines)
+    val cwd = grant.cwd.takeIf { it.isNotBlank() }
+    return listOfNotNull(host, cwd).joinToString(" · ").ifBlank { grant.raw }
+}
 
 /** "Continue the original chat on Server" / "Run in the same chat" / "Start a new chat". */
 internal fun ScheduledTask.whereLine(say: ProactiveText, machines: List<Machine>): String {

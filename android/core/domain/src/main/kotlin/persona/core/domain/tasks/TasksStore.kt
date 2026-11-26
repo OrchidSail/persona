@@ -42,7 +42,11 @@ import persona.core.contracts.api.ConnectionState
 import persona.core.contracts.api.HubConnection
 import persona.core.contracts.api.LauncherRetryUnsupportedException
 import persona.core.contracts.api.PhoneQuickResults
+import persona.core.contracts.api.RepositoryCatalog
+import persona.core.contracts.api.RepositoryLinkInput
 import persona.core.contracts.api.RequestManager
+import persona.core.contracts.api.TaskRepositoryInput
+import persona.core.contracts.api.TaskRepositorySet
 import persona.core.contracts.api.hubCodedFailure
 import persona.core.contracts.api.TasksApi
 import persona.core.domain.views.AssistantCardActions
@@ -102,7 +106,7 @@ class TasksStore(
     private val clock: Clock = Clock.systemDefaultZone(),
     /** The phone's own delete for Undo on a calendar quick result; null: the cards offer no Undo. */
     private val quickResults: PhoneQuickResults? = null,
-) : TodoDecisionsSource {
+) : TodoDecisionsSource, TodoRepositoriesSource {
     /** Created calendar event id → its Undo state, for as long as this store lives (iOS `TasksStore.undone`). */
     private val _quickResultUndos = MutableStateFlow<Map<Long, QuickResultUndo>>(emptyMap())
     val quickResultUndos: StateFlow<Map<Long, QuickResultUndo>> = _quickResultUndos.asStateFlow()
@@ -478,6 +482,30 @@ class TasksStore(
 
     override suspend fun addDecision(todoId: String, question: String, choice: String, reason: String, supersedesId: String) =
         api.addTodoDecision(todoId, question, choice, reason, supersedesId)
+
+    override suspend fun todoRepositories(todo: Todo): TaskRepositorySet? =
+        withContext(RequestManager(todo.manager.orEmpty())) { api.todoRepositories(todo.id) }
+
+    override suspend fun assistantRepositories(todo: Todo): RepositoryCatalog? =
+        withContext(RequestManager(todo.manager.orEmpty())) { api.assistantRepositories() }
+
+    override suspend fun setTodoRepositories(
+        todo: Todo,
+        expectedRevision: Long,
+        expectedCatalogRevision: Long,
+        repositories: List<TaskRepositoryInput>,
+    ): TaskRepositorySet = withContext(RequestManager(todo.manager.orEmpty())) {
+        api.setTodoRepositories(todo.id, expectedRevision, expectedCatalogRevision, repositories)
+    }.also { reloadTodos() }
+
+    override suspend fun setTodoRepositoryLinks(
+        todo: Todo,
+        repoId: String,
+        expectedRevision: Long,
+        links: List<RepositoryLinkInput>,
+    ): TaskRepositorySet = withContext(RequestManager(todo.manager.orEmpty())) {
+        api.setTodoRepositoryLinks(todo.id, repoId, expectedRevision, links)
+    }.also { reloadTodos() }
 
     suspend fun linkTodoAgent(todoId: String, machineId: String, sessionId: String) {
         api.linkTodoAgent(todoId, machineId, sessionId)

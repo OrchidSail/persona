@@ -1,6 +1,7 @@
 package persona.core.hub
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonNull
@@ -31,6 +32,11 @@ import persona.core.contracts.TodoDue
 import persona.core.contracts.TodosResponse
 import persona.core.contracts.api.AssistantManagerChoice
 import persona.core.contracts.api.AssistantViewAnswer
+import persona.core.contracts.api.CreateRepositoryBindings
+import persona.core.contracts.api.RepositoryCatalog
+import persona.core.contracts.api.RepositoryLinkInput
+import persona.core.contracts.api.TaskRepositoryInput
+import persona.core.contracts.api.TaskRepositorySet
 import persona.core.contracts.api.TasksApi
 import persona.core.contracts.generated.ExtensionAssistantHTMLActionInput
 import persona.core.contracts.generated.ExtensionAssistantHTMLOpenResult
@@ -154,7 +160,15 @@ class HttpTasksApi internal constructor(
 
     // A new to-do is the current assistant's (the client names it on `POST todos`), or the one the caller named for it
     // (a RequestManager: an agent's own assistant when it is linked at once; "" the default's).
-    override suspend fun createTodo(title: String, notes: String, due: TodoDue?): Todo {
+    override suspend fun createTodo(title: String, notes: String, due: TodoDue?): Todo =
+        createTodo(title, notes, due, repositoryBindings = null)
+
+    override suspend fun createTodo(
+        title: String,
+        notes: String,
+        due: TodoDue?,
+        repositoryBindings: CreateRepositoryBindings?,
+    ): Todo {
         val named = kotlinx.coroutines.currentCoroutineContext()[persona.core.contracts.api.RequestManager]
         val owner = if (named != null) named.id.ifEmpty { null } else AssistantManagerChoice.current.value.manager
         val made: Todo = JsonCodec.decodeFromJsonElement(call(path("todos"), "POST", buildJsonObject {
@@ -165,6 +179,7 @@ class HttpTasksApi internal constructor(
                 is TodoDue.Day -> put("due_date", due.day.toString())
                 null -> Unit
             }
+            repositoryBindings?.let { put("repository_bindings", it.toJson()) }
         })["todo"] ?: error("no todo in the answer"))
         return (if (made.manager == null) made.copy(manager = owner) else made)
             .also { AssistantManagerChoice.noteItem(listOf("todos", it.id), it.manager) }
@@ -211,6 +226,52 @@ class HttpTasksApi internal constructor(
             reason.trim().takeIf { it.isNotEmpty() }?.let { put("reason", it) }
             supersedesId.takeIf { it.isNotEmpty() }?.let { put("supersedes_id", it) }
         })).decision
+
+    override suspend fun todoRepositories(todoId: String): TaskRepositorySet? = try {
+        JsonCodec.decodeFromJsonElement(call(path("todos", todoId, "repositories")))
+    } catch (failure: HubFailure) {
+        if ((failure.status == 404 || failure.status == 405) && failure.code != "task_repositories_not_found") null
+        else throw failure
+    }
+
+    override suspend fun setTodoRepositories(
+        todoId: String,
+        expectedRevision: Long,
+        expectedCatalogRevision: Long,
+        repositories: List<TaskRepositoryInput>,
+    ): TaskRepositorySet = JsonCodec.decodeFromJsonElement(
+        call(
+            path("todos", todoId, "repositories"),
+            "PUT",
+            buildJsonObject {
+                put("expected_revision", expectedRevision)
+                put("expected_catalog_revision", expectedCatalogRevision)
+                put("repositories", JsonArray(repositories.map(TaskRepositoryInput::toJson)))
+            },
+        ),
+    )
+
+    override suspend fun setTodoRepositoryLinks(
+        todoId: String,
+        repoId: String,
+        expectedRevision: Long,
+        links: List<RepositoryLinkInput>,
+    ): TaskRepositorySet = JsonCodec.decodeFromJsonElement(
+        call(
+            path("todos", todoId, "repositories", repoId, "links"),
+            "PUT",
+            buildJsonObject {
+                put("expected_revision", expectedRevision)
+                put("links", JsonArray(links.map(RepositoryLinkInput::toJson)))
+            },
+        ),
+    )
+
+    override suspend fun assistantRepositories(): RepositoryCatalog? = try {
+        JsonCodec.decodeFromJsonElement(call(path("assistant", "repositories")))
+    } catch (failure: HubFailure) {
+        if (failure.status == 404 || failure.status == 405) null else throw failure
+    }
 
     override suspend fun linkTodoAgent(todoId: String, machineId: String, sessionId: String) {
         call(path("todos", todoId, "agents", machineId, sessionId), "PUT", JsonObject(emptyMap()))

@@ -4,6 +4,7 @@ import androidx.annotation.StringRes
 import persona.core.contracts.SessionKey
 import persona.core.contracts.parseTime
 import persona.core.contracts.api.AssistantManagement
+import persona.core.contracts.api.CronPreview
 import persona.core.contracts.api.Run
 import persona.core.contracts.api.ScheduledTask
 import persona.feature.assistant.R
@@ -45,6 +46,11 @@ internal interface ProactiveApi {
     suspend fun runs(): List<Run>
     /** Where assistant conversations run, for a task's last run (tasks do not say which machine). */
     suspend fun assistantMachine(): String
+    /** Assistant hub time zone used to evaluate cron schedules, when known. */
+    suspend fun assistantTimezone(): String? = null
+    suspend fun previewCron(expression: String): CronPreview = throw UnsupportedOperationException("Cron preview unavailable")
+    suspend fun revokeTaskStartGrant(id: String, kind: String? = null): ScheduledTask =
+        throw UnsupportedOperationException("Start grant unavailable")
 }
 
 internal fun AssistantManagement.proactive(): ProactiveApi = object : ProactiveApi {
@@ -56,6 +62,9 @@ internal fun AssistantManagement.proactive(): ProactiveApi = object : ProactiveA
     override suspend fun freshTask(id: String) = api.freshTask(id)
     override suspend fun runs() = api.runs()
     override suspend fun assistantMachine() = api.notes().machineId
+    override suspend fun assistantTimezone(): String? = try { api.config().timezone?.takeIf(String::isNotBlank) } catch (_: Exception) { null }
+    override suspend fun previewCron(expression: String) = api.previewCron(expression)
+    override suspend fun revokeTaskStartGrant(id: String, kind: String?) = api.revokeTaskStartGrant(id, kind)
 }
 
 
@@ -75,9 +84,22 @@ internal fun normalizeDays(days: List<Int>): List<Int> =
 
 /** How a task repeats (the hub's `repeat`). */
 internal enum class TaskRepeat(val wire: String) {
-    Once(ScheduledTask.ONCE), Daily(ScheduledTask.DAILY), Interval(ScheduledTask.INTERVAL);
+    Once(ScheduledTask.ONCE), Daily(ScheduledTask.DAILY), Interval(ScheduledTask.INTERVAL), Cron(ScheduledTask.CRON);
     companion object { fun of(wire: String?) = entries.firstOrNull { it.wire == wire } ?: Once }
 }
+
+internal const val DefaultCron = "0 9 * * 1-5"
+
+internal data class CronExample(val expression: String, @StringRes val labelRes: Int)
+
+internal val CronExamples = listOf(
+    CronExample("*/30 9-18 * * 1-5", R.string.assistant_proactive_cron_example_workhours),
+    CronExample("0 9 * * 1-5", R.string.assistant_proactive_cron_example_weekdays),
+    CronExample("0 10 1 * *", R.string.assistant_proactive_cron_example_monthly),
+)
+
+internal fun normalizeCron(expr: String): String =
+    expr.trim().split(Regex("\\s+")).filter(String::isNotEmpty).joinToString(" ")
 
 /** The intervals the editor offers, in minutes (iOS AssistantScheduleText.intervals); the hub takes 5 minutes to 7 days. */
 internal val TaskIntervals = listOf(5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 360, 480, 720, 1440)
@@ -106,6 +128,7 @@ internal data class TaskDraft(
     val permissionMode: String = "",
     val push: String = "",
     val inbox: String = "",
+    val cron: String = "",
 ) {
     val pushesOnlyAsked: Boolean get() = push == ScheduledTask.PUSH_ASKED
     /** "Push when done" set to [value]: only its alerts leaves "Continue the original chat" (the hub runs such a task in its own conversation). */
@@ -117,9 +140,16 @@ internal data class TaskDraft(
         TaskRepeat.Once -> at != null
         TaskRepeat.Daily -> validTime(normalizeTime(time))
         TaskRepeat.Interval -> everyMinutes in IntervalRange
+        TaskRepeat.Cron -> normalizeCron(cron).isNotEmpty()
     }
     val valid: Boolean get() = titled && prompt.isNotBlank() && timed
-    fun normalized() = copy(title = title.trim(), prompt = prompt.trim(), time = normalizeTime(time), weekdays = normalizeDays(weekdays))
+    fun normalized() = copy(
+        title = title.trim(),
+        prompt = prompt.trim(),
+        time = normalizeTime(time),
+        weekdays = normalizeDays(weekdays),
+        cron = normalizeCron(cron),
+    )
     /** Only what the rule uses counts: another rule's leftover fields do not make a change. */
     private fun key() = normalized().let {
         it.copy(
@@ -127,16 +157,18 @@ internal data class TaskDraft(
             time = it.time.takeIf { repeat == TaskRepeat.Daily } ?: "",
             weekdays = it.weekdays.takeIf { repeat == TaskRepeat.Daily }.orEmpty(),
             everyMinutes = it.everyMinutes.takeIf { repeat == TaskRepeat.Interval } ?: 0,
+            cron = it.cron.takeIf { _ -> repeat == TaskRepeat.Cron } ?: "",
         )
     }
     /** Same schedule and words, ignoring surrounding spaces, "9:00" against "09:00" and how "every day" is spelled. */
     fun sameAs(other: TaskDraft) = key() == other.key()
 
-    /** Switching to "Once" picks the next full hour an hour from now; to "Every", half an hour (iOS does the same). */
+    /** Switching to "Once" picks the next full hour an hour from now; to "Every", half an hour; to "Cron", default expression. */
     fun repeating(next: TaskRepeat, now: Instant, zone: ZoneId): TaskDraft = copy(
         repeat = next,
         at = if (next == TaskRepeat.Once && (at == null || at.isBefore(now))) nextHour(now, zone) else at,
         everyMinutes = if (next == TaskRepeat.Interval && everyMinutes !in IntervalRange) DefaultInterval else everyMinutes,
+        cron = if (next == TaskRepeat.Cron && cron.isBlank()) DefaultCron else cron,
     )
 }
 
@@ -161,7 +193,7 @@ internal val ScheduledTask.ownConversation: SessionKey? get() {
 internal fun ScheduledTask.draft() = TaskDraft(
     title = title, prompt = prompt, repeat = repeat, at = parseTime(at),
     time = normalizeTime(time?.takeIf { it.isNotBlank() } ?: "09:00"), weekdays = weekdays,
-    everyMinutes = everyMinutes.takeIf { it > 0 } ?: DefaultInterval, enabled = enabled,
+    everyMinutes = everyMinutes.takeIf { it > 0 } ?: DefaultInterval, cron = cron.orEmpty(), enabled = enabled,
     continues = !sessionId.isNullOrBlank(), permissionMode = permissionMode.orEmpty(), push = push.orEmpty(), inbox = inbox.orEmpty(),
 )
 
@@ -172,9 +204,18 @@ internal fun ScheduledTask.draft() = TaskDraft(
 internal fun ScheduledTask.applying(draft: TaskDraft): ScheduledTask = draft.normalized().let {
     copy(
         title = it.title, prompt = it.prompt, repeats = it.repeat.wire,
-        at = when (it.repeat) { TaskRepeat.Once -> it.at?.toString(); TaskRepeat.Interval -> at; TaskRepeat.Daily -> null },
-        time = it.time.takeIf { _ -> it.repeat == TaskRepeat.Daily }, weekdays = if (it.repeat == TaskRepeat.Daily) it.weekdays else emptyList(),
-        everyMinutes = if (it.repeat == TaskRepeat.Interval) it.everyMinutes else 0, enabled = it.enabled,
+        at = when (it.repeat) {
+            TaskRepeat.Once -> it.at?.toString()
+            TaskRepeat.Interval -> at
+            TaskRepeat.Daily, TaskRepeat.Cron -> null
+        },
+        time = it.time.takeIf { _ -> it.repeat == TaskRepeat.Daily },
+        weekdays = if (it.repeat == TaskRepeat.Daily) it.weekdays else emptyList(),
+        everyMinutes = if (it.repeat == TaskRepeat.Interval) it.everyMinutes else 0,
+        cron = it.cron.takeIf { _ -> it.repeat == TaskRepeat.Cron },
+        cronText = cronText.takeIf { _ -> it.repeat == TaskRepeat.Cron && normalizeCron(cron.orEmpty()) == it.cron },
+        nextRuns = if (it.repeat == TaskRepeat.Cron && normalizeCron(cron.orEmpty()) == it.cron) nextRuns else emptyList(),
+        enabled = it.enabled,
         sessionId = sessionId.takeIf { _ -> it.continues && !it.pushesOnlyAsked }, permissionMode = it.permissionMode.ifBlank { null },
         push = it.push.takeIf { p -> p.isNotEmpty() || push != null },
         inbox = it.inbox.takeIf { p -> p.isNotEmpty() || inbox != null },
@@ -195,6 +236,7 @@ internal fun ScheduledTask.patched(from: TaskDraft, to: TaskDraft): ScheduledTas
         time = if (ruleChanged) after.time else pick { it.time },
         weekdays = if (ruleChanged) after.weekdays else pick { it.weekdays },
         everyMinutes = if (ruleChanged) after.everyMinutes else pick { it.everyMinutes },
+        cron = if (ruleChanged) after.cron else pick { it.cron },
         enabled = pick { it.enabled }, continues = pick { it.continues }, permissionMode = pick { it.permissionMode }, push = pick { it.push },
         inbox = pick { it.inbox },
     ))
@@ -256,6 +298,7 @@ internal data class ProactiveState(
     val busy: Set<String> = emptySet(),
     val refreshing: Boolean = false,
     val assistantMachine: String? = null,
+    val assistantTimezone: String? = null,
     /** When the tasks were last read: what is due after this is worth reading again for. */
     val readAt: Instant? = null,
 ) {
@@ -263,7 +306,7 @@ internal data class ProactiveState(
     val shownTasks: List<ScheduledTask>? get() = tasks.value?.let { list ->
         pending.fold(list) { tasks, pending -> tasks.map { if (it.id == pending.change.id) it.copy(enabled = pending.change.enabled) else it } }
     }
-    /** Scheduled tasks: daily and interval ones, in the hub's order. */
+    /** Scheduled tasks: daily, interval and cron ones, in the hub's order. */
     val repeating: List<ScheduledTask>? get() = shownTasks?.filter { it.repeat != TaskRepeat.Once }
     /** One-off follow-ups: soonest first. */
     val oneOff: List<ScheduledTask>? get() = shownTasks?.filter { it.repeat == TaskRepeat.Once }
@@ -274,6 +317,8 @@ internal data class ProactiveState(
     fun running(id: String) = "run:$id" in busy
     fun busy(id: String) = "task:$id" in busy || running(id)
     fun freshening(id: String) = "fresh:$id" in busy
+    fun revokingGrant(id: String, kind: String) = "grant:$id:$kind" in busy
+    fun revokingAnyGrant(id: String) = busy.any { it.startsWith("grant:$id:") }
     /** True once something has been read, so the page can tell "nothing scheduled" from "not loaded yet". */
     val loaded: Boolean get() = tasks.value != null
 
@@ -353,6 +398,26 @@ internal class ProactiveStore(
 
     private suspend fun loadMachine() {
         attempt { api.assistantMachine() }.onSuccess { id -> mutable.update { it.copy(assistantMachine = id.ifBlank { null }) } }
+        attempt { api.assistantTimezone() }.onSuccess { tz ->
+            if (!tz.isNullOrBlank()) mutable.update { it.copy(assistantTimezone = tz) }
+        }
+    }
+
+    suspend fun previewCron(expression: String): Result<CronPreview> = attempt { api.previewCron(expression) }
+
+    /** Revokes one pre-authorized start-grant kind; updates only the saved task so unsaved editor changes stay intact. */
+    suspend fun revokeStartGrant(id: String, kind: String): Result<ScheduledTask> {
+        val key = "grant:$id:$kind"
+        mutable.update { it.copy(busy = it.busy + key) }
+        val result = try {
+            withContext(NonCancellable) {
+                writes.withLock { attempt { api.revokeTaskStartGrant(id, kind) } }
+            }
+        } finally {
+            mutable.update { it.copy(busy = it.busy - key) }
+        }
+        result.onSuccess(::put).onFailure { report(R.string.assistant_proactive_not_saved, it) }
+        return result
     }
 
     /** The switch moves at once; the write follows, and a failure puts back what the hub has. */

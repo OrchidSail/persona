@@ -22,7 +22,9 @@ sealed interface ChatAction {
          * `launcher_switch`); the session's own launcher drops one that waits. [from] is the launcher the app saw it on.
          */
         val launcher: String? = null,
-        val from: String? = null) : ChatAction
+        val from: String? = null,
+        /** Codex Fast service tier (`"priority"` or `"default"`), always sent as the sole key in its own request. */
+        val serviceTier: String? = null) : ChatAction
     data object Close : ChatAction
     /** Join a Codex app-server thread live (POST …/attach); only for a session whose capabilities offer it. */
     data object Attach : ChatAction

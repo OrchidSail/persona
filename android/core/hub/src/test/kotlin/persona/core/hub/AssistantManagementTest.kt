@@ -10,8 +10,13 @@ import persona.core.contracts.api.ConversationSwitchRequest
 import persona.core.contracts.api.ConversationSwitchState
 import persona.core.contracts.api.ConversationTagFilters
 import persona.core.contracts.api.AssistantSkills
+import persona.core.contracts.api.DefaultRepositoryProviders
+import persona.core.contracts.api.DirectionNotesConflictException
+import persona.core.contracts.api.GovernanceUnsupportedException
 import persona.core.contracts.api.NewMainResult
+import persona.core.contracts.api.RepositoryInput
 import persona.core.contracts.api.ScheduledTask
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.*
@@ -564,6 +569,169 @@ class AssistantManagementTest {
             assertTrue(runCatching { api.conversationSwitchState(session) }.exceptionOrNull() is CancellationException)
             assertTrue(runCatching { api.submitConversationSwitch(session, request) }.exceptionOrNull() is CancellationException)
             assertEquals(5, server.requestCount)
+        }
+    }
+
+    @Test fun cronAndStartGrantRoundTripPreviewAndRevoke() = runBlocking {
+        MockWebServer().use { server ->
+            val api = HttpAssistantManagement(server.url("/").toString(), "test-token", OkHttpClient())
+            server.enqueue(MockResponse().setBody("""{
+                "tasks":[{
+                    "id":"cron_1",
+                    "title":"Weekday check",
+                    "prompt":"Check build status",
+                    "repeat":"cron",
+                    "cron":"0 9 * * 1-5",
+                    "cron_text":"At 09:00, Monday through Friday",
+                    "next_runs":["2026-11-03T09:00:00+08:00","2026-11-04T09:00:00+08:00"],
+                    "start_grant":{"kinds":["mac|/repo|edit","box|/srv/app|readonly"]},
+                    "enabled":true
+                }]
+            }"""))
+            val task = api.tasks().single()
+            server.takeRequest()
+            assertEquals(ScheduledTask.CRON, task.repeats)
+            assertEquals("0 9 * * 1-5", task.cron)
+            assertEquals("At 09:00, Monday through Friday", task.cronText)
+            assertEquals(2, task.nextRuns.size)
+            assertEquals(listOf("mac|/repo|edit", "box|/srv/app|readonly"), task.startGrant?.kinds)
+
+            // Saving a cron task writes its cron expression; switching away writes explicit empty string.
+            server.enqueue(MockResponse().setBody("""{"task":{"id":"cron_1","repeat":"cron","cron":"*/30 9-18 * * 1-5"}}"""))
+            api.saveTask(task.copy(cron = "*/30 9-18 * * 1-5"))
+            val cronPut = JsonCodec.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+            assertEquals("cron", cronPut.getValue("repeat").jsonPrimitive.content)
+            assertEquals("*/30 9-18 * * 1-5", cronPut.getValue("cron").jsonPrimitive.content)
+
+            server.enqueue(MockResponse().setBody("""{"task":{"id":"cron_1","repeat":"daily","time":"09:00"}}"""))
+            api.saveTask(task.copy(repeats = ScheduledTask.DAILY, time = "09:00", cron = null))
+            val nonCronPut = JsonCodec.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+            assertEquals("daily", nonCronPut.getValue("repeat").jsonPrimitive.content)
+            assertEquals("", nonCronPut.getValue("cron").jsonPrimitive.content)
+
+            // Cron preview endpoint sends ?cron= query and surfaces 400 validation errors.
+            server.enqueue(MockResponse().setBody("""{"cron":"0 9 * * 1-5","text":"At 09:00 on weekdays","timezone":"Asia/Shanghai","next_runs":["2026-11-03T01:00:00Z"]}"""))
+            val preview = api.previewCron("0 9 * * 1-5")
+            val previewReq = server.takeRequest()
+            assertEquals("GET", previewReq.method)
+            assertEquals("/api/v1/assistant/tasks/cron", previewReq.requestUrl?.encodedPath)
+            assertEquals("0 9 * * 1-5", previewReq.requestUrl?.queryParameter("cron"))
+            assertEquals("At 09:00 on weekdays", preview.text)
+            assertEquals("Asia/Shanghai", preview.timezone)
+            assertEquals(listOf("2026-11-03T01:00:00Z"), preview.nextRuns)
+
+            server.enqueue(MockResponse().setResponseCode(400).setBody("""{"error":"cron must have 5 fields"}"""))
+            val bad = runCatching { api.previewCron("bad") }.exceptionOrNull() as HubFailure
+            assertEquals(400, bad.status)
+            assertEquals("cron must have 5 fields", bad.message)
+            server.takeRequest()
+
+            // Start-grant revocation sends DELETE with optional kind body and returns updated task.
+            server.enqueue(MockResponse().setBody("""{"task":{"id":"cron_1","repeat":"cron","cron":"0 9 * * 1-5","start_grant":{"kinds":["box|/srv/app|readonly"]}}}"""))
+            val afterOne = api.revokeTaskStartGrant("cron_1", "mac|/repo|edit")
+            val revokeReq = server.takeRequest()
+            assertEquals("DELETE", revokeReq.method)
+            assertEquals("/api/v1/assistant/tasks/cron_1/start-grant", revokeReq.requestUrl?.encodedPath)
+            assertEquals("""{"kind":"mac|/repo|edit"}""", revokeReq.body.readUtf8())
+            assertEquals(listOf("box|/srv/app|readonly"), afterOne.startGrant?.kinds)
+
+            server.enqueue(MockResponse().setBody("""{"task":{"id":"cron_1","repeat":"cron","cron":"0 9 * * 1-5"}}"""))
+            val afterAll = api.revokeTaskStartGrant("cron_1", null)
+            val revokeAllReq = server.takeRequest()
+            assertEquals("DELETE", revokeAllReq.method)
+            assertEquals("", revokeAllReq.body.readUtf8())
+            assertNull(afterAll.startGrant)
+        }
+    }
+
+    @Test fun governanceTaskTrustDirectionNotesAndRepositoriesWireContracts() = runBlocking {
+        assertTrue(isCurrentAssistantPath("https://hub.invalid/api/v1/task-trust".toHttpUrl(), "GET"))
+        assertTrue(isCurrentAssistantPath("https://hub.invalid/api/v1/task-trust?key=a".toHttpUrl(), "DELETE"))
+
+        MockWebServer().use { server ->
+            val api = HttpAssistantManagement(server.url("/").toString(), "test-token", OkHttpClient()).forManager("work")
+
+            // Task trust list & revoke + 404 unsupported.
+            server.enqueue(MockResponse().setBody("""{"kinds":[{"key":"mac|/repo|edit","machine":"mac","cwd":"/repo","readonly":false,"ambiguous":true}]}"""))
+            val kinds = api.taskTrust()
+            val trustReq = server.takeRequest()
+            assertEquals("/api/v1/task-trust", trustReq.requestUrl?.encodedPath)
+            assertEquals("work", trustReq.getHeader(ManagerHeader))
+            assertEquals(1, kinds.size)
+            assertEquals("mac|/repo|edit", kinds.single().key)
+            assertTrue(kinds.single().ambiguous)
+
+            server.enqueue(MockResponse().setBody("""{"ok":true}"""))
+            api.revokeTaskTrust("mac|/repo|edit")
+            val revokeTrust = server.takeRequest()
+            assertEquals("DELETE", revokeTrust.method)
+            assertEquals("mac|/repo|edit", revokeTrust.requestUrl?.queryParameter("key"))
+
+            server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"not found"}"""))
+            assertTrue(runCatching { api.taskTrust() }.exceptionOrNull() is GovernanceUnsupportedException)
+            server.takeRequest()
+
+            // Direction leaders + notes save (with explicit null notes_at) + 409 notes_changed conflict.
+            server.enqueue(MockResponse().setBody("""{"leaders":[{"id":"dir-1","name":"Platform","project":"infra","ended":false,"notes":"Ship weekly","notes_at":"2026-11-01T10:00:00Z"},{"id":"dir-old","name":"Old","ended":true}]}"""))
+            val leaders = api.leaders()
+            server.takeRequest()
+            assertEquals(2, leaders.size)
+            assertEquals("Platform", leaders[0].displayName)
+            assertEquals("2026-11-01T10:00:00Z", leaders[0].notesAt)
+
+            server.enqueue(MockResponse().setBody("""{"notes":"New standing note","notes_at":"2026-11-02T11:00:00Z"}"""))
+            val savedNote = api.updateDirectionNotes("dir-1", "New standing note", null)
+            val noteReq = server.takeRequest()
+            assertEquals("PUT", noteReq.method)
+            assertEquals("/api/v1/assistant/directions/dir-1/notes", noteReq.requestUrl?.encodedPath)
+            val noteBody = JsonCodec.parseToJsonElement(noteReq.body.readUtf8()).jsonObject
+            assertEquals("New standing note", noteBody.getValue("notes").jsonPrimitive.content)
+            assertTrue(noteBody["notes_at"] is JsonNull)
+            assertEquals("2026-11-02T11:00:00Z", savedNote.notesAt)
+
+            server.enqueue(MockResponse().setResponseCode(409).setBody("""{"code":"notes_changed","error":"Notes updated elsewhere","notes":"Remote text","notes_at":"2026-11-03T12:00:00Z"}"""))
+            val conflict = runCatching { api.updateDirectionNotes("dir-1", "Mine", "2026-11-01T10:00:00Z") }.exceptionOrNull() as DirectionNotesConflictException
+            assertEquals("Remote text", conflict.currentNotes)
+            assertEquals("2026-11-03T12:00:00Z", conflict.currentNotesAt)
+            server.takeRequest()
+
+            // Repositories list, providers (404 fallback), preview, create, update, delete, restore.
+            server.enqueue(MockResponse().setBody("""{"manager":"work","catalog_revision":7,"repositories":[{"id":"repo_1","provider":"github","instance_url":"https://github.com","path":"acme/app","canonical_url":"https://github.com/acme/app","name":"App","aliases":["frontend"],"purpose":"Main app","task_workflow":"shared_branch"}]}"""))
+            val catalog = api.repositories()
+            server.takeRequest()
+            assertEquals(7L, catalog.catalogRevision)
+            assertEquals("acme/app", catalog.repositories.single().path)
+            assertEquals("shared_branch", catalog.repositories.single().taskWorkflow)
+
+            server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"not found"}"""))
+            assertEquals(DefaultRepositoryProviders, api.repositoryProviders())
+            server.takeRequest()
+
+            server.enqueue(MockResponse().setBody("""{"manager":"work","identity":{"provider":"github","instance_url":"https://github.com","path":"acme/api","canonical_url":"https://github.com/acme/api"}}"""))
+            val preview = api.previewRepository("https://github.com/acme/api", "github")
+            assertEquals("https://github.com/acme/api", preview.identity.canonicalUrl)
+            server.takeRequest()
+
+            server.enqueue(MockResponse().setBody("""{"manager":"work","repository":{"id":"repo_2","provider":"github","instance_url":"https://github.com","path":"acme/api","canonical_url":"https://github.com/acme/api","name":"API"}}"""))
+            val created = api.createRepository(RepositoryInput(url = "https://github.com/acme/api", provider = "github", name = "API", aliases = listOf("backend"), purpose = "API service", taskWorkflow = "isolated"))
+            val createReq = server.takeRequest()
+            assertEquals("POST", createReq.method)
+            val createJson = JsonCodec.parseToJsonElement(createReq.body.readUtf8()).jsonObject
+            assertEquals("isolated", createJson.getValue("task_workflow").jsonPrimitive.content)
+            assertFalse(createJson.containsKey("clone_url"))
+            assertEquals("repo_2", created.id)
+
+            server.enqueue(MockResponse().setBody("""{"manager":"work","receipt":"rcpt_abc"}"""))
+            val removed = api.deleteRepository("repo_2")
+            assertEquals("rcpt_abc", removed.receipt)
+            assertEquals("DELETE", server.takeRequest().method)
+
+            server.enqueue(MockResponse().setBody("""{"manager":"work","repository":{"id":"repo_2","provider":"github","instance_url":"https://github.com","path":"acme/api","canonical_url":"https://github.com/acme/api","name":"API"}}"""))
+            val restored = api.restoreRepository("repo_2", "rcpt_abc")
+            val restoreReq = server.takeRequest()
+            assertEquals("/api/v1/assistant/repositories/repo_2/restore", restoreReq.requestUrl?.encodedPath)
+            assertEquals("""{"receipt":"rcpt_abc"}""", restoreReq.body.readUtf8())
+            assertEquals("repo_2", restored.id)
         }
     }
 }

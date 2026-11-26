@@ -55,6 +55,7 @@ internal class AssistantPreparedSend(
     val page: String,
     val starterModel: String?,
     val starterEffort: String?,
+    val starterServiceTier: String? = null,
 )
 
 /** Why a new conversation did not start: a coded setup refusal, else the existing generic failure. */
@@ -109,6 +110,7 @@ internal suspend fun sendAssistantPrepared(
     onOpenConversation: (SessionKey) -> Unit,
     /** Every chat known to be a domain space's (#13500), by space; a chat started in one joins it. */
     spaceKeys: MutableState<Map<SessionKey, String>>? = null,
+    startConversationWithSpeed: (suspend (ModelPick, String?) -> SessionKey)? = null,
 ) {
     var accepted = false
     val submitted = request.text
@@ -124,9 +126,13 @@ internal suspend fun sendAssistantPrepared(
         val target = when {
             launcher != null && startConversationWith != null -> {
                 val picked = ModelPick(launcher, request.starterModel, request.starterEffort)
+                val tier = request.starterServiceTier?.takeIf(String::isNotBlank)
                 val start: suspend (String) -> SessionKey = { l ->
-                    if ((picked.model != null || picked.effort != null) && startConversationPicked != null) startConversationPicked(picked.copy(launcher = l))
-                    else startConversationWith(l)
+                    when {
+                        tier != null && startConversationWithSpeed != null -> startConversationWithSpeed(picked.copy(launcher = l), tier)
+                        (picked.model != null || picked.effort != null) && startConversationPicked != null -> startConversationPicked(picked.copy(launcher = l))
+                        else -> startConversationWith(l)
+                    }
                 }
                 starterTarget(launcher, state.started.value, start).also { state.started.value = it }.session
             }
@@ -165,6 +171,7 @@ internal suspend fun sendAssistantPrepared(
             state.launcher.value = null
             state.model.value = null
             state.effort.value = null
+            state.fast.value = false
             state.started.value = null
             assistantAttempt { repository.refresh() }
             onOpenConversation(target)
