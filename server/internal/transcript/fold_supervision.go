@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/nwverse/persona/server/internal/compat"
 	"github.com/nwverse/persona/server/internal/lazyre"
@@ -42,6 +43,49 @@ func StripToolResultTimestampHeaders(text string) string {
 func HasUserVisibleAction(items []proto.Item) bool {
 	uses := pairedToolUses(items)
 	return supervisionUserAction(items, uses)
+}
+
+// ActiveSupervisionRound inspects the latest genuine input round in items and
+// reports whether an input round was observed, whether it is an open
+// supervision turn, whether it has already been promoted to user-visible, and
+// the timestamp of that round's input item when present.
+func ActiveSupervisionRound(items []proto.Item) (observed, supervision, promoted bool, startedAt time.Time) {
+	start := -1
+	for i := len(items) - 1; i >= 0; i-- {
+		if supervisionRoundInput(items, i) {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return false, false, false, time.Time{}
+	}
+	round := items[start:]
+	startedAt = round[0].TS
+	if supervisionRoundClosed(round) {
+		return true, false, false, startedAt
+	}
+	source := prompts.ItemSource(round[0])
+	if source == nil || source.Kind != proto.SourceSupervision {
+		return true, false, false, startedAt
+	}
+	uses := pairedToolUses(round)
+	if supervisionUserAction(round, uses) {
+		return true, true, true, startedAt
+	}
+	for _, it := range round {
+		if it.SupervisionUser || it.Fold != nil && it.Fold.SupervisionUser {
+			return true, true, true, startedAt
+		}
+		in := it.Injected
+		if in == nil {
+			in = prompts.ParseInjected(it.Text)
+		}
+		if in != nil && in.State == "supervise" && in.Level == "user" {
+			return true, true, true, startedAt
+		}
+	}
+	return true, true, false, startedAt
 }
 
 func pairedToolUses(items []proto.Item) map[string]proto.Item {
