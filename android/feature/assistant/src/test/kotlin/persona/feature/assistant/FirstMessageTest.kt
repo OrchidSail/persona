@@ -204,24 +204,19 @@ class FirstMessageTest {
         assertNull(prefs.read("hub/assistant"))
     }
 
-    // iOS's DayLine over the bubble (#1911): the day stands there from the start, as the conversation's own will have it, so it
-    // does not appear above the message later. Glass only: Brief and Board keep the page as it was.
-    @Test fun theDayStandsOverTheBubbleOnGlassOnly() {
+    // iOS's DayLine over the bubble (#1911): the day stands there from the start across every style, as the conversation's
+    // own will have it, so it does not appear above the message later.
+    @Test fun theDayStandsOverTheBubbleInEveryStyle() {
         var style by mutableStateOf(AppStyle.Glass)
         val hub = Hub().apply { gate = CompletableDeferred() }
         mount(hub) { style }
         send("Plan a weekend in the mountains")
-        rule.onNodeWithTag("assistant-first-sending").assertExists()
-        rule.onNodeWithTag("assistant-first-day").assertExists().assert(hasText("Today · ", substring = true))
-        for (s in listOf(AppStyle.Brief, AppStyle.Board)) {
+        for (s in AppStyle.entries) {
             style = s
             rule.waitForIdle()
             rule.onNodeWithTag("assistant-first-sending").assertExists()
-            rule.onAllNodesWithTag("assistant-first-day").assertCountEquals(0)
+            rule.onNodeWithTag("assistant-first-day").assertExists().assert(hasText("Today · ", substring = true))
         }
-        style = AppStyle.Glass
-        rule.waitForIdle()
-        rule.onAllNodesWithTag("assistant-first-day").assertCountEquals(1)
         rule.runOnIdle { hub.gate?.complete(Unit) }
         rule.waitUntil(5_000) { hub.sent.isNotEmpty() }
     }
@@ -235,18 +230,17 @@ class FirstMessageTest {
         rule.onNodeWithTag("assistant-first-day").assertExists().assert(hasText("Yesterday · ", substring = true))
     }
 
-    // The page that starts the main conversation when there is none yet draws the messages it sent to its queue, not iOS's
-    // first-message page: on Glass the day stands over them too, the day the first was written.
-    @Test fun theMainQueuePageHasTheDayOnGlassOnly() {
+    // The page that starts the main conversation when there is none yet draws the messages it sent to its queue:
+    // the day stands over them across every style, the day the first was written.
+    @Test fun theMainQueuePageHasTheDayInEveryStyle() {
         val sentAt = java.time.LocalDate.now().minusDays(1).atTime(12, 0).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
         val queued = listOf(OutboxMessage("c1", main, "Plan a weekend", DeliveryState.Sent, mainTarget = true, createdAt = sentAt))
         var style by mutableStateOf(AppStyle.Glass)
         rule.setContent { PersonaTheme(reduceMotion = true, style = style) { AssistantPendingConversation(queued, null) } }
-        rule.onNodeWithTag("assistant-pending-day").assertExists().assert(hasText("Yesterday · ", substring = true))
-        for (s in listOf(AppStyle.Brief, AppStyle.Board)) {
+        for (s in AppStyle.entries) {
             style = s
             rule.waitForIdle()
-            rule.onAllNodesWithTag("assistant-pending-day").assertCountEquals(0)
+            rule.onNodeWithTag("assistant-pending-day").assertExists().assert(hasText("Yesterday · ", substring = true))
         }
     }
 

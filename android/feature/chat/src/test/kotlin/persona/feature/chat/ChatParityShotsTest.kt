@@ -155,7 +155,7 @@ class ChatParityShotsTest {
         for (s in AppStyle.entries) for (d in listOf(false, true)) {
             style = s; dark = d
             rule.waitForIdle()
-            if (s != AppStyle.Glass) rule.onNodeWithText("查看子 Agent", substring = true, useUnmergedTree = true).assertExists()
+            rule.onNodeWithText("查看子 Agent", substring = true, useUnmergedTree = true).assertDoesNotExist()
             save(rule.onNodeWithTag("shot").captureToImage().asAndroidBitmap(), "parity-${s.name.lowercase()}-${if (d) "dark" else "light"}")
         }
     }

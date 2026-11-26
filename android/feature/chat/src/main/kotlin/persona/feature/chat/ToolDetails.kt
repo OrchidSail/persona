@@ -34,7 +34,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import coil3.ImageLoader
 import persona.core.contracts.Item
 import persona.core.contracts.SessionKey
-import persona.core.designsystem.AppStyle
 import persona.core.designsystem.JIcon
 import persona.core.designsystem.InterfaceContent
 import persona.core.designsystem.JSpinner
@@ -67,10 +66,9 @@ import kotlinx.serialization.json.contentOrNull
 internal fun ToolInputDetail(item: Item, result: Item? = null) {
     val input = item.toolInput as? JsonObject
     val plain: @Composable () -> Unit = { CodeText(toolDetail(item), stringResource(R.string.chat_tool_details)) }
-    // iOS's default case (#2986, #4339 C1): the input as `key: value` lines in words, its JSON under Raw input;
-    // Glass only, Brief and Board keep the input as code (decision 8).
+    // iOS's default case (#2986, #4339 C1): the input as `key: value` lines in words across every style, its JSON under Raw input.
     val listed: @Composable () -> Unit = {
-        if (PersonaTheme.style == AppStyle.Glass && ToolArgumentRows.lists(item.toolName.orEmpty())) {
+        if (ToolArgumentRows.lists(item.toolName.orEmpty())) {
             val arguments = remember(item.toolInput) { ToolNaming.arguments(item.toolInput) }
             if (arguments.isNotEmpty()) Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Tokens.Space.s)) {
                 ToolArguments(arguments)
@@ -113,7 +111,6 @@ private val specialDetail = setOf("Read", "NotebookRead", "NotebookEdit", "ExitP
  */
 @Composable
 internal fun drawsRawInput(item: Item): Boolean {
-    if (PersonaTheme.style != AppStyle.Glass) return false
     val name = item.toolName.orEmpty()
     if (ComputerSteps.isComputerTool(name)) return true
     if (PersonaTools.isAskUser(name) || name in specialDetail || !ToolArgumentRows.lists(name)) return false

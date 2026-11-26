@@ -499,19 +499,15 @@ internal fun ChatLineContent(
             line.images.forEach { ChatPicture(session, it.item, loader, alignEnd = true) }
         }
         is ChatLine.Work -> Column(Modifier.fillMaxWidth()) {
-            // No live preview: ordinary tools, thoughts and intermediate text stay inside the expandable summary. On Glass
-            // Persona's work line is the Agent chat's, ticking while it runs (iOS has one `WorkLine`, #4339 C13).
-            if (style.compactToolSummary && PersonaTheme.style != AppStyle.Glass) AssistantWorkSummary(line, onToggle)
-            else {
-                // Waiting on you, the turn stays the live one (it folds and opens as while it runs), but its line says it
-                // waits: no "Working", no clock, no spinner, as the header says "Waiting for you".
-                val waits = waiting && line.live
-                val now by rememberNow(1_000, enabled = line.live && !waits)
-                WorkGroup(workSummary(res, line, recordedDuration, now.takeIf { line.live }, waiting = waits, names = LocalToolNames.current), line.open,
-                    { onToggle(line.id) }, running = line.live && !waits,
-                    onTerminal = onTerminal?.takeIf { ChatTerminalPlaces.onWorkLine(line.live, PersonaTheme.style) },
-                    terminalLabel = stringResource(R.string.chat_screen_open_terminal)) {}
-            }
+            // Every style uses the live ticking WorkGroup across Agent and Assistant conversations (#4339 C13).
+            // Waiting on you, the turn stays the live one (it folds and opens as while it runs), but its line says it
+            // waits: no "Working", no clock, no spinner, as the header says "Waiting for you".
+            val waits = waiting && line.live
+            val now by rememberNow(1_000, enabled = line.live && !waits)
+            WorkGroup(workSummary(res, line, recordedDuration, now.takeIf { line.live }, waiting = waits, names = LocalToolNames.current), line.open,
+                { onToggle(line.id) }, running = line.live && !waits,
+                onTerminal = onTerminal?.takeIf { ChatTerminalPlaces.onWorkLine(line.live, PersonaTheme.style) },
+                terminalLabel = stringResource(R.string.chat_screen_open_terminal)) {}
         }
         // Every open step sits on the work line's rail, the plan and its items too (Glass, iOS's timeline, #4339 C5).
         is ChatLine.Step -> Box(Modifier.fillMaxWidth().workRail(lastWorkStep)) {
@@ -524,14 +520,9 @@ internal fun ChatLineContent(
     }
 }
 
-/** Persona's thoughts stay out of its conversation, except on Glass: there its work line counts them and opens to them, as iOS's does. */
+/** Persona's thoughts stay expandable inside the work line across every style (Glass, Brief, Board). */
 @Composable
-private fun ChatRenderStyle.hidesThoughts(): Boolean = hideThoughts && PersonaTheme.style != AppStyle.Glass
-
-@Composable
-private fun AssistantWorkSummary(line: ChatLine.Work, onToggle: (String) -> Unit) {
-    AssistantFoldLine(pluralStringResource(R.plurals.chat_assistant_checked, line.tools, line.tools), line.open) { onToggle(line.id) }
-}
+private fun ChatRenderStyle.hidesThoughts(): Boolean = false
 
 /** One muted line that opens and closes what it stands for: the work summary, a folded background round (#4314). */
 @Composable
@@ -581,8 +572,8 @@ private fun WorkStep(step: WorkItem, session: SessionKey, loader: ImageLoader, o
                     return
                 }
             }
-            // Glass draws a subagent as its task card, running or done (#5045, DESIGN_SYSTEM.md 4.7 "Task cards").
-            if (PersonaTheme.style == AppStyle.Glass && Subagents.isAgent(call)) {
+            // Every style draws a subagent as its task card, running or done (#5045, DESIGN_SYSTEM.md 4.7 "Task cards").
+            if (Subagents.isAgent(call)) {
                 SubagentCard(call, live = running, assistant = style == ChatRenderStyle.Assistant)
                 return
             }
@@ -627,8 +618,8 @@ private fun WorkStep(step: WorkItem, session: SessionKey, loader: ImageLoader, o
                 // Right of the rail on Glass, under the step's words (iOS's timeline, `detailLeading`).
                 if (open) Column(Modifier.unfolding(detailRevealing).fillMaxWidth().workDetail(Tokens.Space.m),
                     verticalArrangement = Arrangement.spacedBy(Tokens.Space.s)) {
-                    // A tool that operates a Mac says its steps in words on Glass, its output and picture with them (iOS ComputerToolDetail).
-                    val computer = PersonaTheme.style == AppStyle.Glass && persona.core.domain.ComputerSteps.isComputerTool(call.name)
+                    // A tool that operates a computer says its steps in words across every style (iOS ComputerToolDetail).
+                    val computer = persona.core.domain.ComputerSteps.isComputerTool(call.name)
                     if (diff != null) {
                         toolPath(call.use.item)?.let { DiffHeader(it, diff.added, diff.removed) }
                         DiffView(diff, call.id)

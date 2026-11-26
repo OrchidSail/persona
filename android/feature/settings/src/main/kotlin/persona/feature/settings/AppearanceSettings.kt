@@ -86,8 +86,8 @@ fun AppearanceSettings(modifier: Modifier = Modifier, agentsDisplay: AgentListDi
                 style = PersonaTheme.type.caption, color = palette.ink3,
             )
         }
-        // Glass draws the Agents list in the chosen row style (#4338 A9); Brief and Board keep Compact and Detailed (decision 8).
-        if (current == AppStyle.Glass && agentsDisplay != null) AgentsListLayout(agentsDisplay)
+        // Every style supports all four Agents list layouts (#4338 A9).
+        if (agentsDisplay != null) AgentsListLayout(agentsDisplay)
     }
 }
 

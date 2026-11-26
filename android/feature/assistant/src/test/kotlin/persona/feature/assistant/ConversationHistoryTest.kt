@@ -225,9 +225,11 @@ class ConversationHistoryTest {
         assertEquals("any other title is drawn as it is", emptyList<Pair<Int, Int>>(), other)
     }
 
-    @Test fun archivedRowsDrawTheTitleWholeInBrief() = assertEquals(emptyList<Pair<Int, Int>>(), archivedSpans(AppStyle.Brief).first)
+    @Test fun archivedRowsQuietTheDayAndKindInBrief() =
+        assertEquals(listOf(0 to "1101 | 修复 | ".length), archivedSpans(AppStyle.Brief).first)
 
-    @Test fun archivedRowsDrawTheTitleWholeInBoard() = assertEquals(emptyList<Pair<Int, Int>>(), archivedSpans(AppStyle.Board).first)
+    @Test fun archivedRowsQuietTheDayAndKindInBoard() =
+        assertEquals(listOf(0 to "1101 | 修复 | ".length), archivedSpans(AppStyle.Board).first)
 
     // The history says when as iOS does (`Fmt.relative`): minutes ago, not the date and time (#4339 C12).
     @Test fun theHistorySaysWhenAsIOSDoes() {

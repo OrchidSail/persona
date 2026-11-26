@@ -293,7 +293,6 @@ internal fun ArchivedConversationsSheet(
 ) {
     val words = conversationWords()
     val resources = androidx.compose.ui.platform.LocalResources.current
-    val glass = PersonaTheme.style == AppStyle.Glass
     val unarchive = stringResource(R.string.assistant_unarchive)
     var menu by remember { mutableStateOf<Session?>(null) }
     JSheet(onDismiss, title = stringResource(R.string.assistant_archived)) {
@@ -302,9 +301,9 @@ internal fun ArchivedConversationsSheet(
         else LazyColumn(Modifier.weight(1f, fill = false).testTag("archived-conversations")) {
             items(sessions, key = { it.key.path }) { session ->
                 JSwipeActions(end = SwipeAction(unarchive, PersonaIcons.unarchive, Status.Working, { onUnarchive(session) })) {
-                    // A hub title's day and kind in the quiet ink, the topic after it (iOS `ConversationTitle`); Glass.
+                    // A hub title's day and kind in the quiet ink, the topic after it across every style (iOS `ConversationTitle`).
                     val title = session.conversationTitle(words)
-                    val dated = if (glass) ConversationTitle.parse(title) else null
+                    val dated = ConversationTitle.parse(title)
                     Column {
                         JRow(dated?.topic ?: title, titleLead = dated?.head, subtitle = historyTime(session.updated, resources),
                             onClick = { onOpen(session) }, onLongClick = { menu = session }, trailing = {

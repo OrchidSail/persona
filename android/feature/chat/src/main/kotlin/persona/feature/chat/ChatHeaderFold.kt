@@ -27,9 +27,9 @@ internal object HeaderFoldRules {
     /** The list's newest end, within this far of it: a lifted finger folds the header there (iOS: 40 pt). */
     const val NEWEST_EDGE_DP = 40
 
-    /** Glass folds an Agent's chat header; Persona's conversations and the other styles keep theirs. */
+    /** Every style folds an Agent's chat header; Persona's conversations keep theirs open. */
     fun folds(style: AppStyle, topBar: Boolean, render: ChatRenderStyle): Boolean =
-        style == AppStyle.Glass && topBar && render != ChatRenderStyle.Assistant
+        topBar && render != ChatRenderStyle.Assistant
 
     /**
      * The list moved by [dy] pixels on screen (negative: toward the newest, the list being upside down): the header
@@ -153,7 +153,6 @@ internal enum class ChatTitleTap {
 
     companion object {
         fun of(style: AppStyle, online: Boolean, hasSession: Boolean): ChatTitleTap = when {
-            style != AppStyle.Glass -> Status
             !online -> Connection
             hasSession -> SessionInfo
             else -> Status

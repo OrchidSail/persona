@@ -225,8 +225,12 @@ class HeaderModeTest {
         assertFalse(SessionModes.offersPermissions(live.copy(status = "offline"), glass = true, modeSheet = false))
         assertFalse(SessionModes.offersPermissions(paned().copy(agent = "codex"), glass = true, modeSheet = true))
         assertFalse(SessionModes.offersPermissions(null, glass = true, modeSheet = true))
-        // a Persona conversation, where its mode can change
-        assertTrue(SessionModes.offersPermissions(claude("default").copy(assistant = true), glass = true, modeSheet = false))
+        // Style-agnostic overload used by every style's unified composer permission picker.
+        assertTrue(SessionModes.offersPermissions(live))
+        assertTrue(SessionModes.offersPermissions(claude("default").copy(assistant = true)))
+        assertFalse(SessionModes.offersPermissions(live.copy(status = "offline")))
+        assertFalse(SessionModes.offersPermissions(paned().copy(agent = "codex")))
+        assertFalse(SessionModes.offersPermissions(null))
     }
 
     @Test fun bypassPendingIsReadOffTheSession() {

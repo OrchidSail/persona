@@ -41,9 +41,9 @@ import persona.core.navigation.Navigator
 import java.io.File
 
 /**
- * Where "Requests and history" is (#4338 A1): on Glass a page in list settings after Machines; Brief and Board keep
- * the list row (decision 8). The page and its list settings sheet in every style,
- * light and dark, written to `build/requests-menu-shots/` (or `-Dpersona.shots=<dir>`).
+ * Where "Requests and history" is (#4338 A1): a page in list settings after Machines and Terminals across every style.
+ * The page and its list settings sheet in every style, light and dark, written to `build/requests-menu-shots/` (or
+ * `-Dpersona.shots=<dir>`).
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -74,7 +74,7 @@ class RequestsMenuShotsTest {
             rule.runOnIdle { style = s; dark = d }
             rule.waitForIdle()
             save(rule.onNode(isDialog()).captureToImage().asAndroidBitmap(), "menu", s, d)
-            // One way there in every style: the item in the sheet on Glass, the row under it on Brief and Board.
+            // One way there in every style: the item in the list settings sheet.
             assertEquals("$s", 1, rule.onAllNodesWithText("Requests and history").fetchSemanticsNodes().size)
         }
     }

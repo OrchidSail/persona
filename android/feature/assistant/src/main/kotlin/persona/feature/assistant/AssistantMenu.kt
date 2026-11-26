@@ -15,11 +15,9 @@ import persona.core.contracts.api.AssistantConfig
 import persona.core.contracts.api.AssistantSnapshot
 import persona.core.contracts.api.ChatComposerService
 import persona.core.contracts.api.ConnectionState
-import persona.core.designsystem.AppStyle
 import persona.core.designsystem.CopyAction
 import persona.core.designsystem.JAction
 import persona.core.designsystem.JActionSheet
-import persona.core.designsystem.PersonaTheme
 import persona.core.designsystem.icons.PersonaIcons
 import persona.core.designsystem.icons.PhIcon
 import persona.core.domain.modelShortName
@@ -245,15 +243,13 @@ internal fun AssistantTitleMenu(
                 }
             })
         }
-        // iOS's icon on every item: Glass draws them; Brief and Board keep their words (Back to main chat has had its house all along).
-        val glassIcons = PersonaTheme.style == AppStyle.Glass
         // A module's action (Modules.kt) carries its own words, icon and click.
         fun entryAction(item: AssistantMenuEntry, separator: Boolean): JAction = when (item) {
             is ModuleItem -> JAction(item.action.label, separatorBefore = separator, onClick = item.action.onClick)
             is AssistantMenuItem -> rawAction(item, separator)
         }
         fun action(item: AssistantMenuEntry, separator: Boolean): JAction = entryAction(item, separator)
-            .copy(icon = item.icon.takeIf { glassIcons || item == AssistantMenuItem.BackToMain })
+            .copy(icon = item.icon)
         // iOS's heading: which conversation and what it runs on ("Main chat · claude · Opus 4.5").
         JActionSheet(title = copyText.menuTitle(resources, assistantName, hubGroup), onDismiss = onDismiss,
             actions = sections.flatMapIndexed { index, items -> items.mapIndexed { i, item -> action(item, separator = index > 0 && i == 0) } })

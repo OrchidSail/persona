@@ -54,17 +54,19 @@ class ChatTerminalTest {
         assertFalse(ChatTerminalPlaces.has(readOnly = false, canTerminal = true, ChatRenderStyle.Assistant))
     }
 
-    @Test fun onlyBriefAndBoardKeepTheHeadersButton() {
+    @Test fun noStyleKeepsTheHeadersTerminalButton() {
         assertFalse(ChatTerminalPlaces.inHeader(AppStyle.Glass))
-        assertTrue(ChatTerminalPlaces.inHeader(AppStyle.Brief))
-        assertTrue(ChatTerminalPlaces.inHeader(AppStyle.Board))
+        assertFalse(ChatTerminalPlaces.inHeader(AppStyle.Brief))
+        assertFalse(ChatTerminalPlaces.inHeader(AppStyle.Board))
     }
 
-    @Test fun theMarkIsOnTheLiveWorkLineOnGlass() {
+    @Test fun theMarkIsOnTheLiveWorkLineInEveryStyle() {
         assertTrue(ChatTerminalPlaces.onWorkLine(live = true, AppStyle.Glass))
         assertFalse(ChatTerminalPlaces.onWorkLine(live = false, AppStyle.Glass)) // a finished turn
-        assertFalse(ChatTerminalPlaces.onWorkLine(live = true, AppStyle.Brief))
-        assertFalse(ChatTerminalPlaces.onWorkLine(live = true, AppStyle.Board))
+        assertTrue(ChatTerminalPlaces.onWorkLine(live = true, AppStyle.Brief))
+        assertFalse(ChatTerminalPlaces.onWorkLine(live = false, AppStyle.Brief))
+        assertTrue(ChatTerminalPlaces.onWorkLine(live = true, AppStyle.Board))
+        assertFalse(ChatTerminalPlaces.onWorkLine(live = false, AppStyle.Board))
     }
 
     private val key = SessionKey("macbook", "weather")
@@ -138,10 +140,24 @@ class ChatTerminalTest {
         assertEquals(2, opened)
     }
 
-    @Test fun briefKeepsItsHeaderButtonAndDrawsNoMark() {
+    @Test fun briefUsesTheWorkLineMarkAndMenuWithNoHeaderButton() {
         var opened = 0
         page(AppStyle.Brief) { opened++ }
-        // The header's button; the work line draws as before, with no mark.
+        // One "Open terminal": the work line's mark (the header's button is gone).
+        rule.onAllNodesWithContentDescription("Open terminal").assertCountEquals(1)
+        rule.onNodeWithContentDescription("Open terminal").performClick()
+        rule.mainClock.advanceTimeByFrame()
+        assertEquals(1, opened)
+        rule.onNodeWithContentDescription("More actions").performClick()
+        repeat(5) { rule.mainClock.advanceTimeBy(200) }
+        rule.onNode(hasText("Terminal") and hasAnyAncestor(isDialog())).performClick()
+        rule.mainClock.advanceTimeByFrame()
+        assertEquals(2, opened)
+    }
+
+    @Test fun boardUsesTheWorkLineMarkAndMenuWithNoHeaderButton() {
+        var opened = 0
+        page(AppStyle.Board) { opened++ }
         rule.onAllNodesWithContentDescription("Open terminal").assertCountEquals(1)
         rule.onNodeWithContentDescription("Open terminal").performClick()
         rule.mainClock.advanceTimeByFrame()

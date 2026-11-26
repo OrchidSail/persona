@@ -103,12 +103,12 @@ class HeaderModeShotsTest {
         return page.copy(Bitmap.Config.ARGB_8888, true).also { Canvas(it).drawBitmap(menu, m.x - p.x, m.y - p.y, null) }
     }
 
-    /** The header and, on Glass, the mode as the composer has it (Q11, #5055: Glass's header has no mode button). */
+    /** The header and the unified composer mode button across every style (Q11, #5055: no duplicate header mode button). */
     @androidx.compose.runtime.Composable
     private fun Moded(s: Session, chrome: ChatChromeState) {
         ChatHeader(s, machine, listOf(s), chrome, null, false, onBack = {}, onOpenSession = {}, onConnectionDetails = {},
             onOverlay = {}, statusState = working)
-        if (PersonaTheme.style == AppStyle.Glass && SessionModes.showsInComposer(s)) Row { HeaderModeButton(s, chrome, online = true) {} }
+        if (SessionModes.showsInComposer(s)) Row { HeaderModeButton(s, chrome, online = true) {} }
     }
 
     private fun has(text: String) = rule.onAllNodesWithText(text, substring = true, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
@@ -126,8 +126,8 @@ class HeaderModeShotsTest {
                             onOverlay = {}, statusState = working)
                         Spacer(Modifier.weight(1f))
                         ChatSessionStatusLine(working, s, null, 0, onDetails = {}, terminal = null)
-                        // the composer's control: Glass's is the mode button beside the model pill (Q11, #5055)
-                        Row { if (style == AppStyle.Glass) HeaderModeButton(s, chrome, online = true) {} else ChatModeBar(s, chrome, online = true) }
+                        // the composer's unified mode control across every style (Q11, #5055)
+                        Row { HeaderModeButton(s, chrome, online = true) {} }
                     }
                 }
                 assertTrue("$scene: mode button", described(if (scene == "after-bypass") "权限模式：完全访问" else "权限模式：允许编辑"))

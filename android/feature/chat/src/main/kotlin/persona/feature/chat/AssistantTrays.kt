@@ -348,8 +348,8 @@ internal fun AssistantTrays(host: AssistantTaskHost, state: AssistantTrayState,
     val standalone = remember(host.conversation, main, host.sessions, todos, hierarchy) {
         persona.core.domain.tasks.dockAgents(host.conversation, main, host.sessions, todos, hierarchy)
     }
-    // Glass folds the shelved tasks into one line under In progress, as iOS (#4339 C18); Brief and Board keep the tray as it was.
-    val shelvedLine = PersonaTheme.style == AppStyle.Glass
+    // Every style folds tasks idle for 48h into one quiet shortcut line under In progress (iOS `shelvedLine`, #4339 C18).
+    val shelvedLine = true
     // the tray closes once its last thing is handled; tapped while empty it still opens "All caught up"
     LaunchedEffect(needsCount) { if (needsCount == 0 && state.expanded == AssistantTray.NeedsYou) state.expanded = null }
     BackHandler(state.expanded != null) { state.expanded = null }

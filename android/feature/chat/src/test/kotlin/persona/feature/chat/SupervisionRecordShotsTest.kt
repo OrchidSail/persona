@@ -63,12 +63,10 @@ class SupervisionRecordShotsTest {
                 val context = LocalContext.current
                 val loader = remember { ImageLoader.Builder(context).build() }
                 DisposableEffect(loader) { onDispose { loader.shutdown() } }
-                val glass = style == AppStyle.Glass
                 val original = ChatTimeline().lines(transcript, false, open.value).lines
-                // as the chat page does: Glass folds a supervision round with the chat's open-line set (rounds: the main
-                // conversation's switch, off here)
+                // as the chat page does: every style folds a supervision round with the chat's open-line set
                 val lines = AssistantConversation.project(original, transcript,
-                    if (glass) BackgroundFolding(open.value, rounds = false) else null, inline = glass).foreground
+                    BackgroundFolding(open.value, rounds = false), inline = true).foreground
                 // no ripples: Robolectric has no render thread, so a tapped line would keep a frozen one in the shots
                 CompositionLocalProvider(androidx.compose.material3.LocalRippleConfiguration provides null, LocalHomeChrome provides HomeChrome(
                     listOf(NavItem("assistant", "Assistant", PhIcons.House)), "assistant", onSelect = {}, leading = {})) {
@@ -119,14 +117,17 @@ class SupervisionRecordShotsTest {
         assertNotEquals("dark capture must differ from light", colors[0], colors[1])
     }
 
-    private fun keepsTheRoundBehind(style: AppStyle) {
+    private fun foldsSupervisionInlineAndShowsToolsWorkGroup(style: AppStyle) {
         show(style, mutableStateOf(false)); settle()
-        rule.onNodeWithText("Handled in the background").assertDoesNotExist()
+        rule.onNodeWithText("Handled in the background").assertIsDisplayed()
         rule.onNodeWithText("Nothing needs the owner right now.").assertDoesNotExist()
-        rule.onNodeWithText("Checked 2 places").assertIsDisplayed()
+        rule.onNodeWithText("Checked", substring = true).assertDoesNotExist()
+        rule.onNodeWithText("Tools 2", substring = true).assertIsDisplayed()
         capture("supervision-${style.name.lowercase()}-light")
+        rule.onNodeWithText("Handled in the background").performClick(); settle()
+        rule.onNodeWithText("Nothing needs the owner right now.").assertIsDisplayed()
     }
 
-    @Test fun briefKeepsTheRoundInTheBackgroundRecord() = keepsTheRoundBehind(AppStyle.Brief)
-    @Test fun boardKeepsTheRoundInTheBackgroundRecord() = keepsTheRoundBehind(AppStyle.Board)
+    @Test fun briefFoldsSupervisionInlineAndShowsToolsWorkGroup() = foldsSupervisionInlineAndShowsToolsWorkGroup(AppStyle.Brief)
+    @Test fun boardFoldsSupervisionInlineAndShowsToolsWorkGroup() = foldsSupervisionInlineAndShowsToolsWorkGroup(AppStyle.Board)
 }

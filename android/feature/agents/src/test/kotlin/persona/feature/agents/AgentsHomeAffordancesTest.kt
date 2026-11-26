@@ -216,20 +216,25 @@ class AgentsHomeAffordancesTest {
         rule.onNodeWithText("Requests waiting for you").assertIsDisplayed()
     }
 
-    // Brief and Board keep their row (decision 8)...
-    @Test fun briefKeepsTheRequestsRow() {
+    // Brief and Board share the same list-settings placement as Glass: Requests and history lives in the sheet, not inline.
+    @Test fun briefKeepsRequestsInListSettings() {
         showScreen(style = AppStyle.Brief)
+        rule.onAllNodesWithText("Requests and history").assertCountEquals(0)
+        rule.reselectAgentsTab()
+        rule.onNodeWithText("Machine monitor").performScrollTo().assertIsDisplayed()
         rule.onNodeWithText("Requests and history")
-            .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button)).performClick()
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button)).performScrollTo().performClick()
         rule.onNodeWithText("Requests waiting for you").assertIsDisplayed()
     }
 
-    // ...and their ⋯ adds no second way there: the one node is the row under the sheet.
-    @Test fun briefMoreHasNoRequestsItem() {
-        showScreen(style = AppStyle.Brief)
-        rule.onNodeWithContentDescription("List settings").performClick()
-        rule.onNodeWithText("Machine monitor").assertIsDisplayed()
-        rule.onAllNodesWithText("Requests and history").assertCountEquals(1)
+    @Test fun boardKeepsRequestsInListSettings() {
+        showScreen(style = AppStyle.Board)
+        rule.onAllNodesWithText("Requests and history").assertCountEquals(0)
+        rule.reselectAgentsTab()
+        rule.onNodeWithText("Machine monitor").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("Requests and history")
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button)).performScrollTo().performClick()
+        rule.onNodeWithText("Requests waiting for you").assertIsDisplayed()
     }
 
     /** A runtime's agent and one it created (#4494), which the list draws under "Subtasks (1)". */

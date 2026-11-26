@@ -39,9 +39,9 @@ import persona.core.domain.sort.AgentListDisplaySettings
 import java.io.File
 
 /**
- * Settings › Interface style's "Agents list layout" (#4338 A9, iOS `LayoutSettingsPage`): on Glass the four displays, each
- * with two agents drawn that way and what it shows, the chosen one checked; a tap sets the list's choice. Brief and Board
- * have no such section (decision 8). PNGs in `build/agents-layout-shots/`.
+ * Settings › Interface style's "Agents list layout" (#4338 A9, iOS `LayoutSettingsPage`): across every style the four
+ * displays, each with two agents drawn that way and what it shows, the chosen one checked; a tap sets the list's choice.
+ * PNGs in `build/agents-layout-shots/`.
  */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [35], qualifiers = "en-w400dp-h3200dp-xhdpi")
@@ -85,9 +85,18 @@ class AgentsListLayoutShotsTest {
         rule.waitForIdle()
         assertEquals(AgentListDisplay.Cards, choice.display.value)
         rule.onNodeWithTag("layout-agents-Cards").assertIsSelected()
-        // Brief and Board keep Compact and Detailed in the list's ⋯; their settings page has no such section.
-        rule.runOnIdle { store.setStyle(AppStyle.Brief); style = AppStyle.Brief }
-        rule.waitForIdle()
-        assertEquals(0, rule.onAllNodesWithText("Agents list layout").fetchSemanticsNodes().size)
+        // Brief and Board expose the same Agents list layout section and persist the shared display setting.
+        for (other in listOf(AppStyle.Brief, AppStyle.Board)) {
+            rule.runOnIdle { store.setStyle(other); style = other }
+            rule.waitForIdle()
+            assertEquals(1, rule.onAllNodesWithText("Agents list layout").fetchSemanticsNodes().size)
+            rule.onNodeWithTag("layout-agents-Cards").assertIsSelected()
+            rule.onNodeWithTag("layout-agents-TwoLines").performClick()
+            rule.waitForIdle()
+            assertEquals(AgentListDisplay.TwoLines, choice.display.value)
+            rule.onNodeWithTag("layout-agents-Cards").performClick()
+            rule.waitForIdle()
+            assertEquals(AgentListDisplay.Cards, choice.display.value)
+        }
     }
 }

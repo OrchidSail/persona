@@ -261,7 +261,7 @@ class AgentFilterCapsuleTest {
         assertEquals(bounds("agents-status-scroll").center.x, bounds("agents-status-1").center.x, 2f)
     }
 
-    @Test fun allCountKeepsEachStylesExistingVisibility() {
+    @Test fun allCountIsHiddenAcrossEveryStyle() {
         var style by mutableStateOf(AppStyle.Glass)
         rule.setContent {
             PersonaTheme(style = style, reduceMotion = true) {
@@ -273,7 +273,7 @@ class AgentFilterCapsuleTest {
         }
         for (option in AppStyle.entries) {
             rule.runOnIdle { style = option }
-            rule.onNodeWithTag("agents-status-0").assertContentDescriptionEquals(if (option == AppStyle.Glass) "All" else "All 4")
+            rule.onNodeWithTag("agents-status-0").assertContentDescriptionEquals("All")
             rule.onNodeWithTag("agents-status-0").assertIsSelected()
         }
     }

@@ -503,9 +503,10 @@ private fun ChatPage(
     val glass = PersonaTheme.style == AppStyle.Glass
     val agentChat = renderStyle != ChatRenderStyle.Assistant
     val window = LocalWindowLayout.current
-    val compactGlassAgent = glass && agentChat && !embedded && !LocalLargeWindowInput.current &&
+    val compactAgentPhone = agentChat && !embedded && !LocalLargeWindowInput.current &&
         !window.expanded && !window.tabletop && LocalSplitDetail.current == null
-    val errorLine = snapshot.error?.takeIf { glass && agentChat }
+    val compactGlassAgent = glass && compactAgentPhone
+    val errorLine = snapshot.error?.takeIf { agentChat }
     // Persona's conversation says it too, by Persona's name (#4339 C18): a new conversation's first message waits there.
     val personaName = persona.core.designsystem.LocalPersonaName.current
     val readyLine = if (readOnly) null else gettingReady(res, session, messages, liveWork = liveWorkLines.isNotEmpty(),
@@ -611,10 +612,10 @@ private fun ChatPage(
     LaunchedEffect(projection) {
         openFoldsToFetch(projection.lines, folding, foldErrors.keys).forEach(::expand)
     }
-    // The chat's model operating a Mac (#4339 C9 and C18, iOS ComputerActivityPill), on Glass: a pill over an Agent chat's
-    // composer, under the entries in Persona's conversation; a tap opens the work line that holds the call.
-    val computer = remember(glass, readOnly, snapshot.items, machines, key.machineId) {
-        if (glass && !readOnly) persona.core.domain.ComputerActivity.latest(snapshot.items, key.machineId, machines) else null
+    // The chat's model operating a computer (#4339 C9 and C18, iOS ComputerActivityPill), shared across every style:
+    // a pill over an Agent chat's composer, under the entries in Persona's conversation; a tap opens the work line that holds the call.
+    val computer = remember(readOnly, snapshot.items, machines, key.machineId) {
+        if (!readOnly) persona.core.domain.ComputerActivity.latest(snapshot.items, key.machineId, machines) else null
     }
     val computerLine = computer?.let { a -> computerWorkLine(lines, a.toolUseId) }
     val computerPill: (@Composable (Modifier) -> Unit)? = computer?.let { a -> { modifier -> ChatComputerPill(a, onOpen = computerLine?.let { line -> {
@@ -810,13 +811,13 @@ private fun ChatPage(
     }
     val fixModel = chrome.onFixModel?.let { open -> { action: persona.core.designsystem.ReadinessActionId -> open(action, session?.launcher, session?.manager) } }
     val ownModelPicker = switchSession != null && chrome.assistantManagement != null &&
-        (glass || (!readOnly && (canSend || turnFix == TurnErrorFix.ModelRoute)))
+        (glass || (renderStyle == ChatRenderStyle.Assistant && !readOnly && (canSend || turnFix == TurnErrorFix.ModelRoute)))
     val clearModelAction: (() -> Unit)? = session?.takeIf {
         it.modelPick != null && persona.core.domain.models.PersonaModelPanel.MODEL_PICK in persona.core.designsystem.LocalHubFeatures.current &&
             chrome.assistantManagement != null
     }?.let { current ->
         {
-            if (glass && ownModelPicker) clearModelPick = true
+            if (ownModelPicker) clearModelPick = true
             else scope.launch {
                 try {
                     chrome.assistantManagement?.clearModelPick(current.key)
@@ -854,9 +855,8 @@ private fun ChatPage(
         headerFold, lines, lifecycle, lastUserId)
     val unreadEntry = pageListKeys.unreadEntry
     val placed = pageListKeys.placed
-    // Persona's first message, not in the transcript yet: its day stands over it on Glass, as the transcript's will once it
-    // is there (iOS `DayLine`, #1911), so the line does not appear above it later. The day it was written, else today.
-    val pendingDay = if (glass && !agentChat && lines.isEmpty() && placed.rest.isNotEmpty())
+    // Persona's first message, not in the transcript yet: its day stands over it across every style (iOS `DayLine`, #1911).
+    val pendingDay = if (!agentChat && lines.isEmpty() && placed.rest.isNotEmpty())
         placed.rest.mapNotNull { it.createdAt }.minOrNull()?.let { java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).toLocalDate() }
             ?: java.time.LocalDate.now()
         else null
@@ -1103,7 +1103,7 @@ private fun ChatPage(
                             if (foldsHeader) JFoldingHeader({ headerFold.fold }, onRange = { headerFold.range = it }, onTouch = headerFold::touched,
                                 full = header, compact = {
                                     ChatSlimHeader(session, status, connection, onBack,
-                                        onMore = if (compactGlassAgent) ({ headerMenuOpen.value = true }) else null,
+                                        onMore = if (compactAgentPhone) ({ headerMenuOpen.value = true }) else null,
                                         preferHerdrTabName = preferHerdrTabName,
                                         onOpen = headerFold::open)
                                 })
@@ -1113,9 +1113,9 @@ private fun ChatPage(
                                 onFreeze = { timeline.freeze(currentItems()); timelineVersion++ },
                                 onVisibilityChanged = { taskPageVisible = it },
                                 onExpandFold = ::expand, foldErrors = foldErrors,
-                                // Glass agent chats surface the plan via the floating PlanPill above the composer (matching iOS)
+                                // Every style surfaces Agent chat plans via the floating PlanPill above the composer (matching iOS)
                                 // instead of a top full-width progress bar; also hide while the link card peeks.
-                                showBar = linkInset.value <= 0f && !(glass && agentChat), callJumps = callJumps)
+                                showBar = linkInset.value <= 0f && !agentChat, callJumps = callJumps)
                         }
                     },
                     bottomBar = footer@ {
@@ -1147,7 +1147,7 @@ private fun ChatPage(
                             // An Agent's cards sit over the queue, the notes and the composer, as iOS's footer has them.
                             if (!readOnly && !assistantChat) pendingCards(stackCards, false, keyboard)
                             // The latest question the assistant answered here, after the agent's own cards (iOS DelegatedCard, #4339 C9).
-                            if (glass && agentChat && !readOnly)
+                            if (agentChat && !readOnly)
                                 DelegatedCard(key, interactions, canSend, Modifier.padding(horizontal = Tokens.Space.m, vertical = Tokens.Space.xs))
                             val composerError = snapshot.error.takeIf { errorLine == null }
                             (if (feedback == null) notice ?: composerError else composerError)?.let {
@@ -1242,18 +1242,34 @@ private fun ChatPage(
                                 // as iOS's footer has them: they alone, so "N pending" counts only them (DESIGN_SYSTEM.md 4.8).
                                 if (assistantChat) pendingCards(stackCards, false, keyboard)
                                 val claudeCommands = session?.canTypeClaudeCommands == true
-                                // Brief and Board's "Mode" sheet: a permission mode, an effort or a model to change (a
-                                // listed model needs the computer's launcher lists), or the modes a provider lists (#8261).
-                                val modeSheet = session != null && (session.canChangeModes || session.canChangeEffortOnly ||
-                                    session.canSwitchListedModes || (chrome.worktrees != null && SessionModes.listsModels(session)))
                                 // Persona's queue: its own messages, then those relayed from elsewhere, under its entries and right
                                 // above the composer, as iOS's footer has it (every style: it is behaviour; each draws its own strip, #4339 C6).
                                 if (renderStyle == ChatRenderStyle.Assistant && SlashCommand.mainSuggestions(composer.value.text,
                                         clear = canSend && LocalMainChatClear.current != null,
-                                        permissions = SessionModes.offersPermissions(session, glass, modeSheet), resources = res).isEmpty())
+                                        permissions = SessionModes.offersPermissions(session), resources = res).isEmpty())
                                     ChatQueueStrip(session, chrome.actions, composer, { notice = it }, sessions::refresh, imageLimits = imageLimits)
                                 if (embedded && assistantChat) LocalMainChatGuidance.current?.invoke()
                                 val offlineHint = if (agentChat) offlineAgentPlaceholder(session, machine, heldActions != null) else null
+                                val renderPersonaModelPill: @Composable (ModelPillWidth, Modifier) -> Unit = { width, pillModifier ->
+                                    val online = connection == null || connection == ConnectionState.Online
+                                    PersonaModelPill(switchSession, key.machineId, chrome.assistantManagement, width,
+                                        pagePick = conversationLauncher?.let { persona.core.contracts.ModelPick(it, conversationModel) },
+                                        onPagePick = { pick -> conversationLauncher = pick?.launcher; conversationModel = pick?.model },
+                                        onNotice = { notice = it }, modifier = pillModifier, enabled = online, onOverlay = { pillOverlay = it },
+                                        onConfigure = chrome.onFixModel?.let { fix -> { fix(persona.core.designsystem.ReadinessActionId.EditProvider, null, switchSession?.manager) } },
+                                        onEffort = { effort -> switchSession?.let { controls.run(it, ChatAction.Modes(effort = effort)) } },
+                                        openRequested = openModes || openModelRoutePicker,
+                                        onOpenHandled = { openModes = false; openModelRoutePicker = false },
+                                        clearRequested = clearModelPick, onClearHandled = { clearModelPick = false },
+                                        leaderConversations = chrome.leaderConversations,
+                                        onSwitched = {
+                                            scope.launch {
+                                                try { sessions.refresh() }
+                                                catch (cancelled: CancellationException) { throw cancelled }
+                                                catch (_: Exception) { }
+                                            }
+                                        })
+                                }
                                 LargeWindowComposer(key, composer, session?.status == "working" && !(agentChat && machine?.online == false),
                                     sending || submittedDraft != null,
                                     // /clear and /model type into Claude's pane: Claude in a terminal engine only (positive check).
@@ -1271,38 +1287,21 @@ private fun ChatPage(
                                         !agentChat -> stringResource(R.string.chat_placeholder_ask, persona.core.designsystem.LocalPersonaName.current)
                                         else -> offlineHint ?: agentPlaceholder(res, session)
                                     },
-                                    // Permission mode and effort for Claude's sessions, Persona's included; the model for Claude in a pane;
-                                    // the effort alone for a Codex thread on its app-server.
-                                    leading = when {
-                                        // Glass: the permission mode in the composer (Q11, iOS and the web): its symbol in its tone and
-                                        // its menu; the model and the effort are the pill's.
-                                        glass -> if (session != null && SessionModes.showsInComposer(session)) ({
-                                            HeaderModeButton(session, controls, connection == null || connection == ConnectionState.Online,
-                                                openRequested = openPermissions, onOpenHandled = { openPermissions = false }) { modeOverlay = it }
-                                        }) else null
-                                        // Brief and Board: also an agent whose model the node switches itself (a Paseo
-                                        // provider's), its launcher's models listed in the sheet (#8143). When AgentModelPill
-                                        // is active for an Agent chat, `/model` opens the unified model panel rather than both.
-                                        modeSheet -> ({
-                                            val modeBarTakesModel = !agentChat || switchSession == null
-                                            ChatModeBar(session, controls, connection == null || connection == ConnectionState.Online,
-                                                onOverlay = { modeOverlay = it }, onPickModel = { model -> send("/model $model") },
-                                                openRequested = (modeBarTakesModel && openModes) || openPermissions,
-                                                onOpenHandled = { if (modeBarTakesModel) openModes = false; openPermissions = false },
-                                                creation = chrome.worktrees)
-                                        })
-                                        else -> null
-                                    },
-                                    modeHint = if (glass) null else chatModeHint(session, includeModes = modeSheet),
-                                    // Brief and Board share one wrapping row for the launcher and mode chips; Glass's pill does its work (#5055).
-                                    hintChips = if (!glass && renderStyle == ChatRenderStyle.Assistant && chrome.assistantManagement != null &&
+                                    // Unified permission mode entry in the composer across every style (Q11, iOS and the web, S-09).
+                                    leading = if (session != null && SessionModes.showsInComposer(session)) ({
+                                        HeaderModeButton(session, controls, connection == null || connection == ConnectionState.Online,
+                                            openRequested = openPermissions, onOpenHandled = { openPermissions = false }) { modeOverlay = it }
+                                    }) else null,
+                                    modeHint = null,
+                                    // Shared PersonaModelPill across every style (S-01): Brief and Board place it in the
+                                    // composer chip row so all Assistant chats (main and non-main) share server modelPick,
+                                    // cross-engine switching, favorites/recent, effort, and TurnErrorFix with Glass.
+                                    hintChips = if (!glass && renderStyle == ChatRenderStyle.Assistant && switchSession != null && chrome.assistantManagement != null &&
+
                                         !readOnly && (canSend || turnFix == TurnErrorFix.ModelRoute)) ({
-                                        ConversationLauncherChip(chrome.assistantManagement, key.machineId, key.sessionId, session?.launcher,
-                                            conversationLauncher, conversationModel, openRequested = openModes || openModelRoutePicker,
-                                            onOpenHandled = { openModes = false; openModelRoutePicker = false }) { launcher, model ->
-                                            conversationLauncher = launcher
-                                            conversationModel = model
-                                        }
+                                        val pillWidth = ModelPillWidth.of(androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp.toFloat())
+                                            .let { if (it == ModelPillWidth.Compact) ModelPillWidth.Small else it }
+                                        renderPersonaModelPill(pillWidth, Modifier.heightIn(min = persona.core.designsystem.JChipTokens.height))
                                     }) else null,
                                     // The model pill (#5055, the web's ModelPill): every style for Agent chats, and Glass for Persona chats.
                                     modelPill = if (switchSession == null || (!agentChat && !glass)) null else ({ width ->
@@ -1320,23 +1319,7 @@ private fun ChatPage(
                                             switchObservation = pageSession.switchObservation,
                                             openRequested = openModes, onOpenHandled = { openModes = false },
                                             onConfigure = chrome.onFixModel?.let { fix -> { fix(persona.core.designsystem.ReadinessActionId.EditProvider, null, switchSession.manager) } })
-                                        else PersonaModelPill(switchSession, key.machineId, chrome.assistantManagement, width,
-                                            pagePick = conversationLauncher?.let { persona.core.contracts.ModelPick(it, conversationModel) },
-                                            onPagePick = { pick -> conversationLauncher = pick?.launcher; conversationModel = pick?.model },
-                                            onNotice = { notice = it }, enabled = online, onOverlay = { pillOverlay = it },
-                                            onConfigure = chrome.onFixModel?.let { fix -> { fix(persona.core.designsystem.ReadinessActionId.EditProvider, null, switchSession.manager) } },
-                                            onEffort = { effort -> controls.run(switchSession, ChatAction.Modes(effort = effort)) },
-                                            openRequested = openModes || openModelRoutePicker,
-                                            onOpenHandled = { openModes = false; openModelRoutePicker = false },
-                                            clearRequested = clearModelPick, onClearHandled = { clearModelPick = false },
-                                            leaderConversations = chrome.leaderConversations,
-                                            onSwitched = {
-                                                scope.launch {
-                                                    try { sessions.refresh() }
-                                                    catch (cancelled: CancellationException) { throw cancelled }
-                                                    catch (_: Exception) { }
-                                                }
-                                            })
+                                        else renderPersonaModelPill(width, Modifier)
                                     }),
                                     accessory = {
                                         if (linkContexts.isEmpty()) ComposerSuggestion(session, composer, onSend = { text -> send(text) })
@@ -1350,9 +1333,8 @@ private fun ChatPage(
                                     onMentionTask = { id -> tasks?.setRoute(key.sessionId, id) },
                                     // /model opens the "Mode" sheet's model choices; both need Claude in a pane (as the sheet does).
                                     onModel = if (claudeCommands && session?.canChangeModes == true) ({ openModes = true }) else null,
-                                    // /permissions where the composer has the mode picker (Glass's button, the others' "Mode" sheet), the
-                                    // web's `canPickPermissions`: Claude's sessions and Persona's while they can change it (#6513)
-                                    onPermissions = if (SessionModes.offersPermissions(session, glass, modeSheet)) ({ openPermissions = true }) else null,
+                                    // /permissions opens the composer's unified permission picker across every style (#6513).
+                                    onPermissions = if (SessionModes.offersPermissions(session)) ({ openPermissions = true }) else null,
                                     // (on Glass /model opens the pill's panel, where the model is picked)
                                     loop = claudeCommands,
                                     imageLimits = imageLimits)

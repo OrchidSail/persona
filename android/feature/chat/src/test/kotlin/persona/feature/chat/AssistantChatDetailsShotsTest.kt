@@ -152,10 +152,10 @@ class AssistantChatDetailsShotsTest {
             rule.waitUntil(10_000) { rule.onAllNodesWithTag("assistant-tray-bar").fetchSemanticsNodes().isNotEmpty() }
             rule.onNodeWithText("Ask Persona…").assertExists()
 
-            // In progress: the running task, and on Glass the two shelved ones as one quiet line.
+            // In progress: the running task, and the two shelved ones as one quiet line across every style.
             rule.onNodeWithTag("assistant-entry-running").performClick(); settle()
             shot("$name-1-in-progress")
-            rule.onAllNodesWithTag("assistant-tray-shelved").assertCountEquals(if (s == AppStyle.Glass) 1 else 0)
+            rule.onAllNodesWithTag("assistant-tray-shelved").assertCountEquals(1)
             rule.onNodeWithTag("assistant-entry-running").performClick(); settle()
 
             // Needs you: approving the last card here offers the next one waiting elsewhere, as an Agent's chat does.
@@ -172,8 +172,7 @@ class AssistantChatDetailsShotsTest {
             rule.onNodeWithText("Persona is getting ready…").assertExists()
             shot("$name-4-getting-ready")
 
-            // The shelved line opens the board, which lists them.
-            if (s != AppStyle.Glass) continue
+            // The shelved line opens the board, which lists them across every style.
             rule.onNodeWithTag("assistant-entry-running").performClick(); settle()
             rule.onNodeWithText("Shelved").assertExists()
             rule.onNodeWithTag("assistant-tray-shelved").performClick(); settle()
@@ -188,8 +187,8 @@ class AssistantChatDetailsShotsTest {
     }
 
     // iOS's DayLine over a first message the transcript does not have yet (#1911): Persona's conversation says its day from the
-    // start (Glass), so the line does not appear above it later; the day it was written. Brief and Board keep the page.
-    @Test fun aFirstMessageNotInTheTranscriptYetHasItsDayOnGlass() {
+    // start across every style, so the line does not appear above it later; the day it was written.
+    @Test fun aFirstMessageNotInTheTranscriptYetHasItsDayInEveryStyle() {
         var style by mutableStateOf(AppStyle.Glass)
         var dark by mutableStateOf(false)
         val fixture = Fixture(items = emptyList()).apply {
@@ -220,8 +219,7 @@ class AssistantChatDetailsShotsTest {
             val name = "${s.name.lowercase()}-${if (d) "dark" else "light"}"
             rule.onNodeWithText("Plan a weekend in the mountains").assertExists()
             rule.onNodeWithText("Persona is getting ready…").assertExists()
-            if (s == AppStyle.Glass) rule.onNodeWithTag("chat-pending-day").assertExists().assert(hasText("Today · ", substring = true))
-            else rule.onAllNodesWithTag("chat-pending-day").assertCountEquals(0)
+            rule.onNodeWithTag("chat-pending-day").assertExists().assert(hasText("Today · ", substring = true))
             shot("$name-6-first-message")
         }
     }

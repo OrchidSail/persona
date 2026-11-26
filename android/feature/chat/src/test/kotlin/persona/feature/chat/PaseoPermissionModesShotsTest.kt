@@ -108,13 +108,13 @@ class PaseoPermissionModesShotsTest {
         return page.copy(Bitmap.Config.ARGB_8888, true).also { Canvas(it).drawBitmap(menu, m.x - p.x, m.y - p.y, null) }
     }
 
-    /** The header and its mode control where the style has it: the composer's on Glass (Q11, #5055). */
+    /** The header and its unified composer mode button across every style (Q11, #5055). */
     @Composable
     private fun Moded(s: Session, chrome: ChatChromeState) {
         Column(Modifier.fillMaxWidth()) {
             ChatHeader(s, machine, listOf(s), chrome, null, false, onBack = {}, onOpenSession = {}, onConnectionDetails = {}, onOverlay = {})
             Spacer(Modifier.height(8.dp))
-            if (PersonaTheme.style == AppStyle.Glass) Row { HeaderModeButton(s, chrome, online = true) {} }
+            Row { HeaderModeButton(s, chrome, online = true) {} }
         }
     }
 

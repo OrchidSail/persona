@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.SpanStyle
@@ -29,7 +31,9 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import persona.core.designsystem.AppStyle
 import persona.core.designsystem.GroupPosition
+import persona.core.designsystem.JChipTokens
 import persona.core.designsystem.JGroupItem
 import persona.core.designsystem.JIcon
 import persona.core.designsystem.MessageItemTokens
@@ -72,6 +76,7 @@ internal fun GlassInboxFilterStrip(
     )
     Row(
         modifier
+            .testTag("inbox-filter-strip")
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState())
             .padding(vertical = Tokens.Space.xs),
@@ -126,9 +131,11 @@ private fun GlassInboxFilterPill(
     val palette = PersonaTheme.palette
     val fill = if (active) palette.accent else palette.sunken
     val ink = if (active) palette.needsYou.onDot else palette.ink
+    val shape = if (PersonaTheme.style == AppStyle.Board) PersonaTheme.shapes.controlShape else CircleShape
     Row(
         Modifier
-            .clip(CircleShape)
+            .heightIn(min = JChipTokens.height)
+            .clip(shape)
             .background(fill)
             .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = Tokens.Space.m, vertical = Tokens.Space.sm),
@@ -155,9 +162,41 @@ internal fun inboxInteractionIcon(kind: String): PhIcon = when (kind) {
     else -> PersonaIcons.waitsForYou
 }
 
+/** Style-independent data projection for an Inbox waiting-agent row: computer name, time, kind icon, ask and headline. */
+internal data class InboxAgentRowModel(
+    val heading: String,
+    val timeText: String?,
+    val ask: String?,
+    val subtitleHeadline: String,
+    val machine: String?,
+    val icon: PhIcon,
+)
+
+internal fun projectInboxAgentRow(
+    interaction: InboxInteraction,
+    machineName: String?,
+    timeText: String?,
+    fallbackKindLabel: String,
+): InboxAgentRowModel {
+    val heading = interaction.sessionTitle.ifBlank { interaction.title }
+    val ask = (interaction.askLine ?: interaction.summary)?.trim()?.trimStart('#')?.trim()
+        ?.takeIf { it.isNotEmpty() && it != heading }
+    val rawHeadline = interaction.title.trim()
+    val subtitleHeadline = if (rawHeadline.isEmpty() || rawHeadline == ask) fallbackKindLabel else rawHeadline
+    val machine = machineName?.trim()?.takeIf { it.isNotEmpty() }
+    return InboxAgentRowModel(
+        heading = heading,
+        timeText = timeText,
+        ask = ask,
+        subtitleHeadline = subtitleHeadline,
+        machine = machine,
+        icon = inboxInteractionIcon(interaction.kind),
+    )
+}
+
 /**
- * Glass waiting-agent row in the Inbox (matching iOS `InboxAgentRow`): rounded-square tinted icon well with semantic
- * blue request-kind icon, session title + short timestamp, ask line, and blue request headline + machine name.
+ * Shared waiting-agent row in the Inbox across every style (matching iOS `InboxAgentRow`): rounded-square tinted icon
+ * well with semantic request-kind icon, session title + short timestamp, ask line, and request headline + machine name.
  */
 @Composable
 internal fun GlassInboxAgentRow(
@@ -173,9 +212,6 @@ internal fun GlassInboxAgentRow(
     val clock = LocalInboxClock.current
     val zone = LocalInboxZone.current
     val timeText = interaction.createdAt?.let { displayTime(it, currentLocale, res, zone, clock()) }
-    val heading = interaction.sessionTitle.ifBlank { interaction.title }
-    val ask = (interaction.askLine ?: interaction.summary)?.trim()?.trimStart('#')?.trim()
-        ?.takeIf { it.isNotEmpty() && it != heading }
     val fallbackKindLabel = when (interaction.kind) {
         "plan" -> stringResource(persona.core.designsystem.R.string.designsystem_decision_plan)
         "question" -> stringResource(persona.core.designsystem.R.string.designsystem_decision_question)
@@ -183,9 +219,11 @@ internal fun GlassInboxAgentRow(
         "screen" -> stringResource(persona.core.designsystem.R.string.designsystem_decision_screen)
         else -> ""
     }
-    val rawHeadline = interaction.title.trim()
-    val subtitleHeadline = if (rawHeadline.isEmpty() || rawHeadline == ask) fallbackKindLabel else rawHeadline
-    val machine = machineName?.trim()?.takeIf { it.isNotEmpty() }
+    val model = projectInboxAgentRow(interaction, machineName, timeText, fallbackKindLabel)
+    val heading = model.heading
+    val ask = model.ask
+    val subtitleHeadline = model.subtitleHeadline
+    val machine = model.machine
 
     JGroupItem(position) {
         Row(
@@ -205,7 +243,7 @@ internal fun GlassInboxAgentRow(
                 contentAlignment = Alignment.Center,
             ) {
                 JIcon(
-                    inboxInteractionIcon(interaction.kind),
+                    model.icon,
                     null,
                     size = Tokens.Size.iconXS,
                     tint = palette.needsYou.dot,

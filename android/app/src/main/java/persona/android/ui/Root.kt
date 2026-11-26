@@ -715,16 +715,16 @@ internal fun PersonaShell(session: ShellSession, openNavigation: MutableState<((
         inboxUnreadCount(shownRecords, inboxConversationList)
     }
     val badges = mapOf(AppTab.Agents to agentNeeds, AppTab.Persona to assistantRequests.size)
-    // "Needs you now" on the Persona home: the agents waiting (not Persona's own, not muted), then the inbox's "Needs you".
+    // "Needs you now" on the Persona home across every style (#4339 C17, S-13): single source of truth aligned with
+    // the Agents tab's badge (session-deduplicated agentRows), then the inbox's "Needs you".
     val needsMessages = remember(shownRecords) {
         shownRecords.map { persona.feature.assistant.NeedsYouMessage(it.item, lark = it.feedId != null, working = it.agentWorking) }
     }
-    val needsYou = remember(agentRequests, sessions, preferences.mutes, needsMessages) {
-        persona.feature.assistant.needsYou(agentRequests, sessions, preferences.mutes, needsMessages)
-    }
-    // On Glass over the blank page's composer (#4339 C17): the sessions the Agents tab's badge counts, then the inbox's.
     val shellNeedsYou = remember(agentRows, sessions, needsMessages) {
         persona.feature.assistant.needsYouBySession(agentRows, sessions, needsMessages)
+    }
+    val needsYou = remember(shellNeedsYou) {
+        persona.feature.assistant.needsYouFromLines(shellNeedsYou)
     }
     // The modules on for this hub (Modules.kt): carried by the build, and offered by the hub when they need a feature.
     val hubFeatures by session.features.collectAsStateWithLifecycle()

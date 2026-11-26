@@ -48,10 +48,10 @@ import java.time.Instant
 class ChatHeaderFoldTest {
     @get:Rule val rule = createComposeRule()
 
-    @Test fun onlyGlassFoldsAnAgentsChatHeader() {
+    @Test fun everyStyleFoldsAnAgentsChatHeader() {
         assertTrue(HeaderFoldRules.folds(AppStyle.Glass, topBar = true, ChatRenderStyle.Agent))
-        assertFalse(HeaderFoldRules.folds(AppStyle.Brief, topBar = true, ChatRenderStyle.Agent))
-        assertFalse(HeaderFoldRules.folds(AppStyle.Board, topBar = true, ChatRenderStyle.Agent))
+        assertTrue(HeaderFoldRules.folds(AppStyle.Brief, topBar = true, ChatRenderStyle.Agent))
+        assertTrue(HeaderFoldRules.folds(AppStyle.Board, topBar = true, ChatRenderStyle.Agent))
         assertFalse(HeaderFoldRules.folds(AppStyle.Glass, topBar = true, ChatRenderStyle.Assistant))
         assertFalse(HeaderFoldRules.folds(AppStyle.Glass, topBar = false, ChatRenderStyle.Agent))
     }
@@ -89,12 +89,13 @@ class ChatHeaderFoldTest {
         assertFalse(HeaderFoldRules.reopens(setOf("a"), setOf("a")))
     }
 
-    @Test fun theTitleOpensSessionInfoOnGlass() {
+    @Test fun theTitleOpensSessionInfoInEveryStyle() {
         assertEquals(ChatTitleTap.SessionInfo, ChatTitleTap.of(AppStyle.Glass, online = true, hasSession = true))
         assertEquals(ChatTitleTap.Connection, ChatTitleTap.of(AppStyle.Glass, online = false, hasSession = true))
         assertEquals(ChatTitleTap.Status, ChatTitleTap.of(AppStyle.Glass, online = true, hasSession = false))
-        assertEquals(ChatTitleTap.Status, ChatTitleTap.of(AppStyle.Brief, online = true, hasSession = true))
-        assertEquals(ChatTitleTap.Status, ChatTitleTap.of(AppStyle.Board, online = false, hasSession = true))
+        assertEquals(ChatTitleTap.SessionInfo, ChatTitleTap.of(AppStyle.Brief, online = true, hasSession = true))
+        assertEquals(ChatTitleTap.Connection, ChatTitleTap.of(AppStyle.Board, online = false, hasSession = true))
+        assertEquals(ChatTitleTap.Status, ChatTitleTap.of(AppStyle.Brief, online = true, hasSession = false))
     }
 
     private val key = SessionKey("macbook", "weather")
@@ -208,20 +209,28 @@ class ChatHeaderFoldTest {
         assertFalse("the header says it needs you again", folded())
     }
 
-    @Test fun briefNeverFolds() {
+    @Test fun briefFoldsAndOpensSessionInfoLikeGlass() {
+        animationsOff()
         page(style = AppStyle.Brief)
         rule.waitForIdle()
-        scrollTowardTheNewest()
-        rule.mainClock.advanceTimeBy(5_000)
         assertFalse(folded())
+        scrollTowardTheNewest()
+        assertTrue("the header folded to its slim bar on Brief", folded())
+        rule.onNodeWithContentDescription(slim).performClick()
+        rule.waitForIdle()
+        assertFalse("a tap on the slim bar opens it on Brief", folded())
     }
 
-    @Test fun boardNeverFolds() {
+    @Test fun boardFoldsAndOpensSessionInfoLikeGlass() {
+        animationsOff()
         page(style = AppStyle.Board)
         rule.waitForIdle()
-        scrollTowardTheNewest()
-        rule.mainClock.advanceTimeBy(5_000)
         assertFalse(folded())
+        scrollTowardTheNewest()
+        assertTrue("the header folded to its slim bar on Board", folded())
+        rule.onNodeWithContentDescription(slim).performClick()
+        rule.waitForIdle()
+        assertFalse("a tap on the slim bar opens it on Board", folded())
     }
 
     @Test fun glassTitleOpensSessionInfo() {
@@ -232,11 +241,19 @@ class ChatHeaderFoldTest {
         rule.onNode(isDialog() and androidx.compose.ui.test.hasAnyDescendant(hasText("Session overview"))).assertExists()
     }
 
-    @Test fun briefTitleKeepsTheStatusSheet() {
+    @Test fun briefTitleOpensSessionInfo() {
         page(style = AppStyle.Brief)
         rule.waitForIdle()
         rule.onNode(hasClickAction() and hasText("Weather widget", substring = true)).performClick()
         rule.waitForIdle()
-        rule.onNode(isDialog() and androidx.compose.ui.test.hasAnyDescendant(hasText("Session status"))).assertExists()
+        rule.onNode(isDialog() and androidx.compose.ui.test.hasAnyDescendant(hasText("Session overview"))).assertExists()
+    }
+
+    @Test fun boardTitleOpensSessionInfo() {
+        page(style = AppStyle.Board)
+        rule.waitForIdle()
+        rule.onNode(hasClickAction() and hasText("Weather widget", substring = true)).performClick()
+        rule.waitForIdle()
+        rule.onNode(isDialog() and androidx.compose.ui.test.hasAnyDescendant(hasText("Session overview"))).assertExists()
     }
 }

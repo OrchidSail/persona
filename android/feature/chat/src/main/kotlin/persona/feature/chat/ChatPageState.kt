@@ -209,9 +209,9 @@ internal fun rememberChatPageLinks(key: SessionKey, chrome: ChatChromeBindings, 
     }
     // A task's notice jumps to the call that started it through the task bar's navigation (ChatTasks).
     val callJumps = remember(key) { ChatCallJumps() }
-    // The Macs a computer tool's `machine` is, by name (the list changes with every report, its names seldom); Glass's
-    // rows also keep some tools' words as the title with the subject under them (#4339 C1).
-    val toolNames = remember(machines.map { it.id to it.name }, key.machineId, glass) { ToolNames(machines, key.machineId, glass = glass) }
+    // The Macs a computer tool's `machine` is, by name (the list changes with every report, its names seldom); every
+    // style keeps structured tool titles and subjects (#4339 C1).
+    val toolNames = remember(machines.map { it.id to it.name }, key.machineId) { ToolNames(machines, key.machineId, glass = true) }
     // Whose the conversation is, for what its links open (docs/assistant/managers.md "Clients"): its session's manager, else
     // for an assistant conversation the one whose page listed it.
     val linkManager = session?.manager ?: if (renderStyle == ChatRenderStyle.Assistant)
@@ -347,9 +347,8 @@ internal fun rememberChatPageLines(key: SessionKey, renderStyle: ChatRenderStyle
     modeChangesUntil: java.time.Instant? = null): ChatPageLines {
     val jumpItemState = remember { mutableStateOf<String?>(null) }
     var jumpItem by jumpItemState
-    // Glass draws the hub's task records among the lines, as iOS does (#4339 C13), and folds a supervision round into one
-    // line there rather than moving it to the background record; Brief and Board keep both behind the trays.
-    val inlineRecords = PersonaTheme.style == AppStyle.Glass
+    // Every style draws the hub's task records among the lines (#4339 C13) and folds supervision rounds inline.
+    val inlineRecords = true
     val backgroundFolding = if (foldsBackground || ((inlineRecords || !supervisingConversation) && renderStyle.compactToolSummary))
         persona.core.domain.tasks.BackgroundFolding(openWork, search.selected?.itemId ?: jumpItem, rounds = foldsBackground) else null
     val assistantPresentation = remember(projection, snapshot.items, feed, renderStyle, backgroundFolding, inlineRecords, supervisingConversation) {
@@ -361,13 +360,12 @@ internal fun rememberChatPageLines(key: SessionKey, renderStyle: ChatRenderStyle
         } else persona.core.domain.tasks.AssistantConversation(projection.lines, emptyList())
     }
     LaunchedEffect(key, tasks) { tasks?.load(key.sessionId); tasks?.loadTodayIfMain(key.sessionId) }
-    // Glass draws the subagents a subagent launched as task cards of their own among the steps, by when they started
-    // (#5045, DESIGN_SYSTEM.md 4.7 "Task cards"); Brief and Board do not.
-    val subagentCards = PersonaTheme.style == AppStyle.Glass
-    val nestedSubagents = if (subagentCards) session?.subagents.orEmpty() else emptyList()
-    val viewedStrips = PersonaTheme.style == AppStyle.Glass
-    // Where the replies' model changes, a divider (#5055, the web's ModelChangeDivider): Glass's, as its model pill.
-    val modelChanges = PersonaTheme.style == AppStyle.Glass
+    // Every style draws the subagents a subagent launched as task cards of their own among the steps (#5045).
+    val subagentCards = true
+    val nestedSubagents = session?.subagents.orEmpty()
+    val viewedStrips = true
+    // Where the replies' model changes, a divider across every style (#5055, the web's ModelChangeDivider).
+    val modelChanges = true
     val childPlaces = remember(key) { persona.core.domain.lines.ChildSessionPlaces() }
     val places = remember(children) { childPlaces.places(children) }
     val earliest = remember(snapshot.hasOlder, snapshot.items) { loadedEarliest(snapshot.items, snapshot.hasOlder) }
@@ -421,7 +419,7 @@ internal fun rememberChatPageRecap(key: SessionKey, composer: ChatComposerState,
     val recapContext = LocalContext.current
     val closedRecaps = remember(recapContext) { ClosedRecaps(recapContext) }
     var closedRecap by remember(key) { mutableStateOf(closedRecaps.closed(key)) }
-    val recapShown = if (glass && agentChat && !readOnly) openRecapId(lines, closedRecap) else null
+    val recapShown = if (agentChat && !readOnly) openRecapId(lines, closedRecap) else null
     val openRecap = remember(key, recapShown) {
         recapShown?.let { id -> OpenRecap(id) { closedRecaps.close(key, id); closedRecap = id } }
     }

@@ -82,7 +82,7 @@ class ByProjectShotsTest {
         }
         val opened = mutableMapOf<AppStyle, Int>()
         val hidden = mutableMapOf<AppStyle, Int>()
-        var foldedAgain = 0
+        val foldedAgain = mutableMapOf<AppStyle, Int>()
         var clocks = 0
         var idles = 0
         val named = mutableMapOf<AppStyle, Int>()
@@ -93,18 +93,18 @@ class ByProjectShotsTest {
             save("by-project", s, d)
             if (!d) clocks += listOf("1", "2").sumOf { rule.onAllNodesWithContentDescription("$it waiting in the background").fetchSemanticsNodes().size }
             if (!d) idles += rule.onAllNodesWithContentDescription("3 idle").fetchSemanticsNodes().size
-            // The folded row's chips: the three idle agents' tabs, beside "3 more idle" on Glass.
+            // The folded row's chips: the three idle agents' tabs beside "3 more idle" in every style.
             if (!d) named[s] = listOf("review", "research", "docs").count { rule.onAllNodesWithText(it).fetchSemanticsNodes().isNotEmpty() }
-            // "3 more idle" opens the three idle agents; on Glass "Hide 3 Idle" follows them.
+            // "3 more idle" opens the three idle agents; "Hide 3 Idle" follows them in every style.
             rule.onNodeWithText("3 more idle").performClick()
             rule.waitForIdle()
             save("by-project-open", s, d)
             opened[s] = rule.onAllNodesWithText("Update the docs").fetchSemanticsNodes().size
             hidden[s] = rule.onAllNodesWithText("Hide 3 Idle").fetchSemanticsNodes().size
-            if (s == AppStyle.Glass && !d && hidden[s] == 1) {
+            if (!d && hidden[s] == 1) {
                 rule.onNodeWithText("Hide 3 Idle").performClick()
                 rule.waitForIdle()
-                foldedAgain = rule.onAllNodesWithText("3 more idle").fetchSemanticsNodes().size
+                foldedAgain[s] = rule.onAllNodesWithText("3 more idle").fetchSemanticsNodes().size
             } else rule.runOnIdle { model.hideIdle(app()) }
             rule.waitForIdle()
         }
@@ -112,13 +112,12 @@ class ByProjectShotsTest {
         assertEquals(4 * AppStyle.entries.size, clocks)
         // The idle count after the clock, on the computer's heading and the space's, in every style.
         assertEquals(2 * AppStyle.entries.size, idles)
-        // Only Glass names the folded agents' tabs beside "3 more idle".
-        assertEquals(mapOf(AppStyle.Glass to 3, AppStyle.Brief to 0, AppStyle.Board to 0), named)
-        // The idle agents show once opened in every style; only Glass has the row that hides them again.
+        // Every style names the folded agents' tabs beside "3 more idle".
+        assertEquals(mapOf(AppStyle.Glass to 3, AppStyle.Brief to 3, AppStyle.Board to 3), named)
+        // The idle agents show once opened and "Hide 3 Idle" folds them again in every style.
         assertEquals(mapOf(AppStyle.Glass to 1, AppStyle.Brief to 1, AppStyle.Board to 1), opened)
-        assertEquals(mapOf(AppStyle.Glass to 1, AppStyle.Brief to 0, AppStyle.Board to 0), hidden)
-        // A tap on "Hide 3 Idle" folds them behind "3 more idle" again.
-        assertEquals(1, foldedAgain)
+        assertEquals(mapOf(AppStyle.Glass to 1, AppStyle.Brief to 1, AppStyle.Board to 1), hidden)
+        assertEquals(mapOf(AppStyle.Glass to 1, AppStyle.Brief to 1, AppStyle.Board to 1), foldedAgain)
     }
 
     /** The folded row names at most six of the hidden agents' tabs (iOS `IdleFoldRow`'s `prefix(6)`), as chips; a compact list says them in one line. */
@@ -163,14 +162,14 @@ class ByProjectShotsTest {
         rule.waitForIdle()
         save("by-project-chips-compact", AppStyle.Glass, false)
         assertEquals(1, rule.onAllNodesWithText("review · research · docs · deps · lint · types").fetchSemanticsNodes().size)
-        // Brief and Board keep the count alone.
+        // Brief and Board show the same six tab chips too.
         rule.runOnIdle { model.compact() }
         rule.waitUntil(5_000) { !model.page.value.preferences.compact }
         for (s in listOf(AppStyle.Brief, AppStyle.Board)) {
             rule.runOnIdle { style = s }
             rule.waitForIdle()
             save("by-project-chips", s, false)
-            assertEquals(emptyList<String>(), named())
+            assertEquals(tabs.take(6), named())
         }
     }
 }

@@ -103,7 +103,7 @@ class PlanCardConversationTest {
                 val host = AssistantTaskHost(store, "main", emptyList(), { machines[it] ?: it }, {}, { throw it }, {})
                 val original = ChatTimeline().lines(transcript, false, emptySet()).lines
                 val lines = AssistantTaskCards.lines(AssistantConversation.project(original, transcript).foreground, items, current, todos,
-                    inline = style == AppStyle.Glass)
+                    inline = true)
                 CompositionLocalProvider(LocalAssistantTaskHost provides host, LocalHomeChrome provides HomeChrome(
                     listOf(NavItem("assistant", "Assistant", persona.core.designsystem.icons.PhIcons.House)), "assistant", onSelect = {}, leading = {})) {
                     Column(Modifier.fillMaxWidth().testTag("plan-shot").background(PersonaTheme.palette.background)
@@ -342,18 +342,17 @@ class PlanCardConversationTest {
         capture("plan-glass-320")
     }
 
-    private fun keepsThePlanBehindTheTrays(style: AppStyle) {
+    private fun drawsInlinePlanCard(style: AppStyle) {
         show(style)
-        rule.onAllNodesWithTag("plan-card-plan").assertCountEquals(0)
-        rule.onNodeWithText("Split into 2 tasks, started like this").assertDoesNotExist()
-        rule.onNodeWithText("Start 2 tasks").assertDoesNotExist()
-        // the conversation is its two messages alone
+        rule.onAllNodesWithTag("plan-card-plan").assertCountEquals(1)
+        rule.onNodeWithText("Split into 2 tasks, started like this").assertIsDisplayed()
+        rule.onNodeWithText("Start 2 tasks").assertIsDisplayed()
         rule.onNodeWithText("I made a plan; start it when you are ready.").assertIsDisplayed()
         capture("plan-${style.name.lowercase()}-light")
     }
 
-    @Test fun briefKeepsThePlanBehindTheTrays() = keepsThePlanBehindTheTrays(AppStyle.Brief)
-    @Test fun boardKeepsThePlanBehindTheTrays() = keepsThePlanBehindTheTrays(AppStyle.Board)
+    @Test fun briefDrawsInlinePlanCard() = drawsInlinePlanCard(AppStyle.Brief)
+    @Test fun boardDrawsInlinePlanCard() = drawsInlinePlanCard(AppStyle.Board)
 
     private fun words(language: String, heading: String, start: String, edit: String, dismiss: String, directly: String) {
         show(AppStyle.Glass)

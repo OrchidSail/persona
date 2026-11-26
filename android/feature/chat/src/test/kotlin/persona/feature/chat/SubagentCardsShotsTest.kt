@@ -139,8 +139,8 @@ class SubagentCardsShotsTest {
                 val timeline = remember(scene) { ChatTimeline() }
                 val folds = remember(scene) { SubagentFolds() }
                 val snapshot = timeline.lines(scenes.getValue(scene), live = scene != "done", open = setOf("w-u1"))
-                // As the chat page: nested subagents are cards of their own in Glass only.
-                val lines = if (style == AppStyle.Glass) Subagents.withNested(snapshot.lines, listed) else snapshot.lines
+                // As the chat page: nested subagents are cards of their own across every style.
+                val lines = Subagents.withNested(snapshot.lines, listed)
                 val groups = lines.filterIsInstance<ChatLine.Work>().associateBy { it.id }
                 val last = lines.filterIsInstance<ChatLine.Step>().associate { it.groupId to it.step.id }
                 val links = ChatSubagents(listed.filter { it.toolUseId != null }.associate { it.toolUseId!! to SessionKey("box", it.sessionId) },

@@ -56,11 +56,12 @@ class ChatActivityTest {
     private val utc = ZoneId.of("UTC")
     private val now = Instant.parse("2026-11-12T14:00:00Z")
 
-    @Test fun onlyGlassShowsThemInTheHeader() {
+    @Test fun everyStyleShowsAgentActivityInTheHeader() {
         assertTrue(ChatActivity.inHeader(AppStyle.Glass, topBar = true, ChatRenderStyle.Agent))
-        assertFalse(ChatActivity.inHeader(AppStyle.Brief, topBar = true, ChatRenderStyle.Agent))
-        assertFalse(ChatActivity.inHeader(AppStyle.Board, topBar = true, ChatRenderStyle.Agent))
+        assertTrue(ChatActivity.inHeader(AppStyle.Brief, topBar = true, ChatRenderStyle.Agent))
+        assertTrue(ChatActivity.inHeader(AppStyle.Board, topBar = true, ChatRenderStyle.Agent))
         assertFalse(ChatActivity.inHeader(AppStyle.Glass, topBar = true, ChatRenderStyle.Assistant))
+        assertFalse(ChatActivity.inHeader(AppStyle.Brief, topBar = false, ChatRenderStyle.Agent))
         assertFalse(ChatActivity.shown(Session("m", "s")))
         assertTrue(ChatActivity.shown(Session("m", "s", loop = LoopInfo(kind = "wakeup"))))
         assertTrue(ChatActivity.shown(Session("m", "s", background = listOf(BackgroundTask("b1", "shell")))))
@@ -143,10 +144,18 @@ class ChatActivityTest {
         assertTrue(rule.onAllNodes(hasText("Background 1", substring = true), useUnmergedTree = true).fetchSemanticsNodes().isEmpty())
     }
 
-    @Test fun briefKeepsItsChipsAndNoPill() {
+    @Test fun briefShowsTheHeaderPillAndNotDuplicateChips() {
         page(AppStyle.Brief)
-        assertTrue(rule.onAllNodes(pill).fetchSemanticsNodes().isEmpty())
-        rule.onAllNodes(hasText("Background 1", substring = true), useUnmergedTree = true).fetchSemanticsNodes().let { assertFalse(it.isEmpty()) }
+        rule.onNode(pill).assertExists()
+        rule.onNode(hasContentDescription("1 background task, tap to view", substring = true)).assertExists()
+        assertTrue(rule.onAllNodes(hasText("Background 1", substring = true), useUnmergedTree = true).fetchSemanticsNodes().isEmpty())
+    }
+
+    @Test fun boardShowsTheHeaderPillAndNotDuplicateChips() {
+        page(AppStyle.Board)
+        rule.onNode(pill).assertExists()
+        rule.onNode(hasContentDescription("1 background task, tap to view", substring = true)).assertExists()
+        assertTrue(rule.onAllNodes(hasText("Background 1", substring = true), useUnmergedTree = true).fetchSemanticsNodes().isEmpty())
     }
 
     @Test fun stopLoopAsksThenSendsTheAgentIosWords() {

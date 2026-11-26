@@ -131,6 +131,13 @@ fun needsYouBySession(rows: List<NeedsYouRow>, sessions: List<Session>, messages
     return agents + inboxLines(messages)
 }
 
+/**
+ * Truncates [lines] (such as [needsYouBySession]'s session-deduplicated list) into a paged [NeedsYou] model
+ * so every style shares the same single source of truth with the Agents tab badge.
+ */
+fun needsYouFromLines(lines: List<NeedsYouLine>, shown: Int = NeedsYouShown): NeedsYou =
+    NeedsYou(lines.take(shown), (lines.size - shown).coerceAtLeast(0))
+
 /** The inbox items still to do in "Needs you" (not those the AI twin has in hand), newest first. */
 private fun inboxLines(messages: List<NeedsYouMessage>): List<NeedsYouLine> {
     val lark = messages.filter { it.lark }.map { it.item.id }.toSet()
@@ -185,7 +192,10 @@ internal fun NeedsYouSection(needs: NeedsYou, onOpen: (NeedsYouLine) -> Unit, on
         needs.lines.forEachIndexed { index, line ->
             key(line.key) {
                 JGroupItem(GroupPosition.of(index, count)) {
-                    JRow(needsYouWho(line), subtitle = line.what.ifBlank { null }, subtitleLines = 1, onClick = { onOpen(line) },
+                    val subtitle = if (line is NeedsYouLine.Agent && line.terminal && line.what.isBlank()) {
+                        stringResource(persona.core.designsystem.R.string.designsystem_decision_screen)
+                    } else line.what.ifBlank { null }
+                    JRow(needsYouWho(line), subtitle = subtitle, subtitleLines = 1, onClick = { onOpen(line) },
                         leading = {
                             // Regular weight: some fill glyphs (a terminal window, a checklist) read as solid blocks.
                             JIcon(needsYouIcon(line), null, tint = if (line is NeedsYouLine.Agent) palette.needsYou.dot else palette.ink2)

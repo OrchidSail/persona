@@ -196,8 +196,7 @@ internal fun ChatHeader(
         source = session?.let { chatPlace(it, machine?.displayName, it.sourceSubtitle?.text(), preferHerdrTabName = preferHerdrTabName) },
         sourceShort = session?.let { chatPlace(it, machine?.displayName, it.sourceSubtitle?.text(), short = true, preferHerdrTabName = preferHerdrTabName) },
         busy = connection in setOf(ConnectionState.Connecting, ConnectionState.Updating),
-        // Glass's title opens Session Info, as iOS's (#4339 C4), or why the hub is out of reach while it is; Brief and
-        // Board keep the status sheet.
+        // Tapping the title opens Session Info across every style (#4339 C4), or connection details while offline.
         onTitleClick = when (ChatTitleTap.of(PersonaTheme.style, online = linkTitle == null, hasSession = session != null)) {
             ChatTitleTap.SessionInfo -> ({ dialog = "info" })
             ChatTitleTap.Connection -> ({ dialog = "connection" })
@@ -205,10 +204,9 @@ internal fun ChatHeader(
         },
         agentMark = session?.agentMark,
         waiting = agent?.waitsInBackground == true,
-        titleClickLabel = if (PersonaTheme.style == AppStyle.Glass)
-            stringResource(if (linkTitle == null) R.string.chat_chrome_title_info else R.string.chat_chrome_title_connection) else null,
+        titleClickLabel = stringResource(if (linkTitle == null) R.string.chat_chrome_title_info else R.string.chat_chrome_title_connection),
     ) {
-        // Glass opens the terminal from ⋯ and the work line, as iOS (#4339 C7); Brief and Board keep their header.
+        // Every style opens the terminal from ⋯ and the live work line (#4339 C7).
         val headerTerminal = onTerminal ?: onTerminalHelp
         if (headerTerminal != null && ChatTerminalPlaces.inHeader(PersonaTheme.style))
             JIconButton(PersonaIcons.terminal, stringResource(if (onTerminal != null) R.string.chat_screen_open_terminal else R.string.chat_screen_terminal_help),
@@ -233,10 +231,7 @@ internal fun ChatHeader(
             )
         }
         actions()
-        // The permission mode, always in view and changed here (#3957, iOS #3719).
-        // Glass has the mode in the composer, by the model pill (Q11, #5055); Brief and Board keep it here.
-        if (session != null && SessionModes.showsInHeader(session) && PersonaTheme.style != AppStyle.Glass)
-            HeaderModeButton(session, state, online && !readOnly) { modeOverlay = it }
+        // Permission mode lives in the composer across every style (S-09); no duplicate top-bar button.
         JIconButton(PhIcons.DotsThree, stringResource(R.string.chat_chrome_more), { menu = true })
     }
     val resumeCopied = stringResource(R.string.chat_chrome_resume_copied)

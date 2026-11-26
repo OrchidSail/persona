@@ -22,7 +22,6 @@ import persona.core.contracts.Item
 import persona.core.contracts.SessionKey
 import persona.core.contracts.api.ChatRepository
 import persona.core.contracts.api.ChatSnapshot
-import persona.core.designsystem.AppStyle
 import persona.core.designsystem.JLoading
 import persona.core.designsystem.JNotice
 import persona.core.designsystem.JTextButton
@@ -248,9 +247,8 @@ internal fun rememberEarlierEngines(
     }
     val open = store.open
     val folds = store.folds
-    val glass = PersonaTheme.style == AppStyle.Glass
-    val lines by produceState(emptyList<EarlierEngineLine>(), plan.sections, open, folds, glass) {
-        value = withContext(Dispatchers.Default) { earlierEngineLines(plan, open, folds, glass) }
+    val lines by produceState(emptyList<EarlierEngineLine>(), plan.sections, open, folds) {
+        value = withContext(Dispatchers.Default) { earlierEngineLines(plan, open, folds, showModelChanges = true) }
     }
     return EarlierEnginePresentation(lines, plan.next, store.loading, store.failed, plan.missing, {
         plan.next?.let { next -> scope.launch { store.load(next, current, live) } }
