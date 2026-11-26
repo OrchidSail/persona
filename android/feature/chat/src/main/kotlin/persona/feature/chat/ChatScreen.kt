@@ -679,11 +679,14 @@ private fun ChatPage(
         if (!line.open) toggle(line.id)
         if (!chatList.followsEnd) scope.launch { chatList.scrollToRecord(line.contentKey) }
     } }, modifier) } }
+    val hubKeepsModelPick = switchSession != null &&
+        persona.core.domain.models.PersonaModelPanel.MODEL_PICK in persona.core.designsystem.LocalHubFeatures.current
     /** Whether the message was taken (false: nothing went, the box or another send stands); [onFailed] if it then fails. */
     fun send(command: String? = null, onFailed: () -> Unit = {}): Boolean = interactionController.send(command,
         draft = composer.draft, contexts = linkContexts, hasContent = composer.hasContent, ready = composer.ready,
         wireText = command ?: linkMessage(composer.message(), linkContexts, context.resources), paneId = session?.paneId,
-        conversationLauncher = conversationLauncher, conversationModel = conversationModel, agentChat = agentChat,
+        conversationLauncher = if (hubKeepsModelPick) null else conversationLauncher,
+        conversationModel = if (hubKeepsModelPick) null else conversationModel, agentChat = agentChat,
         onFailed = onFailed, onCleared = { refs -> linkContexts = linkContexts.filterNot { ref -> refs.any { it.id == ref.id } } })
     // Chat content (group A): the message menu, quote and context actions.
     // A swipe to the left quotes (iOS #1058) wherever the long-press menu's "Quote" is offered.
