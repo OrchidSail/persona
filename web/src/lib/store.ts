@@ -26,7 +26,7 @@ import { helloDeviceId } from "./device-id";
 import { currentLanguage } from "../i18n";
 import type { AgentMutes } from "./agent-groups";
 import { justFinished } from "./agent-groups";
-import { stateOf } from "./format";
+import { activityOf } from "./format";
 import { timeMs } from "./times";
 import { agentKey, NO_PINS, pinsOf, type AgentPins } from "./pins";
 import { holdNotedSeen, recordMarkedSeen, releaseOpenSeen, releaseSeen, resetSeenVisit } from "./seen-rows";
@@ -304,7 +304,7 @@ onRuntimeChanges((upsert, remove) => {
 });
 
 /** What a summary row (`waiting` present) says by leaving a field out: none (docs/protocol/protocol.md "Summary rows"). */
-const SUMMARY_FLAGS = ["quiet", "awaits_reply", "starting", "awaiting_first_message", "start_error", "start_error_code",
+const SUMMARY_FLAGS = ["view", "locallySeen", "quiet", "awaits_reply", "starting", "awaiting_first_message", "start_error", "start_error_code",
   "turn_error", "turn_error_kind", "turn_error_code", "turn_error_resets_at", "turn_error_resumes"] as const;
 
 /** `row` as a changed list row says it is now: a complete row is the row; a summary row goes over the fields it
@@ -1265,6 +1265,12 @@ function onMessage(msg: Record<string, unknown>) {
     case "agents.prefs":
       void refreshAgentPrefs();
       break;
+    case "mutes":
+      void refreshMutes();
+      break;
+    case "pins":
+      void refreshPins();
+      break;
     case "agents":
       agentsChanged(Array.isArray(msg.session_ids) ? (msg.session_ids as string[]) : []);
       break;
@@ -1309,6 +1315,24 @@ async function save<K extends "mutes" | "pins">(key: K, path: string, next: Stat
 /** "Mute" (optimistic): PUT /mutes; throws when the hub refuses, with the mutes put back. */
 export function saveMutes(mutes: AgentMutes): Promise<void> {
   return save("mutes", "/mutes", mutes, mutesSaves);
+}
+
+async function refreshMutes() {
+  if (mutesSaves.out) return;
+  const at = mutesSaves.rev;
+  try {
+    const v = await api<AgentMutes>("/mutes", { dedupe: false });
+    if (at === mutesSaves.rev && !mutesSaves.out) set({ mutes: { spaces: v.spaces ?? [], sessions: v.sessions ?? [], allowed: v.allowed ?? [] } });
+  } catch { /* keep current mutes until next sync */ }
+}
+
+async function refreshPins() {
+  if (pinsSaves.out) return;
+  const at = pinsSaves.rev;
+  try {
+    const v = await api<Partial<AgentPins>>("/pins", { dedupe: false });
+    if (at === pinsSaves.rev && !pinsSaves.out) set({ pins: pinsOf(v) });
+  } catch { /* keep current pins until next sync */ }
 }
 
 /** One machine as the hub answered a change to it (PUT …/engine), over what the list has: the hub's next \`machines\`
@@ -2039,8 +2063,8 @@ export function markSeenLocally(mid: string, sid: string) {
     send({ type: "seen", machine_id: mid, session_id: sid });
     return;
   }
-  if (s && (stateOf(s) === "unread" || justFinished(s, state.mutes))) {
-    recordMarkedSeen(s, stateOf(s) === "idle" ? "just_finished" : "unread", viewed.has(runtimeIdentity(s)));
+  if (s && (activityOf(s) === "unread" || justFinished(s, state.mutes))) {
+    recordMarkedSeen(s, activityOf(s) === "idle" ? "just_finished" : "unread", viewed.has(runtimeIdentity(s)));
   }
   set({ seen: { ...state.seen, [runtimeIdentity(s!)]: deliverSeen(mid, sid, mark) } });
   scheduleSeenCheck();

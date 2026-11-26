@@ -436,7 +436,7 @@ class HttpInboxAssistantTransport private constructor(
         internal const val CREATE_CONVERSATION_TIMEOUT_SECONDS = 45L
 
         // Different repositories and pairing scopes can refresh at the same time.
-        private val jsonDecodeGate = Semaphore(1)
+        internal val jsonDecodeGate = Semaphore(1)
 
         private fun fixedRequest(baseUrl: String, token: String, client: OkHttpClient):
             suspend (String, String, RequestBody?, Boolean, Long?) -> Response {

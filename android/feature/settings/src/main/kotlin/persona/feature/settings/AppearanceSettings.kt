@@ -48,6 +48,7 @@ import persona.core.designsystem.icons.PhIcons
 import persona.core.domain.sort.AgentListDisplay
 import persona.core.domain.sort.AgentListDisplaySettings
 import persona.core.domain.sort.AgentRowStyle
+import persona.core.domain.sort.AgentSeenRows
 
 /**
  * Settings › Interface style: three styles, applied at once and remembered on this phone, then "Theme color" (iOS `ThemeColor`) and "Appearance"
@@ -88,6 +89,30 @@ fun AppearanceSettings(modifier: Modifier = Modifier, agentsDisplay: AgentListDi
         }
         // Every style supports all four Agents list layouts (#4338 A9).
         if (agentsDisplay != null) AgentsListLayout(agentsDisplay)
+        if (agentsDisplay != null) SeenAgentsOptions(agentsDisplay)
+    }
+}
+
+@Composable
+private fun SeenAgentsOptions(settings: AgentListDisplaySettings) {
+    val selected by settings.seenRows.collectAsState(AgentSeenRows.Stay)
+    val scope = rememberCoroutineScope()
+    JSectionHeader(stringResource(R.string.settings_seen_agents))
+    AgentSeenRows.entries.forEach { choice ->
+        val title = stringResource(when (choice) {
+            AgentSeenRows.Stay -> R.string.settings_seen_agents_stay
+            AgentSeenRows.Leave -> R.string.settings_seen_agents_leave
+        })
+        val isSelected = choice == selected
+        Row(
+            Modifier.fillMaxWidth().option(isSelected, onClick = {
+                scope.launch { settings.setSeenRows(choice) }
+            }).padding(Tokens.Space.m),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(title, Modifier.weight(1f), style = PersonaTheme.type.body, color = PersonaTheme.palette.ink)
+            JRadio(isSelected, null)
+        }
     }
 }
 

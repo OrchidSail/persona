@@ -22,12 +22,10 @@ import (
 // plan's own todo_id, the todo a started task became, is the hub's to set, and the shallower field wins in JSON.
 type planTaskIn struct {
 	PlanTask
-	TodoID          string   `json:"todo_id"`
-	WritePrefixes   []string `json:"write_prefixes,omitempty"`
-	ForceParallel   bool     `json:"force_parallel,omitempty"`
-	ChangedFiles    []string `json:"changed_files,omitempty"`
-	UnlockStage     string   `json:"unlock_stage,omitempty"`
-	UnlockContracts []string `json:"unlock_contracts,omitempty"`
+	TodoID        string   `json:"todo_id"`
+	WritePrefixes []string `json:"write_prefixes,omitempty"`
+	ForceParallel bool     `json:"force_parallel,omitempty"`
+	ChangedFiles  []string `json:"changed_files,omitempty"`
 }
 
 // toolTaskPlanFrom is task_plan from the conversation sessionID running on machine (where its attachments are).
@@ -44,7 +42,6 @@ func (s *Service) taskPlanFrom(ctx context.Context, machine, sessionID string, a
 	}
 	var a struct{ Tasks []PlanTask }
 	var plannedScopes []plannedWriteScopeInput
-	var plannedUnlocks []todoStageUnlockSpec
 	lead := "" // optional initial leader assignment; omission keeps the planning lead or main
 	if scope != nil {
 		tasks, err := scope.workerTasks(args)
@@ -53,7 +50,6 @@ func (s *Service) taskPlanFrom(ctx context.Context, machine, sessionID string, a
 		}
 		a.Tasks = tasks
 		plannedScopes = make([]plannedWriteScopeInput, len(tasks))
-		plannedUnlocks = make([]todoStageUnlockSpec, len(tasks))
 	} else {
 		var in struct {
 			Tasks      []planTaskIn `json:"tasks"`
@@ -75,10 +71,6 @@ func (s *Service) taskPlanFrom(ctx context.Context, machine, sessionID string, a
 				WritePrefixes: t.WritePrefixes,
 				ChangedFiles:  t.ChangedFiles,
 				ForceParallel: t.ForceParallel,
-			})
-			plannedUnlocks = append(plannedUnlocks, todoStageUnlockSpec{
-				stage:     t.UnlockStage,
-				contracts: t.UnlockContracts,
 			})
 		}
 	}
@@ -155,18 +147,13 @@ func (s *Service) taskPlanFrom(ctx context.Context, machine, sessionID string, a
 				}
 				t.BlockedByPR = normPRs
 			}
-			if i < len(plannedUnlocks) {
-				normStage, normContracts, err := parseUnlockStageRule(plannedUnlocks[i].stage, plannedUnlocks[i].contracts)
-				if err != nil {
-					return "", fmt.Errorf("task %d: %w", i+1, err)
-				}
-				plannedUnlocks[i] = todoStageUnlockSpec{stage: normStage, contracts: normContracts}
+			t.UnlockStage, t.UnlockContracts, err = parseUnlockStageRule(t.UnlockStage, t.UnlockContracts)
+			if err != nil {
+				return "", fmt.Errorf("task %d: %w", i+1, err)
 			}
 		} else {
 			t.BlockedByPR = nil
-			if i < len(plannedUnlocks) {
-				plannedUnlocks[i] = todoStageUnlockSpec{}
-			}
+			t.UnlockStage, t.UnlockContracts = "", nil
 		}
 		if err := t.checkRole(scope != nil); err != nil {
 			return "", fmt.Errorf("task %d: %w", i+1, err)
@@ -207,7 +194,9 @@ func (s *Service) taskPlanFrom(ctx context.Context, machine, sessionID string, a
 				return "", fmt.Errorf("task %d: %v", i+1, err)
 			}
 		}
+		t.InboxOptOut = false
 		t.InboxHandoff = ""
+		t.InboxMatch, t.InboxMatchText, t.InboxNotice, t.InboxCandidates = "", "", "", nil
 		if err := s.planInboxSource(ctx, machine, sessionID, t); err != nil {
 			return "", fmt.Errorf("task %d: %w", i+1, err)
 		}
@@ -351,16 +340,17 @@ func (s *Service) taskPlanFrom(ctx context.Context, machine, sessionID string, a
 					t.Permission = "bypassPermissions"
 				}
 			}
-			// traex, omp…: no mode, no effort (launcher_modes.go). One the call names is refused now, rather than by
-			// the computer once the task starts; one a tier filled in is dropped. pi, cursor: dropped either way.
+			// Check the caller's choices before saving a plan for a launcher with limited start options.
 			if takesModes = startTakesModes(fit.agent); !takesModes {
 				if err := startModesRefused(cmp.Or(t.Launcher, resolvedLauncher), fit.agent, asked, own.effort); err != nil {
 					return "", fmt.Errorf("task %d: %w", i+1, err)
 				}
-				t.Effort = ""
 				if asked != "" { // a work agent's, not refused: the card shows none, as none will run
 					t.Permission = ""
 				}
+			}
+			if !startTakesEffort(fit.agent) {
+				t.Effort = ""
 			}
 		}
 		// Unset: settled on the computer it lands on, so the card shows what will run (tasks_permission.go). An agent
@@ -397,6 +387,11 @@ func (s *Service) taskPlanFrom(ctx context.Context, machine, sessionID string, a
 	}
 	if err := s.planBriefs(ctx, machine, sessionID, a.Tasks); err != nil {
 		return "", err
+	}
+	for i := range a.Tasks {
+		if err := s.matchPlannedInbox(ctx, machine, sessionID, &a.Tasks[i]); err != nil {
+			return "", fmt.Errorf("task %d: %w", i+1, err)
+		}
 	}
 	// A round the hub started for a scheduled task (schedule_grant.go, #8045): its plan names the schedule, so the card
 	// can offer to let it start these by itself, and that schedule's grant may start them now. Never for a plan whose
@@ -485,9 +480,6 @@ func (s *Service) taskPlanFrom(ctx context.Context, machine, sessionID string, a
 	if err := s.savePlan(ctx, p); err != nil {
 		return "", err
 	}
-	if s.settings(ctx).todosV2On() {
-		s.rememberPlanUnlockRules(p.ID, plannedUnlocks)
-	}
 	// The plan goes in the item's body too: a client that missed the task_plan event (or raced it) still draws the
 	// card from the conversation itself.
 	if scope == nil {
@@ -519,6 +511,7 @@ func (s *Service) taskPlanFrom(ctx context.Context, machine, sessionID string, a
 		b.WriteString("This is not confirmation that any agent started: you are told when one fails to start. A worker that has " +
 			"report_to_supervisor reports to you in a message, and they cannot hand work on.")
 		b.WriteString(dups)
+		b.WriteString(s.inboxPlanNotes(ctx, started.Tasks))
 		b.WriteString(conflictHints)
 		b.WriteString(taskPlanEstimateNotes(started.Tasks))
 		return b.String(), nil
@@ -557,6 +550,7 @@ func (s *Service) taskPlanFrom(ctx context.Context, machine, sessionID string, a
 		}
 		b.WriteString("After the user taps Start, check the task cards or context snapshot for the outcome.")
 		b.WriteString(dups)
+		b.WriteString(s.inboxPlanNotes(ctx, p.Tasks))
 		b.WriteString(conflictHints)
 		b.WriteString(taskPlanEstimateNotes(p.Tasks))
 		if _, talking := s.ownersPresent(time.Now())[sessionID]; talking {
@@ -631,6 +625,7 @@ func (s *Service) taskPlanFrom(ctx context.Context, machine, sessionID string, a
 		fmt.Fprintf(&b, " Leader conversation %s supervises them: their supervision messages go there, and it reviews them with task_review.", supervisor)
 	}
 	b.WriteString(dups)
+	b.WriteString(s.inboxPlanNotes(ctx, started.Tasks))
 	b.WriteString(conflictHints)
 	b.WriteString(taskPlanEstimateNotes(started.Tasks))
 	if wait > 0 && len(started.Tasks) == 1 && scope == nil && started.Tasks[0].Error == "" {

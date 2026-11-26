@@ -406,6 +406,78 @@
         }
       }
     },
+    "3 Days [Token Project]": {
+      "comment": "Token usage by project: the range of the last 3 days",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "3 Days"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "3日間"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "近 3 天"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "7 Days [Token Project]": {
+      "comment": "Token usage by project: the range of the last 7 days",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "7 Days"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "7日間"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "近 7 天"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Assistant [Token Project]": {
+      "comment": "Token usage by project: the Persona assistant's own conversations",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Assistant"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アシスタント"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "助手"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
     "Browsers": {
       "extractionState": "manual",
       "localizations": {
@@ -429,6 +501,198 @@
         }
       }
     },
+    "By Agent": {
+      "comment": "Token usage by project: each coding agent's tokens",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "By Agent"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent別"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按 Agent"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "By Computer": {
+      "comment": "Token usage by project: each computer's tokens",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "By Computer"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コンピューター別"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按电脑"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "By Hour": {
+      "comment": "Token usage by project: today's tokens by the hour",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "By Hour"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1時間ごと"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每小时"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "By Launcher": {
+      "comment": "Token usage by project: each launcher's tokens",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "By Launcher"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ランチャー別"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按启动器"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Cache Hits": {
+      "comment": "Token usage by project: cache reads over all input",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cache Hits"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "キャッシュヒット"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "缓存命中"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Development [Token Project]": {
+      "comment": "Token usage by project: git repositories",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Development"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "開発"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开发"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Folders and Worktrees": {
+      "comment": "Token usage by project: each folder or git worktree the project's sessions started in",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Folders and Worktrees"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "フォルダーとワークツリー"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目录与 worktree"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Home Folder [Token Project]": {
+      "comment": "Token usage by project: sessions started in the home folder itself",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Home Folder"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ホームフォルダー"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "主目录"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
     "Integrations": {
       "extractionState": "manual",
       "localizations": {
@@ -451,6 +715,174 @@
           }
         }
       }
+    },
+    "Linked Worktree": {
+      "comment": "Token usage by project: a git worktree that is not the main checkout",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linked Worktree"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "リンクされたワークツリー"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关联的 worktree"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Non-development": {
+      "comment": "Token usage by project: folders, the home folder and the assistant, not in a git repository",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Non-development"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "開発以外"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "非开发"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Nothing Used in These Days": {
+      "comment": "Token usage by project: the range has no usage",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nothing Used in These Days"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この期間の使用量はありません"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这几天没有用量"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Nothing Used Today Yet": {
+      "comment": "Token usage by project: today has no usage",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nothing Used Today Yet"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "今日の使用量はまだありません"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "今天还没有用量"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Opened in a Terminal [Launcher]": {
+      "comment": "Token usage by project: sessions typed in a terminal, with no launcher",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Opened in a Terminal"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ターミナルで開いたもの"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "终端里打开的"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Range [Token Project]": {
+      "comment": "Token usage by project: the range picker's label",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Range"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "期間"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "时间范围"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Requests [Token Project]": {
+      "comment": "Token usage by project: how many model replies",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Requests"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "リクエスト"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请求"
+          }
+        }
+      },
+      "extractionState": "manual"
     },
     "Scoped Access": {
       "extractionState": "manual",
@@ -113547,6 +113979,28 @@
       },
       "extractionState": "manual"
     },
+    "New Agent in %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New Agent in %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ にエージェントを作成"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在%@中新建 Agent"
+          }
+        }
+      }
+    },
     "New Agent [Mac Quick Open 0587b9]": {
       "localizations": {
         "en": {
@@ -160965,6 +161419,30 @@
       },
       "extractionState": "manual"
     },
+    "Share [Token Project]": {
+      "comment": "Token usage by project: the project's part of every project's tokens",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Share"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全体比"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "占全部"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
     "SMS": {
       "localizations": {
         "en": {
@@ -185858,6 +186336,30 @@
           "stringUnit": {
             "state": "translated",
             "value": "临时码"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
+    "Temporary Folders": {
+      "comment": "Token usage by project: sessions started in a temporary folder",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Temporary Folders"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一時フォルダー"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "临时文件夹"
           }
         }
       },
@@ -214296,6 +214798,30 @@
       },
       "extractionState": "manual"
     },
+    "Unknown Folder": {
+      "comment": "Token usage by project: usage whose folder no computer could tell",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unknown Folder"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不明なフォルダー"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未知目录"
+          }
+        }
+      },
+      "extractionState": "manual"
+    },
     "Unknown message %u": {
       "localizations": {
         "en": {
@@ -240676,6 +241202,248 @@
           "stringUnit": {
             "state": "translated",
             "value": "收尾"
+          }
+        }
+      }
+    },
+    "kept forever": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "kept forever"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "無期限に保存"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "永久保留"
+          }
+        }
+      }
+    },
+    "kept for %lld days": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "variations": {
+            "plural": {
+              "one": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "kept for %1$lld day"
+                }
+              },
+              "other": {
+                "stringUnit": {
+                  "state": "translated",
+                  "value": "kept for %1$lld days"
+                }
+              }
+            }
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld日間保存"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保留 %lld 天"
+          }
+        }
+      }
+    },
+    "This meeting's audio, Talk included, goes through your hub to %@. The hub deletes the audio once the minutes are written; the text in Knowledge is %@.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This meeting's audio, Talk included, goes through your hub to %1$@. The hub deletes the audio once the minutes are written; the text in Knowledge is %2$@."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この会議の音声は（「話す」を含め）ハブを経由して %1$@ に送られます。議事録ができるとハブは音声を削除します。ナレッジのテキストは%2$@されます。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这场会议的音频（包括“说话”）会经你的 hub 发送到 %1$@。会议纪要写好后，hub 会删除这段音频；知识库中的文字会%2$@。"
+          }
+        }
+      }
+    },
+    "This meeting's audio, Talk included, goes through your hub to the speech service it is set up with. The hub deletes the audio once the minutes are written; the text in Knowledge is %@.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This meeting's audio, Talk included, goes through your hub to the speech service it is set up with. The hub deletes the audio once the minutes are written; the text in Knowledge is %@."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この会議の音声は（「話す」を含め）ハブを経由して、ハブに設定された音声サービスに送られます。議事録ができるとハブは音声を削除します。ナレッジのテキストは%@されます。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这场会议的音频（包括“说话”）会经你的 hub 发送到它配置的语音服务。会议纪要写好后，hub 会删除这段音频；知识库中的文字会%@。"
+          }
+        }
+      }
+    },
+    "Audio stays on this iPhone, except while Talk is on: what is said then goes to the voice service. Its text syncs to Knowledge and is %@.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Audio stays on this iPhone, except while Talk is on: what is said then goes to the voice service. Its text syncs to Knowledge and is %@."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "「話す」がオンの間、話した内容は音声サービスに送られます。それ以外の音声はこのiPhoneに残ります。テキストはナレッジに同期され、%@されます。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Talk 开启时，说出的内容会发到语音服务，音频平时留在这台 iPhone 上。文字会同步到知识库，%@。"
+          }
+        }
+      }
+    },
+    "Audio stays on this device. Its text syncs to Knowledge and is %@.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Audio stays on this device. Its text syncs to Knowledge and is %@."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "音声はこのデバイスに残り、テキストはナレッジに同期され、%@されます。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "音频保留在本机，文字会同步到知识库，%@。"
+          }
+        }
+      }
+    },
+    "This meeting's audio also went through your hub to its speech service; the hub deletes that audio once the minutes are written. Audio on this device is %@. Its text in Knowledge is %@.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This meeting's audio also went through your hub to its speech service; the hub deletes that audio once the minutes are written. Audio on this device is %1$@. Its text in Knowledge is %2$@."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この会議の音声はハブを経由して音声サービスにも送られました。議事録ができるとハブはその音声を削除します。このデバイスの音声は%1$@されます。ナレッジのテキストは%2$@されます。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这场会议的音频也经你的 hub 发送到了它的语音服务；会议纪要写好后，hub 会删除那段音频。本机的音频会%1$@。知识库中的文字会%2$@。"
+          }
+        }
+      }
+    },
+    "Audio stays on this iPhone until 3 days after the day's final recap, 7 days at most, or the hub's audio retention when shorter. Only the text goes to Knowledge, where it is %@; the recap is kept like meeting minutes.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Audio stays on this iPhone until 3 days after the day's final recap, 7 days at most, or the hub's audio retention when shorter. Only the text goes to Knowledge, where it is %@; the recap is kept like meeting minutes."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "音声は、その日の最終まとめから3日後、遅くとも7日後、または hub の音声保存期間が短い場合はその時点でこのiPhoneから削除されます。ナレッジに送られるのはテキストだけで、テキストは%@されます。まとめは会議の議事録と同じ期間保持されます。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "音频最多在这台 iPhone 上保留 7 天，即当日最终回顾生成后 3 天（以较早者为准），如果 hub 的音频保留期更短则按更短的来。只有文字会进入知识库，文字会%@；回顾的保留方式与会议纪要相同。"
+          }
+        }
+      }
+    },
+    "Only the text and timestamps go into Knowledge; the original audio isn't uploaded. Audio on this device is %@. Its text in Knowledge is %@.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Only the text and timestamps go into Knowledge; the original audio isn't uploaded. Audio on this device is %1$@. Its text in Knowledge is %2$@."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ナレッジに入るのはテキストとタイムスタンプだけです。元の音声はアップロードされません。このデバイスの音声は%1$@されます。ナレッジのテキストは%2$@されます。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只有文字和时间戳会进入知识库；原始音频不会上传。本机的音频会%1$@。知识库中的文字会%2$@。"
+          }
+        }
+      }
+    },
+    "The text is %@, and the day's recap is kept as long as meeting minutes, which is forever by default.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The text is %@, and the day's recap is kept as long as meeting minutes, which is forever by default."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "テキストは%@され、その日のまとめは会議の議事録と同じ期間保持されます（初期設定では無期限）。"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文字会%@，当日回顾的保留时间与会议纪要相同，默认永久保留。"
           }
         }
       }

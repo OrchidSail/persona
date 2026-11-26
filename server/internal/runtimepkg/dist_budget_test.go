@@ -46,10 +46,19 @@ import (
 // After preserving Antigravity modes (#16300), the packages measured 278,334 B. Filtering botmux marker
 // lines before shortening runtime previews adds 549 B (#16310).
 // Antigravity detached pending approval turn cancellation (including sibling-ask withdrawal and stale-turn/racing-ask/refusal guards) and explicit deny-with-note refusal follow-up add 436 B (279,319 B).
+// Antigravity native usage account name and subscription plan enrichment via GetUserStatus (#16277) adds 286 B (279,605 B).
+// Main then measured 280,046 B (#16595): #16490 (+21 B), #15678 (+406 B) and #16027 (+22 B) grew the packages without raising
+// the budget, and #16285 adds 278 B on main (its 286 B was measured on its own branch).
+// Later runtime changes on main (#16591, #16122) bring the total to 280,892 B.
+// Following an Antigravity conversation past a rewind's abandoned export tail and rewinding a cut that hides ranges at
+// its matching visible step (#14297) add 304 B (281,196 B).
+// Applying the configured Antigravity model before the first prompt after ACP resume (#15537) adds 67 B (281,263 B).
+// Claude Code plugin 0.3.1 reports classic hook pass-over and disables permission bridging under managed settings
+// (#15546), adding 1,397 B (282,660 B).
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	// Personal US hub baseline (+open PRs + US synergy + #14755 + upstream #16220/#16300/#16365/#16513) totals 283,095 B.
-	const budget = 283_400
+	// Personal US hub baseline (+open PRs #16001/#14755/#14935/#16153/#16393 + US synergy + upstream #15542/#16556/#15673) totals 288,055 B.
+	const budget = 288_400
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {

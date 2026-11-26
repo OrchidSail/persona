@@ -65,6 +65,19 @@ func TestManifestSchemaAgreesOnMetadata(t *testing.T) {
 		}, append(slices.Clone(HubScopes), ScopeCallPrefix+"example-other", ScopeDeviceRelayPrefix+"example-channel", ScopeDeviceRelayPrefix+"example_ch"),
 			[]string{"agents", "agents.everything", " kb.read", "KB.read", ScopeCallPrefix, ScopeCallPrefix + "Example",
 				ScopeDeviceRelayPrefix, ScopeDeviceRelayPrefix + "Example", ScopeDeviceRelayPrefix + "-bad", ScopeDeviceRelayPrefix + "bad.ch"}},
+		{"contributes.skills[].title", func(m map[string]any, v string) {
+			m["contributes"] = map[string]any{"skills": []any{map[string]any{"id": "search", "title": v, "dir": "skills/search"}}}
+		}, []string{"", "Search code", strings.Repeat("好", 40)}, []string{strings.Repeat("好", 41)}},
+		{"contributes.assistant[].title", func(m map[string]any, v string) {
+			m["contributes"] = map[string]any{"assistant": []any{map[string]any{
+				"id": "search", "title": v, "skills": []any{"skills/search"},
+			}}}
+		}, []string{"", "Search command", strings.Repeat("好", 40)}, []string{strings.Repeat("好", 41)}},
+		{"contributes.mcp_servers[].title", func(m map[string]any, v string) {
+			m["contributes"] = map[string]any{"mcp_servers": []any{map[string]any{
+				"id": "search", "title": v, "command": "search-server",
+			}}}
+		}, []string{"", "Search server", strings.Repeat("好", 40)}, []string{strings.Repeat("好", 41)}},
 	}
 	for _, c := range cases {
 		check := func(v string, want bool) {

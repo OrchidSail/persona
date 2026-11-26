@@ -25,8 +25,11 @@ func visibleSegments(c *db.LogicalConversation) []conversationlog.Segment {
 }
 
 func logicalSegmentContext(ctx context.Context, seg conversationlog.Segment, strict bool) context.Context {
-	if !strict && seg.State == "retired" && seg.FrozenEnd != nil && seg.SourceHistory != "" {
-		return context.WithValue(ctx, frozenSegmentKey{}, frozenSegmentHint{history: seg.SourceHistory, frozenEnd: *seg.FrozenEnd})
+	if seg.FrozenEnd != nil {
+		ctx = withoutLiveHistoryRead(ctx) // retired frozen segments cannot receive new sends; durable history stays authoritative
+		if !strict && seg.State == "retired" && seg.SourceHistory != "" {
+			return context.WithValue(ctx, frozenSegmentKey{}, frozenSegmentHint{history: seg.SourceHistory, frozenEnd: *seg.FrozenEnd})
+		}
 	}
 	return ctx
 }

@@ -1025,11 +1025,11 @@ private fun GlassMessageCard(item: FeedItem, host: AssistantTaskHost, todo: Todo
                 // Dismissed/filed: keep the hub's draft text rather than any unsaved local edit.
                 if (editing && open) BasicTextField(draft, onDraft, Modifier.fillMaxWidth().testTag("message-card-field"),
                     textStyle = type.body.copy(color = palette.ink), cursorBrush = SolidColor(palette.accent))
-                else Text(
-                    sent?.text ?: if (filed || dismissed) item.field("draft").orEmpty() else draft.ifEmpty { item.field("draft").orEmpty() },
-                    style = type.body,
-                    color = if (filed || dismissed) palette.ink2 else palette.ink,
-                )
+                else {
+                    val displayed = sent?.text ?: if (filed || dismissed) item.field("draft").orEmpty() else draft.ifEmpty { item.field("draft").orEmpty() }
+                    if (displayed.isNotEmpty()) Text(displayed, style = type.body,
+                        color = if (filed || dismissed) palette.ink2 else palette.ink)
+                }
             }
             if (blank != null) Text(stringResource(R.string.chat_tasks_message_blank, blank), style = type.caption, color = palette.danger.text)
             if (filed) Text(stringResource(R.string.chat_tasks_message_filed), style = type.caption, color = palette.ink2)
