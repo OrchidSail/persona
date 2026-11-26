@@ -55,7 +55,10 @@ import persona.core.contracts.FeedResponse
 import persona.core.contracts.Interaction
 import persona.core.contracts.Item
 import persona.core.contracts.JsonCodec
+import persona.core.contracts.LnModeResponse
 import persona.core.contracts.Machine
+import persona.core.contracts.PushIntercept
+import persona.core.contracts.PushInterceptsResponse
 import persona.core.contracts.QueueEdit
 import persona.core.contracts.Resolution
 import persona.core.contracts.ServerEvent
@@ -83,9 +86,13 @@ import persona.core.contracts.api.ScheduledTask
 import persona.core.contracts.api.SessionsRepository
 import persona.core.contracts.api.TasksApi
 import persona.core.designsystem.AppStyle
+import persona.core.designsystem.HomeChrome
 import persona.core.designsystem.JChipTokens
+import persona.core.designsystem.LocalHomeChrome
+import persona.core.designsystem.NavItem
 import persona.core.designsystem.PersonaTheme
 import persona.core.designsystem.Tokens
+import persona.core.designsystem.icons.PhIcons
 import persona.core.domain.tasks.TasksStore
 import java.io.File
 import java.time.Instant

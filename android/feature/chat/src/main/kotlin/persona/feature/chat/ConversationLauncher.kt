@@ -8,9 +8,9 @@ import kotlinx.coroutines.launch
 import persona.core.contracts.ModelPick
 import persona.core.contracts.Session
 import persona.core.contracts.api.*
+import persona.core.designsystem.ComposerMetaChip
 import persona.core.designsystem.JAction
 import persona.core.designsystem.JActionSheet
-import persona.core.designsystem.JChip
 import persona.core.designsystem.LocalHubFeatures
 import persona.core.designsystem.icons.PersonaIcons
 import persona.core.designsystem.operationFeedback
@@ -402,12 +402,12 @@ internal fun ConversationLauncherChip(
         fallbackSelectedLabel = stringResource(R.string.chat_conversation_model_selected),
     )
     val label = if (state.overridden) listOfNotNull(state.effectiveLauncher, pickedModelLabel).joinToString(" · ") else defaultLabel
-    JChip(
-        label,
-        onClick = { if (enabled && !state.saving) open = true },
+    ComposerMetaChip(
+        text = label,
         icon = PersonaIcons.model,
         selected = state.overridden,
-        muted = !enabled || state.saving,
+        dropdown = true,
+        onClick = if (enabled && !state.saving) ({ open = true }) else null,
     )
     if (!open) return
 
