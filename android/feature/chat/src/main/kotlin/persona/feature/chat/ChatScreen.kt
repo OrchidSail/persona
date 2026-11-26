@@ -429,15 +429,32 @@ private fun ChatPage(
     // live one (it folds and opens as while it runs), but nothing is at work, so its line reads "Waiting for you" with no
     // clock, as the header does (web goes by the same state).
     val waitingOnYou = turnWaitsOnYou(session, key, requests)
-    // Which items the lines were last built from: until the first build finishes, the page is still loading, not empty.
-    var projectedFrom by remember { mutableStateOf<List<Item>?>(null) }
-    val projection by produceState(persona.core.domain.lines.ChatSnapshot(emptyList(), emptyList(), persona.core.domain.lines.TaskIndex()),
-        snapshot.items, live, openWork, timelineVersion) {
+    // Pair the async timeline projection atomically with the snapshot window it was built from so assistant
+    // folding and feed clipping never mix old line IDs with a newly committed snapshot during recomposition.
+    val projected by produceState(
+        ProjectedTimeline(),
+        snapshot.items, snapshot.hasOlder, snapshot.olderBoundaryKnown, snapshot.loading, live, openWork, timelineVersion,
+    ) {
         val items = snapshot.items
-        value = withContext(Dispatchers.Default) {
+        val hasOlder = snapshot.hasOlder
+        val olderBoundaryKnown = snapshot.olderBoundaryKnown
+        val loading = snapshot.loading
+        val next = withContext(Dispatchers.Default) {
             timeline.lines(items, live, openWork.toSet())
         }
-        projectedFrom = items
+        value = ProjectedTimeline(next, items, hasOlder, olderBoundaryKnown, loading)
+    }
+    val projection = projected.snapshot
+    val projectedFrom = projected.items
+    val projectedSnapshot = remember(snapshot, projected) {
+        projected.items?.let { items ->
+            snapshot.copy(
+                items = items,
+                hasOlder = projected.hasOlder,
+                olderBoundaryKnown = projected.olderBoundaryKnown,
+                loading = projected.loading,
+            )
+        } ?: snapshot.copy(items = emptyList(), hasOlder = false, olderBoundaryKnown = false, loading = true)
     }
     // Where the header counts "Working 22 min" from: the start of the turn that runs now (iOS `Turn.startedAt`).
     val runningSince = remember(projection) { projection.liveTurnId?.let { id -> projection.turns.firstOrNull { it.id == id }?.start } }
@@ -468,7 +485,7 @@ private fun ChatPage(
         session?.let { modeChangeStore.watch(key, it, agentChat = renderStyle != ChatRenderStyle.Assistant) }
     }
     val modeChangesUntil = remember(timelineVersion, projection) { modeChangesCutoff(timeline.isFrozen(), projection.lines) }
-    val pageLines = rememberChatPageLines(key, renderStyle, snapshot, session, foldsBackground, supervisingConversation, tasks, taskTodos, search,
+    val pageLines = rememberChatPageLines(key, renderStyle, projectedSnapshot, session, foldsBackground, supervisingConversation, tasks, taskTodos, search,
         openWork, projection, feed, taskPlans, taskCardProjection, childCards.list, modeChanges = modeChangeStore.changes,
         modeChangesUntil = modeChangesUntil)
     var jumpItem by pageLines.jumpItem

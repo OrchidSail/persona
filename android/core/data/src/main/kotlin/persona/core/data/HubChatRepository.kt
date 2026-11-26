@@ -101,6 +101,16 @@ class HubChatRepository(
         /** A delta arrived since the window's last publish. Guarded by [lock]. */
         var deltaDirty = false
         /**
+         * Committed snapshot held on screen while a history rewrite awaits its replacement page
+         * (matching web `useTranscript.ts` `replacing`), so intermediate empty or partial states
+         * never wipe loaded messages, drop `hasOlder`, reset live drafts, or overwrite the disk cache.
+         * Guarded by [lock].
+         */
+        var replacing: ChatSnapshot? = null
+        /** Live streaming delta buffered while [replacing] holds the previous history on screen. Guarded by [lock]. */
+        var pendingReplacementDelta: DeltaEvent? = null
+        var pendingReplacementDeltaEnded = false
+        /**
          * Nothing has come from the hub for this chat yet: its first page is on its way, or was refused as not_loaded
          * and waits for the watch ([notLoadedWait]). With nothing cached the chat shows its loading state meanwhile, not
          * an empty chat (#8321).
@@ -137,6 +147,20 @@ class HubChatRepository(
                     is DeltaEvent -> existing(SessionKey(event.machineId, event.sessionId))?.let { entry ->
                         entry.ready.await()
                         entry.lock.withLock {
+                            if (entry.replacing != null) {
+                                entry.reconnected = false
+                                if (!event.turnFinished) {
+                                    entry.pendingReplacementDelta = event
+                                    entry.pendingReplacementDeltaEnded = false
+                                } else {
+                                    entry.stopRequested = false
+                                    entry.deltaWindow?.cancel()
+                                    entry.deltaWindow = null
+                                    entry.pendingReplacementDeltaEnded = true
+                                    requestSync(entry.key)
+                                }
+                                return@withLock
+                            }
                             entry.realtime.delta(event, entry.reducer.items)
                             entry.reconnected = false
                             if (!event.turnFinished) {
@@ -772,11 +796,60 @@ class HubChatRepository(
         }
     }
 
+    private fun needsReplacementFetch(requests: List<Action>): Boolean =
+        requests.any { it is Action.FetchLatest || it is Action.FetchAfter }
+
+    /**
+     * Called holding [Entry.lock] after a continuity transition.
+     *
+     * When a history change resets or truncates an already populated transcript while a replacement
+     * fetch (`FetchLatest` or `FetchAfter`) is still pending, keep the last committed snapshot on
+     * screen until the replacement completes (matching web `useTranscript.ts` `replacing`).
+     */
+    private fun updateReplacing(
+        entry: Entry,
+        previousHistory: String?,
+        state: ContinuityAdapter.State,
+        requests: List<Action>,
+        reloadApplied: Boolean,
+        contentApplied: Boolean,
+        gap: persona.core.domain.ContinuityReducer.Gap,
+        follow: Boolean = false,
+        zeroOriginComplete: Boolean = false,
+    ) {
+        if (reloadApplied) {
+            entry.replacing = null
+            return
+        }
+        val historyChanged = previousHistory != null && state.history != null && state.history != previousHistory
+        val pending = needsReplacementFetch(requests)
+        if (historyChanged && pending) {
+            if (entry.replacing == null && entry.state.value.items.isNotEmpty()) {
+                entry.replacing = entry.state.value
+                entry.deltaWindow?.cancel()
+                entry.deltaWindow = null
+                entry.deltaDirty = false
+            }
+            return
+        }
+        if (entry.replacing != null) {
+            val overtaken = state.items.any { it.seq > state.covered }
+            val complete = contentApplied && !pending && !follow && !overtaken &&
+                gap == persona.core.domain.ContinuityReducer.Gap.None &&
+                (state.covered > 0 || zeroOriginComplete)
+            if (complete) entry.replacing = null
+        }
+    }
+
     private suspend fun pushSynchronous(entry: Entry, input: Input.Push): List<Action> = entry.lock.withLock {
+        val previousHistory = entry.reducer.history
         val result = entry.continuity.accept(input)!!
         clearSyncBackoffLocked(entry)
         entry.eventError = null
         firstPageIn(entry)
+        updateReplacing(entry, previousHistory, result.state, result.requests, reloadApplied = false,
+            contentApplied = true, gap = result.gap,
+            zeroOriginComplete = input.batch.fromSeq == 0 && !input.batch.moreAfter)
         publish(entry, verified = result.verified && (input.batch.backlog || entry.state.value.verified))
         result.requests
     }
@@ -785,6 +858,7 @@ class HubChatRepository(
         for (result in entry.patches) {
             if (result.diagnosticOnly) continue
             val continueFill = entry.lock.withLock {
+                val previousHistory = entry.appliedContinuity.history
                 entry.appliedContinuity = result.state
                 if (result.contentApplied) {
                     if (result.operations.any { it.content && it.id > entry.errorAfterOperation }) {
@@ -793,16 +867,21 @@ class HubChatRepository(
                     }
                     firstPageIn(entry)
                 }
+                val settled = result.afterApplied || result.reloadApplied
+                val hasFill = result.requests.any { it is Action.FetchAfter || it is Action.FetchLatest }
+                val overtaken = (settled || entry.replacing != null) &&
+                    result.state.items.any { it.seq > result.state.covered }
+                val follow = settled && !hasFill && (overtaken || entry.continuity.behind) &&
+                    entry.followupPages < 8 && (entry.followupCoverage == null || result.state.covered > entry.followupCoverage!!)
+                updateReplacing(entry, previousHistory, result.state, result.requests,
+                    reloadApplied = result.reloadApplied, contentApplied = result.contentApplied,
+                    gap = result.gap, follow = follow,
+                    zeroOriginComplete = result.afterApplied && result.verified)
                 if (result.stateChanged || result.contentApplied)
                     publish(entry, verified = result.verified && entry.eventError == null)
-                val settled = result.afterApplied || result.reloadApplied
                 if (!settled) return@withLock false
-                val overtaken = result.state.items.any { it.seq > result.state.covered }
-                val hasFill = result.requests.any { it is Action.FetchAfter || it is Action.FetchLatest }
-                val follow = !hasFill && (overtaken || entry.continuity.behind) &&
-                    entry.followupPages < 8 && (entry.followupCoverage == null || result.state.covered > entry.followupCoverage!!)
                 if (follow) { entry.followupPages++; entry.followupCoverage = result.state.covered }
-                if (result.verified && entry.eventError == null && !overtaken && !hasFill) {
+                if (result.verified && entry.eventError == null && !overtaken && !hasFill && entry.replacing == null) {
                     entry.followupPages = 0; entry.followupCoverage = null
                     val receipt = result.operations.filter { it.fillResponse }.maxOfOrNull { it.id }
                     if (receipt != null) entry.reconciliations.entries.removeAll { (ready, startedAfter) ->
@@ -935,6 +1014,7 @@ class HubChatRepository(
                         dispatch(entry, listOf(Action.FetchLatest()))
                         return@withLock
                     }
+                    val previousHistory = entry.reducer.history
                     val result = if (initial) entry.continuity.accept(Input.Latest(Batch(page.items, page.history,
                         toSeq = page.toSeq, hasMore = page.hasMore)))!!
                     else entry.continuity.accept(Input.Reload(page.items, page.history, page.toSeq, page.hasMore))!!
@@ -942,6 +1022,8 @@ class HubChatRepository(
                     clearSyncBackoffLocked(entry)
                     entry.eventError = null
                     firstPageIn(entry)
+                    updateReplacing(entry, previousHistory, result.state, emptyList(), reloadApplied = true,
+                        contentApplied = true, gap = result.gap)
                     publish(entry, verified = !overtaken)
                     if (overtaken || entry.continuity.behind) dispatch(entry, entry.continuity.accept(Input.HubChanged)!!.requests)
                 }
@@ -1047,14 +1129,20 @@ class HubChatRepository(
                                 if (history != entry.reducer.history && page.history != entry.reducer.history) {
                                     return@withLock listOf(Action.FetchLatest())
                                 }
+                                val previousHistory = entry.reducer.history
                                 val result = entry.continuity.accept(Input.After(Batch(page.items, page.history,
                                     page.fromSeq, page.toSeq, moreAfter = page.moreAfter)))!!
                                 val overtaken = result.state.items.any { it.seq > result.state.covered }
                                 clearSyncBackoffLocked(entry)
+                                val nextRequests = if (result.requests.isEmpty() && overtaken)
+                                    entry.continuity.accept(Input.ContinueFill)!!.requests else result.requests
                                 entry.eventError = null
                                 firstPageIn(entry)
+                                updateReplacing(entry, previousHistory, result.state, nextRequests, reloadApplied = false,
+                                    contentApplied = true, gap = result.gap,
+                                    zeroOriginComplete = page.fromSeq == 0 && !page.moreAfter)
                                 publish(entry, verified = result.verified && !overtaken)
-                                if (result.requests.isEmpty() && overtaken) entry.continuity.accept(Input.ContinueFill)!!.requests else result.requests
+                                nextRequests
                             }
                         }
                         is Action.FetchLatest -> {
@@ -1064,11 +1152,14 @@ class HubChatRepository(
                                 if (history != entry.reducer.history && page.history != entry.reducer.history) {
                                     return@withLock listOf(Action.FetchLatest())
                                 }
+                                val previousHistory = entry.reducer.history
                                 val result = entry.continuity.accept(Input.Reload(page.items, page.history, page.toSeq, page.hasMore))!!
                                 val overtaken = result.state.items.any { it.seq > result.state.covered }
                                 clearSyncBackoffLocked(entry)
                                 entry.eventError = null
                                 firstPageIn(entry)
+                                updateReplacing(entry, previousHistory, result.state, emptyList(), reloadApplied = true,
+                                    contentApplied = true, gap = result.gap)
                                 publish(entry, verified = !overtaken)
                                 if (overtaken || entry.continuity.behind) entry.continuity.accept(Input.ContinueFill)!!.requests else emptyList()
                             }
@@ -1132,9 +1223,10 @@ class HubChatRepository(
         entry.persistPending.set(false)
         quietly {
             val snapshot = entry.lock.withLock {
+                if (entry.replacing != null) return@withLock null
                 val state = entry.reducer
                 CachedChat(state.items, state.history, state.covered, state.hasMore)
-            }
+            } ?: return@quietly
             cache.save(entry.key, snapshot)
         }
     }
@@ -1144,31 +1236,10 @@ class HubChatRepository(
             entry.currentSessions = authority.sessions[entry.key.machineId]
             entry.machineOnline = authority.machines?.firstOrNull { it.id == entry.key.machineId }?.online
         }
-        if (entry.seenHistory != entry.reducer.history) {
-            if (entry.seenHistory != null) {
-                entry.realtime.reset()
-                entry.turnDurationSeconds = null
-                entry.durationAfterSeq = 0
-            }
-            entry.lastSeen = null
-            entry.seenHistory = entry.reducer.history
-        }
+        val held = entry.replacing
         val metadata = entry.currentSessions?.firstOrNull { it.key == entry.key }
             ?: sessions.sessions.value.firstOrNull { it.key == entry.key }
         val previous = metadata ?: entry.previousSession
-        val recorded = entry.reducer.items
-        val userId = recorded.lastOrNull { it.startsRecordedTurn }?.id
-        if (entry.lastUserId != userId) {
-            if (entry.lastUserId != null) entry.turnDurationSeconds = null
-            entry.lastUserId = userId
-        }
-        if (entry.durationItems !== recorded) {
-            entry.durationItems = recorded
-            entry.durations = recordedTurnDurations(recorded)
-            entry.durationSeconds = entry.durations.mapValues { it.value.seconds }
-        }
-        val durations = entry.durations
-        durations[userId]?.takeIf { it.seq > entry.durationAfterSeq }?.let { entry.turnDurationSeconds = it.seconds }
         if (metadata != null) entry.previousSession = metadata
         val machineOnline = entry.machineOnline.takeIf { connection.state.value == ConnectionState.Online }
         // Ended and replaced stay latched while lists are unknown; a verified list that drops the session and later
@@ -1183,6 +1254,56 @@ class HubChatRepository(
                 relisted = true
             }
         }
+        if (held != null) {
+            val runtime = previous?.let {
+                SessionRuntimeState.map(it, entry.currentSessions, machineOnline,
+                    closeConfirmed = entry.closeConfirmed, stopRequested = entry.stopRequested,
+                    recordedTurnDurationSeconds = held.turnDurationSeconds)
+            } ?: SessionRuntimeState(turnDurationSeconds = held.turnDurationSeconds)
+            if (runtime.ended || metadata?.status in listOf("idle", "done", "offline", "blocked")) entry.stopRequested = false
+            entry.state.update {
+                held.copy(
+                    loading = false,
+                    loadingOlder = it.loadingOlder,
+                    error = entry.eventError,
+                    verified = false,
+                    ended = runtime.ended || (it.ended && !relisted),
+                    replaced = runtime.replaced || (it.replaced && !relisted),
+                    stopping = runtime.stopping,
+                )
+            }
+            return
+        }
+        if (entry.seenHistory != entry.reducer.history) {
+            if (entry.seenHistory != null) {
+                entry.realtime.reset()
+                entry.turnDurationSeconds = null
+                entry.durationAfterSeq = 0
+            }
+            entry.lastSeen = null
+            entry.seenHistory = entry.reducer.history
+        }
+        val recorded = entry.reducer.items
+        if (entry.pendingReplacementDelta != null || entry.pendingReplacementDeltaEnded) {
+            val bufferedDelta = entry.pendingReplacementDelta
+            val bufferedEnd = entry.pendingReplacementDeltaEnded
+            entry.pendingReplacementDelta = null
+            entry.pendingReplacementDeltaEnded = false
+            if (bufferedDelta != null) entry.realtime.delta(bufferedDelta, recorded)
+            if (bufferedEnd) entry.realtime.finish()
+        }
+        val userId = recorded.lastOrNull { it.startsRecordedTurn }?.id
+        if (entry.lastUserId != userId) {
+            if (entry.lastUserId != null) entry.turnDurationSeconds = null
+            entry.lastUserId = userId
+        }
+        if (entry.durationItems !== recorded) {
+            entry.durationItems = recorded
+            entry.durations = recordedTurnDurations(recorded)
+            entry.durationSeconds = entry.durations.mapValues { it.value.seconds }
+        }
+        val durations = entry.durations
+        durations[userId]?.takeIf { it.seq > entry.durationAfterSeq }?.let { entry.turnDurationSeconds = it.seconds }
         val runtime = previous?.let {
             SessionRuntimeState.map(it, entry.currentSessions, machineOnline,
                 closeConfirmed = entry.closeConfirmed, stopRequested = entry.stopRequested,
