@@ -242,16 +242,26 @@ fun ChatDestination(
     val focus = LocalFocusManager.current
     var openedPath by androidx.compose.runtime.saveable.rememberSaveable(route.machineId, route.sessionId) { mutableStateOf<String?>(null) }
     var openedLine by androidx.compose.runtime.saveable.rememberSaveable(route.machineId, route.sessionId) { mutableStateOf<Int?>(null) }
+    var openedFileMachine by androidx.compose.runtime.saveable.rememberSaveable(route.machineId, route.sessionId) { mutableStateOf<String?>(null) }
     var insertionFocused by remember(route.machineId, route.sessionId) { mutableStateOf(false) }
     val cwd = shownMetadata.firstOrNull { it.key == session }?.cwd ?: historySession?.takeIf { it.key == session }?.cwd.orEmpty()
     val canOpenFilePath = style == ChatRenderStyle.Assistant && session.machineId.isNotBlank() && wiring?.files != null && composer != null
+    val canOpenMachineFile = wiring?.files != null
     fun open(path: String, line: Int?) {
         insertionFocused = composer?.focused == true
         focus.clearFocus()
+        openedFileMachine = null
         openedPath = path
         openedLine = line
     }
-    fun close() { openedPath = null; openedLine = null }
+    fun openMachineFile(machineId: String, path: String) {
+        insertionFocused = composer?.focused == true
+        focus.clearFocus()
+        openedFileMachine = persona.core.contracts.GroupKeys.machine(machineId, persona.core.contracts.GroupKeys.namespaceOf(session.machineId))
+        openedPath = path
+        openedLine = null
+    }
+    fun close() { openedFileMachine = null; openedPath = null; openedLine = null }
     // The next card another chat waits on you with, after answering here (Persona's conversation in the Assistant tab).
     val elsewhere = LocalWaitingElsewhere.current.takeUnless { historyReadOnly }
     androidx.compose.runtime.CompositionLocalProvider(LocalUsageRead provides wiring?.usage) {
@@ -289,6 +299,7 @@ fun ChatDestination(
                     onConnectionDetails = { navigator.navigate(SettingsPageRoute(SettingsPage.Diagnostics)) },
                     files = wiring?.files, hubScope = wiring?.scope?.path.orEmpty(), ports = wiring?.ports,
                     onOpenPath = if (canOpenFilePath) ({ path, line -> open(path, line) }) else null,
+                    onOpenMachineFile = if (canOpenMachineFile) ({ machineId, path -> openMachineFile(machineId, path) }) else null,
                     tasks = wiring?.tasks?.takeIf { style == ChatRenderStyle.Assistant && !historyReadOnly },
                     assistantManagement = assistantManagement,
                     mainConversation = assistantSnapshot.mainSession?.sessionId,
@@ -304,10 +315,12 @@ fun ChatDestination(
                 composerService = wiring?.composer.takeUnless { historyReadOnly },
                 statusBindings = ChatStatusBindings(recovery = wiring?.recovery.takeUnless { historyReadOnly }, draftSaveError = error?.let { stringResource(it) }),
                 onContextCleared = { navigator.navigate(ChatRoute(it.machineId, it.sessionId)) })
-            if (openedPath != null && canOpenFilePath) {
+            if (openedPath != null && (canOpenFilePath || (openedFileMachine != null && canOpenMachineFile))) {
                 BackHandler { close() }
+                val targetMachine = openedFileMachine ?: session.machineId
+                val targetCwd = if (openedFileMachine != null && openedFileMachine != session.machineId) "" else cwd.ifBlank { "~" }
                 CompositionLocalProvider(persona.core.designsystem.LocalSplitDetail provides null) {
-                    SessionFilesScreen(route.copy(sessionId = session.sessionId), cwd.ifBlank { "~" }, requireNotNull(wiring?.files), ::close, { path ->
+                    SessionFilesScreen(route.copy(machineId = targetMachine, sessionId = session.sessionId), targetCwd, requireNotNull(wiring?.files), ::close, { path ->
                         composer?.let { state ->
                             state.value = insertFilePath(state.value, path, insertionFocused)
                             state.focusRequest++

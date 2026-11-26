@@ -71,8 +71,11 @@ object HubLinks {
             "open" -> openPage(link, parts, query) ?: return openFailure(link, parts, query)
             "session" -> if (parts.size == 2) agent(parts[0], parts[1], query) else null
             "task" -> if (parts.size == 1) HubPage.Screen(TodoDetailRoute(parts[0])) else null
-            "kb" -> if (parts.size >= 2 && knowledgeKind(parts[0]) != null)
-                HubPage.KnowledgeEntry(parts[0], parts.drop(1).joinToString("/")) else null
+            "kb" -> when {
+                parts.size == 1 && knowledgeKind(parts[0]) != null -> HubPage.Knowledge(parts[0])
+                parts.size >= 2 && knowledgeKind(parts[0]) != null -> HubPage.KnowledgeEntry(parts[0], parts.drop(1).joinToString("/"))
+                else -> null
+            }
             "settings" -> when (parts) {
                 listOf("sent") -> HubPage.Screen(SettingsPageRoute(SettingsPage.Sent))
                 else -> if (parts.size == 2 && parts[0] == "extensions")

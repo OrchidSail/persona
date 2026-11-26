@@ -21,11 +21,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.AndroidUriHandler
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import kotlinx.coroutines.launch
 import persona.core.contracts.api.ExtensionViewItem
+import persona.core.contracts.api.KnowledgeKind
+import persona.core.contracts.generated.ExtensionViewActionKind
 import persona.core.designsystem.GroupPosition
 import persona.core.designsystem.JActionSheet
 import persona.core.designsystem.JAction
@@ -181,14 +184,34 @@ internal fun AssistantViewCard(key: String, version: Long, card: AssistantCard, 
     val values = initial + edits.filterKeys { it in initial }
     val state = ExtensionViewState(view = presented, values = values, acting = sending.takeIf { busy })
 
+    fun openInAppUri(targetUrl: String) {
+        // Assistant card links always open inside the app (ChatLinkHost / shell navigation), never the external browser.
+        if (uri is AndroidUriHandler) {
+            feedback?.notice(unsupportedText)
+            return
+        }
+        val _ = runCatching { uri.openUri(targetUrl) }.onFailure { feedback?.notice(unsupportedText) }
+    }
     fun open(url: String) {
         when (val target = AssistantOpen.target(url)) {
-            is AssistantOpenTarget.Web -> { val _ = runCatching { uri.openUri(target.url) } }
-            is AssistantOpenTarget.Session -> {
-                val _ = runCatching { uri.openUri("persona://session/${segment(target.machine)}/${segment(target.session)}") }
+            is AssistantOpenTarget.Web -> openInAppUri(target.url)
+            is AssistantOpenTarget.Session -> openInAppUri("persona://session/${segment(target.machine)}/${segment(target.session)}")
+            is AssistantOpenTarget.Task -> openInAppUri("persona://task/${segment(target.id)}")
+            is AssistantOpenTarget.Knowledge -> {
+                val parts = target.path.split('/')
+                val kind = parts.firstOrNull()?.let(KnowledgeKind::fromWire)
+                when {
+                    kind == null -> feedback?.notice(unsupportedText)
+                    parts.size == 1 -> openInAppUri("persona://open/kb/${segment(kind.wire)}")
+                    else -> openInAppUri("persona://kb/${segment(kind.wire)}/${parts.drop(1).joinToString("/") { segment(it) }}")
+                }
+            }
+            is AssistantOpenTarget.File -> {
+                val opener = host?.openFile
+                if (opener != null) opener(target.machine, target.path)
+                else feedback?.notice(unsupportedText)
             }
             null -> feedback?.notice(badLinkText)
-            else -> feedback?.notice(unsupportedText)
         }
     }
     fun send(action: AssistantAction, sent: Map<String, String>, confirmed: Boolean, seen: Long) {
@@ -217,22 +240,44 @@ internal fun AssistantViewCard(key: String, version: Long, card: AssistantCard, 
             action.reply != null -> reply(item, action, card.fields(action).associateWith { values[it].orEmpty() })
         }
     }
-    // An HTML page's two calls, after the user confirmed them: a reply is the card's one answer (as a declared one is),
-    // a link opens only while the card is still the version it was asked from.
-    val bridge = host?.takeIf { it.actions.bridges(features) }?.let { h ->
+    // HTML pages run only where the hub advertises `assistant_html_bridge` and not in offscreen picture mode.
+    val htmlEnabled = host != null && host.actions.bridges(features) && !picture
+    // An HTML page's two calls, after the user confirmed them natively: reply shares the card's one answer with
+    // declarative replies; open validates at the confirmed card version and opens inside the app without locking replies.
+    val bridge = if (htmlEnabled && host.interactive && registered) {
         HtmlBridgeHost(
-            reply = if (locked || busy) null else { componentKey, text ->
-                say(h.actions.html(h.conversation, key, componentKey, pageName, version, text = text))
+            reply = if (locked || busy) null else { componentKey, text, seen ->
+                if (seen != currentVersion) {
+                    feedback?.notice(changedText)
+                    false
+                } else {
+                    val outcome = host.actions.html(host.conversation, key, componentKey, pageName, seen, text = text)
+                    say(outcome)
+                    outcome is CardOutcome.Recorded
+                }
             },
-            open = { componentKey, url ->
-                val seen = version
-                when (val outcome = h.actions.html(h.conversation, key, componentKey, pageName, seen, url = url)) {
-                    is CardOutcome.Open -> if (seen == currentVersion) open(outcome.url) else feedback?.notice(changedText)
-                    else -> say(outcome)
+            open = { componentKey, url, seen ->
+                if (seen != currentVersion) {
+                    feedback?.notice(changedText)
+                    false
+                } else {
+                    when (val outcome = host.actions.html(host.conversation, key, componentKey, pageName, seen, url = url)) {
+                        is CardOutcome.Open -> if (seen == currentVersion) {
+                            open(outcome.url)
+                            true
+                        } else {
+                            feedback?.notice(changedText)
+                            false
+                        }
+                        else -> {
+                            say(outcome)
+                            false
+                        }
+                    }
                 }
             },
         )
-    }
+    } else null
     val handle = ExtensionViewHandle(
         press = { item, a -> press(item, a.id) },
         edit = { name, value -> if (!locked) edits[name] = value },
@@ -275,7 +320,20 @@ internal fun AssistantViewCard(key: String, version: Long, card: AssistantCard, 
                 }
             })
         }
-        CompositionLocalProvider(LocalViewHtml provides { item, m -> AssistantHtmlItem(item, card, m, bridge) }) {
+        CompositionLocalProvider(LocalViewHtml provides { item, m ->
+            AssistantHtmlItem(
+                item = item,
+                card = card,
+                modifier = m,
+                bridge = bridge,
+                cardKey = key,
+                version = version,
+                pageName = pageName,
+                answered = answer != null,
+                enabled = htmlEnabled,
+                onVersionChanged = { feedback?.notice(changedText) },
+            )
+        }) {
             ExtensionViewColumn(state, handle)
         }
         AssistantCardPresentation.status(answer)?.let { status ->
@@ -285,10 +343,15 @@ internal fun AssistantViewCard(key: String, version: Long, card: AssistantCard, 
                 AssistantCardStatus.Failed -> answer?.error?.takeIf { it.isNotBlank() }?.let { stringResource(R.string.settings_card_failed_reason, it) }
                     ?: stringResource(R.string.settings_card_failed)
             }
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs)) {
-                JIcon(if (status == AssistantCardStatus.Failed) PhIcons.WarningCircle else PhIcons.CheckCircle, null,
-                    size = Tokens.Space.l, tint = PersonaTheme.palette.ink3)
-                Text(text, style = PersonaTheme.type.caption, color = PersonaTheme.palette.ink2, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Column(verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs)) {
+                    JIcon(if (status == AssistantCardStatus.Failed) PhIcons.WarningCircle else PhIcons.CheckCircle, null,
+                        size = Tokens.Space.l, tint = PersonaTheme.palette.ink3)
+                    Text(text, style = PersonaTheme.type.caption, color = PersonaTheme.palette.ink2, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+                if (answer?.kind == ExtensionViewActionKind.HTML && !answer.text.isNullOrBlank()) {
+                    Text(answer.text.orEmpty(), style = PersonaTheme.type.callout, color = PersonaTheme.palette.ink)
+                }
             }
         }
     }

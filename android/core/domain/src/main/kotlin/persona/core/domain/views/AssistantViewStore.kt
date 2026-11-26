@@ -251,4 +251,6 @@ class AssistantCardsHost(
     val actions: AssistantCardActions,
     /** False for a read-only device or conversation: cards draw, nothing answers. */
     val interactive: Boolean,
+    /** Opens a paired machine's file inside the app (`persona://file/<machine>/<path>`); null when unavailable. */
+    val openFile: ((machineId: String, path: String) -> Unit)? = null,
 )
