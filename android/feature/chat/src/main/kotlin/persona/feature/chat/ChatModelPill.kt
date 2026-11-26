@@ -281,16 +281,16 @@ internal data class DrawnSwitch(val switch: PendingSwitch?, val observation: Lon
 internal fun DrawnSwitch?.over(session: Session, observed: Long): Session =
     if (this == null || observed != observation) session else session.copy(pendingSwitch = switch)
 
-/** The user's next message from the chat carries out a launcher switch waiting on [session] ([on]: where the pill shows it). */
+/** The user's next message from the chat carries out a launcher or engine switch waiting on [session] ([on]: an Agent chat). */
 internal fun switchesNext(session: Session?, on: Boolean): Boolean = on && session != null &&
     session.pendingSwitch?.launcher?.let { it.isNotEmpty() && it != AgentModelPanel.launcher(session) } == true
 
 /**
- * An Agent chat's model pill and its panel (#5055, the web's `ModelPill` and `lib/session-panel.ts`; Glass): what runs,
- * or the switch the next message carries out; a tap opens the panel. A pick on the session's own launcher switches its
- * model at once (`POST …/modes {model}` then `{effort}`); on a hub with `launcher_switch` a Claude Code Agent may pick a
- * model of another launcher of its engine, which is recorded for the user's next message ([onSwitch] draws it at once).
- * The flyout's effort of the model that runs applies at once, and ultracode is there too.
+ * An Agent chat's model pill and its panel (#5055, the web's `ModelPill` and `lib/session-panel.ts`, shared across every
+ * style): what runs, or the switch the next message carries out; a tap opens the panel. A pick on the session's own
+ * launcher switches its model at once (`POST …/modes {model}` then `{effort}`); on a hub with `launcher_switch` or
+ * `engine_switch` an Agent may pick a model of another launcher or engine, which is recorded for the user's next message
+ * ([onSwitch] draws it at once). The flyout's effort of the model that runs applies at once, and ultracode is there too.
  */
 @Composable
 internal fun AgentModelPill(

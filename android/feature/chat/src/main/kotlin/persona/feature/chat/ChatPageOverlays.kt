@@ -70,6 +70,7 @@ internal fun ChatPageOverlays(
     onFork: ((String) -> Unit)?,
     rewindMenu: RewindMenu?,
     onDelete: (MessageTarget) -> Unit,
+    onEditPending: ((MessageTarget) -> Unit)? = null,
     viewer: MutableState<ViewerRequest?>,
     chatListState: ChatListState,
     backgroundActions: ChatActions?,
@@ -109,7 +110,7 @@ internal fun ChatPageOverlays(
     sheetPlan.value?.takeIf { planSheet.value }?.let { PlanSheet(it, onDismiss = { planSheet.value = false }) }
     ChatMessageActions(key, session, machine, renderStyle, repository, readOnly, composer, messageMenu,
         quoteTarget = quoteTarget, onContext = onContext, onNotice = onNotice, onFork = onFork, rewindMenu = rewindMenu,
-        onDelete = onDelete, imageLimits = imageLimits)
+        onDelete = onDelete, onEditPending = onEditPending, imageLimits = imageLimits)
     val context = LocalContext.current
     val resources = LocalResources.current
     viewer.value?.let { request ->

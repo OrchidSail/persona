@@ -58,10 +58,12 @@ class SwitchReconciliationTest {
     @Volatile private var shown: Session? = null
     @Volatile private var observed = 0L
 
-    private fun mount(wire: Wire) {
+    private fun mount(wire: Wire, style: AppStyle = AppStyle.Glass) {
+        observed = 0L
+        shown = null
         val chrome = ChatChromeBindings(actions = wire, connection = wire)
         rule.setContent {
-            PersonaTheme(reduceMotion = true, style = AppStyle.Glass) {
+            PersonaTheme(reduceMotion = true, style = style) {
                 CompositionLocalProvider(LocalHubFeatures provides setOf("engine_switch", "sessions_lookup")) {
                     val page = rememberChatPageSession(summary.key, chrome, ChatRenderStyle.Agent, historyReadOnly = false,
                         historyFooter = null, historySession = null, res = LocalResources.current,
@@ -79,6 +81,27 @@ class SwitchReconciliationTest {
             }
         }
         rule.waitUntil(10_000) { observed >= 1L }
+    }
+
+    @Test fun briefTracksAndReconcilesServerPendingSwitch() = assertTracksServerPendingSwitch(AppStyle.Brief)
+
+    @Test fun boardTracksAndReconcilesServerPendingSwitch() = assertTracksServerPendingSwitch(AppStyle.Board)
+
+    private fun assertTracksServerPendingSwitch(style: AppStyle) {
+        val wire = Wire(full.copy(pendingSwitch = scheduled))
+        mount(wire, style)
+        rule.onNodeWithText(scheduled.model!!).assertExists()
+        rule.runOnIdle {
+            assertEquals(scheduled, shown?.pendingSwitch)
+            assertTrue("$style must apply observed pendingSwitch", switchesNext(shown, true))
+        }
+        val before = observed
+        rule.runOnIdle {
+            wire.answer = full
+            assertTrue(wire.events.tryEmit(SessionsListEvent("cleared-on-web")))
+        }
+        rule.waitUntil(10_000) { observed > before && shown?.pendingSwitch == null }
+        rule.runOnIdle { assertFalse(switchesNext(shown, true)) }
     }
 
     @Test fun aListHintClearsTheLocalScheduleEvenWhenTheWholeRowIsUnchanged() {

@@ -273,12 +273,10 @@ class ChatBottomChromeCompactTest {
             settle()
             rule.onNode(hasSetTextAction()).performClick()
             settle()
-            // Expand Glass queue so we inspect both folded and expanded states.
-            if (s == AppStyle.Glass) {
-                saveShot("stacked-folded-${s.name.lowercase()}-${if (isDark) "dark" else "light"}")
-                rule.onAllNodesWithContentDescription("queued · Persona", substring = true)[0].performClick()
-                settle()
-            }
+            // Expand queue across all three styles so we inspect both folded and expanded states.
+            saveShot("stacked-folded-${s.name.lowercase()}-${if (isDark) "dark" else "light"}")
+            rule.onAllNodesWithContentDescription("queued · Persona", substring = true)[0].performClick()
+            settle()
             val trayBar = rule.onNodeWithTag("assistant-tray-bar").getUnclippedBoundsInRoot()
             val trayEntry = rule.onNodeWithTag("assistant-entry-needs").getUnclippedBoundsInRoot()
             val trayEntryTouch = rule.onNodeWithTag("assistant-entry-needs").fetchSemanticsNode().touchBoundsInRoot
@@ -321,7 +319,8 @@ class ChatBottomChromeCompactTest {
                 assertEquals("$s dark=$isDark: toolbar button width stays 48dp", Tokens.MinTouch.android.value, add.width.value, 0.5f)
                 assertTrue("$s dark=$isDark: toolbar keeps >= 4dp bottom breathing room above keyboard", root.bottom - add.bottom >= Tokens.Space.xs - 0.5.dp)
             }
-            val minQueueRow = if (s == AppStyle.Glass) JChipTokens.height else Tokens.Size.slimBar
+            val minQueueRow = JChipTokens.height
+
             assertTrue("$s dark=$isDark: queue row height >= $minQueueRow", queueItem.height >= minQueueRow)
             assertTrue("$s dark=$isDark: toolbar stays inside viewport", add.bottom <= root.bottom)
 
@@ -343,10 +342,8 @@ class ChatBottomChromeCompactTest {
             settle()
             rule.onNode(hasSetTextAction()).performClick()
             settle()
-            if (s == AppStyle.Glass) {
-                rule.onAllNodesWithContentDescription("queued · Persona", substring = true)[0].performClick()
-                settle()
-            }
+            rule.onAllNodesWithContentDescription("queued · Persona", substring = true)[0].performClick()
+            settle()
             val trayBar = rule.onNodeWithTag("assistant-tray-bar").getUnclippedBoundsInRoot()
             val queueItem = rule.onNodeWithContentDescription("Item 1: Check the release checklist and regression results").getUnclippedBoundsInRoot()
             val field = rule.onNode(hasSetTextAction()).getUnclippedBoundsInRoot()

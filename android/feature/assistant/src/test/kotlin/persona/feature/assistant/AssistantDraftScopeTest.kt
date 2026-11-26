@@ -97,7 +97,18 @@ class AssistantDraftScopeTest {
         override suspend fun freshTask(id: String) = ScheduledTask(id)
         override suspend fun runs() = emptyList<Run>()
         override suspend fun config() = AssistantConfig(machineId = "mac", launcher = "default", timezone = java.util.TimeZone.getDefault().id)
-        override suspend fun launchers(machineId: String) = listOf(AgentLauncher("codex-test", agentType = "codex"))
+        override suspend fun launchers(machineId: String) = listOf(AgentLauncher("codex-test", agentType = "codex", assistant = true))
+        override suspend fun assistantLauncherList(machineId: String) = AssistantLaunchers(
+            launchers = listOf(
+                AgentLauncher("default", displayName = "Default"),
+                AgentLauncher("codex-test", agentType = "codex", displayName = "codex-test", assistant = true),
+            ),
+            default = LauncherDefault("default", "opus", "high"),
+        )
+        override suspend fun launcherModels(machineId: String, launcher: String) = when (launcher) {
+            "codex-test" -> LauncherModels("codex", listOf(AgentModel("default", "Codex Branch", isDefault = true)))
+            else -> LauncherModels("claude", listOf(AgentModel("opus", "Opus 5.5", isDefault = true)))
+        }
         override suspend fun notes() = AssistantNotes(machineId = "mac")
         override suspend fun setNotes(text: String) = Unit
         override suspend fun memory() = emptyList<MemoryFile>()
@@ -215,13 +226,20 @@ class AssistantDraftScopeTest {
 
     @Test fun failedLauncherSendRetainsCreatedTargetAndClientIdAfterSwitchingBack() {
         val created = mutableListOf<SessionKey>()
-        // The launcher chip remains on Brief; Glass uses the model panel covered by ModelPillTest.
+        // Brief shares the unified model pill and panel with Glass and Board.
         val hub = mount(management = Management(), hub = Hub().apply { failNext = true }, style = AppStyle.Brief, startWith = {
             SessionKey("mac", "branch-${created.size}").also { created += it }
         })
-        rule.onNodeWithText("默认：default").performClick()
-        rule.waitForIdle()
-        rule.onNodeWithText("codex-test").performClick()
+        rule.onNode(hasSetTextAction()).performClick()
+        rule.waitUntil(10_000) { rule.onAllNodes(hasTestTag("model-pill")).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithTag("model-pill").performClick()
+        val codexRow = hasText("Codex Branch") and hasAnyAncestor(isDialog())
+        rule.waitUntil(10_000) {
+            rule.onAllNodes(codexRow, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+        }
+        rule.onNode(codexRow, useUnmergedTree = true).performClick()
+        rule.waitUntil(10_000) { rule.onAllNodes(isDialog()).fetchSemanticsNodes().isEmpty() }
+        rule.onNodeWithTag("model-pill").assertContentDescriptionContains("Codex Branch", substring = true)
         text("独立分支重试稿")
         rule.onNodeWithContentDescription("发送").performClick()
         rule.waitForIdle()
@@ -231,7 +249,6 @@ class AssistantDraftScopeTest {
         pick("工作")
         text("工作稿")
         pick("助手")
-        rule.onNodeWithText("codex-test").assertExists()
         // The failed first message waits as a bubble on its assistant's page (#4339 C18): Resend sends it again.
         rule.onNodeWithText("重发").performClick()
         rule.waitForIdle()

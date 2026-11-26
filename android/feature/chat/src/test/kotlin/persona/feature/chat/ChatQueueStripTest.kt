@@ -243,30 +243,36 @@ class ChatQueueStripTest {
         rule.onAllNodes(isDialog()).assertCountEquals(0)
     }
 
-    // Seeing one's own queue is behaviour: Brief and Board show Persona's too, as their always-open strip without Send now.
-    @Test fun briefAndBoardFoldTheRelayedOneBehindTheSummaryLine() {
+    // Seeing and steering one's own queue is shared behaviour across every style: Brief and Board fold by default,
+    // offer Send Now at one press, keep relayed backlog behind the summary line, and reorder own rows.
+    @Test fun briefAndBoardShareFoldSendNowAndRelayedSummary() {
         var style by mutableStateOf(AppStyle.Brief)
         val queue = Queue()
+        val notices = mutableListOf<String>()
         rule.setContent {
-            PersonaTheme(style = style, reduceMotion = true) {
-                ChatQueueStrip(persona, queue, ChatComposerState(), {}, {})
+            androidx.compose.runtime.key(style) {
+                PersonaTheme(style = style, reduceMotion = true) {
+                    ChatQueueStrip(persona, queue, ChatComposerState(), { notices += it }, {})
+                }
             }
         }
-        for (s in listOf(AppStyle.Brief, AppStyle.Board)) {
+        for ((index, s) in listOf(AppStyle.Brief, AppStyle.Board).withIndex()) {
             style = s
             rule.waitForIdle()
-            rule.onNodeWithText("排队中 3 条 · Persona 忙完会依次处理").assertExists()
+            rule.onNodeWithContentDescription("排队中 3 条 · Persona 忙完会依次处理，已收起").assertExists()
+            rule.onNodeWithContentDescription("第 1 条：顺便把下周三的会也挪到下午").assertDoesNotExist()
+            // Send Now works directly from the folded bar with TalkBack explanation and no dialog.
+            assertSendNowSpeaks(res.getString(R.string.chat_queue_send_now_message_persona, "Persona"))
+            rule.onNodeWithText("立即发送").performClick()
+            rule.waitForIdle()
+            assertEquals("$s Send Now count", index + 1, queue.sentNow)
+            // Expand the strip: own rows show, relayed backlog stays behind its summary line.
+            rule.onNodeWithContentDescription("排队中 3 条 · Persona 忙完会依次处理，已收起").performClick()
+            rule.waitForIdle()
             rule.onNodeWithContentDescription("第 1 条：顺便把下周三的会也挪到下午").assertExists()
             val summary = "还有 1 条别的对话在排队"
             rule.onNodeWithContentDescription(summary).assertExists()
-            // The backlog stays behind the summary line until it is opened (the two styles share the strip's state,
-            // so a second style may start where the first left off: fold it first, then assert it is collapsed).
-            if (rule.onAllNodes(hasContentDescription("第 3 条：来自「早报」：会议纪要整理好了，要不要发给参会的人？")).fetchSemanticsNodes().isNotEmpty()) {
-                rule.onNodeWithContentDescription(summary).performClick()
-                rule.waitForIdle()
-            }
             rule.onNodeWithContentDescription("第 3 条：来自「早报」：会议纪要整理好了，要不要发给参会的人？").assertDoesNotExist()
-            rule.onNodeWithText("立即发送").assertDoesNotExist()
             rule.onNodeWithContentDescription(summary).performClick()
             rule.waitForIdle()
             rule.onNodeWithContentDescription("第 3 条：来自「早报」：会议纪要整理好了，要不要发给参会的人？").assertExists()
@@ -279,6 +285,10 @@ class ChatQueueStripTest {
             rule.onNodeWithText("下移").assertIsNotEnabled()
             rule.onNodeWithText("上移").performClick()
             rule.waitForIdle()
+            // Collapse again cleanly.
+            rule.onNodeWithContentDescription("排队中 3 条 · Persona 忙完会依次处理，已展开").performClick()
+            rule.waitForIdle()
+            rule.onNodeWithContentDescription("第 1 条：顺便把下周三的会也挪到下午").assertDoesNotExist()
         }
         assertEquals(listOf(listOf(1, 0), listOf(1, 0)), queue.kept)
     }
@@ -456,7 +466,7 @@ class ChatQueueStripTest {
         assertEquals(1, rule.onAllNodesWithText(two).fetchSemanticsNodes().size)
     }
 
-    @Test fun anAgentsQueueAndBriefAndBoardKeepThePhotoMarkAmongTheWords() {
+    @Test fun personaQueueShowsPhotoCountsInEveryStyleWhileAgentQueueKeepsThePhotoMark() {
         var style by mutableStateOf(AppStyle.Glass)
         var session by mutableStateOf(claude.copy(queued = photoRows.queued))
         rule.setContent {
@@ -465,14 +475,23 @@ class ChatQueueStripTest {
             }
         }
         val two = res.getQuantityString(DesignSystemR.plurals.designsystem_queue_photos, 2, 2)
-        // An Agent's chat on Glass: iOS puts its mark before the words; Android keeps its [Photo] among them.
-        rule.onNodeWithText("看看这两张\n\n[图片]").assertExists()
-        rule.onAllNodesWithText(two).assertCountEquals(0)
-        for (s in listOf(AppStyle.Brief, AppStyle.Board)) {
-            session = photoRows; style = s
+        val one = res.getQuantityString(DesignSystemR.plurals.designsystem_queue_photos, 1, 1)
+        // Agent queues keep [Photo] inline consistently across all three styles.
+        for (s in AppStyle.entries) {
+            session = claude.copy(queued = photoRows.queued); style = s
             rule.waitForIdle()
             rule.onNodeWithText("看看这两张\n\n[图片]").assertExists()
             rule.onAllNodesWithText(two).assertCountEquals(0)
+        }
+        // Persona queues show photo counts under the text in Glass, Brief, and Board alike.
+        for (s in AppStyle.entries) {
+            session = photoRows; style = s
+            rule.waitForIdle()
+            rule.onNodeWithText("看看这两张").assertExists()
+            rule.onNodeWithText(two).assertExists()
+            rule.onNodeWithText(one).assertExists()
+            rule.onAllNodesWithText("[图片]", substring = true).assertCountEquals(0)
+            rule.onNodeWithContentDescription("第 1 条：看看这两张。$two").assertExists()
         }
     }
 }

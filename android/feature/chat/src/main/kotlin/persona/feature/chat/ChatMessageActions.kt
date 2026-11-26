@@ -40,6 +40,7 @@ internal fun ChatMessageActions(
     onFork: ((String) -> Unit)?,
     rewindMenu: RewindMenu?,
     onDelete: (MessageTarget) -> Unit,
+    onEditPending: ((MessageTarget) -> Unit)? = null,
     imageLimits: ImageLimits = LocalHubImageLimits.current.forAgent(session?.agent),
 ) {
     val resources = LocalResources.current
@@ -112,7 +113,7 @@ internal fun ChatMessageActions(
     MessageMenuSheet(messageMenu, messageMenuWrites(readOnly, session),
         onQuote = quoteTarget, onEdit = composer::edit,
         onContext = onContext, onForward = forwarding?.let { pick::open },
-        onNotice = onNotice, onFork = onFork, rewind = rewindMenu, onDelete = onDelete,
+        onNotice = onNotice, onFork = onFork, rewind = rewindMenu, onDelete = onDelete, onEditPending = onEditPending,
         share = shareCardSource(session, LocalPersonaName.current),
         star = starFlag, onStar = onStar)
     val targets = pick.sheet ?: return

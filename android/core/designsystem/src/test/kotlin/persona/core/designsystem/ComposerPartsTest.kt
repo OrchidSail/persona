@@ -110,7 +110,8 @@ class ComposerPartsTest {
         var enabled by mutableStateOf(true)
         rule.setContent {
             PersonaTheme(style = AppStyle.Brief, reduceMotion = true) {
-                QueueStrip("排队中 2 条 · Claude 忙完会依次处理", listOf("一", "二"), onItem = { picked += it }, busy = busy, enabled = enabled)
+                QueueStrip("排队中 2 条 · Claude 忙完会依次处理", listOf("一", "二"), onItem = { picked += it }, busy = busy, enabled = enabled,
+                    initiallyExpanded = true)
             }
         }
         rule.onNodeWithContentDescription("第 2 条：二").assertIsEnabled().performClick()
@@ -122,46 +123,52 @@ class ComposerPartsTest {
         rule.onNodeWithContentDescription("第 1 条：一").assertIsNotEnabled()
     }
 
-    // Glass is iOS QueueStrip: folded to its line by default, the line opens and folds it, and Send Now stays on the line.
-    @Test fun glassFoldsTheQueueToItsLineUntilTapped() {
+    // Every style shares QueueStrip's fold/expand toggle, Send Now action, and photo count summary.
+    @Test fun everyStyleFoldsTheQueueShowsSendNowAndPhotoCounts() {
+        var style by mutableStateOf(AppStyle.Glass)
         var busy by mutableStateOf(false)
+        var enabled by mutableStateOf(true)
         var sent = 0
         rule.setContent {
-            PersonaTheme(style = AppStyle.Glass, reduceMotion = true) {
-                QueueStrip("排队中 2 条 · Claude 忙完会依次处理", listOf("一", "二"), onItem = {}, busy = busy,
-                    sendNow = "立即发送", onSendNow = { sent++ })
+            androidx.compose.runtime.key(style) {
+                PersonaTheme(style = style, reduceMotion = true) {
+                    QueueStrip("排队中 2 条 · Claude 忙完会依次处理", listOf("一", "二"), onItem = {}, busy = busy, enabled = enabled,
+                        sendNow = "立即发送", onSendNow = { sent++ }, photos = listOf(2, 0))
+                }
             }
         }
-        rule.onNodeWithContentDescription("第 1 条：一").assertDoesNotExist()
-        rule.onNodeWithText("立即发送").performClick()
-        assertEquals(1, sent)
-        rule.onNodeWithContentDescription("第 1 条：一").assertDoesNotExist()
-        rule.onNodeWithContentDescription("排队中 2 条 · Claude 忙完会依次处理，已收起").performClick()
-        rule.onNodeWithContentDescription("第 2 条：二").assertIsEnabled()
-        rule.onNodeWithText("立即发送").assertHasClickAction()
-        // Busy: the spinner takes Send Now's place.
-        busy = true
-        rule.onNodeWithText("立即发送").assertDoesNotExist()
-        busy = false
-        rule.onNodeWithContentDescription("排队中 2 条 · Claude 忙完会依次处理，已展开").performClick()
-        rule.onNodeWithContentDescription("第 2 条：二").assertDoesNotExist()
+        for (s in AppStyle.entries) {
+            sent = 0; busy = false; enabled = true; style = s
+            rule.waitForIdle()
+            rule.onNodeWithContentDescription("第 1 条：一。2 张图片").assertDoesNotExist()
+            rule.onNodeWithText("立即发送").performClick()
+            assertEquals("$s Send Now while folded", 1, sent)
+            rule.onNodeWithContentDescription("第 1 条：一。2 张图片").assertDoesNotExist()
+            rule.onNodeWithContentDescription("排队中 2 条 · Claude 忙完会依次处理，已收起").performClick()
+            rule.onNodeWithContentDescription("第 1 条：一。2 张图片").assertIsEnabled()
+            rule.onNodeWithContentDescription("第 2 条：二").assertIsEnabled()
+            rule.onNodeWithText("2 张图片").assertExists()
+            rule.onNodeWithText("立即发送").assertHasClickAction()
+            // Busy: the spinner takes Send Now's place.
+            busy = true
+            rule.onNodeWithText("立即发送").assertDoesNotExist()
+            busy = false
+            // Read-only: Send Now hides when actions are disabled.
+            enabled = false
+            rule.onNodeWithText("立即发送").assertDoesNotExist()
+            enabled = true
+            rule.onNodeWithContentDescription("排队中 2 条 · Claude 忙完会依次处理，已展开").performClick()
+            rule.onNodeWithContentDescription("第 2 条：二").assertDoesNotExist()
+        }
     }
 
-    // Brief and Board stay as they were (the alignment plan aligns Glass only): always open, no fold, no Send Now.
-    @Test fun briefAndBoardKeepTheQueueOpenWithoutSendNow() {
-        var style by mutableStateOf(AppStyle.Brief)
-        rule.setContent {
-            PersonaTheme(style = style, reduceMotion = true) {
-                QueueStrip("排队中 2 条 · Claude 忙完会依次处理", listOf("一", "二"), onItem = {}, sendNow = "立即发送", onSendNow = {})
-            }
-        }
-        for (s in listOf(AppStyle.Brief, AppStyle.Board)) {
-            style = s
-            rule.waitForIdle()
-            rule.onNodeWithContentDescription("第 2 条：二").assertIsEnabled()
-            rule.onNodeWithText("立即发送").assertDoesNotExist()
-            rule.onNodeWithContentDescription("已收起", substring = true).assertDoesNotExist()
-        }
+    @Test fun modelPillToolbarWidthAdaptsAcrossComposerAndSlotWidths() {
+        assertEquals(ModelPillWidth.Wide, ModelPillWidth.forToolbar(620f, Tokens.Size.box80))
+        assertEquals(ModelPillWidth.Narrow, ModelPillWidth.forToolbar(540f, Tokens.Size.box80))
+        assertEquals(ModelPillWidth.Small, ModelPillWidth.forToolbar(400f, Tokens.Size.box150))
+        assertEquals(ModelPillWidth.AgentComposer, ModelPillWidth.forToolbar(400f, Tokens.Size.box80))
+        assertEquals(ModelPillWidth.Compact, ModelPillWidth.forToolbar(400f, Tokens.MinTouch.android))
+        assertEquals(null, ModelPillWidth.forToolbar(400f, Tokens.Space.l))
     }
 
     @Test fun anOpenedQueueShowsAboutThreeRowsBeforeItScrolls() {

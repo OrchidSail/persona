@@ -49,37 +49,48 @@ internal fun outboxMark(state: DeliveryState): OutboxMark? = when (state) {
 /** Glass draws [state] as iOS's bubble: one with a [OutboxMark], or one delivered and waiting for the chat history. */
 internal fun drawsAsPendingBubble(state: DeliveryState): Boolean = state == DeliveryState.Sent || outboxMark(state) != null
 
-/** The mark's menu, in iOS's order: Retry now and Don't send while it waits, Resend and Delete once it failed. */
+/** The mark's menu actions for [mark]: Edit, Retry now and Don't send while it waits; Resend and Delete once it failed. */
 internal fun outboxMarkActions(mark: OutboxMark, canSend: Boolean = true): List<DeliveryAction> = when (mark) {
     OutboxMark.Sending -> emptyList()
-    OutboxMark.Waiting -> listOf(DeliveryAction.RetryNow, DeliveryAction.Cancel)
+    OutboxMark.Waiting -> listOf(DeliveryAction.Edit, DeliveryAction.RetryNow, DeliveryAction.Cancel)
     OutboxMark.Failed -> listOf(DeliveryAction.Retry, DeliveryAction.Delete)
 }.filter { it.available(canSend) }
 
 /**
+ * The mark's menu actions for a concrete [state]: adds [DeliveryAction.Edit] wherever [DeliveryState.allows] permits
+ * pulling the unsent message back into the composer (Queued, WaitingForNetwork and Refused, matching Brief and Board).
+ */
+internal fun outboxMarkActions(state: DeliveryState, canSend: Boolean = true): List<DeliveryAction> = when (outboxMark(state)) {
+    OutboxMark.Sending, null -> emptyList()
+    OutboxMark.Waiting -> listOf(DeliveryAction.Edit, DeliveryAction.RetryNow, DeliveryAction.Cancel)
+    OutboxMark.Failed -> listOf(DeliveryAction.Edit, DeliveryAction.Retry, DeliveryAction.Delete)
+}.filter { state.allows(it, canSend) }
+
+/**
  * An unsent message on Glass, as iOS's `PendingBubble`: its [OutboxMark] before the bubble, a tap on it opens the small menu
  * ([outboxMarkActions], also TalkBack's actions); the bubble faded while it waits or after it failed, "Sends when connected"
- * under it while it waits. Its long press is the bubble's own (Copy, Select, Share, then Don't send or Delete). [onAction]
- * null: a read-only chat, the mark has no menu.
+ * under it while it waits. Its long press is the bubble's own (Copy, Select, Share, Edit when editable, then Don't send or
+ * Delete). [onAction] null: a read-only chat, the mark has no menu.
  */
 @Composable
 internal fun OutboxBubble(text: String, id: String, state: DeliveryState, busy: Boolean, canSend: Boolean = true, onAction: ((DeliveryAction) -> Unit)?) {
     val mark = outboxMark(state)
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs)) {
         UserBubble(text, id, state, faded = mark == OutboxMark.Waiting || mark == OutboxMark.Failed,
-            leading = mark?.let { { OutboxMarkButton(it, busy, canSend, onAction) } })
+            leading = mark?.let { { OutboxMarkButton(it, state, busy, canSend, onAction) } })
         if (mark == OutboxMark.Waiting) Text(PendingStatus.Waiting.localizedLabel, style = PersonaTheme.type.caption,
             color = PersonaTheme.palette.ink2, maxLines = 1)
     }
 }
 
 @Composable
-private fun OutboxMarkButton(mark: OutboxMark, busy: Boolean, canSend: Boolean, onAction: ((DeliveryAction) -> Unit)?) {
+private fun OutboxMarkButton(mark: OutboxMark, state: DeliveryState, busy: Boolean, canSend: Boolean, onAction: ((DeliveryAction) -> Unit)?) {
     val palette = PersonaTheme.palette
     val res = LocalResources.current
     var open by remember { mutableStateOf(false) }
-    val actions = if (onAction == null || busy) emptyList() else outboxMarkActions(mark, canSend)
+    val actions = if (onAction == null || busy) emptyList() else outboxMarkActions(state, canSend)
     fun label(action: DeliveryAction) = res.getString(when (action) {
+        DeliveryAction.Edit -> R.string.chat_delivery_edit
         DeliveryAction.RetryNow -> R.string.chat_outbox_retry_now
         DeliveryAction.Cancel -> R.string.chat_outbox_dont_send
         DeliveryAction.Retry -> R.string.chat_outbox_resend
@@ -107,7 +118,12 @@ private fun OutboxMarkButton(mark: OutboxMark, busy: Boolean, canSend: Boolean, 
             OutboxMark.Failed -> JIcon(PersonaIcons.errorFilled, null, size = Tokens.Size.iconXS, tint = palette.danger.dot, decorative = true)
         }
         JMenu(open, { open = false }, actions.map { action ->
-            JAction(label(action), if (action == DeliveryAction.Cancel || action == DeliveryAction.Delete) PersonaIcons.delete else PersonaIcons.retry,
+            val icon = when (action) {
+                DeliveryAction.Edit -> PersonaIcons.edit
+                DeliveryAction.Cancel, DeliveryAction.Delete -> PersonaIcons.delete
+                else -> PersonaIcons.retry
+            }
+            JAction(label(action), icon,
                 destructive = action == DeliveryAction.Cancel || action == DeliveryAction.Delete) { onAction?.invoke(action) }
         })
     }
