@@ -160,8 +160,30 @@ func runFakeAgyHelper(args []string) int {
 	})
 
 	mode := os.Getenv("FAKE_ACP_MODE")
+	onceFile := os.Getenv("FAKE_ACP_ONCE_FILE")
 	dynCmds := strings.Split(os.Getenv("FAKE_ACP_DYNAMIC_CMDS"), ",")
 	gateAddr := os.Getenv("FAKE_ACP_GATE_ADDR")
+
+	claimOnce := func() bool {
+		if onceFile == "" {
+			return false
+		}
+		f, err := os.OpenFile(onceFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			return false
+		}
+		_ = f.Close()
+		return true
+	}
+
+	if mode == "init_unknown_subcommand" {
+		fmt.Fprintln(os.Stderr, `unknown command "acp" for "agy"`)
+		return 2
+	}
+	if mode == "init_transient_crash_once" && claimOnce() {
+		fmt.Fprintln(os.Stderr, "temporary startup I/O error")
+		return 1
+	}
 
 	var writeMu sync.Mutex
 	send := func(v any) {
@@ -221,6 +243,22 @@ func runFakeAgyHelper(args []string) int {
 		switch req.Method {
 		case "initialize":
 			appendFakeTrace(tracePath, fakeAgyTraceEvent{Mode: "acp", PID: pid, Method: "initialize"})
+			if mode == "init_method_not_found" {
+				send(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"error":   map[string]any{"code": -32601, "message": "Method not found: initialize"},
+				})
+				continue
+			}
+			if mode == "init_auth_once" && claimOnce() {
+				send(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"error":   map[string]any{"code": -32000, "message": "Authentication required"},
+				})
+				continue
+			}
 			appendCap := mode != "no_cap"
 			send(map[string]any{
 				"jsonrpc": "2.0",
@@ -324,6 +362,15 @@ func runFakeAgyHelper(args []string) int {
 					},
 				},
 			})
+			if mode == "block_stdin_after_session_new" {
+				if gateAddr != "" {
+					if conn, err := net.Dial("tcp", gateAddr); err == nil {
+						_ = conn.Close()
+					}
+				}
+				// Stop reading stdin forever so a large subsequent write fills the OS pipe buffer.
+				select {}
+			}
 
 		case "session/set_model":
 			var p struct {
@@ -386,6 +433,33 @@ func runFakeAgyHelper(args []string) int {
 			})
 
 			switch {
+			case strings.HasPrefix(promptText, "STOP_REASON:"):
+				reason := strings.TrimPrefix(promptText, "STOP_REASON:")
+				send(map[string]any{
+					"jsonrpc": "2.0",
+					"method":  "session/update",
+					"params": map[string]any{
+						"sessionId": p.SessionID,
+						"update": map[string]any{
+							"sessionUpdate": "agent_message_chunk",
+							"content":       map[string]any{"type": "text", "text": "partial:" + reason},
+						},
+					},
+				})
+				send(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"result": map[string]any{
+						"stopReason": reason,
+						"usage": map[string]any{
+							"inputTokens":      42,
+							"outputTokens":     18,
+							"cachedReadTokens": 10,
+						},
+					},
+				})
+				continue
+
 			case promptText == "TRIGGER_AUTH_ERR":
 				send(map[string]any{
 					"jsonrpc": "2.0",
@@ -1488,6 +1562,356 @@ func TestModelRunAgyWarmInvalidationTTLRotationAndServeClose(t *testing.T) {
 			t.Fatalf("workerDir leaked after Node.Serve exit: %s", dir)
 		}
 		waitAgyWarmUntil(t, 2*time.Second, func() bool { return !osproc.Alive(pid) }, "worker exit after Serve")
+	})
+}
+
+// Regression test (PR #16796 P2 #1): normal terminal ACP stopReasons (`max_tokens`, `max_turn_requests`,
+// `refusal`) preserve aggregated partial text, usage, and the warm worker (reused on the next turn),
+// while `cancelled` and unknown stopReasons fail closed and destroy the worker.
+func TestModelRunAgyWarmStopReasons(t *testing.T) {
+	wantUsage := aiwire.Usage{InputTokens: 42, OutputTokens: 18, CacheReadInputTokens: 10}
+	for _, reason := range []string{"max_tokens", "max_turn_requests", "refusal"} {
+		t.Run("normal_stop_"+reason, func(t *testing.T) {
+			fx := setupFakeAgyWarm(t, nil)
+			got, err := runModelWithNode(t, fx.node, proto.ModelRunParams{
+				Launcher: "agy",
+				Prompt:   "STOP_REASON:" + reason,
+			})
+			a, ok := got.(proto.ModelRunAnswer)
+			if err != nil || !ok || a.Text != "partial:"+reason || a.Usage != wantUsage {
+				t.Fatalf("stopReason=%s: got %#v %v", reason, got, err)
+			}
+			pool := fx.node.agyPool()
+			pool.mu.Lock()
+			if pool.worker == nil {
+				pool.mu.Unlock()
+				t.Fatalf("stopReason=%s: expected warm worker kept alive", reason)
+			}
+			pid1 := pool.worker.pid
+			pool.mu.Unlock()
+
+			// Subsequent turn must reuse the exact same warm worker PID.
+			got2, err2 := runModelWithNode(t, fx.node, proto.ModelRunParams{Launcher: "agy", Prompt: "after-" + reason})
+			if a2, ok2 := got2.(proto.ModelRunAnswer); err2 != nil || !ok2 || a2.Text != "warm(sys=):after-"+reason {
+				t.Fatalf("follow-up after %s failed: %#v %v", reason, got2, err2)
+			}
+			pool.mu.Lock()
+			pid2 := pool.worker.pid
+			pool.mu.Unlock()
+			if pid2 != pid1 {
+				t.Fatalf("stopReason=%s destroyed warm worker: pid1=%d pid2=%d", reason, pid1, pid2)
+			}
+		})
+	}
+
+	for _, reason := range []string{"cancelled", "unexpected_error"} {
+		t.Run("abnormal_stop_"+reason, func(t *testing.T) {
+			fx := setupFakeAgyWarm(t, nil)
+			if _, err := runModelWithNode(t, fx.node, proto.ModelRunParams{Launcher: "agy", Prompt: "warmup"}); err != nil {
+				t.Fatal(err)
+			}
+			pool := fx.node.agyPool()
+			pool.mu.Lock()
+			pid1 := pool.worker.pid
+			dir1 := pool.worker.workerDir
+			pool.mu.Unlock()
+
+			_, err := runModelWithNode(t, fx.node, proto.ModelRunParams{
+				Launcher: "agy",
+				Prompt:   "STOP_REASON:" + reason,
+			})
+			if err == nil || !strings.Contains(err.Error(), reason) {
+				t.Fatalf("stopReason=%s: expected fail-closed error, got %v", reason, err)
+			}
+			if _, statErr := os.Stat(dir1); !os.IsNotExist(statErr) {
+				t.Fatalf("stopReason=%s: workerDir leaked: %s", reason, dir1)
+			}
+
+			// Rebuild must use a fresh worker PID.
+			got2, err2 := runModelWithNode(t, fx.node, proto.ModelRunParams{Launcher: "agy", Prompt: "recover"})
+			if a2, ok2 := got2.(proto.ModelRunAnswer); err2 != nil || !ok2 || a2.Text != "warm(sys=):recover" {
+				t.Fatalf("recover after %s failed: %#v %v", reason, got2, err2)
+			}
+			pool.mu.Lock()
+			pid2 := pool.worker.pid
+			pool.mu.Unlock()
+			if pid2 == pid1 {
+				t.Fatalf("stopReason=%s did not replace worker: stayed pid %d", reason, pid1)
+			}
+		})
+	}
+}
+
+// Regression test (PR #16796 P2 #2): transient cmd.Start / auth / crash failures during warm startup fall back
+// without permanently marking the launcher unsupported, while explicit permanent incompatibility (-32601 Method
+// not found or unknown acp subcommand) caches unsupported for that launcherKey.
+func TestModelRunAgyWarmTransientVsPermanentInitFailures(t *testing.T) {
+	t.Run("transient_cmd_start_failure_recovers_on_next_call", func(t *testing.T) {
+		fx := setupFakeAgyWarm(t, nil)
+		n, _ := runtimeNode(t)
+		n.home = fx.home
+		t.Cleanup(n.closeAgyModelRunPool)
+		const inst = "builtin-transient-start"
+		n.runtimeHost.agy.mu.Lock()
+		n.runtimeHost.agy.instance = inst
+		n.runtimeHost.agy.bin = fx.exePath
+		n.runtimeHost.agy.mu.Unlock()
+		dialRuntime(t, n, map[string]any{
+			"runtime":  "agy",
+			"agent":    "agy",
+			"instance": inst,
+			"launcher": "agy",
+			"caps":     map[string]any{"start": true},
+		})
+
+		// Simulate transient exec failure (e.g. non-executable/busy binary during CLI upgrade).
+		if err := os.Chmod(fx.exePath, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = runModelWithNode(t, n, proto.ModelRunParams{Launcher: "agy", Prompt: "during-upgrade"})
+		if n.agyPool().isUnsupported("builtin:" + fx.exePath) {
+			t.Fatal("transient cmd.Start error must not permanently mark launcher unsupported")
+		}
+
+		// Restore executable permission: next call must start and use warm ACP cleanly.
+		if err := os.Chmod(fx.exePath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		got, err := runModelWithNode(t, n, proto.ModelRunParams{Launcher: "agy", Prompt: "after-upgrade"})
+		if a, ok := got.(proto.ModelRunAnswer); err != nil || !ok || a.Text != "warm(sys=):after-upgrade" {
+			t.Fatalf("expected warm recovery after transient cmd.Start failure, got %#v %v", got, err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		mode string
+	}{
+		{"transient_init_auth_error_recovers", "init_auth_once"},
+		{"transient_init_crash_recovers", "init_transient_crash_once"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			onceFile := filepath.Join(t.TempDir(), "once.flag")
+			fx := setupFakeAgyWarm(t, map[string]string{
+				"FAKE_ACP_MODE":      tc.mode,
+				"FAKE_ACP_ONCE_FILE": onceFile,
+			})
+			// 1st call hits transient failure -> falls back to cold without caching unsupported.
+			got1, err1 := runModelWithNode(t, fx.node, proto.ModelRunParams{Launcher: "agy", Prompt: "first"})
+			if a1, ok1 := got1.(proto.ModelRunAnswer); err1 != nil || !ok1 || a1.Text != "cold:first" {
+				t.Fatalf("1st call expected cold fallback, got %#v %v", got1, err1)
+			}
+			// 2nd call must retry warm ACP and succeed.
+			got2, err2 := runModelWithNode(t, fx.node, proto.ModelRunParams{Launcher: "agy", Prompt: "second"})
+			if a2, ok2 := got2.(proto.ModelRunAnswer); err2 != nil || !ok2 || a2.Text != "warm(sys=):second" {
+				t.Fatalf("2nd call expected warm recovery, got %#v %v", got2, err2)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name       string
+		mode       string
+		wantStarts int
+	}{
+		{"permanent_method_not_found_cached", "init_method_not_found", 1},
+		{"permanent_unknown_subcommand_cached", "init_unknown_subcommand", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := setupFakeAgyWarm(t, map[string]string{"FAKE_ACP_MODE": tc.mode})
+			for i := range 2 {
+				got, err := runModelWithNode(t, fx.node, proto.ModelRunParams{Launcher: "agy", Prompt: fmt.Sprintf("p-%d", i)})
+				if a, ok := got.(proto.ModelRunAnswer); err != nil || !ok || a.Text != fmt.Sprintf("cold:p-%d", i) {
+					t.Fatalf("call %d expected cold fallback, got %#v %v", i, got, err)
+				}
+			}
+			events := readFakeTrace(t, fx.tracePath)
+			startups, colds := 0, 0
+			for _, ev := range events {
+				if ev.Method == "startup" {
+					startups++
+				}
+				if ev.Method == "cold_run" {
+					colds++
+				}
+			}
+			if startups != tc.wantStarts || colds != 2 {
+				t.Fatalf("%s: expected %d startup probe and 2 cold runs, got startups=%d colds=%d", tc.name, tc.wantStarts, startups, colds)
+			}
+		})
+	}
+}
+
+// Regression test (PR #16796 P2 #3): a blocked large writeFrame on a full stdin pipe respects ctx cancellation
+// and never deadlocks with destroy() / pool.close(), leaving zero leaked goroutines or temp directories.
+func TestModelRunAgyWarmWriteBlockedNoDeadlock(t *testing.T) {
+	t.Run("direct_blocked_pipe_write_interrupted_by_destroy", func(t *testing.T) {
+		stdinR, stdinW, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stdinR.Close()
+		stdoutR, stdoutW, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stdoutW.Close()
+		stderrR, stderrW, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stderrW.Close()
+
+		writeStarted := make(chan struct{})
+		var startOnce sync.Once
+		w := &agyWarmWorker{
+			stdin:         stdinW,
+			stdout:        stdoutR,
+			stderr:        stderrR,
+			writeCh:       make(chan agyWriteReq),
+			stopWriteCh:   make(chan struct{}),
+			writerDone:    make(chan struct{}),
+			pending:       map[int64]chan agyRPCResponse{},
+			dynamicCmds:   map[string]struct{}{},
+			startupAuthCh: make(chan struct{}),
+			commandsReady: make(chan struct{}),
+			stdoutDone:    make(chan struct{}),
+			stderrDone:    make(chan struct{}),
+			waitDone:      make(chan struct{}),
+			onBeforeWrite: func() {
+				startOnce.Do(func() { close(writeStarted) })
+			},
+		}
+		close(w.waitDone)
+		go w.writeLoop()
+		go w.readStdoutLoop()
+		go w.readStderrLoop()
+
+		// 512 KiB exceeds OS pipe buffer so w.stdin.Write blocks until interrupted by destroy().
+		bigPayload := map[string]any{"data": strings.Repeat("A", 512*1024)}
+		writeErrCh := make(chan error, 1)
+		go func() {
+			writeErrCh <- w.writeFrame(context.Background(), bigPayload, nil)
+		}()
+
+		select {
+		case <-writeStarted:
+		case <-time.After(5 * time.Second):
+			t.Fatal("writeLoop did not start writing")
+		}
+
+		destroyDone := make(chan struct{})
+		go func() {
+			w.destroy()
+			close(destroyDone)
+		}()
+
+		select {
+		case <-destroyDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("destroy() deadlocked against blocked writeFrame")
+		}
+		select {
+		case werr := <-writeErrCh:
+			if werr == nil {
+				t.Fatal("expected writeFrame error after destroy")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("writeFrame did not return after destroy")
+		}
+		select {
+		case <-w.writerDone:
+		default:
+			t.Fatal("writerDone not closed after destroy")
+		}
+	})
+
+	t.Run("request_timeout_unblocks_stalled_prompt_write_and_cleans_up", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		go func() {
+			if c, e := ln.Accept(); e == nil {
+				_ = c.Close()
+			}
+		}()
+
+		fx := setupFakeAgyWarm(t, map[string]string{
+			"FAKE_ACP_MODE":      "block_stdin_after_session_new",
+			"FAKE_ACP_GATE_ADDR": ln.Addr().String(),
+		})
+		bigPrompt := strings.Repeat("Z", 512*1024)
+		start := time.Now()
+		_, err = runModelWithNode(t, fx.node, proto.ModelRunParams{
+			Launcher:  "agy",
+			Prompt:    bigPrompt,
+			TimeoutMS: 300,
+		})
+		elapsed := time.Since(start)
+		if runCode(err) != proto.CodeModelRunTimeout {
+			t.Fatalf("expected CodeModelRunTimeout on stalled stdin write, got %v (elapsed %s)", err, elapsed)
+		}
+		if elapsed > 5*time.Second {
+			t.Fatalf("stalled stdin write took too long to abort: %s", elapsed)
+		}
+		events := readFakeTrace(t, fx.tracePath)
+		for _, ev := range events {
+			if ev.Method == "startup" && ev.Cwd != "" {
+				workerDir := filepath.Dir(ev.Cwd)
+				if _, statErr := os.Stat(workerDir); !os.IsNotExist(statErr) {
+					t.Fatalf("workerDir leaked after stalled write timeout: %s", workerDir)
+				}
+				waitAgyWarmUntil(t, 2*time.Second, func() bool { return !osproc.Alive(ev.PID) }, "stalled worker exit")
+			}
+		}
+	})
+
+	t.Run("concurrent_pool_close_unblocks_stalled_prompt_write", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+
+		fx := setupFakeAgyWarm(t, map[string]string{
+			"FAKE_ACP_MODE":      "block_stdin_after_session_new",
+			"FAKE_ACP_GATE_ADDR": ln.Addr().String(),
+		})
+		doneCh := make(chan error, 1)
+		go func() {
+			_, e := runModelWithNode(t, fx.node, proto.ModelRunParams{
+				Launcher:  "agy",
+				Prompt:    strings.Repeat("Q", 512*1024),
+				TimeoutMS: 30000,
+			})
+			doneCh <- e
+		}()
+
+		// Wait deterministically until fake ACP finished session/new and stopped reading stdin.
+		conn, err := ln.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.Close()
+
+		closeDone := make(chan struct{})
+		go func() {
+			fx.node.closeAgyModelRunPool()
+			close(closeDone)
+		}()
+
+		select {
+		case <-closeDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("closeAgyModelRunPool deadlocked against stalled prompt write")
+		}
+		select {
+		case <-doneCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("in-flight modelRun did not unblock after closeAgyModelRunPool")
+		}
 	})
 }
 

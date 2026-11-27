@@ -55,6 +55,8 @@ const (
 	agyWarmDefaultMaxRequests = 50
 	agyWarmDefaultStopGrace   = 2 * time.Second
 	agyWarmCloseSessionWait   = 2 * time.Second
+	agyWarmControlWriteWait   = 200 * time.Millisecond
+	agyWarmDefaultWriteWait   = 30 * time.Second
 	agyWarmCommandsProbeWait  = 50 * time.Millisecond
 	agyWarmMaxScanTokenSize   = 16 * 1024 * 1024
 	agyWarmStderrBufLimit     = 8 * 1024
@@ -541,12 +543,19 @@ type agyWarmWorker struct {
 
 	cmd      *exec.Cmd
 	pid      int
-	stdin    *os.File
+	stdin    *os.File // immutable after init; closed only via abortStdin/closeStdinOnce
 	stdout   *os.File
 	stderr   *os.File
-	writeMu  sync.Mutex
 	nextID   atomic.Int64
 	requests int
+
+	writeCh        chan agyWriteReq
+	stopWriteCh    chan struct{}
+	stopWriteOnce  sync.Once
+	closeStdinOnce sync.Once
+	stdinAborted   atomic.Bool
+	writerDone     chan struct{}
+	onBeforeWrite  func()
 
 	mu             sync.Mutex
 	pending        map[int64]chan agyRPCResponse
@@ -646,27 +655,111 @@ func (w *agyWarmWorker) sawStartupAuth() bool {
 	return w.startupAuthHit
 }
 
-func (w *agyWarmWorker) writeFrame(v any) error {
+type agyWriteReq struct {
+	data     []byte
+	deadline time.Time
+	errCh    chan error
+}
+
+func (w *agyWarmWorker) stopWrite() {
+	w.stopWriteOnce.Do(func() { close(w.stopWriteCh) })
+}
+
+// abortStdin immediately interrupts any blocked w.stdin.Write (via write deadline + Close on Go's netpoller)
+// without acquiring any write lock, so destroy() and ctx cancellation can never deadlock against a full pipe.
+func (w *agyWarmWorker) abortStdin() {
+	w.stdinAborted.Store(true)
+	w.stopWrite()
+	w.closeStdinOnce.Do(func() {
+		if w.stdin != nil {
+			_ = w.stdin.SetWriteDeadline(time.Now())
+			_ = w.stdin.Close()
+		}
+	})
+}
+
+func (w *agyWarmWorker) writeLoop() {
+	defer close(w.writerDone)
+	for {
+		select {
+		case <-w.stopWriteCh:
+			return
+		case req := <-w.writeCh:
+			if w.stdinAborted.Load() {
+				req.errCh <- io.ErrClosedPipe
+				return
+			}
+			// Apply write deadline when supported by the pipe; ignore os.ErrNoDeadline on platforms without pollable pipes.
+			if w.onBeforeWrite != nil {
+				w.onBeforeWrite()
+			}
+			_ = w.stdin.SetWriteDeadline(req.deadline)
+			_, err := w.stdin.Write(req.data)
+			if err != nil {
+				w.abortStdin()
+				req.errCh <- err
+				return
+			}
+			_ = w.stdin.SetWriteDeadline(time.Time{})
+			req.errCh <- nil
+		}
+	}
+}
+
+func (w *agyWarmWorker) writeFrame(ctx context.Context, v any, abortCh <-chan struct{}) error {
+	if w.stdinAborted.Load() {
+		return io.ErrClosedPipe
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
 	b = append(b, '\n')
-	w.writeMu.Lock()
-	defer w.writeMu.Unlock()
-	if w.stdin == nil {
-		return io.ErrClosedPipe
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(agyWarmDefaultWriteWait)
 	}
-	_, err = w.stdin.Write(b)
-	return err
+	req := agyWriteReq{
+		data:     b,
+		deadline: deadline,
+		errCh:    make(chan error, 1),
+	}
+
+	select {
+	case w.writeCh <- req:
+	case <-w.stopWriteCh:
+		return io.ErrClosedPipe
+	case <-abortCh:
+		return errAgyWarmAborted
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	select {
+	case err := <-req.errCh:
+		return err
+	case <-w.stopWriteCh:
+		return io.ErrClosedPipe
+	case <-abortCh:
+		w.abortStdin()
+		return errAgyWarmAborted
+	case <-ctx.Done():
+		// Interrupt any blocked write immediately; partial writes invalidate JSON-RPC framing so this worker cannot be reused.
+		w.abortStdin()
+		return ctx.Err()
+	}
 }
 
-func (w *agyWarmWorker) notify(method string, params any) error {
-	return w.writeFrame(map[string]any{
+func (w *agyWarmWorker) notify(ctx context.Context, method string, params any) error {
+	return w.writeFrame(ctx, map[string]any{
 		"jsonrpc": "2.0",
 		"method":  method,
 		"params":  params,
-	})
+	}, nil)
 }
 
 func (w *agyWarmWorker) call(ctx context.Context, method string, params any, abortCh <-chan struct{}) (json.RawMessage, *agyRPCError, error) {
@@ -687,12 +780,12 @@ func (w *agyWarmWorker) call(ctx context.Context, method string, params any, abo
 		w.mu.Unlock()
 	}()
 
-	if err := w.writeFrame(map[string]any{
+	if err := w.writeFrame(ctx, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
 		"method":  method,
 		"params":  params,
-	}); err != nil {
+	}, abortCh); err != nil {
 		return nil, nil, err
 	}
 
@@ -818,27 +911,29 @@ func (w *agyWarmWorker) readStderrLoop() {
 }
 
 func (w *agyWarmWorker) handleServerRequest(rawID json.RawMessage, method string) {
+	replyCtx, cancel := context.WithTimeout(context.Background(), agyWarmControlWriteWait)
+	defer cancel()
 	switch method {
 	case "session/request_permission":
-		_ = w.writeFrame(map[string]any{
+		_ = w.writeFrame(replyCtx, map[string]any{
 			"jsonrpc": "2.0",
 			"id":      rawID,
 			"result":  map[string]any{"outcome": map[string]any{"outcome": "cancelled"}},
-		})
+		}, nil)
 		w.failActiveSecurity(errors.New("agy requested tool permission during zero-tool model.run"))
 	case "elicitation/create":
-		_ = w.writeFrame(map[string]any{
+		_ = w.writeFrame(replyCtx, map[string]any{
 			"jsonrpc": "2.0",
 			"id":      rawID,
 			"result":  map[string]any{"action": "cancel"},
-		})
+		}, nil)
 		w.failActiveSecurity(errors.New("agy requested elicitation during zero-tool model.run"))
 	default:
-		_ = w.writeFrame(map[string]any{
+		_ = w.writeFrame(replyCtx, map[string]any{
 			"jsonrpc": "2.0",
 			"id":      rawID,
 			"error":   map[string]any{"code": -32601, "message": "Method not found: " + method},
-		})
+		}, nil)
 		w.failActiveSecurity(fmt.Errorf("agy sent unexpected ACP request %q during zero-tool model.run", method))
 	}
 }
@@ -938,13 +1033,9 @@ func (w *agyWarmWorker) destroy() {
 		w.destroyed = true
 		w.mu.Unlock()
 
-		// 1. Close stdin so agy acp sees EOF and can exit gracefully.
-		w.writeMu.Lock()
-		if w.stdin != nil {
-			_ = w.stdin.Close()
-			w.stdin = nil
-		}
-		w.writeMu.Unlock()
+		// 1. Interrupt any blocked stdin write and close stdin without holding a write lock so agy acp sees EOF
+		// and teardown can never deadlock against a stalled pipe.
+		w.abortStdin()
 
 		// 2. Give the process a brief window to drain any final stdin frame (cancel / permission refusal) and exit on EOF,
 		// then send SIGTERM with grace window, escalating to SIGKILL if still alive.
@@ -975,13 +1066,14 @@ func (w *agyWarmWorker) destroy() {
 			<-w.waitDone
 		}
 
-		// 4. Close read ends and wait for reader goroutines so zero goroutines or fds leak.
+		// 4. Close read ends and wait for writer + reader goroutines so zero goroutines or fds leak.
 		if w.stdout != nil {
 			_ = w.stdout.Close()
 		}
 		if w.stderr != nil {
 			_ = w.stderr.Close()
 		}
+		<-w.writerDone
 		<-w.stdoutDone
 		<-w.stderrDone
 
@@ -1067,7 +1159,8 @@ func (n *Node) startAgyWarmWorker(
 		_ = stdoutW.Close()
 		_ = stderrR.Close()
 		_ = stderrW.Close()
-		return nil, agyWarmStartUnsupported, nil
+		// Transient spawn/exec errors (e.g. ETXTBSY/EAGAIN during CLI upgrade) must not permanently disable warm reuse.
+		return nil, agyWarmStartFallbackNoCache, nil
 	}
 	// Close child ends in parent immediately so EOF propagates accurately and cmd.Wait never races readers.
 	_ = stdinR.Close()
@@ -1087,6 +1180,9 @@ func (n *Node) startAgyWarmWorker(
 		stdin:         stdinW,
 		stdout:        stdoutR,
 		stderr:        stderrR,
+		writeCh:       make(chan agyWriteReq),
+		stopWriteCh:   make(chan struct{}),
+		writerDone:    make(chan struct{}),
 		pending:       map[int64]chan agyRPCResponse{},
 		dynamicCmds:   map[string]struct{}{},
 		startupAuthCh: make(chan struct{}),
@@ -1099,6 +1195,7 @@ func (n *Node) startAgyWarmWorker(
 		w.waitErr = cmd.Wait()
 		close(w.waitDone)
 	}()
+	go w.writeLoop()
 	go w.readStdoutLoop()
 	go w.readStderrLoop()
 
@@ -1110,13 +1207,18 @@ func (n *Node) startAgyWarmWorker(
 	if initErr != nil || initRPCErr != nil {
 		authHit := w.sawStartupAuth()
 		w.destroy()
-		if authHit {
+		stderr := w.stderrText()
+		if authHit || isAgyACPAuthError(initRPCErr) || isAgyLoggedOut(stderr) {
 			return nil, agyWarmStartFallbackNoCache, nil
 		}
-		if ctx.Err() != nil {
+		if isAgyTimeoutErr(ctx, initErr) {
 			return nil, agyWarmStartTimeout, nil
 		}
-		return nil, agyWarmStartUnsupported, nil
+		if isAgyACPPermanentUnsupported(initRPCErr, stderr) {
+			return nil, agyWarmStartUnsupported, nil
+		}
+		// Transient I/O, crash, or non-capability RPC failures fall back without permanently disabling warm reuse.
+		return nil, agyWarmStartFallbackNoCache, nil
 	}
 
 	// Guardrail ①: strictly verify native per-session systemPrompt.append capability.
@@ -1151,7 +1253,7 @@ func (n *Node) startAgyWarmWorker(
 			_, authRPCErr, authErr := w.call(ctx, "authenticate", map[string]any{"methodId": "gemini-api-key"}, nil)
 			if authErr != nil {
 				w.destroy()
-				if ctx.Err() != nil {
+				if isAgyTimeoutErr(ctx, authErr) {
 					return nil, agyWarmStartTimeout, nil
 				}
 				return nil, agyWarmStartError, errors.New("model.run: " + checkOutput(cmp.Or(w.stderrText(), authErr.Error())))
@@ -1313,7 +1415,7 @@ func (w *agyWarmWorker) runTurn(
 		return proto.ModelRunAnswer{}, false, false, false, fmt.Errorf("model.run: %s", secErr.Error())
 	}
 	if newErr != nil {
-		if ctx.Err() != nil {
+		if isAgyTimeoutErr(ctx, newErr) {
 			return proto.ModelRunAnswer{}, false, false, false, timedOut
 		}
 		return proto.ModelRunAnswer{}, false, false, false, w.transportError(p.Launcher, newErr)
@@ -1385,7 +1487,7 @@ func (w *agyWarmWorker) runTurn(
 			return proto.ModelRunAnswer{}, false, false, false, fmt.Errorf("model.run: %s", secErr.Error())
 		}
 		if callErr != nil {
-			if ctx.Err() != nil {
+			if isAgyTimeoutErr(ctx, callErr) {
 				return proto.ModelRunAnswer{}, false, false, false, timedOut
 			}
 			return proto.ModelRunAnswer{}, false, false, false, w.transportError(p.Launcher, callErr)
@@ -1417,7 +1519,7 @@ func (w *agyWarmWorker) runTurn(
 				return proto.ModelRunAnswer{}, false, false, false, fmt.Errorf("model.run: %s", secErr.Error())
 			}
 			if callErr != nil {
-				if ctx.Err() != nil {
+				if isAgyTimeoutErr(ctx, callErr) {
 					return proto.ModelRunAnswer{}, false, false, false, timedOut
 				}
 				return proto.ModelRunAnswer{}, false, false, false, w.transportError(p.Launcher, callErr)
@@ -1457,9 +1559,11 @@ func (w *agyWarmWorker) runTurn(
 		return proto.ModelRunAnswer{}, false, false, false, fmt.Errorf("model.run: %s", secErr.Error())
 	}
 	if promptErr != nil {
-		if ctx.Err() != nil {
-			// Guardrail ⑤: send best-effort session/cancel before tearing down the process group.
-			_ = w.notify("session/cancel", map[string]any{"sessionId": sid})
+		if isAgyTimeoutErr(ctx, promptErr) {
+			// Guardrail ⑤: send best-effort session/cancel with a short bounded write deadline before tearing down.
+			cancelCtx, cancelWrite := context.WithTimeout(context.Background(), agyWarmControlWriteWait)
+			_ = w.notify(cancelCtx, "session/cancel", map[string]any{"sessionId": sid})
+			cancelWrite()
 			return proto.ModelRunAnswer{}, false, false, false, timedOut
 		}
 		return proto.ModelRunAnswer{}, false, false, false, w.transportError(p.Launcher, promptErr)
@@ -1475,7 +1579,7 @@ func (w *agyWarmWorker) runTurn(
 	if len(promptRaw) > 0 {
 		_ = json.Unmarshal(promptRaw, &promptRes)
 	}
-	if promptRes.StopReason != "" && promptRes.StopReason != "end_turn" {
+	if !isAgyNormalStopReason(promptRes.StopReason) {
 		return proto.ModelRunAnswer{}, false, false, false, fmt.Errorf("model.run: agy ended with stopReason %q", promptRes.StopReason)
 	}
 
@@ -1534,6 +1638,49 @@ func (w *agyWarmWorker) transportError(launcher string, callErr error) error {
 		msg = clipText(redactCheck(callErr.Error()), 400)
 	}
 	return errors.New("model.run: " + msg)
+}
+
+// isAgyNormalStopReason reports whether an ACP session/prompt stopReason is a normal terminal stop.
+// Matching cold CLI semantics (which returns any SUCCESS result), empty, end_turn, max_tokens,
+// max_turn_requests, and refusal preserve the aggregated text and warm worker; cancelled or unknown
+// stop reasons fail closed and destroy the worker.
+func isAgyTimeoutErr(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || errors.Is(err, os.ErrDeadlineExceeded)
+}
+
+func isAgyNormalStopReason(stopReason string) bool {
+	switch stopReason {
+	case "", "end_turn", "max_tokens", "max_turn_requests", "refusal":
+		return true
+	default:
+		return false
+	}
+}
+
+// isAgyACPPermanentUnsupported distinguishes permanent CLI/protocol incompatibility (no `acp` subcommand,
+// missing ACP isolation flags, or JSON-RPC -32601 Method not found) from transient spawn, I/O, or auth errors.
+func isAgyACPPermanentUnsupported(rpcErr *agyRPCError, stderr string) bool {
+	if rpcErr != nil {
+		if rpcErr.Code == -32601 || strings.Contains(strings.ToLower(rpcErr.Message), "method not found") {
+			return true
+		}
+	}
+	if isIsolationFlagError(stderr) {
+		return true
+	}
+	low := strings.ToLower(stderr)
+	for _, needle := range []string{
+		"unknown command",
+		"unknown subcommand",
+		"unrecognized subcommand",
+		"invalid subcommand",
+		"no such command",
+	} {
+		if strings.Contains(low, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func isAgyACPAuthError(e *agyRPCError) bool {
