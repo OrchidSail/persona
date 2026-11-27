@@ -11,6 +11,8 @@ import android.os.HandlerThread
 import android.os.SystemClock
 import android.view.Display
 import android.view.Surface
+import android.view.WindowManager
+import android.os.Build
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -46,6 +48,8 @@ internal class PhoneControlVirtualDisplay(
     private var hasFrame: Boolean = false
     private var lastFrameProcessMs: Long = 0L
     private var lastPreviewHash: Long = 0L
+    private var consecutiveBlackFrames: Int = 0
+    private var interactiveSurfaceAttached: Boolean = false
 
     private val _displayId = MutableStateFlow<Int?>(null)
     val displayId: StateFlow<Int?> = _displayId.asStateFlow()
@@ -79,10 +83,10 @@ internal class PhoneControlVirtualDisplay(
         }
         val shell = shellProvider() ?: return null
 
-        val metrics = context.resources.displayMetrics
-        val width = metrics.widthPixels.coerceIn(720, 1440)
-        val height = metrics.heightPixels.coerceIn(1280, 3200)
-        val dpi = metrics.densityDpi.coerceIn(160, 640)
+        val (rawW, rawH, rawDpi) = resolveMainDisplayGeometry()
+        val width = rawW.coerceIn(720, 1440)
+        val height = rawH.coerceIn(1280, 3200)
+        val dpi = rawDpi.coerceIn(160, 640)
 
         ensureThreadLocked()
         val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
@@ -91,6 +95,8 @@ internal class PhoneControlVirtualDisplay(
         imageReader = reader
         hasFrame = false
         lastPreviewHash = 0L
+        consecutiveBlackFrames = 0
+        interactiveSurfaceAttached = false
         _previewFrameProtected.value = false
         // Register listener BEFORE creating the virtual display so the very first rendered frame is never missed.
         reader.setOnImageAvailableListener({ r -> captureFromReader(r) }, frameHandler)
@@ -118,12 +124,90 @@ internal class PhoneControlVirtualDisplay(
         return runCatching { sh.topTaskPackage(id) }.getOrNull()
     }
 
-    fun bringTopTaskToMainDisplay(): Boolean {
+    fun captureMainForegroundTask(): MainScreenReturnToken {
+        val sh = synchronized(lock) { activeShell } ?: shellProvider() ?: return MainScreenReturnToken()
+        val raw = runCatching { sh.captureMainForegroundTask() }.getOrNull()
+        return MainScreenReturnToken.parseCaptured(raw)
+    }
+
+    fun topMainTaskPackage(): String? {
+        val sh = synchronized(lock) { activeShell } ?: shellProvider() ?: return null
+        return runCatching { sh.topTaskPackage(Display.DEFAULT_DISPLAY) }.getOrNull()
+    }
+
+    fun moveTopTaskToMainDisplay(): Pair<Int, String?>? {
+        val id = _displayId.value ?: return null
+        val sh = synchronized(lock) { activeShell } ?: return null
+        val taskId = runCatching { sh.topTaskId(id) }.getOrDefault(-1)
+        if (taskId <= 0) return null
+        val pkg = runCatching { sh.topTaskPackage(id) }.getOrNull()
+        val moved = runCatching { sh.moveTask(taskId, Display.DEFAULT_DISPLAY) }.getOrDefault(false)
+        return if (moved) taskId to pkg else null
+    }
+
+    fun bringTopTaskToMainDisplay(): Boolean = moveTopTaskToMainDisplay() != null
+
+    fun moveTaskBackToVirtualDisplay(taskId: Int): Boolean {
         val id = _displayId.value ?: return false
         val sh = synchronized(lock) { activeShell } ?: return false
-        val taskId = runCatching { sh.topTaskId(id) }.getOrDefault(-1)
         if (taskId <= 0) return false
-        return runCatching { sh.moveTask(taskId, Display.DEFAULT_DISPLAY) }.getOrDefault(false)
+        return runCatching { sh.moveTask(taskId, id) }.getOrDefault(false)
+    }
+
+    fun restoreMainTask(token: MainScreenReturnToken): Boolean {
+        val sh = synchronized(lock) { activeShell } ?: shellProvider() ?: return false
+        val targetId = if (token.wasHome || token.prevMainTaskId <= 0) -1 else token.prevMainTaskId
+        return runCatching { sh.restoreMainTask(targetId) }.getOrDefault(false)
+    }
+
+    /**
+     * Phase 2: hot-swaps VirtualDisplay output directly onto an interactive [TextureView] Surface
+     * for 60fps native-resolution rendering without tearing down the virtual display.
+     */
+    fun attachInteractiveSurface(surface: Surface): Boolean = synchronized(lock) {
+        val id = _displayId.value ?: return false
+        val sh = activeShell ?: return false
+        if (!surface.isValid) return false
+        val ok = runCatching { sh.setDisplaySurface(id, surface) }.getOrDefault(false)
+        if (ok) {
+            interactiveSurfaceAttached = true
+        }
+        ok
+    }
+
+    /**
+     * Phase 2: seamlessly switches VirtualDisplay output back to [imageReader] before the
+     * caller releases the interactive [TextureView] Surface.
+     */
+    fun detachInteractiveSurface(): Boolean = synchronized(lock) {
+        if (!interactiveSurfaceAttached) return true
+        val id = _displayId.value
+        val sh = activeShell
+        val reader = imageReader
+        interactiveSurfaceAttached = false
+        lastPreviewHash = 0L
+        if (id == null || sh == null || reader == null) return false
+        val surf = runCatching { reader.surface }.getOrNull() ?: return false
+        if (!surf.isValid) return false
+        runCatching { sh.setDisplaySurface(id, surf) }.getOrDefault(false)
+    }
+
+    /**
+     * Phase 2: forwards a live finger [MotionEvent] into the virtual display via uid-2000 shell.
+     */
+    fun injectInteractiveMotionEvent(
+        action: Int,
+        downTime: Long,
+        eventTime: Long,
+        x: Float,
+        y: Float,
+        pressure: Float = 1f,
+    ): Boolean {
+        val id = _displayId.value ?: return false
+        val sh = synchronized(lock) { activeShell } ?: return false
+        return runCatching {
+            sh.injectMotionEvent(id, action, downTime, eventTime, x, y, pressure)
+        }.getOrDefault(false)
     }
 
     fun latestFrameJpeg(
@@ -161,6 +245,8 @@ internal class PhoneControlVirtualDisplay(
         fullFrame = null
         hasFrame = false
         lastPreviewHash = 0L
+        consecutiveBlackFrames = 0
+        interactiveSurfaceAttached = false
         _previewFrames.value = null
         _previewFrameProtected.value = false
         tearDownThreadLocked()
@@ -216,7 +302,15 @@ internal class PhoneControlVirtualDisplay(
                 bmp.copyPixelsFromBuffer(plane.buffer)
                 hasFrame = true
                 val (sampleHash, mostlyBlack) = sampleBitmapHashAndBlack(bmp, bufferWidth, bufferHeight)
-                _previewFrameProtected.value = mostlyBlack
+                if (mostlyBlack) {
+                    consecutiveBlackFrames = (consecutiveBlackFrames + 1).coerceAtMost(10)
+                    if (consecutiveBlackFrames >= PROTECTED_FRAME_CONSECUTIVE_THRESHOLD) {
+                        _previewFrameProtected.value = true
+                    }
+                } else {
+                    consecutiveBlackFrames = 0
+                    _previewFrameProtected.value = false
+                }
                 if (sampleHash != lastPreviewHash || _previewFrames.value == null) {
                     lastPreviewHash = sampleHash
                     val preview = uprightDisplayFrame(bmp, geom, geom.previewWidth(PREVIEW_SHORT_SIDE_PX), paint)
@@ -255,8 +349,23 @@ internal class PhoneControlVirtualDisplay(
         return h to (total > 0 && nonBlack == 0)
     }
 
+    private fun resolveMainDisplayGeometry(): Triple<Int, Int, Int> {
+        val metrics = context.resources.displayMetrics
+        val dpi = metrics.densityDpi.coerceAtLeast(160)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val bounds = runCatching {
+                context.getSystemService(WindowManager::class.java)?.maximumWindowMetrics?.bounds
+            }.getOrNull()
+            if (bounds != null && bounds.width() > 0 && bounds.height() > 0) {
+                return Triple(bounds.width(), bounds.height(), dpi)
+            }
+        }
+        return Triple(metrics.widthPixels, metrics.heightPixels, dpi)
+    }
+
     private companion object {
         const val FRAME_MIN_INTERVAL_MS = 180L
         const val PREVIEW_SHORT_SIDE_PX = 320
+        const val PROTECTED_FRAME_CONSECUTIVE_THRESHOLD = 2
     }
 }

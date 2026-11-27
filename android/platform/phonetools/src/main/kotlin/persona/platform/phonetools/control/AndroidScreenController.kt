@@ -9,6 +9,9 @@ import android.view.KeyEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import persona.platform.phonetools.control.shell.IPhoneControlShell
 import persona.platform.phonetools.control.shell.PhoneControlShellService
@@ -36,9 +39,24 @@ internal class AndroidScreenController(
     @Volatile
     private var activeDisplayId: Int = Display.DEFAULT_DISPLAY
 
+    private val _activeOnVirtualDisplay = MutableStateFlow(false)
+    val activeOnVirtualDisplay: StateFlow<Boolean> = _activeOnVirtualDisplay.asStateFlow()
+
     private fun requireA11y(): PhoneControlAccessibilityService =
         PhoneControlAccessibilityService.instance.value
             ?: throw PhoneControlException("accessibility_offline", "Accessibility service is not connected")
+
+    private fun updateActiveDisplay(displayId: Int) {
+        activeDisplayId = displayId
+        val vdId = virtualDisplay.displayId.value
+        _activeOnVirtualDisplay.value = vdId != null && displayId == vdId && vdId > Display.DEFAULT_DISPLAY
+    }
+
+    override fun syncActiveDisplay(displayId: Int) {
+        updateActiveDisplay(displayId)
+    }
+
+    override fun isActuallyUsingVirtualDisplay(): Boolean = isOnVirtualDisplay()
 
     private fun isOnVirtualDisplay(): Boolean {
         val vdId = virtualDisplay.displayId.value ?: return false
@@ -51,31 +69,73 @@ internal class AndroidScreenController(
         screenshotQuality: Int,
     ): ScreenSnapshot = withContext(Dispatchers.IO) {
         val a11y = requireA11y()
-        val virtualId = virtualDisplay.displayId.value
-        val hasVirtualTask = virtualId != null && (virtualDisplay.topTaskPackage() != null || activeDisplayId == virtualId)
+        var targetDisplay: Int
+        var usingVirtual: Boolean
+        var width: Int
+        var height: Int
+        var collected: CollectedScreen
+        var topPkg: String?
 
-        var targetDisplay = if (hasVirtualTask && virtualId != null) virtualId else Display.DEFAULT_DISPLAY
-        var windows = a11y.windowsOnDisplay(targetDisplay)
-        var usingVirtual = virtualId != null && targetDisplay == virtualId
+        var attempt = 0
+        while (true) {
+            val virtualId = virtualDisplay.displayId.value
+            val vdTopPkg = if (virtualId != null) virtualDisplay.topTaskPackage() else null
+            val hasVirtualTask = virtualId != null && (vdTopPkg != null || activeDisplayId == virtualId)
 
-        // Only fall back to DEFAULT_DISPLAY when no background task is actually alive on the virtual display.
-        if (windows.isEmpty() && usingVirtual && virtualDisplay.topTaskPackage() == null) {
-            targetDisplay = Display.DEFAULT_DISPLAY
-            windows = a11y.windowsOnDisplay(targetDisplay)
-            usingVirtual = false
+            targetDisplay = if (hasVirtualTask && virtualId != null) virtualId else Display.DEFAULT_DISPLAY
+            var windows = a11y.windowsOnDisplay(targetDisplay)
+            usingVirtual = virtualId != null && targetDisplay == virtualId
+
+            // Filter SKIPPED_WINDOW_TYPES before checking emptiness so stale IME/overlay windows cannot trap us on an empty VD.
+            val hasRenderable = ScreenTreeCollector.hasRenderableContentWindows(windows, context.packageName)
+            if (!hasRenderable && usingVirtual && vdTopPkg == null) {
+                targetDisplay = Display.DEFAULT_DISPLAY
+                windows = a11y.windowsOnDisplay(targetDisplay)
+                usingVirtual = false
+            }
+            updateActiveDisplay(targetDisplay)
+
+            width = if (usingVirtual) virtualDisplay.currentWidth else context.resources.displayMetrics.widthPixels
+            height = if (usingVirtual) virtualDisplay.currentHeight else context.resources.displayMetrics.heightPixels
+
+            collected = ScreenTreeCollector.collect(
+                windows = windows,
+                width = width,
+                height = height,
+                ownPackage = context.packageName,
+            )
+
+            // Display 0 dual fallback: rootInActiveWindow + shell.topTaskPackage(0)
+            if (!usingVirtual && collected.nodes.isEmpty()) {
+                val activeRoot = runCatching { a11y.rootInActiveWindow }.getOrNull()
+                if (activeRoot != null) {
+                    val rootCollected = ScreenTreeCollector.collectFromRootNode(
+                        root = activeRoot,
+                        width = width,
+                        height = height,
+                        imeVisible = collected.imeVisible,
+                    )
+                    if (rootCollected.nodes.isNotEmpty() || rootCollected.topPackage != null) {
+                        collected = rootCollected
+                    }
+                }
+            }
+
+            topPkg = collected.topPackage
+                ?: if (usingVirtual) {
+                    vdTopPkg ?: virtualDisplay.topTaskPackage()
+                } else {
+                    runCatching { a11y.rootInActiveWindow?.packageName?.toString() }.getOrNull()
+                        ?: runCatching { shellProvider()?.topTaskPackage(Display.DEFAULT_DISPLAY) }.getOrNull()
+                }
+
+            val isEmpty = collected.nodes.isEmpty() && topPkg.isNullOrBlank()
+            if (!isEmpty || attempt >= EMPTY_TREE_RETRY_COUNT) {
+                break
+            }
+            attempt++
+            delay(EMPTY_TREE_RETRY_DELAY_MS)
         }
-        activeDisplayId = targetDisplay
-
-        val width = if (usingVirtual) virtualDisplay.currentWidth else context.resources.displayMetrics.widthPixels
-        val height = if (usingVirtual) virtualDisplay.currentHeight else context.resources.displayMetrics.heightPixels
-
-        val collected = ScreenTreeCollector.collect(
-            windows = windows,
-            width = width,
-            height = height,
-            ownPackage = context.packageName,
-        )
-        val topPkg = collected.topPackage ?: if (usingVirtual) virtualDisplay.topTaskPackage() else null
 
         val snapshotId = "snap_${UUID.randomUUID().toString().take(8)}"
         nodeCache.clear()
@@ -98,6 +158,8 @@ internal class AndroidScreenController(
             hasPasswordField = collected.hasPasswordField,
             uiHash = collected.uiHash,
             usingVirtualDisplay = usingVirtual,
+            imeVisible = collected.imeVisible,
+            windowDiagnostics = collected.diagnostics,
             screenshot = capture.payload,
             screenshotOmittedReason = capture.omittedReason,
         )
@@ -302,7 +364,7 @@ internal class AndroidScreenController(
             if (vdId != null) {
                 val code = runCatching { shell.startApp(vdId, resolvedPkg) }.getOrDefault(PhoneControlShellService.START_ERROR)
                 if (code == PhoneControlShellService.START_OK) {
-                    activeDisplayId = vdId
+                    updateActiveDisplay(vdId)
                     launchedVirtual = true
                     // Wait briefly for the first window or frame on the virtual display.
                     val a11y = PhoneControlAccessibilityService.instance.value
@@ -328,7 +390,7 @@ internal class AndroidScreenController(
             started.exceptionOrNull()?.let {
                 return@withContext ActionOutcome.Failed("Launch failed: ${it.message}")
             }
-            activeDisplayId = Display.DEFAULT_DISPLAY
+            updateActiveDisplay(Display.DEFAULT_DISPLAY)
             delay(700)
         }
         ActionOutcome.Ok("Launched $resolvedPkg (virtual=$launchedVirtual$fallbackNote)")
@@ -375,12 +437,12 @@ internal class AndroidScreenController(
 
     override fun clearCaches() {
         nodeCache.clear()
-        activeDisplayId = Display.DEFAULT_DISPLAY
+        updateActiveDisplay(Display.DEFAULT_DISPLAY)
     }
 
     override fun releaseVirtualDisplay() {
         virtualDisplay.release()
-        activeDisplayId = Display.DEFAULT_DISPLAY
+        updateActiveDisplay(Display.DEFAULT_DISPLAY)
     }
 
     private suspend fun dispatchTap(a11y: PhoneControlAccessibilityService, x: Int, y: Int): Boolean {
@@ -474,5 +536,10 @@ internal class AndroidScreenController(
             cur = cur.parent
         }
         return null
+    }
+
+    private companion object {
+        const val EMPTY_TREE_RETRY_COUNT = 2
+        const val EMPTY_TREE_RETRY_DELAY_MS = 350L
     }
 }

@@ -15,6 +15,9 @@ internal data class CollectedScreen(
     val hasPasswordField: Boolean,
     val topPackage: String?,
     val uiHash: Long,
+    val imeVisible: Boolean = false,
+    val contentWindowCount: Int = 0,
+    val diagnostics: String? = null,
 )
 
 /**
@@ -34,20 +37,97 @@ internal object ScreenTreeCollector {
         AccessibilityWindowInfo.TYPE_SPLIT_SCREEN_DIVIDER,
     )
 
+    fun hasRenderableContentWindows(
+        windows: List<AccessibilityWindowInfo>,
+        ownPackage: String,
+    ): Boolean = filterContentWindows(windows, ownPackage).any { it.root != null }
+
+    fun isImeWindowVisible(windows: List<AccessibilityWindowInfo>): Boolean {
+        val bounds = Rect()
+        return windows.any { w ->
+            if (w.type != AccessibilityWindowInfo.TYPE_INPUT_METHOD) return@any false
+            w.getBoundsInScreen(bounds)
+            !bounds.isEmpty || w.root != null || w.isActive || w.isFocused
+        }
+    }
+
+    private fun filterContentWindows(
+        windows: List<AccessibilityWindowInfo>,
+        ownPackage: String,
+    ): List<AccessibilityWindowInfo> = windows
+        .filter { it.type !in SKIPPED_WINDOW_TYPES }
+        .filter { it.root?.packageName?.toString() != ownPackage || it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+        .sortedByDescending { it.layer }
+
+    fun collectFromRootNode(
+        root: AccessibilityNodeInfo?,
+        width: Int,
+        height: Int,
+        imeVisible: Boolean = false,
+    ): CollectedScreen {
+        if (root == null) {
+            return CollectedScreen(
+                nodes = emptyList(),
+                visibleTexts = emptyList(),
+                hasPasswordField = false,
+                topPackage = null,
+                uiHash = FNV_OFFSET,
+                imeVisible = imeVisible,
+                contentWindowCount = 0,
+                diagnostics = "rootInActiveWindow=null",
+            )
+        }
+        return collectRoots(
+            roots = listOf(root),
+            width = width,
+            height = height,
+            topPkg = root.packageName?.toString(),
+            imeVisible = imeVisible,
+            contentWindowCount = 1,
+            diagnostics = "fallback=rootInActiveWindow",
+        )
+    }
+
     fun collect(
         windows: List<AccessibilityWindowInfo>,
         width: Int,
         height: Int,
         ownPackage: String,
     ): CollectedScreen {
-        val contentWindows = windows
-            .filter { it.type !in SKIPPED_WINDOW_TYPES }
-            .filter { it.root?.packageName?.toString() != ownPackage || it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
-            .sortedByDescending { it.layer }
+        val imeVisible = isImeWindowVisible(windows)
+        val contentWindows = filterContentWindows(windows, ownPackage)
 
         val topPkg = contentWindows
             .filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
             .firstNotNullOfOrNull { it.root?.packageName?.toString() }
+            ?: contentWindows.firstNotNullOfOrNull { it.root?.packageName?.toString() }
+
+        val roots = contentWindows.mapNotNull { it.root }
+        val diag = if (roots.isEmpty()) {
+            "total_windows=${windows.size}, content_windows=${contentWindows.size}, roots=0, ime=$imeVisible"
+        } else {
+            null
+        }
+        return collectRoots(
+            roots = roots,
+            width = width,
+            height = height,
+            topPkg = topPkg,
+            imeVisible = imeVisible,
+            contentWindowCount = contentWindows.size,
+            diagnostics = diag,
+        )
+    }
+
+    private fun collectRoots(
+        roots: List<AccessibilityNodeInfo>,
+        width: Int,
+        height: Int,
+        topPkg: String?,
+        imeVisible: Boolean,
+        contentWindowCount: Int,
+        diagnostics: String?,
+    ): CollectedScreen {
 
         val collected = mutableListOf<CollectedNode>()
         val texts = mutableListOf<String>()
@@ -114,8 +194,8 @@ internal object ScreenTreeCollector {
             }
         }
 
-        contentWindows.forEach { w ->
-            w.root?.let { visit(it, 0) }
+        roots.forEach { r ->
+            visit(r, 0)
         }
 
         return CollectedScreen(
@@ -124,6 +204,9 @@ internal object ScreenTreeCollector {
             hasPasswordField = hasPassword,
             topPackage = topPkg,
             uiHash = hash,
+            imeVisible = imeVisible,
+            contentWindowCount = contentWindowCount,
+            diagnostics = diagnostics,
         )
     }
 

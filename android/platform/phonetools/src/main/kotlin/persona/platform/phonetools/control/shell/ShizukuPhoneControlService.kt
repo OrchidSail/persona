@@ -53,6 +53,23 @@ class ShizukuPhoneControlService : IPhoneControlShell.Stub {
 
     override fun releaseAll() = delegate.releaseAll()
 
+    override fun captureMainForegroundTask(): String? = delegate.captureMainForegroundTask()
+
+    override fun restoreMainTask(taskId: Int): Boolean = delegate.restoreMainTask(taskId)
+
+    override fun setDisplaySurface(displayId: Int, surface: Surface?): Boolean =
+        delegate.setDisplaySurface(displayId, surface)
+
+    override fun injectMotionEvent(
+        displayId: Int,
+        action: Int,
+        downTime: Long,
+        eventTime: Long,
+        x: Float,
+        y: Float,
+        pressure: Float,
+    ): Boolean = delegate.injectMotionEvent(displayId, action, downTime, eventTime, x, y, pressure)
+
     override fun destroy() {
         val _ = runCatching { delegate.releaseAll() }
         exitProcess(0)

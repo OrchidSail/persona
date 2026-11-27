@@ -9,7 +9,7 @@
     <dimen name="phonetools_overlay_corner_radius">12dp</dimen>
     <dimen name="phonetools_overlay_stroke_width">1dp</dimen>
     <dimen name="phonetools_overlay_card_width">116dp</dimen>
-    <dimen name="phonetools_overlay_pill_width">104dp</dimen>
+    <dimen name="phonetools_overlay_pill_width">124dp</dimen>
     <dimen name="phonetools_overlay_pill_height">32dp</dimen>
     <dimen name="phonetools_overlay_header_height">20dp</dimen>
     <dimen name="phonetools_overlay_toggle_size">18dp</dimen>
@@ -34,4 +34,20 @@
     <dimen name="phonetools_overlay_chip_padding_vertical">0dp</dimen>
     <dimen name="phonetools_overlay_chip_corner_radius">7dp</dimen>
     <dimen name="phonetools_overlay_chip_margin_end">3dp</dimen>
+    <dimen name="phonetools_overlay_pill_attention_width">148dp</dimen>
+    <dimen name="phonetools_overlay_fullscreen_bar_height">40dp</dimen>
+    <dimen name="phonetools_overlay_fullscreen_bar_top_margin">36dp</dimen>
+    <dimen name="phonetools_overlay_fullscreen_bar_padding_horizontal">10dp</dimen>
+    <dimen name="phonetools_overlay_fullscreen_bar_btn_height">28dp</dimen>
+    <dimen name="phonetools_overlay_fullscreen_bar_btn_padding_horizontal">10dp</dimen>
+    <dimen name="phonetools_overlay_inline_header_height">38dp</dimen>
+    <dimen name="phonetools_overlay_inline_footer_height">52dp</dimen>
+    <dimen name="phonetools_overlay_inline_corner_radius">16dp</dimen>
+    <dimen name="phonetools_overlay_inline_padding">10dp</dimen>
+    <dimen name="phonetools_overlay_inline_btn_height">36dp</dimen>
+    <dimen name="phonetools_overlay_inline_btn_text">11sp</dimen>
+    <dimen name="phonetools_overlay_inline_header_text">12.5sp</dimen>
+    <dimen name="phonetools_overlay_inline_gap">6dp</dimen>
+    <dimen name="phonetools_overlay_gesture_exclusion_edge">32dp</dimen>
+    <dimen name="phonetools_overlay_gesture_exclusion_height">196dp</dimen>
 </resources>

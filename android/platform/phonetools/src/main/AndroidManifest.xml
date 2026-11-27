@@ -68,6 +68,7 @@
 
     <application>
         <receiver android:name=".PhoneConfirmationReceiver" android:exported="false" />
+        <receiver android:name=".control.PhoneControlNotificationReceiver" android:exported="false" />
 
         <!-- Privileged uid-2000 helper Binder handoff endpoint; restricted to shell permission plus nonce/APK/UID checks. -->
         <provider

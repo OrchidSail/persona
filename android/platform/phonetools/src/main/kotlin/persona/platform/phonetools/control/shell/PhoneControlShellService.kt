@@ -1,7 +1,9 @@
 package persona.platform.phonetools.control.shell
 
 import android.annotation.SuppressLint
+import android.app.ActivityManager
 import android.app.ActivityOptions
+import android.os.Bundle
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -32,7 +34,17 @@ internal class PhoneControlShellService(
 
     private val context: Context = ShellContext.create()
     private val displays = HashMap<Int, VirtualDisplay>()
+    private val streamTouches = HashMap<Int, StreamTouchState>()
     private val launchLock = Any()
+
+    private class StreamTouchState(
+        var active: Boolean = false,
+        var serverDownTime: Long = 0L,
+        var lastEventTime: Long = 0L,
+        var clientDownTime: Long = 0L,
+        var lastX: Float = 0f,
+        var lastY: Float = 0f,
+    )
 
     @SuppressLint("PrivateApi")
     private val displayManager: DisplayManager =
@@ -103,7 +115,10 @@ internal class PhoneControlShellService(
 
     override fun releaseDisplay(displayId: Int) {
         awake.stop(displayId)
-        val vd = synchronized(displays) { displays.remove(displayId) }
+        val vd = synchronized(displays) {
+            val _ = streamTouches.remove(displayId)
+            displays.remove(displayId)
+        }
         vd?.release()
     }
 
@@ -134,7 +149,7 @@ internal class PhoneControlShellService(
     }
 
     override fun topTaskId(displayId: Int): Int = try {
-        if (!ownDisplay(displayId)) -1
+        if (displayId != Display.DEFAULT_DISPLAY && !ownDisplay(displayId)) -1
         else tasksOn(displayId).firstOrNull()?.let { TASK_INFO.getField("taskId").getInt(it) } ?: -1
     } catch (t: Throwable) {
         Log.w(TAG, "topTaskId failed", t)
@@ -142,7 +157,7 @@ internal class PhoneControlShellService(
     }
 
     override fun topTaskPackage(displayId: Int): String? = try {
-        if (!ownDisplay(displayId)) null
+        if (displayId != Display.DEFAULT_DISPLAY && !ownDisplay(displayId)) null
         else tasksOn(displayId).firstOrNull()?.let { t ->
             listOf("topActivity", "baseActivity").firstNotNullOfOrNull {
                 (TASK_INFO.getField(it).get(t) as? ComponentName)?.packageName
@@ -151,6 +166,186 @@ internal class PhoneControlShellService(
     } catch (t: Throwable) {
         Log.w(TAG, "topTaskPackage failed", t)
         null
+    }
+
+    override fun captureMainForegroundTask(): String? = try {
+        val task = tasksOn(Display.DEFAULT_DISPLAY).firstOrNull()
+        if (task == null) {
+            "-1||1"
+        } else {
+            val taskId = runCatching { TASK_INFO.getField("taskId").getInt(task) }.getOrDefault(-1)
+            val pkg = listOf("topActivity", "baseActivity").firstNotNullOfOrNull {
+                runCatching { (TASK_INFO.getField(it).get(task) as? ComponentName)?.packageName }.getOrNull()
+            }.orEmpty()
+            val activityType = runCatching { TASK_INFO.getField("topActivityType").getInt(task) }.getOrNull()
+                ?: runCatching {
+                    val cfg = TASK_INFO.getField("configuration").get(task)
+                    val wc = cfg?.javaClass?.getField("windowConfiguration")?.get(cfg)
+                    wc?.javaClass?.getMethod("getActivityType")?.invoke(wc) as? Int
+                }.getOrNull()
+            val isHome = activityType == ACTIVITY_TYPE_HOME || isDefaultLauncherPackage(pkg)
+            formatMainForegroundTask(taskId, pkg, isHome)
+        }
+    } catch (t: Throwable) {
+        Log.w(TAG, "captureMainForegroundTask failed", t)
+        null
+    }
+
+    override fun restoreMainTask(taskId: Int): Boolean = try {
+        if (taskId <= 0) {
+            navigateMainDisplayHome()
+        } else {
+            val options = ActivityOptions.makeBasic().setLaunchDisplayId(Display.DEFAULT_DISPLAY).toBundle()
+            val fromRecents = runCatching {
+                val m = taskManager.javaClass.getMethod("startActivityFromRecents", Int::class.java, Bundle::class.java)
+                val res = m.invoke(taskManager, taskId, options) as Int
+                res >= 0
+            }.getOrDefault(false)
+            if (fromRecents) {
+                true
+            } else {
+                val moved = runCatching {
+                    val am = context.getSystemService(ActivityManager::class.java)
+                    if (am != null) {
+                        am.moveTaskToFront(taskId, 0)
+                        true
+                    } else {
+                        false
+                    }
+                }.getOrDefault(false)
+                if (moved) true else navigateMainDisplayHome()
+            }
+        }
+    } catch (t: Throwable) {
+        Log.w(TAG, "restoreMainTask($taskId) failed", t)
+        navigateMainDisplayHome()
+    }
+
+    override fun setDisplaySurface(displayId: Int, surface: Surface?): Boolean {
+        if (!ownDisplay(displayId) || surface == null || !surface.isValid) return false
+        val vd = synchronized(displays) { displays[displayId] } ?: return false
+        return try {
+            vd.surface = surface
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "setDisplaySurface($displayId) failed", t)
+            false
+        }
+    }
+
+    override fun injectMotionEvent(
+        displayId: Int,
+        action: Int,
+        downTime: Long,
+        eventTime: Long,
+        x: Float,
+        y: Float,
+        pressure: Float,
+    ): Boolean {
+        if (!ownDisplay(displayId)) return false
+        val masked = action and MotionEvent.ACTION_MASK
+        if (masked !in ALLOWED_STREAM_MOTION_ACTIONS) return false
+        val now = SystemClock.uptimeMillis()
+        val safePressure = pressure.takeIf { it.isFinite() }?.coerceIn(0.05f, 1f) ?: 1f
+        val safeX = if (x.isFinite()) x.coerceAtLeast(0f) else 0f
+        val safeY = if (y.isFinite()) y.coerceAtLeast(0f) else 0f
+
+        var syntheticCancel: MotionEvent? = null
+        val mainEvent: MotionEvent? = synchronized(displays) {
+            if (displayId !in displays) return@synchronized null
+            val st = streamTouches.getOrPut(displayId) { StreamTouchState() }
+            when (masked) {
+                MotionEvent.ACTION_DOWN -> {
+                    if (st.active) {
+                        val cancelTime = maxOf(st.lastEventTime, now)
+                        syntheticCancel = obtainTouchEvent(
+                            st.serverDownTime, cancelTime, MotionEvent.ACTION_CANCEL, st.lastX, st.lastY, 0.5f,
+                        )
+                    }
+                    st.active = true
+                    st.serverDownTime = now
+                    st.lastEventTime = now
+                    st.clientDownTime = downTime
+                    st.lastX = safeX
+                    st.lastY = safeY
+                    obtainTouchEvent(st.serverDownTime, st.lastEventTime, MotionEvent.ACTION_DOWN, safeX, safeY, safePressure)
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!st.active) return@synchronized null
+                    val nextTime = sanitizeStreamEventTime(st.serverDownTime, st.lastEventTime, st.clientDownTime, eventTime, now)
+                    st.lastEventTime = nextTime
+                    st.lastX = safeX
+                    st.lastY = safeY
+                    obtainTouchEvent(st.serverDownTime, nextTime, MotionEvent.ACTION_MOVE, safeX, safeY, safePressure)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (!st.active) return@synchronized null
+                    val nextTime = sanitizeStreamEventTime(st.serverDownTime, st.lastEventTime, st.clientDownTime, eventTime, now)
+                    st.lastEventTime = nextTime
+                    st.lastX = safeX
+                    st.lastY = safeY
+                    st.active = false
+                    obtainTouchEvent(st.serverDownTime, nextTime, masked, safeX, safeY, safePressure)
+                }
+                else -> null
+            }
+        }
+        syntheticCancel?.let { cancelEv ->
+            try {
+                val _ = inject(cancelEv, displayId)
+            } finally {
+                cancelEv.recycle()
+            }
+        }
+        val ev = mainEvent ?: return false
+        return try {
+            inject(ev, displayId)
+        } finally {
+            ev.recycle()
+        }
+    }
+
+    private fun obtainTouchEvent(
+        downTime: Long,
+        eventTime: Long,
+        action: Int,
+        x: Float,
+        y: Float,
+        pressure: Float,
+    ): MotionEvent {
+        val props = MotionEvent.PointerProperties().apply {
+            id = 0
+            toolType = MotionEvent.TOOL_TYPE_FINGER
+        }
+        val coords = MotionEvent.PointerCoords().apply {
+            this.x = x
+            this.y = y
+            this.pressure = pressure
+            this.size = 1f
+        }
+        return MotionEvent.obtain(
+            downTime, eventTime, action, 1, arrayOf(props), arrayOf(coords),
+            0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+    }
+
+    private fun isDefaultLauncherPackage(pkg: String): Boolean {
+        if (pkg.isBlank()) return true
+        return runCatching {
+            val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+            val resolved = context.packageManager.resolveActivity(homeIntent, 0)?.activityInfo?.packageName
+            resolved == pkg
+        }.getOrDefault(false)
+    }
+
+    private fun navigateMainDisplayHome(): Boolean {
+        val now = SystemClock.uptimeMillis()
+        val down = KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_HOME, 0, 0, VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD)
+        val up = KeyEvent.changeAction(down, KeyEvent.ACTION_UP)
+        return sendPair({ inject(down, Display.DEFAULT_DISPLAY) }, { inject(up, Display.DEFAULT_DISPLAY) }) {
+            exec("input", "-d", "0", "keyevent", "${KeyEvent.KEYCODE_HOME}") == 0 ||
+                exec("am", "start", "-a", Intent.ACTION_MAIN, "-c", Intent.CATEGORY_HOME) == 0
+        }
     }
 
     override fun moveTask(taskId: Int, displayId: Int): Boolean = try {
@@ -236,6 +431,7 @@ internal class PhoneControlShellService(
     override fun releaseAll() {
         awake.stopAll()
         val all = synchronized(displays) {
+            streamTouches.clear()
             displays.values.toList().also { displays.clear() }
         }
         all.forEach { val _ = runCatching { it.release() } }
@@ -380,6 +576,14 @@ internal class PhoneControlShellService(
         private const val IME_POLICY_LOCAL = 0
         private const val VIRTUAL_KEYBOARD = -1
         private const val USER_CURRENT = -2
+        private const val ACTIVITY_TYPE_HOME = 2
+
+        private val ALLOWED_STREAM_MOTION_ACTIONS = setOf(
+            MotionEvent.ACTION_DOWN,
+            MotionEvent.ACTION_MOVE,
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_CANCEL,
+        )
 
         const val START_OK = 0
         const val START_IN_USE_ON_MAIN = 1
@@ -444,5 +648,20 @@ internal class PhoneControlShellService(
 
         internal fun resolveTargetUid(sdkInt: Int, packageName: String?, userId: Int, uidLookup: (String, Int) -> Int): Int? =
             if (sdkInt < 33 || packageName == null) null else uidLookup(packageName, userId).takeIf { it >= 0 }
+
+        internal fun formatMainForegroundTask(taskId: Int, pkg: String, isHome: Boolean): String =
+            "$taskId|${pkg.replace("|", "")}|${if (isHome) 1 else 0}"
+
+        internal fun sanitizeStreamEventTime(
+            serverDownTime: Long,
+            lastEventTime: Long,
+            clientDownTime: Long,
+            clientEventTime: Long,
+            now: Long,
+        ): Long {
+            val delta = (clientEventTime - clientDownTime).coerceIn(0L, 60_000L)
+            val candidate = serverDownTime + delta
+            return maxOf(lastEventTime, minOf(candidate, now + 50L))
+        }
     }
 }

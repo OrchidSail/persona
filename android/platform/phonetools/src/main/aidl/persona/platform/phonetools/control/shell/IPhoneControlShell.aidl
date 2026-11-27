@@ -17,4 +17,12 @@ interface IPhoneControlShell {
     int[] identity() = 10;
     void releaseAll() = 11;
     void destroy() = 12;
+    // Plan C Phase 1: returns "taskId|packageName|isHome(0/1)" for Display 0 top task, or null.
+    String captureMainForegroundTask() = 13;
+    // Plan C Phase 1: restores main-screen task by taskId (>0) or goes Home (taskId<=0).
+    boolean restoreMainTask(int taskId) = 14;
+    // Plan C Phase 2: hot-swaps VirtualDisplay output surface (ImageReader <-> TextureView).
+    boolean setDisplaySurface(int displayId, in Surface surface) = 15;
+    // Plan C Phase 2: low-latency streaming single MotionEvent injection into an owned virtual display.
+    boolean injectMotionEvent(int displayId, int action, long downTime, long eventTime, float x, float y, float pressure) = 16;
 }

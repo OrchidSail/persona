@@ -14,4 +14,8 @@
     <color name="phonetools_overlay_btn_neutral">#FF334155</color>
     <color name="phonetools_overlay_btn_primary">#FF1D4ED8</color>
     <color name="phonetools_overlay_btn_stop">#FFDC2626</color>
+    <color name="phonetools_overlay_scrim">#73000000</color>
+    <color name="phonetools_overlay_stroke_attention">#FFF59E0B</color>
+    <color name="phonetools_overlay_pill_attention_bg">#F51F1708</color>
+    <color name="phonetools_overlay_btn_success">#FF16A34A</color>
 </resources>

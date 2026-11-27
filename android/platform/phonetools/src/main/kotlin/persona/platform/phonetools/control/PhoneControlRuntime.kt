@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Build
 import android.os.PowerManager
 import android.os.UserManager
+import android.view.Display
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -19,7 +20,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import persona.core.contracts.api.ConnectionState
 import persona.core.contracts.api.DeviceRelayChannelRegistration
@@ -36,15 +39,15 @@ import java.util.concurrent.ConcurrentHashMap
  * Independent remote phone control state machine mounted on the paired HubScope,
  * consuming the generic `device.relay` channel [CHANNEL] (`phone_control`).
  *
- * Strictly enforces three zero-overhead states:
- * - State 0 (OFF / default): zero foreground service lease, zero VirtualDisplay, zero overlay,
- *   zero wireless-ADB watchdog observers, and O(1) AtomicBoolean short-circuit in Accessibility
- *   and NotificationListener services.
- * - State 1 (ON, idle): advertises `device_relay_register` on `/api/v1/ws` and activates
- *   [privilegedShell] watchdog when configured; still zero foreground lease, zero VirtualDisplay,
- *   and zero overlay.
- * - State 2 (active task): acquires `HubService` keepalive lease, creates privileged background
- *   virtual display on demand, and mounts fixed-size live mini-screen [TaskStatusOverlay].
+ * Implements Plan C (Hybrid Non-Intrusive Handover):
+ * - State 0 (OFF) / State 1 (ON, idle): zero background overhead.
+ * - State 2 (active task): starts quietly as a right-edge mini capsule; NEVER steals main-screen
+ *   foreground automatically on `waiting_on_phone` / safety gates.
+ * - Mode A (default): centered 60fps interactive [TextureView] overlay with streaming touch injection.
+ * - Mode B (protected / biometric / user-selected fullscreen): records [MainScreenReturnToken],
+ *   moves target app to Display 0, switches overlay to compact 40dp top bar, and safely returns
+ *   the app to virtual display + restores user's original app/Home on handback (or degrades cleanly
+ *   with `FLAG_KEEP_SCREEN_ON` and restores on terminal completion).
  */
 class PhoneControlRuntime(
     context: Context,
@@ -67,7 +70,7 @@ class PhoneControlRuntime(
     private val terminalReleaseDelayMs: Long = TaskStatusOverlay.AUTO_DISMISS_DELAY_MS,
     private val disconnectGraceMs: Long = DISCONNECT_GRACE_MS,
     private val disconnectPauseLingerMs: Long = DISCONNECT_PAUSE_LINGER_MS,
-) : AutoCloseable {
+) : AutoCloseable, PhoneControlNotificationHandler {
 
     private val appContext = context.applicationContext
     private val job = SupervisorJob(parentScope.coroutineContext[Job])
@@ -84,12 +87,23 @@ class PhoneControlRuntime(
         context = appContext,
         shellProvider = { privilegedShell.currentShell() },
     )
+    private val notifications = PhoneControlNotifications(appContext)
     private val inFlightJobs = ConcurrentHashMap<String, Job>()
+
+    @Volatile
+    private var androidController: AndroidScreenController? = null
+
+    @Volatile
+    private var returnToken: MainScreenReturnToken? = null
+
+    @Volatile
+    private var everUsedMainDisplayForTask: Boolean = false
 
     private var overlay: TaskStatusOverlay? = null
     private var previewFeedJob: Job? = null
     private var terminalReleaseJob: Job? = null
     private var disconnectGraceJob: Job? = null
+    private var handbackJob: Job? = null
     private var lastRegisteredEnabled = false
 
     val isKeepAliveHeld: StateFlow<Boolean> = keepAliveActive.asStateFlow()
@@ -108,6 +122,9 @@ class PhoneControlRuntime(
         controlReturned = appContext.getString(R.string.phonetools_overlay_returned_msg),
         stoppedOnOverlay = appContext.getString(R.string.phonetools_overlay_stopped_msg),
         connectionLost = appContext.getString(R.string.phonetools_overlay_disconnected_msg),
+        returningToBackground = appContext.getString(R.string.phonetools_overlay_returning_msg),
+        attentionNeeded = appContext.getString(R.string.phonetools_overlay_attention_msg),
+        degradedForegroundHint = appContext.getString(R.string.phonetools_overlay_fullscreen_degraded_hint),
     )
 
     private val deviceStateProvider: DeviceControlStateProvider = deviceStateProviderOverride ?: object : DeviceControlStateProvider {
@@ -145,7 +162,14 @@ class PhoneControlRuntime(
                 virtualDisplay = virtualDisplay,
                 notifications = PhoneControlGateState.notificationBuffer,
                 shellProvider = { privilegedShell.currentShell() },
-            )
+            ).also { created ->
+                androidController = created
+                overlay?.let { target ->
+                    if (previewFeedJob?.isActive == true) {
+                        startPreviewFeed(target)
+                    }
+                }
+            }
         },
         masterEnabledProvider = ::isEffectiveEnabled,
         safetyPolicyProvider = ::currentSafetyConfig,
@@ -154,14 +178,17 @@ class PhoneControlRuntime(
         onSessionLifecycle = ::handleSessionLifecycle,
         copy = overlayCopy,
         virtualDisplayActiveProvider = { virtualDisplay.isActive },
-        onBringTaskToForeground = {
-            if (virtualDisplay.isActive) {
-                val _ = virtualDisplay.bringTopTaskToMainDisplay()
-            }
-        },
+        protectedFrameProvider = { virtualDisplay.previewFrameProtected.value },
+        onAttentionRequested = ::handleAttentionRequested,
+        onAttentionCleared = { notifications.cancelAttentionBanner() },
+        onEnterFullscreenHandover = ::enterFullscreenHandover,
+        onHandbackControl = ::performHandbackControl,
+        onTerminalCleanup = ::performTerminalCleanup,
+        appLabelResolver = ::resolveAppLabel,
     )
 
     init {
+        PhoneControlNotificationBridge.register(this)
         PhoneControlGateState.update(
             master = isEffectiveEnabled(),
             otp = settings.allowNotificationOtpAutoLogin.value,
@@ -287,6 +314,144 @@ class PhoneControlRuntime(
         }
     }
 
+    override fun onNotificationOpenInline(taskId: String) {
+        scope.launch {
+            if (taskId.isBlank() || executor.activeTaskId == taskId) {
+                val _ = executor.beginInlineInteractionFromUser()
+            }
+        }
+    }
+
+    override fun onNotificationOpenFullscreen(taskId: String) {
+        scope.launch {
+            if (taskId.isBlank() || executor.activeTaskId == taskId) {
+                val _ = executor.beginFullscreenInteractionFromUser()
+            }
+        }
+    }
+
+    override fun onNotificationCancelTask(taskId: String) {
+        scope.launch {
+            if (taskId.isBlank() || executor.activeTaskId == taskId) {
+                val _ = executor.emergencyStopFromOverlay()
+            }
+        }
+    }
+
+    private fun handleAttentionRequested(request: HandoverRequest) {
+        val canInline = virtualDisplay.isActive && !virtualDisplay.previewFrameProtected.value
+        val appLabel = resolveAppLabel(request.appPackage)
+        val _ = notifications.showAttentionBanner(request, appLabel = appLabel, canInline = canInline)
+    }
+
+    private fun enterFullscreenHandover() {
+        val _ = virtualDisplay.detachInteractiveSurface()
+        val captured = virtualDisplay.captureMainForegroundTask()
+        var movedId = -1
+        var movedPkg: String? = null
+        if (virtualDisplay.isActive) {
+            val moved = virtualDisplay.moveTopTaskToMainDisplay()
+            if (moved != null) {
+                movedId = moved.first
+                movedPkg = moved.second
+            }
+        }
+        returnToken = captured.copy(
+            movedTaskId = movedId,
+            movedPackage = movedPkg ?: executor.currentTargetPackage,
+        )
+        everUsedMainDisplayForTask = true
+        androidController?.syncActiveDisplay(Display.DEFAULT_DISPLAY)
+    }
+
+    private fun performHandbackControl(
+        prevPhase: HandoverPhase,
+        onComplete: (degradedToMainDisplay: Boolean) -> Unit,
+    ) {
+        handbackJob?.cancel()
+        if (prevPhase != HandoverPhase.FULLSCREEN) {
+            val _ = virtualDisplay.detachInteractiveSurface()
+            onComplete(false)
+            return
+        }
+        val token = returnToken
+        handbackJob = scope.launch {
+            val degraded = withContext(Dispatchers.IO) {
+                val vdId = virtualDisplay.displayId.value
+                var movedBack = false
+                if (vdId != null && token != null && token.movedTaskId > 0) {
+                    movedBack = virtualDisplay.moveTaskBackToVirtualDisplay(token.movedTaskId)
+                }
+                if (movedBack && token != null) {
+                    val _ = virtualDisplay.restoreMainTask(token)
+                }
+                if (movedBack && vdId != null) {
+                    val a11y = PhoneControlAccessibilityService.instance.value
+                    var stabilized = false
+                    repeat(HANDBACK_SETTLE_POLLS) {
+                        delay(HANDBACK_SETTLE_INTERVAL_MS)
+                        val hasVdPkg = virtualDisplay.topTaskPackage() != null
+                        val hasVdWin = a11y?.let {
+                            ScreenTreeCollector.hasRenderableContentWindows(it.windowsOnDisplay(vdId), appContext.packageName)
+                        } ?: hasVdPkg
+                        if (hasVdPkg && hasVdWin) {
+                            stabilized = true
+                            return@repeat
+                        }
+                    }
+                    if (stabilized) {
+                        androidController?.syncActiveDisplay(vdId)
+                        false
+                    } else {
+                        androidController?.syncActiveDisplay(Display.DEFAULT_DISPLAY)
+                        true
+                    }
+                } else {
+                    androidController?.syncActiveDisplay(Display.DEFAULT_DISPLAY)
+                    true
+                }
+            }
+            if (!degraded) {
+                returnToken = null
+                everUsedMainDisplayForTask = false
+            }
+            onComplete(degraded)
+        }
+    }
+
+    private fun performTerminalCleanup(status: String, summary: String, targetPackage: String?) {
+        handbackJob?.cancel()
+        handbackJob = null
+        val _ = virtualDisplay.detachInteractiveSurface()
+        notifications.cancelAttentionBanner()
+
+        val token = returnToken
+        val shouldRestoreMain = everUsedMainDisplayForTask || androidController?.activeOnVirtualDisplay?.value == false
+        val pkgToCheck = targetPackage ?: token?.movedPackage
+        if (shouldRestoreMain && !pkgToCheck.isNullOrBlank()) {
+            scope.launch(Dispatchers.IO) {
+                val currentMainTop = virtualDisplay.topMainTaskPackage()
+                if (currentMainTop == pkgToCheck) {
+                    val _ = virtualDisplay.restoreMainTask(token ?: MainScreenReturnToken(wasHome = true))
+                }
+            }
+        }
+        returnToken = null
+        everUsedMainDisplayForTask = false
+
+        val isTimeout = summary.contains("超时") || summary.contains("timeout", ignoreCase = true) // i18n-ignore: matches timeout status summary
+        notifications.showResultNotification(status = status, summary = summary, isTimeout = isTimeout)
+    }
+
+    private fun resolveAppLabel(packageName: String?): String? {
+        val pkg = packageName?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        return runCatching {
+            val pm = appContext.packageManager
+            val ai = pm.getApplicationInfo(pkg, 0)
+            pm.getApplicationLabel(ai)?.toString()?.trim()?.ifEmpty { null }
+        }.getOrNull() ?: pkg.substringAfterLast('.')
+    }
+
     private fun buildRegistrationOrNull(): DeviceRelayChannelRegistration? {
         val snap = deviceStateProvider.snapshot()
         if (!snap.masterEnabled) return null
@@ -314,6 +479,7 @@ class PhoneControlRuntime(
     private fun handleOverlayUpdate(summary: OverlayTaskSummary) {
         if (!isEffectiveEnabled() || (!summary.isActive && summary.status == "idle")) {
             stopPreviewFeed()
+            val _ = virtualDisplay.detachInteractiveSurface()
             overlay?.hide()
             overlayActiveState.value = false
             return
@@ -322,7 +488,8 @@ class PhoneControlRuntime(
             context = appContext,
             onTogglePause = { val _ = executor.togglePauseFromOverlay() },
             onTakeoverOrResumePhone = {
-                if (executor.controlState.value.takeoverRequested || overlay?.lastSummary?.isWaitingOnPhone == true) {
+                val ctrl = executor.controlState.value
+                if (ctrl.takeoverRequested || overlay?.lastSummary?.isWaitingOnPhone == true) {
                     val _ = executor.resumeFromPhoneOverlay()
                 } else {
                     val _ = executor.requestTakeoverFromOverlay()
@@ -335,9 +502,28 @@ class PhoneControlRuntime(
                 releaseKeepAliveLease()
             },
             onBringToForeground = {
-                if (virtualDisplay.isActive) {
-                    val _ = virtualDisplay.bringTopTaskToMainDisplay()
-                }
+                val _ = executor.beginFullscreenInteractionFromUser()
+            },
+            onOpenHandover = {
+                val _ = executor.openHandoverFromUser()
+            },
+            onSwitchToFullscreen = {
+                val _ = executor.beginFullscreenInteractionFromUser()
+            },
+            onCompleteHandback = {
+                val _ = executor.resumeFromPhoneOverlay()
+            },
+            onAttachInteractiveSurface = { surface ->
+                virtualDisplay.attachInteractiveSurface(surface)
+            },
+            onDetachInteractiveSurface = {
+                val _ = virtualDisplay.detachInteractiveSurface()
+            },
+            onInjectInteractiveMotion = { action, downTime, eventTime, x, y, pressure ->
+                virtualDisplay.injectInteractiveMotionEvent(action, downTime, eventTime, x, y, pressure)
+            },
+            virtualDisplaySizeProvider = {
+                virtualDisplay.currentWidth to virtualDisplay.currentHeight
             },
         ).also {
             overlay = it
@@ -352,13 +538,15 @@ class PhoneControlRuntime(
 
     private fun startPreviewFeed(target: TaskStatusOverlay) {
         previewFeedJob?.cancel()
+        val activeVdFlow: StateFlow<Boolean>? = androidController?.activeOnVirtualDisplay
         previewFeedJob = scope.launch {
+            val isActuallyVirtualFlow = activeVdFlow ?: virtualDisplay.displayId.map { it != null }
             combine(
-                virtualDisplay.displayId,
+                isActuallyVirtualFlow,
                 virtualDisplay.previewFrames,
                 virtualDisplay.previewFrameProtected,
-            ) { vdId, frame, isProtected ->
-                Triple(vdId != null, frame, isProtected)
+            ) { isVirtual, frame, isProtected ->
+                Triple(isVirtual, frame, isProtected)
             }.collect { (isVirtual, frame, isProtected) ->
                 target.updatePreviewFrame(frame, usingVirtualDisplay = isVirtual, protectedFrame = isProtected)
             }
@@ -384,6 +572,7 @@ class PhoneControlRuntime(
                 delay(terminalReleaseDelayMs)
                 if (!executor.hasActiveSession) {
                     stopPreviewFeed()
+                    val _ = virtualDisplay.detachInteractiveSurface()
                     overlay?.hide()
                     overlayActiveState.value = false
                     virtualDisplay.release()
@@ -435,18 +624,24 @@ class PhoneControlRuntime(
     }
 
     private fun tearDownActiveSessionAndCalls(sendUnregister: Boolean) {
+        handbackJob?.cancel()
+        handbackJob = null
         terminalReleaseJob?.cancel()
         terminalReleaseJob = null
         cancelDisconnectGraceTimer()
         stopPreviewFeed()
+        notifications.cancelAttentionBanner()
         inFlightJobs.values.forEach { it.cancel(CancellationException("control_disabled")) }
         inFlightJobs.clear()
         executor.resetSession()
+        val _ = virtualDisplay.detachInteractiveSurface()
         overlay?.hide()
         overlay = null
         PhoneControlGateState.activeOverlay = null
         overlayActiveState.value = false
         virtualDisplay.release()
+        returnToken = null
+        everUsedMainDisplayForTask = false
         releaseKeepAliveLease()
         if (sendUnregister && transport != null) {
             val _ = transport.unregister(CHANNEL)
@@ -455,6 +650,7 @@ class PhoneControlRuntime(
     }
 
     override fun close() {
+        PhoneControlNotificationBridge.unregister(this)
         tearDownActiveSessionAndCalls(sendUnregister = lastRegisteredEnabled)
         privilegedShell.setMasterActive(false)
         PhoneControlGateState.resetForShutdown()
@@ -466,6 +662,8 @@ class PhoneControlRuntime(
         const val CHANNEL = "phone_control"
         const val DISCONNECT_GRACE_MS = 30_000L
         const val DISCONNECT_PAUSE_LINGER_MS = 10_000L
+        private const val HANDBACK_SETTLE_POLLS = 6
+        private const val HANDBACK_SETTLE_INTERVAL_MS = 200L
         val CAPABILITIES: List<String> = listOf(
             "device_state",
             "observe",
@@ -476,6 +674,8 @@ class PhoneControlRuntime(
             "fill_verification_code",
             "virtual_display_shell",
             "mini_screen_overlay",
+            "non_intrusive_handover_v2",
+            "inline_vd_touch_v1",
         )
     }
 }

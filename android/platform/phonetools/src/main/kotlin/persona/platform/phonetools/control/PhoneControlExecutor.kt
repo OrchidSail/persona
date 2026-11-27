@@ -34,17 +34,22 @@ data class OverlayCopy(
     val controlReturned: String = "Control returned; resuming task",
     val stoppedOnOverlay: String = "Stopped on phone",
     val connectionLost: String = "Connection lost; paused",
+    val returningToBackground: String = "Returning app to background...",
+    val attentionNeeded: String = "Action needed — tap capsule or notification",
+    val degradedForegroundHint: String = "Continuing in foreground; will return automatically when finished",
 )
 
 /**
  * Executes the 5 atomic phone control operations (`device_state`, `observe`, `action`, `session`, `otp_consume`)
- * for the thin controlled shell while enforcing:
+ * for the thin controlled shell while enforcing Plan C non-intrusive handover:
  * - Master switch enabled check (`control_disabled` when OFF).
  * - Single-device serialization via [Mutex] on `observe`/`action` while `device_state`/`session`/`otp_consume` stay fast.
  * - Bounded in-memory idempotency deduplication via [PhoneControlCallGate] on `action` and `otp_consume`.
  * - Deterministic local [SafetyGatePolicy] BEFORE every action & OTP read, including `tap_xy` coordinate node lookup.
  * - Unconditional `://` URI scheme rejection.
- * - Preserved step numbers across overlay Pause/Resume/Takeover/Return/Stop callbacks.
+ * - ZERO automatic foreground stealing: `waiting_on_phone` / safety gates NEVER move apps to Display 0 automatically;
+ *   they transition into [HandoverPhase.PENDING_ATTENTION] and notify via edge capsule + heads-up notification so
+ *   the user chooses in-place virtual-display overlay (Mode A) or fullscreen (Mode B).
  */
 class PhoneControlExecutor(
     private val screenFactory: () -> ScreenPort,
@@ -56,7 +61,14 @@ class PhoneControlExecutor(
     private val copy: OverlayCopy = OverlayCopy(),
     private val callGate: PhoneControlCallGate = PhoneControlCallGate(),
     private val virtualDisplayActiveProvider: () -> Boolean = { false },
+    private val protectedFrameProvider: () -> Boolean = { false },
     private val onBringTaskToForeground: () -> Unit = {},
+    private val onAttentionRequested: (HandoverRequest) -> Unit = {},
+    private val onAttentionCleared: () -> Unit = {},
+    private val onEnterFullscreenHandover: (() -> Unit)? = null,
+    private val onHandbackControl: ((prevPhase: HandoverPhase, onComplete: (degradedToMainDisplay: Boolean) -> Unit) -> Unit)? = null,
+    private val onTerminalCleanup: (status: String, summary: String, targetPackage: String?) -> Unit = { _, _, _ -> },
+    private val appLabelResolver: (String?) -> String? = { it },
 ) {
     private val gate = SafetyGatePolicy(safetyPolicyProvider)
     private val screenRef = AtomicReference<ScreenPort?>(null)
@@ -70,7 +82,22 @@ class PhoneControlExecutor(
     private var lastKnownStep: Int = 0
 
     @Volatile
-    private var broughtForegroundForWait: Boolean = false
+    private var attentionNotifiedForWait: Boolean = false
+
+    @Volatile
+    private var pendingWaitingFor: String? = null
+
+    @Volatile
+    private var pendingReason: String? = null
+
+    @Volatile
+    private var pendingRequiresForeground: Boolean = false
+
+    @Volatile
+    private var lastTargetPackage: String? = null
+
+    @Volatile
+    private var keepScreenOnForeground: Boolean = false
 
     private val _controlState = MutableStateFlow(OverlayControlState())
     val controlState: StateFlow<OverlayControlState> = _controlState.asStateFlow()
@@ -81,10 +108,24 @@ class PhoneControlExecutor(
     val hasActiveSession: Boolean
         get() = _controlState.value.taskId != null
 
+    val currentTargetPackage: String?
+        get() = lastTargetPackage
+
     private fun screen(): ScreenPort {
         screenRef.get()?.let { return it }
         val created = screenFactory()
         return if (screenRef.compareAndSet(null, created)) created else screenRef.get()!!
+    }
+
+    internal fun currentScreenOrNull(): ScreenPort? = screenRef.get()
+
+    private fun effectiveUsingVirtualDisplay(): Boolean {
+        val port = screenRef.get()
+        return if (port != null && virtualDisplayActiveProvider()) {
+            port.isActuallyUsingVirtualDisplay() || lastSnapshot?.usingVirtualDisplay == true
+        } else {
+            virtualDisplayActiveProvider()
+        }
     }
 
     suspend fun execute(call: PhoneControlCall): PhoneControlResult {
@@ -161,7 +202,7 @@ class PhoneControlExecutor(
             rememberStep(step)
             onSessionLifecycle(true, false)
             val ctrl = _controlState.value
-            if (!ctrl.paused && !ctrl.takeoverRequested && !ctrl.stopRequested) {
+            if (!ctrl.paused && !ctrl.takeoverRequested && !ctrl.stopRequested && ctrl.handoverPhase == HandoverPhase.NONE) {
                 publishOverlay(
                     taskId = taskId,
                     status = "running",
@@ -180,6 +221,9 @@ class PhoneControlExecutor(
         snapshotsById.clear()
         val _ = snapshotsById.put(snap.snapshotId, snap)
         lastSnapshot = snap
+        if (!snap.topPackage.isNullOrBlank()) {
+            lastTargetPackage = snap.topPackage
+        }
 
         val policy = safetyPolicyProvider()
         val otpMeta = if (includeOtpMeta && policy.allowNotificationOtpAutoLogin) {
@@ -198,6 +242,12 @@ class PhoneControlExecutor(
             ),
         )
 
+        val handoverMode = when (_controlState.value.handoverPhase) {
+            HandoverPhase.INLINE -> "inline"
+            HandoverPhase.FULLSCREEN -> "fullscreen"
+            else -> null
+        }
+
         return buildJsonObject {
             put("snapshot_id", snap.snapshotId)
             put("display_id", snap.displayId)
@@ -206,6 +256,9 @@ class PhoneControlExecutor(
             snap.topPackage?.let { put("top_package", it) }
             put("using_virtual_display", snap.usingVirtualDisplay)
             put("has_password_field", snap.hasPasswordField)
+            put("ime_visible", snap.imeVisible)
+            snap.windowDiagnostics?.let { put("window_diagnostics", it) }
+            handoverMode?.let { put("handover_mode", it) }
             put("ui_hash", snap.uiHash)
             put("prompt_summary", snap.toPromptSummary())
             putJsonArray("elements") {
@@ -233,7 +286,6 @@ class PhoneControlExecutor(
             }
             put("safety_policy", policy.toJson())
             put("otp_allowed", policy.allowNotificationOtpAutoLogin)
-            // Never return plaintext otp.code in observe; return redacted otp_meta only.
             put("otp_meta", otpMeta.toJson())
             put("screenshot", JsonNullOrObject(snap.screenshot?.toJson()))
             if (snap.screenshotOmittedReason != null) {
@@ -290,6 +342,7 @@ class PhoneControlExecutor(
                 summary = copy.takeoverActive,
                 isWaitingOnPhone = true,
                 isActive = true,
+                handoverPhase = ctrl.handoverPhase.takeIf { it != HandoverPhase.NONE } ?: HandoverPhase.PENDING_ATTENTION,
             )
             return actionResult(
                 ok = false,
@@ -311,7 +364,6 @@ class PhoneControlExecutor(
         val ref = params["ref"]?.jsonPrimitive?.contentOrNull
         val tapX = params["x"]?.jsonPrimitive?.intOrNull
         val tapY = params["y"]?.jsonPrimitive?.intOrNull
-        // Security hardening: resolve hit UiElement at (x, y) on tap_xy so coordinate taps cannot bypass payment gates.
         val targetEl = when {
             ref != null -> snap?.findRef(ref)
             action == "tap_xy" && tapX != null && tapY != null -> snap?.findElementAt(tapX, tapY)
@@ -335,26 +387,24 @@ class PhoneControlExecutor(
         )
         when (val verdict = gate.evaluate(riskCtx)) {
             is GateDecision.RequirePhone -> {
-                onBringTaskToForeground()
-                _controlState.value = _controlState.value.copy(
-                    taskId = taskId ?: _controlState.value.taskId,
-                    takeoverRequested = false,
-                    resumedFromPhone = false,
-                )
-                publishOverlay(
-                    taskId = taskId ?: _controlState.value.taskId,
-                    status = "waiting_on_phone",
-                    step = lastKnownStep,
-                    summary = verdict.reason,
-                    isWaitingOnPhone = true,
-                    isActive = true,
+                // Plan C core principle: NEVER auto-bring task to foreground.
+                val appPkg = verdict.app ?: snap?.topPackage
+                val requiresFg = needsFullscreenForGate(verdict.waitingFor, verdict.reason, appPkg)
+                enterPendingAttention(
+                    taskId = taskId ?: _controlState.value.taskId.orEmpty(),
+                    waitingFor = verdict.waitingFor,
+                    reason = verdict.reason,
+                    appPackage = appPkg,
+                    requiresForeground = requiresFg,
+                    handoverHint = if (requiresFg) "fullscreen" else "inline",
+                    timeoutSeconds = DEFAULT_HANDOVER_TIMEOUT_S,
                 )
                 return actionResult(
                     ok = false,
                     gated = true,
                     waitingFor = verdict.waitingFor,
                     reason = verdict.reason,
-                    app = verdict.app ?: snap?.topPackage,
+                    app = appPkg,
                 )
             }
             GateDecision.Allow -> Unit
@@ -419,7 +469,11 @@ class PhoneControlExecutor(
                 }
                 val preferVirtual = params["prefer_virtual_display"]?.jsonPrimitive?.booleanOrNull
                     ?: deviceStateProvider.snapshot().virtualDisplayReady
-                port.launchApp(app, preferVirtualDisplay = preferVirtual)
+                val launchRes = port.launchApp(app, preferVirtualDisplay = preferVirtual)
+                if (launchRes is ActionOutcome.Ok && app.contains('.')) {
+                    lastTargetPackage = app
+                }
+                launchRes
             }
             "list_apps" -> {
                 val apps = port.listLaunchableApps().take(80)
@@ -535,39 +589,75 @@ class PhoneControlExecutor(
         val status = body["status"]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase().orEmpty()
         val step = body["step"]?.jsonPrimitive?.intOrNull ?: lastKnownStep
         val summary = body["summary"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val waitingFor = body["waiting_for"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+        val appPkg = body["app"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+        val reqFgExplicit = body["requires_foreground"]?.jsonPrimitive?.booleanOrNull
+        val handoverHint = body["handover_hint"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val timeoutS = body["handover_timeout_s"]?.jsonPrimitive?.intOrNull ?: DEFAULT_HANDOVER_TIMEOUT_S
         val clearFlags = body["clear_flags"]?.jsonPrimitive?.booleanOrNull ?: false
 
         ensureSessionTaskId(taskId)
         rememberStep(step)
+        if (!appPkg.isNullOrBlank()) {
+            lastTargetPackage = appPkg
+        }
         if (clearFlags) {
             _controlState.value = OverlayControlState(taskId = taskId)
+            attentionNotifiedForWait = false
+            pendingWaitingFor = null
+            pendingReason = null
+            pendingRequiresForeground = false
+            onAttentionCleared()
         }
 
         val terminal = status in TERMINAL_STATUSES
-        val ctrlSnapshot = _controlState.value
 
         if (status == "waiting_on_phone") {
-            if (!broughtForegroundForWait) {
-                broughtForegroundForWait = true
-                onBringTaskToForeground()
+            val effectiveWaiting = waitingFor ?: pendingWaitingFor ?: "hand_to_user"
+            val effectiveReason = summary.ifBlank { pendingReason ?: copy.attentionNeeded }
+            val effectiveApp = appPkg ?: lastTargetPackage ?: lastSnapshot?.topPackage
+            val requiresFg = reqFgExplicit
+                ?: (handoverHint.equals("fullscreen", ignoreCase = true) ||
+                    needsFullscreenForGate(effectiveWaiting, effectiveReason, effectiveApp))
+            val curPhase = _controlState.value.handoverPhase
+            if (curPhase == HandoverPhase.NONE || curPhase == HandoverPhase.PENDING_ATTENTION) {
+                enterPendingAttention(
+                    taskId = taskId,
+                    waitingFor = effectiveWaiting,
+                    reason = effectiveReason,
+                    appPackage = effectiveApp,
+                    requiresForeground = requiresFg,
+                    handoverHint = handoverHint.ifBlank { if (requiresFg) "fullscreen" else "inline" },
+                    timeoutSeconds = timeoutS,
+                )
             }
         } else if (status.isNotEmpty()) {
-            broughtForegroundForWait = false
-        }
-
-        if (status.isNotEmpty()) {
+            attentionNotifiedForWait = false
+            pendingWaitingFor = null
+            pendingReason = null
+            pendingRequiresForeground = false
+            onAttentionCleared()
+            if (_controlState.value.handoverPhase != HandoverPhase.NONE && !terminal) {
+                _controlState.value = _controlState.value.copy(handoverPhase = HandoverPhase.NONE)
+            }
             publishOverlay(
                 taskId = taskId,
                 status = status,
                 step = lastKnownStep,
                 summary = summary.ifBlank { status },
                 isPaused = status == "paused",
-                isWaitingOnPhone = status == "waiting_on_phone",
+                isWaitingOnPhone = false,
                 isActive = !terminal,
+                handoverPhase = HandoverPhase.NONE,
             )
         }
 
+        val ctrlSnapshot = _controlState.value
+
         if (terminal) {
+            val targetPkg = lastTargetPackage ?: lastSnapshot?.topPackage
+            onAttentionCleared()
+            onTerminalCleanup(status, summary, targetPkg)
             clearSessionResources()
             onSessionLifecycle(false, true)
         } else {
@@ -580,7 +670,111 @@ class PhoneControlExecutor(
         }
     }
 
-    // ---- On-phone Floating Overlay Button Handlers (preserve lastKnownStep) ----
+    private fun enterPendingAttention(
+        taskId: String,
+        waitingFor: String,
+        reason: String,
+        appPackage: String?,
+        requiresForeground: Boolean,
+        handoverHint: String,
+        timeoutSeconds: Int,
+    ) {
+        pendingWaitingFor = waitingFor
+        pendingReason = reason
+        pendingRequiresForeground = requiresForeground
+        val cur = _controlState.value
+        _controlState.value = cur.copy(
+            taskId = taskId.ifBlank { cur.taskId },
+            resumedFromPhone = false,
+            handoverPhase = HandoverPhase.PENDING_ATTENTION,
+        )
+        publishOverlay(
+            taskId = taskId.ifBlank { cur.taskId },
+            status = "waiting_on_phone",
+            step = lastKnownStep,
+            summary = reason,
+            isWaitingOnPhone = true,
+            isActive = true,
+            handoverPhase = HandoverPhase.PENDING_ATTENTION,
+            waitingFor = waitingFor,
+            requiresForeground = requiresForeground,
+        )
+        if (!attentionNotifiedForWait) {
+            attentionNotifiedForWait = true
+            onAttentionRequested(
+                HandoverRequest(
+                    taskId = taskId.ifBlank { cur.taskId.orEmpty() },
+                    waitingFor = waitingFor,
+                    reason = reason,
+                    appPackage = appPackage,
+                    requiresForeground = requiresForeground,
+                    handoverHint = handoverHint,
+                    timeoutSeconds = timeoutSeconds,
+                ),
+            )
+        }
+    }
+
+    // ---- Plan C User-Initiated Handover & Overlay Callbacks ----
+
+    fun openHandoverFromUser(): Boolean {
+        val cur = _controlState.value
+        if (cur.taskId == null) return false
+        val canInline = virtualDisplayActiveProvider() && !protectedFrameProvider() && !pendingRequiresForeground
+        return if (canInline) {
+            beginInlineInteractionFromUser()
+        } else {
+            beginFullscreenInteractionFromUser()
+        }
+    }
+
+    fun beginInlineInteractionFromUser(): Boolean {
+        val cur = _controlState.value
+        if (cur.taskId == null) return false
+        if (!virtualDisplayActiveProvider() || protectedFrameProvider()) {
+            return beginFullscreenInteractionFromUser()
+        }
+        onAttentionCleared()
+        _controlState.value = cur.copy(
+            resumedFromPhone = false,
+            handoverPhase = HandoverPhase.INLINE,
+        )
+        publishOverlay(
+            taskId = cur.taskId,
+            status = "waiting_on_phone",
+            step = lastKnownStep,
+            summary = pendingReason ?: copy.takeoverActive,
+            isWaitingOnPhone = true,
+            isActive = true,
+            handoverPhase = HandoverPhase.INLINE,
+            waitingFor = pendingWaitingFor,
+            requiresForeground = false,
+        )
+        return true
+    }
+
+    fun beginFullscreenInteractionFromUser(): Boolean {
+        val cur = _controlState.value
+        if (cur.taskId == null) return false
+        onAttentionCleared()
+        (onEnterFullscreenHandover ?: onBringTaskToForeground).invoke()
+        _controlState.value = cur.copy(
+            resumedFromPhone = false,
+            handoverPhase = HandoverPhase.FULLSCREEN,
+        )
+        publishOverlay(
+            taskId = cur.taskId,
+            status = "waiting_on_phone",
+            step = lastKnownStep,
+            summary = pendingReason ?: copy.takeoverActive,
+            isWaitingOnPhone = true,
+            isActive = true,
+            handoverPhase = HandoverPhase.FULLSCREEN,
+            waitingFor = pendingWaitingFor,
+            requiresForeground = true,
+        )
+        return true
+    }
 
     fun togglePauseFromOverlay(): Boolean {
         val cur = _controlState.value
@@ -598,11 +792,24 @@ class PhoneControlExecutor(
         return true
     }
 
-    fun requestTakeoverFromOverlay(): Boolean {
+    fun requestTakeoverFromOverlay(preferFullscreen: Boolean = false): Boolean {
         val cur = _controlState.value
         if (cur.taskId == null) return false
-        onBringTaskToForeground()
-        _controlState.value = cur.copy(takeoverRequested = true, resumedFromPhone = false)
+        onAttentionCleared()
+        val useInline = !preferFullscreen && virtualDisplayActiveProvider() && !protectedFrameProvider()
+        val nextPhase = if (useInline) {
+            HandoverPhase.INLINE
+        } else {
+            (onEnterFullscreenHandover ?: onBringTaskToForeground).invoke()
+            HandoverPhase.FULLSCREEN
+        }
+        pendingWaitingFor = "manual_takeover"
+        pendingReason = copy.takeoverActive
+        _controlState.value = cur.copy(
+            takeoverRequested = true,
+            resumedFromPhone = false,
+            handoverPhase = nextPhase,
+        )
         publishOverlay(
             taskId = cur.taskId,
             status = "waiting_on_phone",
@@ -610,6 +817,9 @@ class PhoneControlExecutor(
             summary = copy.takeoverActive,
             isWaitingOnPhone = true,
             isActive = true,
+            handoverPhase = nextPhase,
+            waitingFor = "manual_takeover",
+            requiresForeground = nextPhase == HandoverPhase.FULLSCREEN,
         )
         return true
     }
@@ -617,30 +827,79 @@ class PhoneControlExecutor(
     fun resumeFromPhoneOverlay(): Boolean {
         val cur = _controlState.value
         if (cur.taskId == null) return false
-        _controlState.value = cur.copy(takeoverRequested = false, paused = false, resumedFromPhone = true)
+        val prevPhase = cur.handoverPhase
+        onAttentionCleared()
+        val handback = onHandbackControl
+        if (handback == null) {
+            finishHandback(cur.taskId, degradedToMainDisplay = false)
+            return true
+        }
+        _controlState.value = cur.copy(
+            handoverPhase = HandoverPhase.RETURNING,
+        )
         publishOverlay(
             taskId = cur.taskId,
             status = "running",
             step = lastKnownStep,
-            summary = copy.controlReturned,
+            summary = copy.returningToBackground,
             isWaitingOnPhone = false,
             isActive = true,
+            handoverPhase = HandoverPhase.RETURNING,
         )
+        handback(prevPhase) { degraded ->
+            finishHandback(cur.taskId, degradedToMainDisplay = degraded)
+        }
         return true
+    }
+
+    private fun finishHandback(taskId: String, degradedToMainDisplay: Boolean) {
+        val cur = _controlState.value
+        if (cur.taskId != taskId || cur.stopRequested) return
+        attentionNotifiedForWait = false
+        pendingWaitingFor = null
+        pendingReason = null
+        pendingRequiresForeground = false
+        keepScreenOnForeground = degradedToMainDisplay
+        _controlState.value = cur.copy(
+            takeoverRequested = false,
+            paused = false,
+            resumedFromPhone = true,
+            handoverPhase = HandoverPhase.NONE,
+        )
+        publishOverlay(
+            taskId = taskId,
+            status = "running",
+            step = lastKnownStep,
+            summary = if (degradedToMainDisplay) copy.degradedForegroundHint else copy.controlReturned,
+            isWaitingOnPhone = false,
+            isActive = true,
+            handoverPhase = HandoverPhase.NONE,
+        )
     }
 
     fun emergencyStopFromOverlay(): Boolean {
         val cur = _controlState.value
         if (cur.taskId == null) return false
         val stoppedStep = lastKnownStep
-        _controlState.value = cur.copy(stopRequested = true, paused = false, takeoverRequested = false)
+        val targetPkg = lastTargetPackage ?: lastSnapshot?.topPackage
+        onAttentionCleared()
+        _controlState.value = cur.copy(
+            stopRequested = true,
+            userCancelled = true,
+            paused = false,
+            takeoverRequested = false,
+            handoverPhase = HandoverPhase.NONE,
+        )
+        keepScreenOnForeground = false
         publishOverlay(
             taskId = cur.taskId,
             status = "cancelled",
             step = stoppedStep,
             summary = copy.stoppedOnOverlay,
             isActive = false,
+            handoverPhase = HandoverPhase.NONE,
         )
+        onTerminalCleanup("cancelled", copy.stoppedOnOverlay, targetPkg)
         clearCachesAndVirtualDisplay()
         onSessionLifecycle(false, true)
         return true
@@ -661,6 +920,7 @@ class PhoneControlExecutor(
     }
 
     fun resetSession() {
+        onAttentionCleared()
         clearSessionResources()
         publishOverlay(taskId = null, status = "idle", step = 0, summary = "", isActive = false)
     }
@@ -668,7 +928,12 @@ class PhoneControlExecutor(
     private fun clearSessionResources() {
         _controlState.value = OverlayControlState()
         lastKnownStep = 0
-        broughtForegroundForWait = false
+        attentionNotifiedForWait = false
+        pendingWaitingFor = null
+        pendingReason = null
+        pendingRequiresForeground = false
+        lastTargetPackage = null
+        keepScreenOnForeground = false
         clearCachesAndVirtualDisplay()
     }
 
@@ -684,6 +949,11 @@ class PhoneControlExecutor(
         if (cur.taskId != taskId) {
             _controlState.value = OverlayControlState(taskId = taskId)
             lastKnownStep = 0
+            attentionNotifiedForWait = false
+            pendingWaitingFor = null
+            pendingReason = null
+            pendingRequiresForeground = false
+            keepScreenOnForeground = false
         }
     }
 
@@ -691,6 +961,13 @@ class PhoneControlExecutor(
         if (step > 0) {
             lastKnownStep = step
         }
+    }
+
+    private fun needsFullscreenForGate(waitingFor: String, reason: String, appPkg: String?): Boolean {
+        if (!virtualDisplayActiveProvider() || protectedFrameProvider()) return true
+        if (waitingFor == "screen_locked") return true
+        val blob = listOf(waitingFor, reason, appPkg.orEmpty()).joinToString(" ").lowercase()
+        return FULLSCREEN_REQUIRED_MARKERS.any { it in blob }
     }
 
     private fun publishOverlay(
@@ -701,7 +978,11 @@ class PhoneControlExecutor(
         isPaused: Boolean = false,
         isWaitingOnPhone: Boolean = false,
         isActive: Boolean = true,
+        handoverPhase: HandoverPhase = _controlState.value.handoverPhase,
+        waitingFor: String? = pendingWaitingFor,
+        requiresForeground: Boolean = pendingRequiresForeground,
     ) {
+        val usingVd = effectiveUsingVirtualDisplay()
         onOverlayUpdate(
             OverlayTaskSummary(
                 taskId = taskId,
@@ -711,7 +992,12 @@ class PhoneControlExecutor(
                 isPaused = isPaused,
                 isWaitingOnPhone = isWaitingOnPhone,
                 isActive = isActive,
-                usingVirtualDisplay = virtualDisplayActiveProvider(),
+                usingVirtualDisplay = usingVd,
+                handoverPhase = handoverPhase,
+                waitingFor = waitingFor,
+                targetAppLabel = appLabelResolver(lastTargetPackage ?: lastSnapshot?.topPackage),
+                requiresForeground = requiresForeground,
+                keepScreenOnForeground = keepScreenOnForeground && !usingVd && isActive,
             ),
         )
     }
@@ -761,6 +1047,11 @@ class PhoneControlExecutor(
     }
 
     private companion object {
+        const val DEFAULT_HANDOVER_TIMEOUT_S = 300
         val TERMINAL_STATUSES = setOf("done", "failed", "cancelled")
+        val FULLSCREEN_REQUIRED_MARKERS = listOf(
+            "biometric", "fingerprint", "face authentication", "flag_secure", "protected",
+            "指纹", "面容", "刷脸", "人脸", "安全键盘", "静态密码", // i18n-ignore: matches system biometric/security prompts
+        )
     }
 }

@@ -151,6 +151,47 @@ data class SafetyGateConfig(
     fun toJson(): JsonObject = toContract().toWire()
 }
 
+enum class HandoverPhase(val wireValue: String) {
+    NONE(""),
+    PENDING_ATTENTION("pending_attention"),
+    INLINE("inline"),
+    FULLSCREEN("fullscreen"),
+    RETURNING("returning"),
+}
+
+data class MainScreenReturnToken(
+    val prevMainTaskId: Int = -1,
+    val prevMainPackage: String? = null,
+    val wasHome: Boolean = true,
+    val movedTaskId: Int = -1,
+    val movedPackage: String? = null,
+) {
+    companion object {
+        fun parseCaptured(raw: String?): MainScreenReturnToken {
+            if (raw.isNullOrBlank()) return MainScreenReturnToken()
+            val parts = raw.split('|')
+            val taskId = parts.getOrNull(0)?.toIntOrNull() ?: -1
+            val pkg = parts.getOrNull(1)?.takeIf { it.isNotBlank() }
+            val isHome = parts.getOrNull(2) == "1" || taskId <= 0 || pkg == null
+            return MainScreenReturnToken(
+                prevMainTaskId = taskId,
+                prevMainPackage = pkg,
+                wasHome = isHome,
+            )
+        }
+    }
+}
+
+data class HandoverRequest(
+    val taskId: String,
+    val waitingFor: String,
+    val reason: String,
+    val appPackage: String? = null,
+    val requiresForeground: Boolean = false,
+    val handoverHint: String = "inline",
+    val timeoutSeconds: Int = 300,
+)
+
 data class OverlayTaskSummary(
     val taskId: String?,
     val status: String,
@@ -160,6 +201,11 @@ data class OverlayTaskSummary(
     val isWaitingOnPhone: Boolean = false,
     val isActive: Boolean = false,
     val usingVirtualDisplay: Boolean = false,
+    val handoverPhase: HandoverPhase = HandoverPhase.NONE,
+    val waitingFor: String? = null,
+    val targetAppLabel: String? = null,
+    val requiresForeground: Boolean = false,
+    val keepScreenOnForeground: Boolean = false,
 )
 
 data class OverlayControlState(
@@ -168,12 +214,20 @@ data class OverlayControlState(
     val takeoverRequested: Boolean = false,
     val stopRequested: Boolean = false,
     val resumedFromPhone: Boolean = false,
+    val handoverPhase: HandoverPhase = HandoverPhase.NONE,
+    val userCancelled: Boolean = false,
 ) {
     fun toJson(): JsonObject = buildJsonObject {
         put("paused", paused)
         put("takeover_requested", takeoverRequested)
         put("stop_requested", stopRequested)
         put("resumed_from_phone", resumedFromPhone)
+        if (handoverPhase != HandoverPhase.NONE) {
+            put("handover_phase", handoverPhase.wireValue)
+        }
+        if (userCancelled) {
+            put("user_cancelled", true)
+        }
     }
 }
 

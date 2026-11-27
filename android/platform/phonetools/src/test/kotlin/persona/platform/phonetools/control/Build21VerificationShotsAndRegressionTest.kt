@@ -79,8 +79,9 @@ class Build21VerificationShotsAndRegressionTest {
     }
 
     @Test
-    fun syncSessionWaitingOnPhoneBringsTaskToForegroundOncePerWait() {
+    fun syncSessionWaitingOnPhoneNeverStealsForegroundAndAlertsOncePerWait() {
         var bringCount = 0
+        var attentionCount = 0
         val executor = PhoneControlExecutor(
             screenFactory = { error("not needed for syncSession") },
             masterEnabledProvider = { true },
@@ -103,18 +104,23 @@ class Build21VerificationShotsAndRegressionTest {
             },
             onOverlayUpdate = {},
             onSessionLifecycle = { _, _ -> },
+            virtualDisplayActiveProvider = { true },
             onBringTaskToForeground = { bringCount++ },
+            onAttentionRequested = { attentionCount++ },
         )
 
-        // Repeated waiting_on_phone polls bring app to foreground once (no flicker spam)
+        // Plan C: repeated waiting_on_phone polls NEVER steal foreground and alert once per wait
         executor.syncSession(buildJsonObject { put("task_id", "t1"); put("status", "waiting_on_phone"); put("step", 5) })
         executor.syncSession(buildJsonObject { put("task_id", "t1"); put("status", "waiting_on_phone"); put("step", 5) })
-        assertEquals(1, bringCount)
+        assertEquals(0, bringCount)
+        assertEquals(1, attentionCount)
+        assertEquals(HandoverPhase.PENDING_ATTENTION, executor.controlState.value.handoverPhase)
 
-        // Resuming then hitting another waiting_on_phone brings forward again
+        // Resuming then hitting another waiting_on_phone alerts again without stealing foreground
         executor.syncSession(buildJsonObject { put("task_id", "t1"); put("status", "running"); put("step", 6) })
         executor.syncSession(buildJsonObject { put("task_id", "t1"); put("status", "waiting_on_phone"); put("step", 7) })
-        assertEquals(2, bringCount)
+        assertEquals(0, bringCount)
+        assertEquals(2, attentionCount)
     }
 
     @Test

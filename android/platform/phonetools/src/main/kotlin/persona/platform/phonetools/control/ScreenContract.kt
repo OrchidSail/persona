@@ -48,6 +48,8 @@ data class ScreenSnapshot(
     val hasPasswordField: Boolean,
     val uiHash: Long,
     val usingVirtualDisplay: Boolean = false,
+    val imeVisible: Boolean = false,
+    val windowDiagnostics: String? = null,
     val screenshot: ScreenshotPayload? = null,
     val screenshotOmittedReason: String? = null,
 ) {
@@ -68,7 +70,7 @@ data class ScreenSnapshot(
 
     fun toPromptSummary(maxElements: Int = 90): String {
         val sb = StringBuilder()
-        val _ = sb.appendLine("Display: id=$displayId (${width}x$height, virtual=$usingVirtualDisplay) | TopPackage: ${topPackage ?: "(unknown)"}")
+        val _ = sb.appendLine("Display: id=$displayId (${width}x$height, virtual=$usingVirtualDisplay, ime_visible=$imeVisible) | TopPackage: ${topPackage ?: "(unknown)"}")
         if (hasPasswordField) {
             val _ = sb.appendLine("Notice: Screen contains a password/secret input field (masked).")
         }
@@ -150,4 +152,6 @@ interface ScreenPort {
     suspend fun waitMs(ms: Long)
     fun clearCaches() = Unit
     fun releaseVirtualDisplay() = Unit
+    fun syncActiveDisplay(displayId: Int) = Unit
+    fun isActuallyUsingVirtualDisplay(): Boolean = false
 }
