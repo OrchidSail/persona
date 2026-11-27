@@ -78,10 +78,11 @@ import (
 // autonomous-wake cleanup, cached GetCascadeTrajectory idle verification for summary_behind, last_modified_time
 // listed cache invalidation, and sanitized unrecognized-status logging) add 1,066 B (292,362 B).
 // Antigravity Run-prefixed Persona MCP permission normalization (with shell/file/a2a guards), fork mode/model/effort preservation with RPC-gated implicit-option recovery, and assistant capabilities.rewind=false advertisement add 1,976 B (294,338 B).
-// Depth-aware top-level stripSnapshotBlocks in runtime-sdk (keeping literal context tags inside attributed quote/forward blocks intact) adds 534 B (294,872 B).
+// Antigravity idle auto-compaction `/compact` divider mapping and empty-prompt exemption (#16604) add 174 B (294,512 B).
+// Depth-aware top-level stripSnapshotBlocks in runtime-sdk (keeping literal context tags inside attributed quote/forward blocks intact) adds 511 B (295,023 B).
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 294_872
+	const budget = 295_023
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {
