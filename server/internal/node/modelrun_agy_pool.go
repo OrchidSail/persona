@@ -696,8 +696,8 @@ func (w *agyWarmWorker) writeLoop() {
 			_ = w.stdin.SetWriteDeadline(req.deadline)
 			_, err := w.stdin.Write(req.data)
 			if err != nil {
-				w.abortStdin()
 				req.errCh <- err
+				w.abortStdin()
 				return
 			}
 			_ = w.stdin.SetWriteDeadline(time.Time{})
@@ -743,7 +743,12 @@ func (w *agyWarmWorker) writeFrame(ctx context.Context, v any, abortCh <-chan st
 	case err := <-req.errCh:
 		return err
 	case <-w.stopWriteCh:
-		return io.ErrClosedPipe
+		select {
+		case err := <-req.errCh:
+			return err
+		default:
+			return io.ErrClosedPipe
+		}
 	case <-abortCh:
 		w.abortStdin()
 		return errAgyWarmAborted
@@ -1645,12 +1650,12 @@ func isAgyTimeoutErr(ctx context.Context, err error) bool {
 }
 
 // isAgyNormalStopReason reports whether an ACP session/prompt stopReason is a normal terminal stop.
-// Matching cold CLI semantics (which returns any SUCCESS result), end_turn, max_tokens,
-// max_turn_requests, and refusal preserve the aggregated text and warm worker; empty, cancelled,
-// or unknown stop reasons fail closed and destroy the worker.
+// Matching cold CLI semantics (which returns any SUCCESS result), empty/omitted, end_turn,
+// max_tokens, max_turn_requests, and refusal preserve the aggregated text and warm worker;
+// cancelled or unknown stop reasons fail closed and destroy the worker.
 func isAgyNormalStopReason(stopReason string) bool {
 	switch stopReason {
-	case "end_turn", "max_tokens", "max_turn_requests", "refusal":
+	case "", "end_turn", "max_tokens", "max_turn_requests", "refusal":
 		return true
 	default:
 		return false

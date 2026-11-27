@@ -446,17 +446,20 @@ func runFakeAgyHelper(args []string) int {
 						},
 					},
 				})
+				res := map[string]any{
+					"usage": map[string]any{
+						"inputTokens":      42,
+						"outputTokens":     18,
+						"cachedReadTokens": 10,
+					},
+				}
+				if reason != "OMITTED" {
+					res["stopReason"] = reason
+				}
 				send(map[string]any{
 					"jsonrpc": "2.0",
 					"id":      req.ID,
-					"result": map[string]any{
-						"stopReason": reason,
-						"usage": map[string]any{
-							"inputTokens":      42,
-							"outputTokens":     18,
-							"cachedReadTokens": 10,
-						},
-					},
+					"result":  res,
 				})
 				continue
 
@@ -1565,13 +1568,24 @@ func TestModelRunAgyWarmInvalidationTTLRotationAndServeClose(t *testing.T) {
 	})
 }
 
-// Regression test (PR #16796 P2 #1): normal terminal ACP stopReasons (`max_tokens`, `max_turn_requests`,
-// `refusal`) preserve aggregated partial text, usage, and the warm worker (reused on the next turn),
-// while `cancelled` and unknown stopReasons fail closed and destroy the worker.
+// Regression test (PR #16796 P2 #1 & ma-review): normal terminal ACP stopReasons (empty/omitted,
+// `max_tokens`, `max_turn_requests`, `refusal`) preserve aggregated partial text, usage, and the
+// warm worker (reused on the next turn), while `cancelled` and unknown stopReasons fail closed and
+// destroy the worker.
 func TestModelRunAgyWarmStopReasons(t *testing.T) {
 	wantUsage := aiwire.Usage{InputTokens: 42, OutputTokens: 18, CacheReadInputTokens: 10}
-	for _, reason := range []string{"max_tokens", "max_turn_requests", "refusal"} {
-		t.Run("normal_stop_"+reason, func(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reason string
+	}{
+		{"empty", ""},
+		{"omitted", "OMITTED"},
+		{"max_tokens", "max_tokens"},
+		{"max_turn_requests", "max_turn_requests"},
+		{"refusal", "refusal"},
+	} {
+		reason := tc.reason
+		t.Run("normal_stop_"+tc.name, func(t *testing.T) {
 			fx := setupFakeAgyWarm(t, nil)
 			got, err := runModelWithNode(t, fx.node, proto.ModelRunParams{
 				Launcher: "agy",
@@ -1579,27 +1593,27 @@ func TestModelRunAgyWarmStopReasons(t *testing.T) {
 			})
 			a, ok := got.(proto.ModelRunAnswer)
 			if err != nil || !ok || a.Text != "partial:"+reason || a.Usage != wantUsage {
-				t.Fatalf("stopReason=%s: got %#v %v", reason, got, err)
+				t.Fatalf("stopReason=%q: got %#v %v", reason, got, err)
 			}
 			pool := fx.node.agyPool()
 			pool.mu.Lock()
 			if pool.worker == nil {
 				pool.mu.Unlock()
-				t.Fatalf("stopReason=%s: expected warm worker kept alive", reason)
+				t.Fatalf("stopReason=%q: expected warm worker kept alive", reason)
 			}
 			pid1 := pool.worker.pid
 			pool.mu.Unlock()
 
 			// Subsequent turn must reuse the exact same warm worker PID.
-			got2, err2 := runModelWithNode(t, fx.node, proto.ModelRunParams{Launcher: "agy", Prompt: "after-" + reason})
-			if a2, ok2 := got2.(proto.ModelRunAnswer); err2 != nil || !ok2 || a2.Text != "warm(sys=):after-"+reason {
-				t.Fatalf("follow-up after %s failed: %#v %v", reason, got2, err2)
+			got2, err2 := runModelWithNode(t, fx.node, proto.ModelRunParams{Launcher: "agy", Prompt: "after-" + tc.name})
+			if a2, ok2 := got2.(proto.ModelRunAnswer); err2 != nil || !ok2 || a2.Text != "warm(sys=):after-"+tc.name {
+				t.Fatalf("follow-up after %s failed: %#v %v", tc.name, got2, err2)
 			}
 			pool.mu.Lock()
 			pid2 := pool.worker.pid
 			pool.mu.Unlock()
 			if pid2 != pid1 {
-				t.Fatalf("stopReason=%s destroyed warm worker: pid1=%d pid2=%d", reason, pid1, pid2)
+				t.Fatalf("stopReason=%q destroyed warm worker: pid1=%d pid2=%d", reason, pid1, pid2)
 			}
 		})
 	}
@@ -1608,7 +1622,6 @@ func TestModelRunAgyWarmStopReasons(t *testing.T) {
 		name   string
 		reason string
 	}{
-		{"empty", ""},
 		{"cancelled", "cancelled"},
 		{"unexpected_error", "unexpected_error"},
 	} {
