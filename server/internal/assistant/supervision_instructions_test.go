@@ -495,3 +495,36 @@ func TestSupervisionPolicySizeBudget(t *testing.T) {
 		t.Fatal("moving the policy raised the total instruction budget")
 	}
 }
+
+func TestSupervisionPolicyFiltersSignalsByRole(t *testing.T) {
+	mainPolicy := supervisionPolicy(supervisionrole.RoleMain())
+	leaderPolicy := supervisionPolicy(supervisionrole.RoleLeader())
+	bgPolicy := supervisionPolicy(supervisionrole.RoleBackground())
+	sidePolicy := supervisionPolicy(supervisionrole.RoleSide())
+
+	for _, sig := range []string{"- `escalated`:", "- `leader_stuck`:"} {
+		if !strings.Contains(mainPolicy, sig) {
+			t.Errorf("main policy missing %s", sig)
+		}
+		for name, policy := range map[string]string{"leader": leaderPolicy, "background": bgPolicy, "side": sidePolicy} {
+			if strings.Contains(policy, sig) {
+				t.Errorf("%s policy leaked main-only signal %s", name, sig)
+			}
+		}
+	}
+	for _, sig := range []string{"- `failed`:", "- `started`:"} {
+		if strings.Contains(bgPolicy, sig) {
+			t.Errorf("background policy leaked start-remedy signal %s", sig)
+		}
+		for name, policy := range map[string]string{"main": mainPolicy, "leader": leaderPolicy, "side": sidePolicy} {
+			if !strings.Contains(policy, sig) {
+				t.Errorf("%s policy missing start-remedy signal %s", name, sig)
+			}
+		}
+	}
+	for name, policy := range map[string]string{"main": mainPolicy, "leader": leaderPolicy, "background": bgPolicy, "side": sidePolicy} {
+		if !strings.Contains(policy, "- `decide`:") {
+			t.Errorf("%s policy missing shared signal decide", name)
+		}
+	}
+}
