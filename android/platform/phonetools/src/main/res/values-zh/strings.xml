@@ -147,6 +147,8 @@
     <string name="phonetools_control_vd_title">后台虚拟屏模式</string>
     <string name="phonetools_control_vd_detail">在独立后台虚拟屏中操作应用，不打断你当前主屏使用，并在悬浮小屏幕中实时显示画面。内置无线调试自配对（免装 Shizuku），同时兼容 Shizuku。</string>
     <string name="phonetools_control_vd_status_builtin">已激活 · 内置无线调试</string>
+    <string name="phonetools_control_vd_status_loopback_tcp">已激活 · 本机回环 ADB</string>
+    <string name="phonetools_control_vd_status_awaiting_auth">等待本机 ADB 调试授权弹窗…</string>
     <string name="phonetools_control_vd_status_shizuku">已激活 · Shizuku</string>
     <string name="phonetools_control_vd_status_connecting">正在连接后台助手…</string>
     <string name="phonetools_control_vd_status_pairing">正在配对无线调试…</string>
@@ -174,10 +176,13 @@
     <string name="phonetools_control_vd_err_invalid_code">请输入无线调试弹窗中显示的 6 位数字配对码。</string>
     <string name="phonetools_control_vd_err_no_port">未发现配对窗口，请先打开「使用配对码配对设备」或手动填写端口。</string>
     <string name="phonetools_control_vd_err_wrong_code">配对码不正确，请核对 6 位数字后重试。</string>
-    <string name="phonetools_control_vd_err_no_wifi">请先连接 Wi-Fi 以启用无线调试。</string>
+    <string name="phonetools_control_vd_awaiting_auth_hint">已连接本机回环 ADB，请在系统弹出的调试授权窗口中勾选「一律允许」并点击允许。</string>
+    <string name="phonetools_control_vd_err_no_wifi">当前未连接 Wi-Fi 且本机回环 ADB（5555）不可用。请连接 Wi-Fi 以启用无线调试；若此前通过 USB 开启过 adb tcpip 5555，4G/移动网络下也可自动直连。</string>
+    <string name="phonetools_control_vd_err_loopback_auth_timeout">等待本机 ADB 调试授权弹窗超时。请点击「重新连接」，并在系统弹窗中勾选「一律允许」后点击允许。</string>
+    <string name="phonetools_control_vd_err_loopback_auth_denied">本机 ADB 调试授权已被拒绝。请点击「重新连接」并在系统弹窗中允许调试。</string>
     <string name="phonetools_control_vd_err_revoked">本机无线调试授权已失效，请重新配对激活。</string>
     <string name="phonetools_control_vd_err_key">已存配对密钥无法读取，请重新配对以生成新密钥。</string>
-    <string name="phonetools_control_vd_err_connect">无法连接本机无线调试，请确认无线调试已开启后重试。</string>
+    <string name="phonetools_control_vd_err_connect">无法连接本机无线调试或回环 ADB（5555），请确认无线调试或 adb tcpip 5555 已开启后重试。</string>
     <string name="phonetools_control_vd_err_helper">后台助手未能完成交接，请点重试或重新配对。</string>
     <string name="phonetools_control_vd_err_unknown">后台助手启动失败，请重试。</string>
     <string name="phonetools_control_perms_section">所需权限</string>

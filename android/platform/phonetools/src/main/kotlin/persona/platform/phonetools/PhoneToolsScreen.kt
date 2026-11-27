@@ -67,6 +67,7 @@ import persona.platform.phonetools.control.PhoneControlNotificationListener
 import persona.platform.phonetools.control.PhoneControlPermissionsChecker
 import persona.platform.phonetools.control.shell.PrivilegedShellError
 import persona.platform.phonetools.control.shell.PrivilegedShellStatus
+import persona.platform.phonetools.control.shell.PrivilegedShellUiState
 
 @Serializable @SerialName("persona.platform.phonetools.PhoneToolsRoute") data object PhoneToolsRoute : NavKey
 
@@ -391,7 +392,6 @@ private fun PhoneControlSection(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BackgroundVirtualDisplaySubsection(
     runtime: PhoneToolsRuntime,
@@ -402,18 +402,47 @@ private fun BackgroundVirtualDisplaySubsection(
     val scope = rememberCoroutineScope()
     val shell = runtime.control.privilegedShell
     val ui by shell.state.collectAsStateWithLifecycle()
+    val settingsFailed = stringResource(R.string.phonetools_error_settings)
+
+    BackgroundVirtualDisplayContent(
+        ui = ui,
+        onStartDiscovery = shell::startPairingDiscovery,
+        onStopDiscovery = shell::stopDiscovery,
+        onOpenWirelessSettings = {
+            if (shell.openWirelessDebuggingSettings(context)) onClearError()
+            else onError(settingsFailed)
+        },
+        onReconnect = { scope.launch { shell.connectNow() } },
+        onUnpair = { scope.launch { shell.unpair() } },
+        onRequestShizuku = { val _ = shell.requestShizukuOrOpen(context) },
+        onPairWithCode = { code, manualPort -> shell.pairWithCode(code, manualPort) },
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun BackgroundVirtualDisplayContent(
+    ui: PrivilegedShellUiState,
+    onStartDiscovery: () -> Unit = {},
+    onStopDiscovery: () -> Unit = {},
+    onOpenWirelessSettings: () -> Unit = {},
+    onReconnect: () -> Unit = {},
+    onUnpair: () -> Unit = {},
+    onRequestShizuku: () -> Unit = {},
+    onPairWithCode: suspend (String, Int?) -> Boolean = { _, _ -> false },
+) {
+    val scope = rememberCoroutineScope()
     var showPairingForm by remember { mutableStateOf(false) }
     var codeInput by remember { mutableStateOf("") }
     var portInput by remember { mutableStateOf("") }
-    val settingsFailed = stringResource(R.string.phonetools_error_settings)
 
     DisposableEffect(showPairingForm) {
         if (showPairingForm) {
-            shell.startPairingDiscovery()
+            onStartDiscovery()
         }
         onDispose {
             if (showPairingForm) {
-                shell.stopDiscovery()
+                onStopDiscovery()
             }
         }
     }
@@ -421,9 +450,11 @@ private fun BackgroundVirtualDisplaySubsection(
     val (badgeText, badgeStatus) = when (ui.status) {
         PrivilegedShellStatus.Running -> when (ui.backend) {
             "shizuku" -> stringResource(R.string.phonetools_control_vd_status_shizuku) to Status.Unread
+            "builtin_loopback_tcp_adb" -> stringResource(R.string.phonetools_control_vd_status_loopback_tcp) to Status.Unread
             else -> stringResource(R.string.phonetools_control_vd_status_builtin) to Status.Unread
         }
         PrivilegedShellStatus.Connecting -> stringResource(R.string.phonetools_control_vd_status_connecting) to Status.Working
+        PrivilegedShellStatus.AwaitingAuthorization -> stringResource(R.string.phonetools_control_vd_status_awaiting_auth) to Status.NeedsYou
         PrivilegedShellStatus.Pairing -> stringResource(R.string.phonetools_control_vd_status_pairing) to Status.Working
         PrivilegedShellStatus.WirelessDebuggingOff -> stringResource(R.string.phonetools_control_vd_status_wireless_off) to Status.NeedsYou
         PrivilegedShellStatus.Failed -> stringResource(R.string.phonetools_control_vd_status_failed) to Status.NeedsYou
@@ -438,6 +469,8 @@ private fun BackgroundVirtualDisplaySubsection(
         PrivilegedShellError.WrongCode -> R.string.phonetools_control_vd_err_wrong_code
         PrivilegedShellError.NoWifi -> R.string.phonetools_control_vd_err_no_wifi
         PrivilegedShellError.AuthorizationRevoked -> R.string.phonetools_control_vd_err_revoked
+        PrivilegedShellError.LoopbackAuthTimeout -> R.string.phonetools_control_vd_err_loopback_auth_timeout
+        PrivilegedShellError.LoopbackAuthDenied -> R.string.phonetools_control_vd_err_loopback_auth_denied
         PrivilegedShellError.KeyUnreadable -> R.string.phonetools_control_vd_err_key
         PrivilegedShellError.ConnectFailed -> R.string.phonetools_control_vd_err_connect
         PrivilegedShellError.HelperStartFailed -> R.string.phonetools_control_vd_err_helper
@@ -467,8 +500,15 @@ private fun BackgroundVirtualDisplaySubsection(
                 color = PersonaTheme.palette.ink2,
             )
         }
-        errorRes?.let { resId ->
-            JNotice(text = stringResource(resId), status = Status.NeedsYou)
+        if (ui.status == PrivilegedShellStatus.AwaitingAuthorization) {
+            JNotice(
+                text = stringResource(R.string.phonetools_control_vd_awaiting_auth_hint),
+                status = Status.NeedsYou,
+            )
+        } else {
+            errorRes?.let { resId ->
+                JNotice(text = stringResource(resId), status = Status.NeedsYou)
+            }
         }
 
         FlowRow(
@@ -478,10 +518,7 @@ private fun BackgroundVirtualDisplaySubsection(
             if (!ui.isReady) {
                 JButton(
                     text = stringResource(R.string.phonetools_control_vd_open_wireless),
-                    onClick = {
-                        if (shell.openWirelessDebuggingSettings(context)) onClearError()
-                        else onError(settingsFailed)
-                    },
+                    onClick = onOpenWirelessSettings,
                     kind = JButtonKind.Secondary,
                     size = JButtonSize.Small,
                 )
@@ -497,22 +534,31 @@ private fun BackgroundVirtualDisplaySubsection(
                     size = JButtonSize.Small,
                 )
             }
-            if (ui.wirelessPaired && !ui.isReady) {
+            val canReconnect = !ui.isReady && (
+                ui.wirelessPaired ||
+                    ui.loopbackTcpAuthorized ||
+                    ui.loopbackTcpPort != null ||
+                    ui.status == PrivilegedShellStatus.Failed ||
+                    ui.status == PrivilegedShellStatus.WirelessDebuggingOff
+                )
+            val connectBusy = ui.status == PrivilegedShellStatus.Connecting ||
+                ui.status == PrivilegedShellStatus.Pairing ||
+                ui.status == PrivilegedShellStatus.AwaitingAuthorization
+            if (canReconnect) {
                 JButton(
                     text = stringResource(R.string.phonetools_control_vd_reconnect),
-                    onClick = {
-                        scope.launch { shell.connectNow() }
-                    },
+                    onClick = onReconnect,
+                    enabled = !connectBusy,
                     kind = JButtonKind.Secondary,
                     size = JButtonSize.Small,
                 )
             }
-            if (ui.wirelessPaired) {
+            if (ui.wirelessPaired || ui.loopbackTcpAuthorized) {
                 JButton(
                     text = stringResource(R.string.phonetools_control_vd_unpair),
                     onClick = {
                         showPairingForm = false
-                        scope.launch { shell.unpair() }
+                        onUnpair()
                     },
                     kind = JButtonKind.Secondary,
                     size = JButtonSize.Small,
@@ -524,9 +570,7 @@ private fun BackgroundVirtualDisplaySubsection(
                         if (ui.shizukuRunning) R.string.phonetools_control_vd_shizuku_action
                         else R.string.phonetools_control_vd_shizuku_open,
                     ),
-                    onClick = {
-                        val _ = shell.requestShizukuOrOpen(context)
-                    },
+                    onClick = onRequestShizuku,
                     kind = JButtonKind.Secondary,
                     size = JButtonSize.Small,
                 )
@@ -568,13 +612,13 @@ private fun BackgroundVirtualDisplaySubsection(
                 monospace = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             )
-            val busy = ui.status == PrivilegedShellStatus.Pairing || ui.status == PrivilegedShellStatus.Connecting
+            val busy = ui.status == PrivilegedShellStatus.Pairing || ui.status == PrivilegedShellStatus.Connecting || ui.status == PrivilegedShellStatus.AwaitingAuthorization
             JButton(
                 text = stringResource(R.string.phonetools_control_vd_pair_submit),
                 onClick = {
                     val manualPort = portInput.trim().toIntOrNull()
                     scope.launch {
-                        if (shell.pairWithCode(codeInput, manualPort)) {
+                        if (onPairWithCode(codeInput, manualPort)) {
                             codeInput = ""
                             portInput = ""
                             showPairingForm = false

@@ -26,6 +26,17 @@ internal object AdbHosts {
     fun ownSocketAddress(host: String, port: Int): InetSocketAddress? =
         ownAddress(host)?.let { InetSocketAddress(it, port) }
 
+    /**
+     * Strict IPv4 loopback-only check for classic TCP ADB fallback: permits only literal `127.0.0.1`
+     * (or `localhost` normalized to `127.0.0.1`) and rejects all LAN, VPN, wildcard, or external hosts.
+     */
+    fun loopbackSocketAddress(host: String, port: Int): InetSocketAddress? {
+        if (port !in 1..65535) return null
+        val address = parseLiteral(host, emptyList()) ?: return null
+        if (!address.address.contentEquals(LOOPBACK4)) return null
+        return InetSocketAddress(address, port)
+    }
+
     private fun ownAddress(host: String, interfaces: List<LocalInterface>): InetAddress? {
         val address = parseLiteral(host, interfaces) ?: return null
         if (address.isLoopbackAddress || (address.address.size == 4 && address.address[0] == 127.toByte())) return address

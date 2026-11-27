@@ -25,6 +25,10 @@ internal class AdbMessage(val command: Int, val arg0: Int, val arg1: Int, val da
         const val WRTE = 0x45545257
         const val STLS = 0x534c5453
 
+        const val AUTH_TOKEN = 1
+        const val AUTH_SIGNATURE = 2
+        const val AUTH_RSAPUBLICKEY = 3
+
         const val VERSION = 0x01000001
         const val VERSION_SKIP_CHECKSUM = 0x01000001
         const val STLS_VERSION = 0x01000000

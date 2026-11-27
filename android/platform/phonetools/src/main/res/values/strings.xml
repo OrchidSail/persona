@@ -148,6 +148,8 @@
     <string name="phonetools_control_vd_title">Background virtual display</string>
     <string name="phonetools_control_vd_detail">Runs remote apps off-screen so your main screen stays undisturbed, with a live mini-screen preview. Uses built-in Wireless Debugging self-pairing (no Shizuku required) and also supports Shizuku.</string>
     <string name="phonetools_control_vd_status_builtin">Active · Wireless Debugging</string>
+    <string name="phonetools_control_vd_status_loopback_tcp">Active · Local ADB (127.0.0.1)</string>
+    <string name="phonetools_control_vd_status_awaiting_auth">Waiting for local ADB authorization…</string>
     <string name="phonetools_control_vd_status_shizuku">Active · Shizuku</string>
     <string name="phonetools_control_vd_status_connecting">Connecting background helper…</string>
     <string name="phonetools_control_vd_status_pairing">Pairing with Wireless Debugging…</string>
@@ -175,10 +177,13 @@
     <string name="phonetools_control_vd_err_invalid_code">Enter the 6-digit pairing code shown in Wireless Debugging.</string>
     <string name="phonetools_control_vd_err_no_port">Pairing dialog not found. Open “Pair device with pairing code” or enter the port manually.</string>
     <string name="phonetools_control_vd_err_wrong_code">Pairing code was rejected. Check the 6-digit code and try again.</string>
-    <string name="phonetools_control_vd_err_no_wifi">Connect to Wi-Fi so Wireless Debugging can start.</string>
+    <string name="phonetools_control_vd_awaiting_auth_hint">Connected to local loopback ADB. Check “Always allow” and tap Allow in the system debugging prompt.</string>
+    <string name="phonetools_control_vd_err_no_wifi">Not connected to Wi-Fi and local loopback ADB (5555) is unavailable. Connect to Wi-Fi to enable Wireless Debugging, or enable “adb tcpip 5555” over USB beforehand to connect directly on mobile data.</string>
+    <string name="phonetools_control_vd_err_loopback_auth_timeout">Timed out waiting for the local ADB debugging prompt. Tap Reconnect, then check “Always allow” and tap Allow.</string>
+    <string name="phonetools_control_vd_err_loopback_auth_denied">Local ADB debugging authorization was declined. Tap Reconnect and allow debugging on this device.</string>
     <string name="phonetools_control_vd_err_revoked">Pairing authorization was revoked on this phone. Pair again to reactivate.</string>
     <string name="phonetools_control_vd_err_key">Stored pairing key could not be read. Pair again to generate a new key.</string>
-    <string name="phonetools_control_vd_err_connect">Could not reach local Wireless Debugging. Make sure Wireless Debugging is on and retry.</string>
+    <string name="phonetools_control_vd_err_connect">Could not reach local Wireless Debugging or loopback ADB (5555). Make sure Wireless Debugging or adb tcpip 5555 is active and retry.</string>
     <string name="phonetools_control_vd_err_helper">Background helper did not finish handoff. Retry or re-pair.</string>
     <string name="phonetools_control_vd_err_unknown">Background helper failed to start. Try again.</string>
     <string name="phonetools_control_perms_section">Required permissions</string>

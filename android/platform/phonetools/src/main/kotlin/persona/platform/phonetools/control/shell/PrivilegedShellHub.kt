@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
+import androidx.core.content.edit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -13,11 +14,19 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.security.MessageDigest
 
 internal enum class PrivilegedBackendKind(val wireName: String) {
     None("none"),
     BuiltinWirelessAdb("builtin_wireless_adb"),
+    BuiltinLoopbackTcpAdb("builtin_loopback_tcp_adb"),
     Shizuku("shizuku"),
+    ;
+
+    companion object {
+        fun fromWireNameOrDefault(raw: String?, fallback: PrivilegedBackendKind = BuiltinWirelessAdb): PrivilegedBackendKind =
+            entries.firstOrNull { it.wireName == raw } ?: fallback
+    }
 }
 
 internal data class ActivePrivilegedShell(
@@ -27,15 +36,19 @@ internal data class ActivePrivilegedShell(
 
 /**
  * Process-wide landing point for the privileged uid-2000 [IPhoneControlShell] Binder,
- * shared by both the built-in wireless ADB helper and optional Shizuku UserService.
+ * shared by the built-in wireless ADB helper, loopback TCP ADB fallback helper, and optional Shizuku UserService.
  */
 internal class PrivilegedShellHub(context: Context) {
     private val app = context.applicationContext
     private val token = Binder()
     private val detachScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
+    private val nonceStore: PrefsNonceStore by lazy { PrefsNonceStore(app) }
     private val nonces: HandoffNonces by lazy {
-        HandoffNonces(PrefsNonceStore(app), SystemClock::elapsedRealtime)
+        HandoffNonces(nonceStore, SystemClock::elapsedRealtime)
     }
+
+    @Volatile
+    private var pendingLaunchBackend: PrivilegedBackendKind = PrivilegedBackendKind.BuiltinWirelessAdb
 
     private val _active = MutableStateFlow<ActivePrivilegedShell?>(null)
     val active: StateFlow<ActivePrivilegedShell?> = _active.asStateFlow()
@@ -44,13 +57,16 @@ internal class PrivilegedShellHub(context: Context) {
     var lastHandoffRejection: String? = null
         private set
 
-    fun issueLaunchNonce(): String {
+    fun issueLaunchNonce(backend: PrivilegedBackendKind = PrivilegedBackendKind.BuiltinWirelessAdb): String {
         lastHandoffRejection = null
+        pendingLaunchBackend = backend
         return nonces.issueLaunch()
     }
 
     fun forget() {
         nonces.clear()
+        nonceStore.clearResumeBackend()
+        pendingLaunchBackend = PrivilegedBackendKind.BuiltinWirelessAdb
         lastHandoffRejection = null
         val prev = synchronized(this) { _active.value.also { _active.value = null } }
         if (prev != null) {
@@ -72,6 +88,10 @@ internal class PrivilegedShellHub(context: Context) {
         )?.let { return reject(it) }
 
         val nonce = extras?.getString(ShellHandoff.KEY_NONCE)
+        val slotsBefore = nonceStore.load()
+        val isLaunchNonce = nonce != null &&
+            slotsBefore.launch != null &&
+            MessageDigest.isEqual(nonce.toByteArray(Charsets.UTF_8), slotsBefore.launch.toByteArray(Charsets.UTF_8))
         if (!nonces.matches(nonce)) return reject(ShellHandoff.Reject.BadNonce)
 
         val shell = IPhoneControlShell.Stub.asInterface(binder!!) ?: return reject(ShellHandoff.Reject.NoBinder)
@@ -80,7 +100,12 @@ internal class PrivilegedShellHub(context: Context) {
             return reject(ShellHandoff.Reject.BinderElsewhere)
         }
         val next = nonces.accept(nonce) ?: return reject(ShellHandoff.Reject.BadNonce)
-        val entry = ActivePrivilegedShell(PrivilegedBackendKind.BuiltinWirelessAdb, shell)
+        val resolvedBackend = if (isLaunchNonce) {
+            pendingLaunchBackend.also { nonceStore.saveResumeBackend(it) }
+        } else {
+            nonceStore.loadResumeBackend()
+        }
+        val entry = ActivePrivilegedShell(resolvedBackend, shell)
         try {
             binder.linkToDeath({
                 synchronized(this@PrivilegedShellHub) {
@@ -92,7 +117,7 @@ internal class PrivilegedShellHub(context: Context) {
         }
         lastHandoffRejection = null
         _active.value = entry
-        Log.i(TAG, "wireless ADB helper pid $callingPid attached")
+        Log.i(TAG, "ADB helper pid $callingPid attached (${resolvedBackend.wireName})")
         return Bundle().apply {
             putBoolean(ShellHandoff.KEY_ACCEPTED, true)
             putString(ShellHandoff.KEY_NEXT, next)
@@ -165,10 +190,22 @@ internal class PrivilegedShellHub(context: Context) {
                 .putLong("launchAt", slots.launchAt)
                 .commit()
         }
+
+        fun loadResumeBackend(): PrivilegedBackendKind =
+            PrivilegedBackendKind.fromWireNameOrDefault(prefs.getString(KEY_RESUME_BACKEND, null))
+
+        fun saveResumeBackend(backend: PrivilegedBackendKind) {
+            prefs.edit(commit = true) { putString(KEY_RESUME_BACKEND, backend.wireName) }
+        }
+
+        fun clearResumeBackend() {
+            prefs.edit(commit = true) { remove(KEY_RESUME_BACKEND) }
+        }
     }
 
     private companion object {
         const val TAG = "PersonaShellHub"
         const val PREFS = "persona_phone_control_helper_nonces"
+        const val KEY_RESUME_BACKEND = "resume_backend"
     }
 }

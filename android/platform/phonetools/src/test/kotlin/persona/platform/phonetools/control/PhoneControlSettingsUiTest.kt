@@ -3,7 +3,9 @@ package persona.platform.phonetools.control
 import android.app.Application
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsOn
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -35,7 +37,11 @@ import persona.core.designsystem.PersonaTheme
 import persona.core.navigation.AppTab
 import persona.core.navigation.Navigator
 import persona.platform.phonetools.PhoneToolsRuntime
+import persona.platform.phonetools.BackgroundVirtualDisplayContent
 import persona.platform.phonetools.PhoneToolsScreen
+import persona.platform.phonetools.control.shell.PrivilegedShellError
+import persona.platform.phonetools.control.shell.PrivilegedShellStatus
+import persona.platform.phonetools.control.shell.PrivilegedShellUiState
 import persona.platform.phonetools.R
 import java.lang.reflect.Proxy
 import java.util.UUID
@@ -115,5 +121,57 @@ class PhoneControlSettingsUiTest {
         rule.onNodeWithText(payTitle).assertIsOff()
 
         runtime.close()
+    }
+
+    @Test
+    fun backgroundVirtualDisplayShowsLoopbackTcpBadgeAwaitingAuthPromptAndReconnectAction() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val uiState = mutableStateOf(
+            PrivilegedShellUiState(
+                status = PrivilegedShellStatus.Failed,
+                backend = "none",
+                wirelessPaired = true,
+                error = PrivilegedShellError.NoWifi,
+            ),
+        )
+        var reconnectClicks = 0
+
+        rule.setContent {
+            PersonaTheme(darkTheme = false, reduceMotion = true, style = AppStyle.Glass) {
+                BackgroundVirtualDisplayContent(
+                    ui = uiState.value,
+                    onReconnect = { reconnectClicks++ },
+                )
+            }
+        }
+        rule.waitForIdle()
+
+        // 1. No Wi-Fi + loopback unavailable shows updated guidance mentioning adb tcpip 5555 and clickable Reconnect.
+        rule.onNodeWithText(app.getString(R.string.phonetools_control_vd_err_no_wifi)).assertExists()
+        rule.onNodeWithText(app.getString(R.string.phonetools_control_vd_reconnect)).assertExists().assertIsEnabled().performClick()
+        rule.waitForIdle()
+        assertTrue(reconnectClicks == 1)
+
+        // 2. Waiting for first-time loopback ADB authorization dialog shows clear prompt hint.
+        uiState.value = PrivilegedShellUiState(
+            status = PrivilegedShellStatus.AwaitingAuthorization,
+            backend = "none",
+            wirelessPaired = true,
+            loopbackTcpPort = 5555,
+        )
+        rule.waitForIdle()
+        rule.onNodeWithText(app.getString(R.string.phonetools_control_vd_status_awaiting_auth)).assertExists()
+        rule.onNodeWithText(app.getString(R.string.phonetools_control_vd_awaiting_auth_hint)).assertExists()
+
+        // 3. Connected via loopback TCP ADB displays dedicated Active · Local ADB (127.0.0.1) badge.
+        uiState.value = PrivilegedShellUiState(
+            status = PrivilegedShellStatus.Running,
+            backend = "builtin_loopback_tcp_adb",
+            wirelessPaired = true,
+            loopbackTcpAuthorized = true,
+            loopbackTcpPort = 5555,
+        )
+        rule.waitForIdle()
+        rule.onNodeWithText(app.getString(R.string.phonetools_control_vd_status_loopback_tcp)).assertExists()
     }
 }

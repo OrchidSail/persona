@@ -13,12 +13,14 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Process
 import android.util.Log
+import androidx.core.content.edit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -28,10 +30,13 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import persona.platform.phonetools.control.adb.AdbAuth
 import persona.platform.phonetools.control.adb.AdbConnectPort
 import persona.platform.phonetools.control.adb.AdbConnection
-import persona.platform.phonetools.control.adb.AdbConnectionException
-import persona.platform.phonetools.control.adb.AdbConnectionReason
+import persona.platform.phonetools.control.adb.AdbFallbackConnector
+import persona.platform.phonetools.control.adb.AdbFallbackException
+import persona.platform.phonetools.control.adb.AdbFallbackFailureReason
+import persona.platform.phonetools.control.adb.AdbFallbackTransport
 import persona.platform.phonetools.control.adb.AdbKeyUnreadableException
 import persona.platform.phonetools.control.adb.AdbPairing
 import persona.platform.phonetools.control.adb.AdbPairingException
@@ -44,12 +49,14 @@ import persona.platform.phonetools.control.adb.NsdAdbServiceFinder
 import persona.platform.phonetools.control.adb.PortCache
 import java.io.File
 import java.net.Inet4Address
+import java.net.Socket
 import java.util.concurrent.atomic.AtomicReference
 
 enum class PrivilegedShellStatus {
     NotConfigured,
     Pairing,
     Connecting,
+    AwaitingAuthorization,
     Running,
     WirelessDebuggingOff,
     Failed,
@@ -63,6 +70,8 @@ enum class PrivilegedShellError {
     WrongCode,
     NoWifi,
     AuthorizationRevoked,
+    LoopbackAuthTimeout,
+    LoopbackAuthDenied,
     KeyUnreadable,
     ConnectFailed,
     HelperStartFailed,
@@ -73,6 +82,8 @@ data class PrivilegedShellUiState(
     val status: PrivilegedShellStatus = PrivilegedShellStatus.NotConfigured,
     val backend: String = "none",
     val wirelessPaired: Boolean = false,
+    val loopbackTcpAuthorized: Boolean = false,
+    val loopbackTcpPort: Int? = null,
     val wirelessDebuggingEnabled: Boolean? = null,
     val pairingDiscoveryActive: Boolean = false,
     val discoveredPairingPort: Int? = null,
@@ -86,9 +97,10 @@ data class PrivilegedShellUiState(
 }
 
 /**
- * Coordinates built-in wireless ADB self-pairing + resident uid-2000 helper and optional Shizuku
- * compatibility. Respects State 0 zero-overhead: registers zero observers or mDNS discovery until
- * [setMasterActive] receives `true`.
+ * Coordinates built-in wireless ADB self-pairing, loopback `127.0.0.1` classic TCP ADB fallback
+ * (for mobile data / no-Wi-Fi environments with `adb tcpip 5555`), resident uid-2000 helper handoff,
+ * and optional Shizuku compatibility. Respects State 0 zero-overhead: registers zero observers or
+ * mDNS discovery until [setMasterActive] receives `true`.
  */
 class PrivilegedShellManager internal constructor(context: Context) {
     private val app = context.applicationContext
@@ -109,6 +121,7 @@ class PrivilegedShellManager internal constructor(context: Context) {
 
     private val connectLock = Mutex()
     private val manualConnectPort = AtomicReference<Int?>(null)
+    private val activeConnectSocket = AtomicReference<Socket?>(null)
     private var masterActive = false
     private var watchJob: Job? = null
     private var retryJob: Job? = null
@@ -129,6 +142,12 @@ class PrivilegedShellManager internal constructor(context: Context) {
     val isWirelessPaired: Boolean
         get() = Build.VERSION.SDK_INT >= MIN_SDK && prefs.getBoolean(KEY_PAIRED, false)
 
+    val isLoopbackTcpAuthorized: Boolean
+        get() = prefs.getBoolean(KEY_LOOPBACK_TCP_AUTHORIZED, false)
+
+    private fun hasAutoConnectCandidate(): Boolean =
+        shizuku.status.value.ready || isWirelessPaired || isLoopbackTcpAuthorized || tcpPortProperty() != null
+
     @Synchronized
     fun setMasterActive(active: Boolean) {
         if (masterActive == active) return
@@ -137,6 +156,7 @@ class PrivilegedShellManager internal constructor(context: Context) {
             stopDiscovery()
             retryJob?.cancel()
             retryJob = null
+            abortActiveConnectSocket()
             watchJob?.cancel()
             watchJob = null
             unregisterObservers()
@@ -156,13 +176,13 @@ class PrivilegedShellManager internal constructor(context: Context) {
                     refreshState(overrideStatus = PrivilegedShellStatus.Running, error = PrivilegedShellError.None)
                 } else if (masterActive) {
                     refreshState()
-                    if (shizuku.status.value.ready || isWirelessPaired) {
+                    if (hasAutoConnectCandidate()) {
                         scheduleConnect(if (shizuku.status.value.ready) 0L else GRACE_MS)
                     }
                 }
             }
         }
-        if (hub.active.value == null && (shizuku.status.value.ready || isWirelessPaired)) {
+        if (hub.active.value == null && hasAutoConnectCandidate()) {
             scheduleConnect(0L)
         } else {
             refreshState()
@@ -253,19 +273,24 @@ class PrivilegedShellManager internal constructor(context: Context) {
         failures = 0
         retryJob?.cancel()
         retryJob = null
-        attemptConnectOnce()
+        attemptConnectOnce(explicitRequest = true)
     }
 
     suspend fun unpair() {
         stopDiscovery()
         retryJob?.cancel()
         retryJob = null
+        abortActiveConnectSocket()
         connectLock.withLock {
             withContext(Dispatchers.IO) {
                 shizuku.unbind()
                 hub.forget()
                 AndroidAdb.forget(app)
-                prefs.edit().putBoolean(KEY_PAIRED, false).remove(KEY_CONNECT_PORT).apply()
+                prefs.edit {
+                    putBoolean(KEY_PAIRED, false)
+                    putBoolean(KEY_LOOPBACK_TCP_AUTHORIZED, false)
+                    remove(KEY_CONNECT_PORT)
+                }
             }
             refreshState(overrideStatus = PrivilegedShellStatus.NotConfigured, error = PrivilegedShellError.None)
         }
@@ -279,6 +304,12 @@ class PrivilegedShellManager internal constructor(context: Context) {
 
     fun openWirelessDebuggingSettings(context: Context): Boolean =
         DeveloperSettingsHelper.openWirelessDebuggingSettings(context)
+
+    private fun abortActiveConnectSocket() {
+        activeConnectSocket.getAndSet(null)?.let { sock ->
+            val _ = runCatching { sock.close() }
+        }
+    }
 
     private fun onShizukuChanged() {
         if (!masterActive) return
@@ -294,39 +325,69 @@ class PrivilegedShellManager internal constructor(context: Context) {
         retryJob?.cancel()
         retryJob = scope.launch {
             if (delayMs > 0L) delay(delayMs)
-            attemptConnectOnce()
+            attemptConnectOnce(explicitRequest = false)
         }
     }
 
-    private suspend fun attemptConnectOnce() = connectLock.withLock {
+    private suspend fun attemptConnectOnce(explicitRequest: Boolean) = connectLock.withLock {
         if (!masterActive) return@withLock
         if (hub.active.value != null) {
             refreshState(overrideStatus = PrivilegedShellStatus.Running, error = PrivilegedShellError.None)
             return@withLock
         }
-        // Prefer built-in wireless ADB when paired, and also try Shizuku if ready.
-        if (isWirelessPaired) {
-            if (DeveloperSettingsHelper.isWirelessDebuggingEnabled(app.contentResolver) == false) {
-                if (shizuku.status.value.ready && tryBindShizuku()) return@withLock
-                refreshState(overrideStatus = PrivilegedShellStatus.WirelessDebuggingOff, error = PrivilegedShellError.None)
-                return@withLock
-            }
+
+        val paired = isWirelessPaired
+        val shizukuReady = shizuku.status.value.ready
+        val canTryAdb = paired || isLoopbackTcpAuthorized || tcpPortProperty() != null || explicitRequest
+
+        // 1. Keep existing Shizuku priority when wireless ADB is not paired (or when wireless TLS is
+        //    unavailable and Shizuku is already running & granted, avoiding unnecessary ADB auth dialogs).
+        val preferWirelessTlsNow = paired &&
+            wifiConnected() &&
+            DeveloperSettingsHelper.isWirelessDebuggingEnabled(app.contentResolver) != false
+        if (shizukuReady && !preferWirelessTlsNow) {
             refreshState(overrideStatus = PrivilegedShellStatus.Connecting, error = PrivilegedShellError.None)
-            val err = launchViaWirelessAdb()
-            if (err == null) {
-                refreshState(overrideStatus = PrivilegedShellStatus.Running, error = PrivilegedShellError.None)
+            if (tryBindShizuku()) return@withLock
+            if (!canTryAdb) {
+                handleFailure(PrivilegedShellError.HelperStartFailed)
                 return@withLock
             }
-            if (shizuku.status.value.ready && tryBindShizuku()) return@withLock
-            handleFailure(err)
-            return@withLock
         }
+
+        // 2. Built-in ADB path: TLS Wireless Debugging when available on Wi-Fi, with automatic
+        //    loopback 127.0.0.1:<service.adb.tcp.port|5555> classic TCP ADB fallback.
+        if (canTryAdb) {
+            refreshState(overrideStatus = PrivilegedShellStatus.Connecting, error = PrivilegedShellError.None)
+            val outcome = launchViaBuiltinAdb()
+            if (!masterActive) return@withLock
+            when (outcome) {
+                is AdbLaunchOutcome.Connected -> {
+                    if (outcome.transport == AdbFallbackTransport.LoopbackTcp) {
+                        prefs.edit { putBoolean(KEY_LOOPBACK_TCP_AUTHORIZED, true) }
+                    }
+                    refreshState(overrideStatus = PrivilegedShellStatus.Running, error = PrivilegedShellError.None)
+                    return@withLock
+                }
+                AdbLaunchOutcome.WirelessDebuggingOff -> {
+                    if (shizuku.status.value.ready && tryBindShizuku()) return@withLock
+                    refreshState(overrideStatus = PrivilegedShellStatus.WirelessDebuggingOff, error = PrivilegedShellError.None)
+                    return@withLock
+                }
+                is AdbLaunchOutcome.Failed -> {
+                    if (shizuku.status.value.ready && tryBindShizuku()) return@withLock
+                    handleFailure(outcome.error)
+                    return@withLock
+                }
+            }
+        }
+
         if (shizuku.status.value.ready) {
             refreshState(overrideStatus = PrivilegedShellStatus.Connecting, error = PrivilegedShellError.None)
             if (tryBindShizuku()) return@withLock
             handleFailure(PrivilegedShellError.HelperStartFailed)
             return@withLock
         }
+
         refreshState(overrideStatus = PrivilegedShellStatus.NotConfigured, error = PrivilegedShellError.None)
     }
 
@@ -342,44 +403,97 @@ class PrivilegedShellManager internal constructor(context: Context) {
         return false
     }
 
-    private suspend fun launchViaWirelessAdb(): PrivilegedShellError? = try {
-        withContext(Dispatchers.IO) {
-            val tls = AndroidAdb.tls(AndroidAdb.identity(app))
+    private sealed interface AdbLaunchOutcome {
+        data class Connected(val transport: AdbFallbackTransport) : AdbLaunchOutcome
+        data object WirelessDebuggingOff : AdbLaunchOutcome
+        data class Failed(val error: PrivilegedShellError) : AdbLaunchOutcome
+    }
+
+    private suspend fun launchViaBuiltinAdb(): AdbLaunchOutcome = try {
+        val transport = withContext(Dispatchers.IO) {
+            val identity = AndroidAdb.identity(app)
             val certPin = ownCertPin() ?: error("missing app signing certificate")
             val command = ShellHandoff.command(app.applicationInfo.sourceDir, app.packageName, Process.myUid(), certPin)
-            val connection = AdbConnectPort(
-                property = ::tlsPortProperty,
-                finder = finder,
-                cache = portCache,
-                scan = scan,
-                manual = { manualConnectPort.getAndSet(null) },
-                scanning = { scanning -> _state.value = _state.value.copy(scanningPorts = scanning) },
-            ).connect { host, port -> AdbConnection.open(host, port, tls) }
 
+            val connector = AdbFallbackConnector(
+                isWirelessPaired = { isWirelessPaired },
+                isWirelessDebuggingEnabled = { DeveloperSettingsHelper.isWirelessDebuggingEnabled(app.contentResolver) },
+                isWifiConnected = ::wifiConnected,
+                openWirelessTls = {
+                    val tls = AndroidAdb.tls(identity)
+                    AdbConnectPort(
+                        property = ::tlsPortProperty,
+                        finder = finder,
+                        cache = portCache,
+                        scan = scan,
+                        manual = { manualConnectPort.getAndSet(null) },
+                        scanning = { scanning -> _state.value = _state.value.copy(scanningPorts = scanning) },
+                    ).connect { host, port -> AdbConnection.open(host, port, tls) }
+                },
+                loopbackTcpPort = { AdbAuth.resolveLoopbackTcpPort(rawTcpPortProperty()) },
+                openLoopbackTcp = { host, port, onAwaitingAuth ->
+                    try {
+                        AdbConnection.openLoopbackTcp(
+                            host = host,
+                            port = port,
+                            identity = identity,
+                            authApprovalTimeoutMs = LOOPBACK_AUTH_APPROVAL_TIMEOUT_MS,
+                            onSocketOpened = { sock -> activeConnectSocket.set(sock) },
+                            onAwaitingAuthorization = onAwaitingAuth,
+                        )
+                    } finally {
+                        activeConnectSocket.set(null)
+                    }
+                },
+            )
+
+            val result = connector.connect(
+                onAwaitingLoopbackAuth = {
+                    refreshState(
+                        overrideStatus = PrivilegedShellStatus.AwaitingAuthorization,
+                        error = PrivilegedShellError.None,
+                    )
+                },
+            )
+
+            val backendKind = when (result.transport) {
+                AdbFallbackTransport.WirelessTls -> PrivilegedBackendKind.BuiltinWirelessAdb
+                AdbFallbackTransport.LoopbackTcp -> PrivilegedBackendKind.BuiltinLoopbackTcpAdb
+            }
             val before = hub.active.value
-            connection.use { conn ->
+            result.connection.use { conn ->
                 val stream = conn.exec(command)
-                stream.write(ShellHandoff.stdinLine(hub.issueLaunchNonce()))
+                stream.write(ShellHandoff.stdinLine(hub.issueLaunchNonce(backendKind)))
                 val _ = withTimeoutOrNull(HANDOFF_WAIT_MS) { hub.active.first { it != null && it !== before } }
             }
+            result.transport
         }
-        if (hub.active.value != null) null else PrivilegedShellError.HelperStartFailed
+        if (hub.active.value != null) {
+            AdbLaunchOutcome.Connected(transport)
+        } else {
+            AdbLaunchOutcome.Failed(PrivilegedShellError.HelperStartFailed)
+        }
     } catch (e: CancellationException) {
+        abortActiveConnectSocket()
         throw e
-    } catch (e: AdbConnectionException) {
-        Log.w(TAG, "wireless ADB connect failed: ${e.reason}", e)
+    } catch (e: AdbFallbackException) {
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        Log.w(TAG, "built-in ADB connect failed: ${e.reason}", e)
         when (e.reason) {
-            AdbConnectionReason.UNAUTHORIZED -> PrivilegedShellError.AuthorizationRevoked
-            AdbConnectionReason.CONNECT_FAILED, AdbConnectionReason.TLS_FAILED, AdbConnectionReason.PROTOCOL ->
-                if (!wifiConnected()) PrivilegedShellError.NoWifi else PrivilegedShellError.ConnectFailed
-            AdbConnectionReason.NOT_LOCAL -> PrivilegedShellError.ConnectFailed
+            AdbFallbackFailureReason.WirelessDebuggingOff -> AdbLaunchOutcome.WirelessDebuggingOff
+            AdbFallbackFailureReason.NoWifiAndLoopbackUnavailable -> AdbLaunchOutcome.Failed(PrivilegedShellError.NoWifi)
+            AdbFallbackFailureReason.AuthorizationRevoked -> AdbLaunchOutcome.Failed(PrivilegedShellError.AuthorizationRevoked)
+            AdbFallbackFailureReason.LoopbackAuthTimeout -> AdbLaunchOutcome.Failed(PrivilegedShellError.LoopbackAuthTimeout)
+            AdbFallbackFailureReason.LoopbackAuthDenied -> AdbLaunchOutcome.Failed(PrivilegedShellError.LoopbackAuthDenied)
+            AdbFallbackFailureReason.ConnectFailed, AdbFallbackFailureReason.NotLocal ->
+                AdbLaunchOutcome.Failed(PrivilegedShellError.ConnectFailed)
         }
     } catch (e: AdbKeyUnreadableException) {
         Log.w(TAG, "stored ADB key unreadable", e)
-        PrivilegedShellError.KeyUnreadable
+        AdbLaunchOutcome.Failed(PrivilegedShellError.KeyUnreadable)
     } catch (e: Exception) {
-        Log.w(TAG, "wireless ADB helper launch failed", e)
-        PrivilegedShellError.Unknown
+        Log.w(TAG, "built-in ADB helper launch failed", e)
+        AdbLaunchOutcome.Failed(PrivilegedShellError.Unknown)
     }
 
     private fun handleFailure(err: PrivilegedShellError) {
@@ -398,11 +512,13 @@ class PrivilegedShellManager internal constructor(context: Context) {
         if (wirelessObserver == null) {
             val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
                 override fun onChange(selfChange: Boolean) {
-                    if (!masterActive || !isWirelessPaired) return
+                    if (!masterActive || (!isWirelessPaired && !isLoopbackTcpAuthorized)) return
                     val on = DeveloperSettingsHelper.isWirelessDebuggingEnabled(app.contentResolver)
-                    if (on == false && hub.active.value == null) {
-                        refreshState(overrideStatus = PrivilegedShellStatus.WirelessDebuggingOff, error = PrivilegedShellError.None)
-                    } else if (on == true && hub.active.value == null) {
+                    if (on == true && hub.active.value == null) {
+                        failures = 0
+                        scheduleConnect(500L)
+                    } else if (on == false && hub.active.value == null) {
+                        // Do not short-circuit immediately to WirelessDebuggingOff: try loopback TCP fallback first.
                         failures = 0
                         scheduleConnect(500L)
                     }
@@ -419,7 +535,11 @@ class PrivilegedShellManager internal constructor(context: Context) {
                 override fun onAvailable(network: Network) {
                     if (!masterActive || !isWirelessPaired || hub.active.value != null) return
                     val cur = _state.value
-                    if (cur.error == PrivilegedShellError.NoWifi || cur.status == PrivilegedShellStatus.Failed) {
+                    if (
+                        cur.error == PrivilegedShellError.NoWifi ||
+                        cur.status == PrivilegedShellStatus.Failed ||
+                        cur.status == PrivilegedShellStatus.WirelessDebuggingOff
+                    ) {
                         failures = 0
                         scheduleConnect(500L)
                     }
@@ -454,18 +574,23 @@ class PrivilegedShellManager internal constructor(context: Context) {
     private fun computeInitialState(): PrivilegedShellUiState {
         val active = hub.active.value
         val paired = isWirelessPaired
+        val loopbackAuthorized = isLoopbackTcpAuthorized
+        val loopbackPort = tcpPortProperty()
         val wirelessOn = DeveloperSettingsHelper.isWirelessDebuggingEnabled(app.contentResolver)
         val sh = shizuku.status.value
         val status = when {
             active != null -> PrivilegedShellStatus.Running
-            paired && wirelessOn == false -> PrivilegedShellStatus.WirelessDebuggingOff
-            paired || sh.ready -> PrivilegedShellStatus.Connecting
+            paired && wirelessOn == false && !loopbackAuthorized && loopbackPort == null ->
+                PrivilegedShellStatus.WirelessDebuggingOff
+            paired || loopbackAuthorized || loopbackPort != null || sh.ready -> PrivilegedShellStatus.Connecting
             else -> PrivilegedShellStatus.NotConfigured
         }
         return PrivilegedShellUiState(
             status = status,
             backend = active?.backend?.wireName ?: PrivilegedBackendKind.None.wireName,
             wirelessPaired = paired,
+            loopbackTcpAuthorized = loopbackAuthorized,
+            loopbackTcpPort = loopbackPort,
             wirelessDebuggingEnabled = wirelessOn,
             shizukuInstalled = sh.installed,
             shizukuRunning = sh.running,
@@ -479,20 +604,27 @@ class PrivilegedShellManager internal constructor(context: Context) {
     ) {
         val active = hub.active.value
         val paired = isWirelessPaired
+        val loopbackAuthorized = isLoopbackTcpAuthorized
+        val loopbackPort = tcpPortProperty()
         val wirelessOn = DeveloperSettingsHelper.isWirelessDebuggingEnabled(app.contentResolver)
         val sh = shizuku.status.value
         val cur = _state.value
         val nextStatus = overrideStatus ?: when {
             active != null -> PrivilegedShellStatus.Running
-            paired && wirelessOn == false -> PrivilegedShellStatus.WirelessDebuggingOff
-            !paired && !sh.ready -> PrivilegedShellStatus.NotConfigured
+            cur.status == PrivilegedShellStatus.AwaitingAuthorization -> PrivilegedShellStatus.AwaitingAuthorization
             cur.status == PrivilegedShellStatus.Failed -> PrivilegedShellStatus.Failed
+            paired && wirelessOn == false && !loopbackAuthorized && loopbackPort == null ->
+                PrivilegedShellStatus.WirelessDebuggingOff
+            !paired && !loopbackAuthorized && loopbackPort == null && !sh.ready ->
+                PrivilegedShellStatus.NotConfigured
             else -> PrivilegedShellStatus.Connecting
         }
         _state.value = cur.copy(
             status = nextStatus,
             backend = active?.backend?.wireName ?: PrivilegedBackendKind.None.wireName,
             wirelessPaired = paired,
+            loopbackTcpAuthorized = loopbackAuthorized,
+            loopbackTcpPort = loopbackPort,
             wirelessDebuggingEnabled = wirelessOn,
             shizukuInstalled = sh.installed,
             shizukuRunning = sh.running,
@@ -517,10 +649,16 @@ class PrivilegedShellManager internal constructor(context: Context) {
     }.getOrDefault(emptyList())
 
     @SuppressLint("PrivateApi")
-    private fun tlsPortProperty(): Int? = runCatching {
+    private fun systemProperty(key: String): String? = runCatching {
         Class.forName("android.os.SystemProperties").getMethod("get", String::class.java)
-            .invoke(null, TLS_PORT_PROPERTY) as String?
-    }.getOrNull()?.trim()?.toIntOrNull()
+            .invoke(null, key) as String?
+    }.getOrNull()
+
+    private fun tlsPortProperty(): Int? = AdbAuth.parseValidPort(systemProperty(TLS_PORT_PROPERTY))
+
+    private fun rawTcpPortProperty(): String? = systemProperty(TCP_PORT_PROPERTY)
+
+    private fun tcpPortProperty(): Int? = AdbAuth.parseValidPort(rawTcpPortProperty())
 
     private fun ownCertPin(): String? = runCatching {
         val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -541,11 +679,14 @@ class PrivilegedShellManager internal constructor(context: Context) {
         private const val TAG = "PersonaPrivShell"
         private const val PREFS = "persona_phone_control_shell"
         private const val KEY_PAIRED = "wireless_paired"
+        private const val KEY_LOOPBACK_TCP_AUTHORIZED = "loopback_tcp_authorized"
         private const val KEY_CONNECT_PORT = "connect_port"
         private const val TLS_PORT_PROPERTY = "service.adb.tls.port"
+        private const val TCP_PORT_PROPERTY = "service.adb.tcp.port"
         private const val PORT_RANGE_FILE = "/proc/sys/net/ipv4/ip_local_port_range"
         private const val GRACE_MS = 2_500L
         private const val HANDOFF_WAIT_MS = 15_000L
+        private const val LOOPBACK_AUTH_APPROVAL_TIMEOUT_MS = AdbConnection.DEFAULT_AUTH_APPROVAL_TIMEOUT_MS
         private const val PAIRING_PORT_LOOKUP_MS = 5_000L
         private const val DISCOVERY_TIMEOUT_MS = 3 * 60_000L
         private const val MAX_RETRY_ATTEMPTS = 4

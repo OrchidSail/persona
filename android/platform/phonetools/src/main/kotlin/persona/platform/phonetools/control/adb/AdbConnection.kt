@@ -22,6 +22,7 @@ internal enum class AdbConnectionReason {
     CONNECT_FAILED,
     TLS_FAILED,
     UNAUTHORIZED,
+    AUTH_TIMEOUT,
     PROTOCOL,
 }
 
@@ -45,6 +46,8 @@ internal class AdbConnection private constructor(
 
     fun exec(command: String): AdbStream = open("exec:$command")
 
+    fun shell(command: String): AdbStream = open("shell:$command")
+
     fun open(destination: String): AdbStream {
         if (closed) throw IOException("adb connection closed")
         val s = AdbStream(nextId.getAndIncrement())
@@ -54,11 +57,11 @@ internal class AdbConnection private constructor(
             s.opened.get(timeoutMs.toLong(), TimeUnit.MILLISECONDS)
         } catch (e: Exception) {
             streams.remove(s.localId)
-            throw IOException("open  timed out", e)
+            throw IOException("open $destination timed out", e)
         }
         if (!ok) {
             streams.remove(s.localId)
-            throw IOException("device refused ")
+            throw IOException("device refused $destination")
         }
         return s
     }
@@ -169,6 +172,7 @@ internal class AdbConnection private constructor(
     }
 
     companion object {
+        const val DEFAULT_AUTH_APPROVAL_TIMEOUT_MS = 25_000
         private val EOF = ByteArray(0)
         private val HOST_BANNER = "host::\u0000".toByteArray(Charsets.US_ASCII)
 
@@ -187,14 +191,61 @@ internal class AdbConnection private constructor(
                 throw AdbConnectionException(AdbConnectionReason.CONNECT_FAILED, "cannot connect to $host:$port", e)
             }
             try {
-                return handshake(plain, target, tls, timeoutMs)
+                return handshakeTls(plain, target, tls, timeoutMs)
             } catch (e: Throwable) {
                 val _ = runCatching { plain.close() }
                 throw e
             }
         }
 
-        private fun handshake(plain: Socket, target: InetSocketAddress, tls: AdbTls, timeoutMs: Int): AdbConnection {
+        /**
+         * Connects over plaintext classic TCP ADB strictly to loopback `127.0.0.1` (never remote or LAN),
+         * following Android's standard `CNXN` -> `AUTH(TOKEN)` -> `AUTH(SIGNATURE)` -> optional
+         * `AUTH(RSAPUBLICKEY)` system debugging authorization flow.
+         */
+        fun openLoopbackTcp(
+            host: String = AdbConnectPort.LOCALHOST,
+            port: Int = AdbAuth.DEFAULT_LOOPBACK_TCP_PORT,
+            identity: AdbIdentity,
+            connectTimeoutMs: Int = 3_000,
+            handshakeTimeoutMs: Int = 5_000,
+            authApprovalTimeoutMs: Int = DEFAULT_AUTH_APPROVAL_TIMEOUT_MS,
+            streamTimeoutMs: Int = 10_000,
+            onSocketOpened: (Socket) -> Unit = {},
+            onAwaitingAuthorization: () -> Unit = {},
+        ): AdbConnection {
+            if (port !in 1..65535) {
+                throw AdbConnectionException(AdbConnectionReason.CONNECT_FAILED, "invalid loopback ADB port: $port")
+            }
+            val target = AdbHosts.loopbackSocketAddress(host, port) ?: throw AdbConnectionException(
+                AdbConnectionReason.NOT_LOCAL,
+                "refusing non-loopback classic TCP ADB target: $host:$port",
+            )
+            val plain = Socket()
+            onSocketOpened(plain)
+            try {
+                plain.tcpNoDelay = true
+                plain.connect(target, connectTimeoutMs)
+                plain.soTimeout = handshakeTimeoutMs
+            } catch (e: IOException) {
+                val _ = runCatching { plain.close() }
+                throw AdbConnectionException(AdbConnectionReason.CONNECT_FAILED, "cannot connect to $host:$port", e)
+            }
+            try {
+                return handshakeLoopbackTcp(
+                    plain = plain,
+                    identity = identity,
+                    authApprovalTimeoutMs = authApprovalTimeoutMs,
+                    streamTimeoutMs = streamTimeoutMs,
+                    onAwaitingAuthorization = onAwaitingAuthorization,
+                )
+            } catch (e: Throwable) {
+                val _ = runCatching { plain.close() }
+                throw e
+            }
+        }
+
+        private fun handshakeTls(plain: Socket, target: InetSocketAddress, tls: AdbTls, timeoutMs: Int): AdbConnection {
             val out = plain.getOutputStream()
             out.write(AdbMessage(AdbMessage.CNXN, AdbMessage.VERSION, AdbMessage.MAX_PAYLOAD, HOST_BANNER).encode())
             out.flush()
@@ -228,6 +279,91 @@ internal class AdbConnection private constructor(
                 }
                 AdbMessage.AUTH -> throw AdbConnectionException(AdbConnectionReason.UNAUTHORIZED, "legacy RSA auth port")
                 else -> throw AdbConnectionException(AdbConnectionReason.PROTOCOL, "unexpected $first")
+            }
+        }
+
+        private fun handshakeLoopbackTcp(
+            plain: Socket,
+            identity: AdbIdentity,
+            authApprovalTimeoutMs: Int,
+            streamTimeoutMs: Int,
+            onAwaitingAuthorization: () -> Unit,
+        ): AdbConnection {
+            val input = DataInputStream(plain.getInputStream())
+            val out = plain.getOutputStream()
+            out.write(AdbMessage(AdbMessage.CNXN, AdbMessage.VERSION, AdbMessage.MAX_PAYLOAD, HOST_BANNER).encode())
+            out.flush()
+
+            var sentSignature = false
+            var sentPublicKey = false
+            var authTokensSeen = 0
+            while (true) {
+                val msg = try {
+                    AdbMessage.read(input)
+                } catch (e: SocketTimeoutException) {
+                    if (sentPublicKey) {
+                        throw AdbConnectionException(
+                            AdbConnectionReason.AUTH_TIMEOUT,
+                            "timed out waiting for local ADB debugging authorization",
+                            e,
+                        )
+                    }
+                    throw AdbConnectionException(AdbConnectionReason.PROTOCOL, "timed out during ADB handshake", e)
+                } catch (e: IOException) {
+                    if (sentPublicKey) {
+                        throw AdbConnectionException(
+                            AdbConnectionReason.UNAUTHORIZED,
+                            "local ADB authorization connection closed",
+                            e,
+                        )
+                    }
+                    throw AdbConnectionException(AdbConnectionReason.PROTOCOL, "ADB handshake I/O error", e)
+                } ?: throw AdbConnectionException(
+                    if (sentPublicKey) AdbConnectionReason.UNAUTHORIZED else AdbConnectionReason.PROTOCOL,
+                    if (sentPublicKey) "local ADB authorization denied or closed" else "device closed connection during handshake",
+                )
+
+                when (msg.command) {
+                    AdbMessage.CNXN -> return finish(plain, input, out, msg, streamTimeoutMs)
+                    AdbMessage.AUTH -> {
+                        if (msg.arg0 != AdbMessage.AUTH_TOKEN) {
+                            throw AdbConnectionException(AdbConnectionReason.PROTOCOL, "unexpected AUTH type ${msg.arg0}")
+                        }
+                        authTokensSeen++
+                        if (authTokensSeen > 4) {
+                            throw AdbConnectionException(AdbConnectionReason.UNAUTHORIZED, "too many AUTH challenges")
+                        }
+                        if (!sentSignature) {
+                            if (msg.data.size != AdbAuth.TOKEN_SIZE) {
+                                throw AdbConnectionException(
+                                    AdbConnectionReason.PROTOCOL,
+                                    "unexpected ADB AUTH token length: ${msg.data.size}",
+                                )
+                            }
+                            val signature = AdbAuth.signToken(identity, msg.data)
+                            out.write(AdbMessage(AdbMessage.AUTH, AdbMessage.AUTH_SIGNATURE, 0, signature).encode())
+                            out.flush()
+                            sentSignature = true
+                        } else if (!sentPublicKey) {
+                            val pubKeyPacket = AdbAuth.encodePublicKeyPacket(identity)
+                            out.write(AdbMessage(AdbMessage.AUTH, AdbMessage.AUTH_RSAPUBLICKEY, 0, pubKeyPacket).encode())
+                            out.flush()
+                            sentPublicKey = true
+                            plain.soTimeout = authApprovalTimeoutMs
+                            onAwaitingAuthorization()
+                        } else {
+                            throw AdbConnectionException(
+                                AdbConnectionReason.UNAUTHORIZED,
+                                "local ADB daemon rejected RSA public key",
+                            )
+                        }
+                    }
+                    AdbMessage.STLS -> throw AdbConnectionException(
+                        AdbConnectionReason.PROTOCOL,
+                        "unexpected STLS on classic TCP ADB port",
+                    )
+                    else -> throw AdbConnectionException(AdbConnectionReason.PROTOCOL, "unexpected $msg")
+                }
             }
         }
 

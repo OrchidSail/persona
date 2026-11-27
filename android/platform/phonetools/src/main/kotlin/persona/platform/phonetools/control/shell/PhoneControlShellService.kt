@@ -191,6 +191,7 @@ internal class PhoneControlShellService(
         null
     }
 
+    @SuppressLint("MissingPermission")
     override fun restoreMainTask(taskId: Int): Boolean = try {
         if (taskId <= 0) {
             navigateMainDisplayHome()

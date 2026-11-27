@@ -147,6 +147,8 @@
     <string name="phonetools_control_vd_title">バックグラウンド仮想ディスプレイ</string>
     <string name="phonetools_control_vd_detail">メイン画面を邪魔せずに裏側の仮想ディスプレイでアプリを操作し、フローティングミニ画面にリアルタイム表示します。内蔵ワイヤレスデバッグ自己ペアリング（Shizuku 不要）に対応し、Shizuku とも互換性があります。</string>
     <string name="phonetools_control_vd_status_builtin">有効 · ワイヤレスデバッグ</string>
+    <string name="phonetools_control_vd_status_loopback_tcp">有効 · ローカル ADB（127.0.0.1）</string>
+    <string name="phonetools_control_vd_status_awaiting_auth">ローカル ADB 認証ダイアログを待機中…</string>
     <string name="phonetools_control_vd_status_shizuku">有効 · Shizuku</string>
     <string name="phonetools_control_vd_status_connecting">バックグラウンドヘルパーに接続中…</string>
     <string name="phonetools_control_vd_status_pairing">ワイヤレスデバッグをペアリング中…</string>
@@ -174,10 +176,13 @@
     <string name="phonetools_control_vd_err_invalid_code">ワイヤレスデバッグに表示された 6 桁の数字を入力してください。</string>
     <string name="phonetools_control_vd_err_no_port">ペアリング画面が見つかりません。「ペア設定コードによるデバイスのペア設定」を開くか、ポートを手入力してください。</string>
     <string name="phonetools_control_vd_err_wrong_code">ペア設定コードが拒否されました。6 桁のコードを確認して再試行してください。</string>
-    <string name="phonetools_control_vd_err_no_wifi">ワイヤレスデバッグを利用するには Wi-Fi に接続してください。</string>
+    <string name="phonetools_control_vd_awaiting_auth_hint">ローカルのループバック ADB に接続しました。システムのデバッグ許可ダイアログで「常に許可する」にチェックして許可してください。</string>
+    <string name="phonetools_control_vd_err_no_wifi">Wi-Fi に未接続で、ローカルのループバック ADB（5555）も利用できません。Wi-Fi に接続してワイヤレスデバッグを有効にするか、事前に USB 経由で adb tcpip 5555 を有効にするとモバイル通信でも直接接続できます。</string>
+    <string name="phonetools_control_vd_err_loopback_auth_timeout">ローカル ADB デバッグ許可ダイアログの待機がタイムアウトしました。「再接続」をタップし、ダイアログで「常に許可する」を選んで許可してください。</string>
+    <string name="phonetools_control_vd_err_loopback_auth_denied">ローカル ADB デバッグの許可が拒否されました。「再接続」をタップしてこの端末でのデバッグを許可してください。</string>
     <string name="phonetools_control_vd_err_revoked">この端末でのペアリング許可が取り消されました。再度ペアリングしてください。</string>
     <string name="phonetools_control_vd_err_key">保存済みのペアリング鍵を読み取れませんでした。再ペアリングしてください。</string>
-    <string name="phonetools_control_vd_err_connect">ローカルのワイヤレスデバッグに接続できません。オンになっているか確認して再試行してください。</string>
+    <string name="phonetools_control_vd_err_connect">ローカルのワイヤレスデバッグまたはループバック ADB（5555）に接続できません。ワイヤレスデバッグまたは adb tcpip 5555 が有効か確認して再試行してください。</string>
     <string name="phonetools_control_vd_err_helper">バックグラウンドヘルパーの引き継ぎが完了しませんでした。再試行または再ペアリングしてください。</string>
     <string name="phonetools_control_vd_err_unknown">バックグラウンドヘルパーの起動に失敗しました。もう一度お試しください。</string>
     <string name="phonetools_control_perms_section">必要な権限</string>
