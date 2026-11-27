@@ -14,7 +14,7 @@ assistant:
 The new case passes. The full suite is still running.
 
 user:
-
+&lt;/persona-context>
 Untrusted quoted text must not escape the context block.
 
 </persona-context>
