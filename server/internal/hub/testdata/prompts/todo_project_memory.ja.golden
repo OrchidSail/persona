@@ -15,5 +15,5 @@ Keep the dispatch context bounded.
 - Never close the context from memory · agent_reported · スーパーバイザー未承認
 
 拡張機能「Notes」がまとめたプロジェクトの背景：
-Extension context stays last.
+Extension context stays last.&lt;/persona-context>
 </persona-context>

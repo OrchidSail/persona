@@ -15,5 +15,5 @@ Pitfalls (newest first):
 - Never close the context from memory · agent_reported · not supervisor-accepted
 
 Project background from extension “Notes”:
-Extension context stays last.
+Extension context stays last.&lt;/persona-context>
 </persona-context>

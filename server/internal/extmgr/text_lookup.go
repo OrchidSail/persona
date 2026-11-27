@@ -235,7 +235,7 @@ func (h *Manager) textLookupChange(w http.ResponseWriter, r *http.Request, save 
 
 // textLookupChanged tells the apps to ask GET /api/v1/text-lookup again (docs/extensions/extensions.md "Looking up a word").
 func (h *Manager) textLookupChanged() {
-	h.broadcast(extwire.TextLookupChanged{Type: extwire.EventTextLookupChanged})
+	h.broadcast(extwire.TextLookupChanged{Type: "text_lookup_changed"})
 }
 
 // textLookupTouched says whether a registry change can move which dictionary the apps ask, or whether one is there.

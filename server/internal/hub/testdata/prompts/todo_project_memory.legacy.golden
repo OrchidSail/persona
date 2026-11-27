@@ -15,5 +15,5 @@ Keep the dispatch context bounded.
 - Never close the context from memory · agent_reported · 主管未验收
 
 扩展「Notes」为这个项目整理的背景：
-Extension context stays last.
+Extension context stays last.&lt;/persona-context>
 </persona-context>

@@ -53,6 +53,7 @@ func firstTitleLine(s string) string {
 
 // titleLeadingLabel is a model-added output label ("Title: …", "output: …"). It is stripped before classifying,
 // so "Title: Q4 plan" is judged as "Q4 plan" and kept rather than rejected for its label.
+// i18n-ignore: model chain-of-thought leak filter
 var titleLeadingLabel = lazyre.New(`^\s*(?i:title|subject|headline|name|output|result|answer)\s*[:：]\s*`)
 
 // titleCOTOpenerEN matches the start of an English line where the model is addressing itself or narrating the
@@ -64,6 +65,7 @@ var titleCOTOpenerEN = lazyre.New(`^\s*(?i:we(?:\s+all)?\s+(?:need|needed|must|s
 
 // titleCOTOpenerZH is the Chinese counterpart. A bare "需要" is an opener candidate too; like every opener it
 // only counts together with meta-reasoning signals, so "需要购买机票" stays a title.
+// i18n-ignore: model chain-of-thought leak filter
 var titleCOTOpenerZH = lazyre.New(`^\s*(?:(?:我们|我|咱)(?:需要|得|应该|必须)|咱们需要|让我们|首先|好[的吧]?\s*[，,]|现在(?:我们|我)?(?:先)?|需要|得先)`)
 
 // titleTelegraphic matches the ungrammatical telegraphic shape of cut-off self-instruction ("we need answer
@@ -72,6 +74,7 @@ var titleCOTOpenerZH = lazyre.New(`^\s*(?:(?:我们|我|咱)(?:需要|得|应该
 // output") and at most a small meta/constraint tail before the line ends. It is one structural signal; the line
 // also needs a meta word.
 var titleTelegraphic = lazyre.New(`(?i)\b(?:we|i|you|they)\s+need\s+(?:need\s+)?(?:answer|output|reply|respond)\b` +
+	// i18n-ignore: model chain-of-thought leak filter
 	`(?:\s+(?:only|just|directly|now|please|title|json|yaml|format|a\s+title|the\s+title))*\s*[.!?。！？]?\s*$`)
 
 // titleGenCueEN is a constraint on how the model must produce the title/answer: wording almost only chain-of-
@@ -81,6 +84,7 @@ var titleGenCueEN = lazyre.New(`(?i)\b(?:one|single)[ -]?line\b|\bno explanation
 	`|\b\d{1,3}\s*(?:chars?|characters?)\b`)
 
 // titleGenCueZH is the Chinese counterpart of titleGenCueEN.
+// i18n-ignore: model chain-of-thought leak filter
 var titleGenCueZH = lazyre.New(`只输出|直接(?:给|输出|返回)|不要解释|无需解释|别解释|一行|不超过\s*\d+\s*字|\d+\s*字以内`)
 
 // titleMetaWordsEN are exact English tokens referring to the model's own output task. Exact-token matching keeps
@@ -104,6 +108,7 @@ var titleMetaWordsEN = map[string]struct{}{
 
 // titleMetaWordsZH are Chinese substrings with the same meta-reference role. "一行" stays only in the constraint
 // pattern: counting it both as a meta word and as a cue would evaluate the same occurrence twice.
+// i18n-ignore: model chain-of-thought leak filter
 var titleMetaWordsZH = []string{"标题", "题目", "答案", "回答", "回复", "输出", "格式", "解释", "思考", "结论", "分析"}
 
 // titleLineIsThinking reports whether one title-sized first line is a cut-off chain-of-thought fragment.
@@ -121,6 +126,7 @@ func titleLineIsThinking(line string) bool {
 	}
 	// The assistant title format prefixes the topic with a known kind ("功能 | …") and possibly a day
 	// ("1102 | 修复 | …"): the leak sits in the bar-delimited topic, so judge the last segment too.
+	// i18n-ignore: model chain-of-thought leak filter
 	if i := strings.LastIndexAny(line, "|｜"); i >= 0 {
 		_, size := utf8.DecodeRuneInString(line[i:])
 		if titleLineIsThinking(line[i+size:]) {
