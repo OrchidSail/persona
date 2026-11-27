@@ -14,7 +14,6 @@ private val noticeHead = Regex("^🔔 任务「(.+)」(做完了|在等用户|�
 private val followupHead = Regex("^⏰ (.+)（(你之前安排的跟进|定时任务(?:，每 [^）]+)?)）$") // i18n-ignore: the injected text it reads (prompts.ParseInjected)
 private val wakeHead = Regex("^⏰（Persona 叫醒你，第 \\d+ 次）你上一轮停下时说在等「(.*?)」") // i18n-ignore: the injected text it reads (prompts.ParseInjected)
 private val superviseHead = Regex("^📋 督办：你派出去的任务有 (\\d+) 个要你处理$") // i18n-ignore: the injected text it reads (prompts.ParseInjected)
-private val leadContext = ProtocolCompatibility.leadContext
 private const val NOTICE_MARKER = "这是 Persona 的任务通知" // i18n-ignore: the injected text it reads (prompts.ParseInjected)
 private const val SUPERVISE_MARKER = "这是 Persona 的督办消息" // i18n-ignore: the injected text it reads (prompts.ParseInjected)
 private const val LOST_TASKS_HEAD = "⚠️ 运行你的 node 刚重启过" // i18n-ignore: the injected text it reads (prompts.ParseInjected)

@@ -36,6 +36,7 @@ func setAgyIdleClock(n *Node, start time.Time) *testAgyClock {
 	c := &testAgyClock{now: start}
 	n.agyIdleMu.Lock()
 	n.agyIdleClock = c.get
+	n.agyIdleSessions = nil
 	n.agyIdleMu.Unlock()
 	return c
 }

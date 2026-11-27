@@ -268,7 +268,7 @@ func (s *Service) mainAutoCompactSessions(ctx context.Context, machine string, l
 	if !st.lastTurnEndAt.IsZero() && now.Sub(st.lastTurnEndAt) > b.delayedWindowPeriod() {
 		st.pendingDelayedCheck = false
 	}
-	grew := int(row.ContextTokens) > prevTokens || row.Rev > prevRev || row.OutputTokens > prevOutput
+	grew := int(row.ContextTokens) > prevTokens || row.Rev > prevRev || int(row.OutputTokensValue()) > prevOutput
 	scheduleDelayed := grew &&
 		st.pendingDelayedCheck &&
 		!st.delayedScheduled &&
@@ -310,7 +310,7 @@ func (b *mainAutoCompactBook) observeLocked(st *mainAutoCompactState, row proto.
 	if !st.baselineKnown && !st.observed {
 		// Initialize output-token baseline on first observation so a hub restart mid-session
 		// does not treat historical cumulative output tokens as fresh post-compaction growth.
-		st.baselineOutputTokens = row.OutputTokens
+		st.baselineOutputTokens = int(row.OutputTokensValue())
 	}
 	st.observed = true
 	if row.Status == proto.StatusWorking {
@@ -369,10 +369,10 @@ func (b *mainAutoCompactBook) observeLocked(st *mainAutoCompactState, row proto.
 	if row.Rev > st.lastRev {
 		st.lastRev = row.Rev
 	}
-	if row.OutputTokens > st.lastOutputTokens {
-		st.lastOutputTokens = row.OutputTokens
+	if int(row.OutputTokensValue()) > st.lastOutputTokens {
+		st.lastOutputTokens = int(row.OutputTokensValue())
 	}
-	st.recordTimeOutputSample(sampleAt, row.OutputTokens)
+	st.recordTimeOutputSample(sampleAt, int(row.OutputTokensValue()))
 }
 
 func (st *mainAutoCompactState) recordSeqOutputSample(seq int64, output int) {
@@ -450,7 +450,7 @@ func (b *mainAutoCompactBook) resetCompactionBaselineLocked(st *mainAutoCompactS
 		tokens = 0
 	}
 	st.baselineSeq = st.lastProbedSeq
-	st.baselineOutputTokens = row.OutputTokens
+	st.baselineOutputTokens = int(row.OutputTokensValue())
 	st.baselineKnown = true
 	st.peakTokens = tokens
 	st.lastTokens = tokens
@@ -473,12 +473,12 @@ func (b *mainAutoCompactBook) resetCompactionBaselineLocked(st *mainAutoCompactS
 	st.lastAttemptSeq = 0
 	st.lastAttemptTokens = 0
 	if st.lastProbedSeq > 0 {
-		st.seqOutputHistory = []mainCompactSeqOutput{{seq: st.lastProbedSeq, output: row.OutputTokens}}
+		st.seqOutputHistory = []mainCompactSeqOutput{{seq: st.lastProbedSeq, output: int(row.OutputTokensValue())}}
 	} else {
 		st.seqOutputHistory = nil
 	}
 	if !sampleAt.IsZero() {
-		st.timeOutputHistory = []mainCompactTimeOutput{{at: sampleAt, output: row.OutputTokens}}
+		st.timeOutputHistory = []mainCompactTimeOutput{{at: sampleAt, output: int(row.OutputTokensValue())}}
 	} else {
 		st.timeOutputHistory = nil
 	}
@@ -551,17 +551,17 @@ func (s *Service) mainAutoCompactTurnSettled(ctx context.Context, machine, sid s
 					}
 					switch {
 					case m.steps == 0:
-						if sess.OutputTokens > 0 {
-							st.baselineOutputTokens = sess.OutputTokens
+						if int(sess.OutputTokensValue()) > 0 {
+							st.baselineOutputTokens = int(sess.OutputTokensValue())
 						}
 					case m.outputTokens > 0:
 						// Reconstruct cumulative output at the compaction boundary instead of folding post-boundary output into baseline.
-						if sess.OutputTokens > 0 {
-							st.baselineOutputTokens = max(sess.OutputTokens-int(m.outputTokens), 0)
+						if int(sess.OutputTokensValue()) > 0 {
+							st.baselineOutputTokens = max(int(sess.OutputTokensValue())-int(m.outputTokens), 0)
 						}
 					case m.hasItemUsage:
-						if sess.OutputTokens > 0 {
-							st.baselineOutputTokens = sess.OutputTokens
+						if int(sess.OutputTokensValue()) > 0 {
+							st.baselineOutputTokens = int(sess.OutputTokensValue())
 						}
 					default:
 						// Items omit per-item usage: advance baseline only to output observed at or before the boundary
@@ -586,11 +586,11 @@ func (s *Service) mainAutoCompactTurnSettled(ctx context.Context, machine, sid s
 					}
 				}
 				if m.maxSeq > 0 {
-					st.recordSeqOutputSample(m.maxSeq, sess.OutputTokens)
+					st.recordSeqOutputSample(m.maxSeq, int(sess.OutputTokensValue()))
 				}
 			}
 		}
-		deltaOutput := max(sess.OutputTokens-st.baselineOutputTokens, 0)
+		deltaOutput := max(int(sess.OutputTokensValue())-st.baselineOutputTokens, 0)
 		if int(m.outputTokens) > deltaOutput {
 			deltaOutput = int(m.outputTokens)
 		}
@@ -820,7 +820,7 @@ func evaluateMainCompactLoad(cfg Settings, st *mainAutoCompactState, sess proto.
 		}
 	}
 	revChanged := !st.probedOnce || sess.Rev != st.lastProbeRev
-	deltaOutput := max(sess.OutputTokens-st.baselineOutputTokens, 0)
+	deltaOutput := max(int(sess.OutputTokensValue())-st.baselineOutputTokens, 0)
 	needProbe = revChanged || deltaOutput >= mainAutoCompactFallbackOutputTokens
 	return "", needProbe, tokensStale
 }

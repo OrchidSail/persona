@@ -634,7 +634,9 @@ export async function brotliCopies(dir: string, files: string[]): Promise<{ file
 // base 53884840c4: ja 486,430 B to 486,476 B). Merged with origin/main (including #17071, which added +109 B to the
 // first screen), this tree measures en 484,077 B, ja 486,585 B, zh-Hans 485,079 B.
 // #17028: depth-aware linear context-block scanner and scoped compatibility rewriting in lib/compatibility.ts.
-export const FIRST_SCREEN_BUDGET = 486_595;
+// Merged onto Build 23 personal/main (upstream 0df7fade9958 + #17028 + phone connector UI), measures en 484,651 B,
+// ja 487,148 B, zh-Hans 485,661 B. Raise the budget to the measured ja size plus 10 B of room.
+export const FIRST_SCREEN_BUDGET = 487_158;
 // The hash in a built file's name: the 8 characters of Rollup's [hash] (url-safe base64) between "-" and the
 // extension, as vite.config.ts names every chunk and asset ("assets/[name]-[hash].js", "[name]-[hash][extname]").
 const NAME_HASH = /-([A-Za-z0-9_-]{8})\.[^./]+$/;

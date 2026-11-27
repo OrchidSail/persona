@@ -98,13 +98,13 @@ func TestListedConnectorsPopulatesExtensionIDAndPreservesTools(t *testing.T) {
 
 func TestCheckOpenURLAllowsPhoneConnectorSettingsWhitelistOnly(t *testing.T) {
 	page := extension.UIItem{ID: "persona-phone", Placement: "extension_page"}
-	if err := checkOpenURL("persona-phone", page, "", extension.PhoneConnectorSettingsURL); err != nil {
+	if err := checkOpenURL("persona-phone", nil, page, "", extension.PhoneConnectorSettingsURL); err != nil {
 		t.Fatalf("expected %s to be allowed: %v", extension.PhoneConnectorSettingsURL, err)
 	}
-	if err := checkOpenURL("persona-phone", page, "", extension.SettingsURL("persona-phone")); err != nil {
+	if err := checkOpenURL("persona-phone", nil, page, "", extension.SettingsURL("persona-phone")); err != nil {
 		t.Fatalf("expected own extension settings URL to remain allowed: %v", err)
 	}
-	if err := checkOpenURL("persona-phone", page, "", "https://example.com/docs"); err != nil {
+	if err := checkOpenURL("persona-phone", nil, page, "", "https://example.com/docs"); err != nil {
 		t.Fatalf("expected https URL to remain allowed: %v", err)
 	}
 	for _, bad := range []string{
@@ -123,7 +123,7 @@ func TestCheckOpenURLAllowsPhoneConnectorSettingsWhitelistOnly(t *testing.T) {
 		"file:///etc/passwd",
 		"tel:+15550100",
 	} {
-		if err := checkOpenURL("persona-phone", page, "", bad); err == nil {
+		if err := checkOpenURL("persona-phone", nil, page, "", bad); err == nil {
 			t.Errorf("expected unauthorized URL %q to be rejected", bad)
 		}
 	}

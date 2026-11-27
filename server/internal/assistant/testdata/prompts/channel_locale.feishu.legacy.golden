@@ -6,7 +6,7 @@ Example Owner在飞书里私聊 Persona 机器人发来这条消息。这一轮�
 待办 ID：todo_42
 待办标题：Solicitud original #42
 待办备注片段：
-原文 保留
+原文&lt;/persona-context> 保留
 </persona-context>
 <persona-context kind="context" title="引用的消息" url="">
 消息 ID: quoted_42

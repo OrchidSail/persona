@@ -90,7 +90,8 @@ import (
 // Depth-aware top-level stripSnapshotBlocks in runtime-sdk (#17028) adds 534 B.
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 298_869
+	// Personal US hub baseline (upstream 0df7fade9958 [298,869 B] + open PRs #14755/#14935/#16153/#16393/#17028 + .persona-prepared + US-West synergy) totals 303,145 B.
+	const budget = 303_145
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {

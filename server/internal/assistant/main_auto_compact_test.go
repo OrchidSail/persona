@@ -238,7 +238,7 @@ func TestMainAutoCompactFallbackStepsBytesAndCompactionBoundary(t *testing.T) {
 		)
 		f.setSessions("server", proto.Session{
 			SessionID: mainID, Assistant: true, Agent: "agy", Launcher: "agy",
-			Status: proto.StatusDone, Rev: 400, ContextTokens: 0, OutputTokens: 120_000,
+			Status: proto.StatusDone, Rev: 400, ContextTokens: 0, Hierarchy: &proto.SessionHierarchy{OutputTokens: 120_000},
 		})
 		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
 		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
@@ -582,7 +582,7 @@ func TestMainAutoCompactOmittedTokensPreserveBaseline(t *testing.T) {
 		// First plausible reading below threshold.
 		row := proto.Session{
 			SessionID: mainID, Assistant: true, Agent: "agy", Launcher: "agy",
-			Status: proto.StatusDone, Rev: 20, ContextTokens: 220_000, ContextWindow: 1_048_576, OutputTokens: 10_000,
+			Status: proto.StatusDone, Rev: 20, ContextTokens: 220_000, ContextWindow: 1_048_576, Hierarchy: &proto.SessionHierarchy{OutputTokens: 10_000},
 		}
 		f.setSessions("server", row)
 		s.SessionsChanged(ctx, DeviceSessions{MachineID: "server", Sessions: []proto.Session{row}})
@@ -721,7 +721,7 @@ func TestMainAutoCompactCompactionNoticePreservesPostBoundaryOutput(t *testing.T
 		)
 		row := proto.Session{
 			SessionID: mainID, Assistant: true, Agent: "agy", Launcher: "agy",
-			Status: proto.StatusDone, Rev: 120, ContextTokens: 0, OutputTokens: 150_000,
+			Status: proto.StatusDone, Rev: 120, ContextTokens: 0, Hierarchy: &proto.SessionHierarchy{OutputTokens: 150_000},
 		}
 		f.setSessions("server", row)
 		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
@@ -740,7 +740,7 @@ func TestMainAutoCompactCompactionNoticePreservesPostBoundaryOutput(t *testing.T
 		}
 
 		row.Rev = 130
-		row.OutputTokens = 185_000
+		row.SetOutputTokens(185_000)
 		f.setSessions("server", row)
 		f.setItems(
 			proto.Item{Seq: 60, Role: "system", Kind: proto.KindNotice, Text: transcript.CompactedNotice},
@@ -772,7 +772,7 @@ func TestMainAutoCompactCompactionNoticePreservesPostBoundaryOutput(t *testing.T
 		)
 		f.setSessions("server", proto.Session{
 			SessionID: mainID, Assistant: true, Agent: "agy", Launcher: "agy",
-			Status: proto.StatusDone, Rev: 120, ContextTokens: 0, OutputTokens: 150_000,
+			Status: proto.StatusDone, Rev: 120, ContextTokens: 0, Hierarchy: &proto.SessionHierarchy{OutputTokens: 150_000},
 		})
 		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
 		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
@@ -792,8 +792,8 @@ func TestMainAutoCompactCompactionNoticePreservesPostBoundaryOutput(t *testing.T
 		})
 		t0 := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
 		for _, snap := range []proto.Session{
-			{SessionID: mainID, Assistant: true, Agent: "claude", Launcher: "claude", Status: proto.StatusDone, Rev: 4096, UpdatedAt: t0, OutputTokens: 20_000},
-			{SessionID: mainID, Assistant: true, Agent: "claude", Launcher: "claude", Status: proto.StatusDone, Rev: 9000, UpdatedAt: t0.Add(5 * time.Minute), OutputTokens: 30_000},
+			{SessionID: mainID, Assistant: true, Agent: "claude", Launcher: "claude", Status: proto.StatusDone, Rev: 4096, UpdatedAt: t0, Hierarchy: &proto.SessionHierarchy{OutputTokens: 20_000}},
+			{SessionID: mainID, Assistant: true, Agent: "claude", Launcher: "claude", Status: proto.StatusDone, Rev: 9000, UpdatedAt: t0.Add(5 * time.Minute), Hierarchy: &proto.SessionHierarchy{OutputTokens: 30_000}},
 		} {
 			s.SessionsChanged(ctx, DeviceSessions{MachineID: "server", Sessions: []proto.Session{snap}})
 		}
@@ -805,7 +805,7 @@ func TestMainAutoCompactCompactionNoticePreservesPostBoundaryOutput(t *testing.T
 		)
 		f.setSessions("server", proto.Session{
 			SessionID: mainID, Assistant: true, Agent: "claude", Launcher: "claude",
-			Status: proto.StatusDone, Rev: 120_000, UpdatedAt: t0.Add(10 * time.Minute), ContextTokens: 0, OutputTokens: 105_000,
+			Status: proto.StatusDone, Rev: 120_000, UpdatedAt: t0.Add(10 * time.Minute), ContextTokens: 0, Hierarchy: &proto.SessionHierarchy{OutputTokens: 105_000},
 		})
 		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
 		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
@@ -828,7 +828,7 @@ func TestMainAutoCompactCompactionNoticePreservesPostBoundaryOutput(t *testing.T
 		)
 		f.setSessions("server", proto.Session{
 			SessionID: mainID, Assistant: true, Agent: "claude", Launcher: "claude",
-			Status: proto.StatusDone, Rev: 140_000, UpdatedAt: t0.Add(15 * time.Minute), ContextTokens: 0, OutputTokens: 115_000,
+			Status: proto.StatusDone, Rev: 140_000, UpdatedAt: t0.Add(15 * time.Minute), ContextTokens: 0, Hierarchy: &proto.SessionHierarchy{OutputTokens: 115_000},
 		})
 		s.noteMainAutoCompactTurnEnded(ctx, "server", mainID)
 		s.mainAutoCompactTurnSettled(ctx, "server", mainID)
@@ -848,7 +848,7 @@ func TestMainAutoCompactCompactionNoticePreservesPostBoundaryOutput(t *testing.T
 		f2.setItems(proto.Item{Seq: 25, Role: "assistant", Kind: proto.KindText, Text: "Before compact"})
 		f2.setSessions("server", proto.Session{
 			SessionID: mainID2, Assistant: true, Agent: "agy", Launcher: "agy",
-			Status: proto.StatusDone, Rev: 9000, ContextTokens: 0, OutputTokens: 30_000,
+			Status: proto.StatusDone, Rev: 9000, ContextTokens: 0, Hierarchy: &proto.SessionHierarchy{OutputTokens: 30_000},
 		})
 		s2.noteMainAutoCompactTurnEnded(ctx, "server", mainID2)
 		s2.mainAutoCompactTurnSettled(ctx, "server", mainID2)
@@ -862,7 +862,7 @@ func TestMainAutoCompactCompactionNoticePreservesPostBoundaryOutput(t *testing.T
 		)
 		f2.setSessions("server", proto.Session{
 			SessionID: mainID2, Assistant: true, Agent: "agy", Launcher: "agy",
-			Status: proto.StatusDone, Rev: 140_000, ContextTokens: 0, OutputTokens: 115_000,
+			Status: proto.StatusDone, Rev: 140_000, ContextTokens: 0, Hierarchy: &proto.SessionHierarchy{OutputTokens: 115_000},
 		})
 		s2.noteMainAutoCompactTurnEnded(ctx, "server", mainID2)
 		s2.mainAutoCompactTurnSettled(ctx, "server", mainID2)
