@@ -50,6 +50,8 @@ func TestSupervisionRoleInstructionsPreserveTheFullPolicy(t *testing.T) {
 	}
 	mainOnly := []string{
 		"- `escalated`:",
+	}
+	mainOrLeaderOnly := []string{
 		"- `leader_stuck`:",
 	}
 	startRemediesOnly := []string{
@@ -57,7 +59,7 @@ func TestSupervisionRoleInstructionsPreserveTheFullPolicy(t *testing.T) {
 		"- `started`:",
 	}
 	private := func(line string) bool {
-		for _, prefixes := range [][]string{leaderOnly, backgroundOnly, mainOnly, startRemediesOnly} {
+		for _, prefixes := range [][]string{leaderOnly, backgroundOnly, mainOnly, mainOrLeaderOnly, startRemediesOnly} {
 			for _, prefix := range prefixes {
 				if strings.HasPrefix(line, prefix) {
 					return true
@@ -80,6 +82,11 @@ func TestSupervisionRoleInstructionsPreserveTheFullPolicy(t *testing.T) {
 		for _, prefix := range mainOnly {
 			if strings.Contains(text, prefix) != (role == "main") {
 				t.Errorf("%s: main-only signal %q leaked or disappeared", role, prefix)
+			}
+		}
+		for _, prefix := range mainOrLeaderOnly {
+			if strings.Contains(text, prefix) != (role == "main" || role == "leader") {
+				t.Errorf("%s: main-or-leader signal %q leaked or disappeared", role, prefix)
 			}
 		}
 		for _, prefix := range startRemediesOnly {
