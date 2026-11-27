@@ -106,9 +106,19 @@ func (t *PlanTask) noteWhy(note string) {
 // (#12032). It also reports what the resolved launcher runs (startAgent: its agent type, and whether it runs with
 // Allow all), using the same launcher list rather than another probe. A read-only task whose launcher has no read-only
 // mode is refused here (readonlyLauncherRefusal), when it is planned and again before it starts.
+func checkAliasAgent(aliases proto.ModelAliases, agent startAgent) error {
+	if len(aliases) > 0 && agent.agent != "" && agent.agent != "claude" {
+		return fmt.Errorf("model_aliases require a Claude Code terminal launcher")
+	}
+	return nil
+}
+
 func (s *Service) fitTaskLauncher(ctx context.Context, t *PlanTask, m Device, own startPick, params map[string]any) (startAgent, error) {
 	note, agent, err := s.fitNewLauncher(ctx, m, own, params)
 	if err != nil {
+		return agent, err
+	}
+	if err := checkAliasAgent(t.ModelAliases, agent); err != nil {
 		return agent, err
 	}
 	if t.Readonly {
@@ -178,21 +188,42 @@ func (s *Service) readonlyLaunchersOn(ctx context.Context, m Device) []string {
 }
 
 // taskDirectoryExists checks the mapped directory before a flexible task changes machines. Missing, denied or
-// unreadable paths (including a node too old to answer fs.stat) keep that machine out of the detour.
+// unreadable paths (including a node too old to answer fs.stat) keep that machine out of the detour. Concurrent
+// identical checks coalesce in-flight, and positive confirmations are reused within the same logical placement
+// decision (placementOf(ctx)); separate requests always re-check live so deleted directories are rejected immediately.
 func (s *Service) taskDirectoryExists(ctx context.Context, machine, dir string) bool {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	var res struct {
-		Stats []struct {
-			Path string `json:"path"`
-			Kind string `json:"kind"`
-		} `json:"stats"`
+	flightKey := taskDirCacheKey(machine, dir)
+	cacheKey := ""
+	if pl := placementOf(ctx); pl != nil && pl.ID != "" {
+		cacheKey = pl.ID + "\x00" + flightKey
 	}
-	if err := s.call(ctx, machine, "fs.stat", map[string]any{"paths": []string{dir}}, &res); err != nil {
+	exists, err := s.tasks.dirMeta.dirExists.getOrFetch(
+		ctx,
+		s.taskMetaNow,
+		flightKey,
+		cacheKey,
+		5*time.Second,
+		func(ok bool) bool { return ok },
+		nil,
+		func(callCtx context.Context) (bool, error) {
+			var res struct {
+				Stats []struct {
+					Path string `json:"path"`
+					Kind string `json:"kind"`
+				} `json:"stats"`
+			}
+			if err := s.call(callCtx, machine, "fs.stat", map[string]any{"paths": []string{dir}}, &res); err != nil {
+				return false, err
+			}
+			return len(res.Stats) == 1 && res.Stats[0].Path == dir && res.Stats[0].Kind == "dir", nil
+		},
+	)
+	if err != nil {
 		placementOf(ctx).hit(machine, "directory_unknown", nil)
 		return false
 	}
-	exists := len(res.Stats) == 1 && res.Stats[0].Path == dir && res.Stats[0].Kind == "dir"
 	if !exists {
 		placementOf(ctx).hit(machine, "directory_missing", nil)
 	}
@@ -298,6 +329,12 @@ func (s *Service) startTaskAgent(ctx context.Context, t *PlanTask, retry bool) (
 	// A self-planning constraint applies only while a policy rule asks for it on this try.
 	t.planFirst = false
 	params := map[string]any{"model_source": planModelSource(*t), "launcher": t.Launcher, "model": t.Model, "effort": t.Effort, "speed": t.Speed, "tier": t.Tier}
+	if caller.model != "" {
+		params["explicit_model"] = caller.model
+	}
+	if len(t.ModelAliases) != 0 {
+		params["model_aliases"] = t.ModelAliases
+	}
 	if t.Host != "" {
 		params["host"] = t.Host // before the fit: an engine host's runtime runs its own launchers (#8140)
 	}

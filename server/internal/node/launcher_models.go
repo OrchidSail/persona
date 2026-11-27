@@ -83,11 +83,11 @@ func (n *Node) launcherModels(ctx context.Context, name, agentType string, refre
 	}
 	if h != nil && !n.usesAgyPane(ctx, name, agentType) {
 		res, _ := launcherModelsOf(h, runtimeName)
-		return n.liveRuntimeModels(ctx, h, runtimeName, refresh, res)
+		return n.liveRuntimeModels(ctx, h, runtimeName, name, refresh, res)
 	}
 	agent := n.launcherModelsAgent(ctx, name, agentType)
 	if agent == ompAgent {
-		// omp accepts a typed model on a new herdr start, unless its launcher pins it.
+		// omp accepts a typed model on a new herdr or Orca start, unless its launcher pins it.
 		res := proto.LauncherModels{Agent: agent, Models: []proto.AgentModel{}}
 		if err := n.checkOmpStartModel(ctx, name, modelCheckProbe); err != nil {
 			res.Locked = err.Error()

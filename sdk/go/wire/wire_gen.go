@@ -257,6 +257,9 @@ type Permissions struct {
 	// Its program is an agent runtime that connects to this machine's node; in a sandbox it gets a socket in its run
 	// directory (PERSONA_RUNTIME_SOCKET) that leads to the node's runtime.sock only. Needs runtime.
 	AgentRuntimes bool `json:"agent_runtimes,omitempty"`
+	// The routine sends its local date and language to this extension and may include its facts and report sections in
+	// the briefing.
+	RoutineFacts bool `json:"routine_facts,omitempty"`
 	// It receives the error and crash reports of the hub and the user's devices, scrubbed (no message text, tokens, user
 	// names, machine names or IP addresses). Needed by contributes.error_reports.
 	ErrorReports bool               `json:"error_reports,omitempty"`
@@ -306,10 +309,12 @@ type Contributes struct {
 	TriageTemplates     []TriageTemplateItem     `json:"triage_templates,omitempty"`
 	AgentFilters        []AgentFilterItem        `json:"agent_filters,omitempty"`
 	Tunnels             []TunnelItem             `json:"tunnels,omitempty"`
+	RoutineFacts        []RoutineFactsItem       `json:"routine_facts,omitempty"`
 	ErrorReports        []ErrorReportsItem       `json:"error_reports,omitempty"`
 	AuthRelay           []AuthRelayItem          `json:"auth_relay,omitempty"`
 	SecretProviders     []SecretProviderItem     `json:"secret_providers,omitempty"`
 	RepositoryProviders []RepositoryProviderItem `json:"repository_providers,omitempty"`
+	TextLookup          []TextLookupItem         `json:"text_lookup,omitempty"`
 	MemorySources       []MemorySourceItem       `json:"memory_sources,omitempty"`
 	DiskOffload         []DiskOffloadItem        `json:"disk_offload,omitempty"`
 	Messaging           []MessagingItem          `json:"messaging,omitempty"`
@@ -323,7 +328,7 @@ func (v *Contributes) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	declared := map[string]json.RawMessage{}
-	for _, key := range []string{"connectors", "voice", "transcription", "speech", "computer", "browser", "iphone", "quota", "usage", "providers", "api", "assistant", "mcp_servers", "ui", "track_kinds", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "repository_providers", "memory_sources", "disk_offload", "messaging"} {
+	for _, key := range []string{"connectors", "voice", "transcription", "speech", "computer", "browser", "iphone", "quota", "usage", "providers", "api", "assistant", "mcp_servers", "ui", "track_kinds", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "routine_facts", "error_reports", "auth_relay", "secret_providers", "repository_providers", "text_lookup", "memory_sources", "disk_offload", "messaging"} {
 		if value, ok := extra[key]; ok {
 			declared[key] = value
 			delete(extra, key)
@@ -355,7 +360,7 @@ func (v Contributes) MarshalJSON() ([]byte, error) {
 	}
 	for key, value := range v.AdditionalProperties {
 		switch key {
-		case "connectors", "voice", "transcription", "speech", "computer", "browser", "iphone", "quota", "usage", "providers", "api", "assistant", "mcp_servers", "ui", "track_kinds", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "repository_providers", "memory_sources", "disk_offload", "messaging":
+		case "connectors", "voice", "transcription", "speech", "computer", "browser", "iphone", "quota", "usage", "providers", "api", "assistant", "mcp_servers", "ui", "track_kinds", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "routine_facts", "error_reports", "auth_relay", "secret_providers", "repository_providers", "text_lookup", "memory_sources", "disk_offload", "messaging":
 			continue
 		}
 		fields[key] = value
@@ -615,6 +620,23 @@ type RepositoryProviderItem struct {
 	Capabilities []string `json:"capabilities,omitempty"`
 }
 
+// TextLookupContributionID: identifies one text_lookup dictionary within its extension.
+type TextLookupContributionID string
+
+// String returns the ID as it is on the wire.
+func (v TextLookupContributionID) String() string { return string(v) }
+
+// TextLookupItem: A dictionary the apps ask for the meaning of a word the user taps (text_lookup.state,
+// text_lookup.lookup, text_lookup.save, text_lookup.remove). Needs the program to speak the protocol. Only English
+// (languages ["en"]) for now.
+type TextLookupItem struct {
+	ID TextLookupContributionID `json:"id"`
+	// What the dictionary is called, in a few words.
+	Name string `json:"name,omitempty"`
+	// The languages it looks up. Only "en" is accepted for now; omitted means ["en"].
+	Languages []string `json:"languages,omitempty"`
+}
+
 // DiskOffloadItem: A provider that moves items from a computer to storage elsewhere, lists what it already holds and
 // brings items back (docs/server/machine-usage-map.md "Extension point disk_offload"): the disk usage map draws its
 // inventory beside the computer's disk and offers Offload; the manager asks the program (offload.inventory,
@@ -674,6 +696,19 @@ const (
 
 // RepositoryLinkKinds are the values of RepositoryLinkKind, in order.
 var RepositoryLinkKinds = []string{"issue", "pull_request"}
+
+// RoutineContributionID: identifies one routine facts source within its extension.
+type RoutineContributionID string
+
+// String returns the ID as it is on the wire.
+func (v RoutineContributionID) String() string { return string(v) }
+
+// RoutineFactsItem: A source of facts and report sections for a scheduled briefing. Requires an RPC runtime and
+// permissions.routine_facts.
+type RoutineFactsItem struct {
+	ID    RoutineContributionID `json:"id"`
+	Title string                `json:"title"`
+}
 
 // ErrorReportsItem: it is given the error and crash reports of the hub and the user's devices
 // (error_reports.deliver): needs the program to speak the protocol, on_startup and permissions.error_reports.
@@ -1535,6 +1570,64 @@ type AuthRelayResult struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// TextLookupStateParams: text_lookup.state's parameters: which contribution to ask for the words the user saved and
+// whether saved words are underlined.
+type TextLookupStateParams struct {
+	Contribution string `json:"contribution"`
+}
+
+// TextLookupStateResult: what text_lookup.state answers. words is capped by the manager at 5000.
+type TextLookupStateResult struct {
+	UnderlineSaved bool     `json:"underline_saved"`
+	Words          []string `json:"words,omitempty"`
+}
+
+// TextLookupLookupParams: text_lookup.lookup's parameters: the word the user tapped, an optional sentence around it,
+// the word's language and the language of the app.
+type TextLookupLookupParams struct {
+	Contribution string `json:"contribution"`
+	Word         string `json:"word"`
+	Context      string `json:"context,omitempty"`
+	Lang         string `json:"lang"`
+	UILang       string `json:"ui_lang"`
+}
+
+// TextLookupSense: one meaning of a looked-up word.
+type TextLookupSense struct {
+	Pos  string `json:"pos,omitempty"`
+	Text string `json:"text"`
+}
+
+// TextLookupLookupResult: what text_lookup.lookup answers: found is false when the dictionary has no entry.
+type TextLookupLookupResult struct {
+	Found    bool              `json:"found"`
+	Word     string            `json:"word"`
+	Lemma    string            `json:"lemma,omitempty"`
+	Phonetic string            `json:"phonetic,omitempty"`
+	Senses   []TextLookupSense `json:"senses,omitempty"`
+	Saved    bool              `json:"saved"`
+}
+
+// TextLookupSaveParams: text_lookup.save's parameters: the word to remember, an optional sentence around it and where
+// the user saved it from.
+type TextLookupSaveParams struct {
+	Contribution string `json:"contribution"`
+	Word         string `json:"word"`
+	Context      string `json:"context,omitempty"`
+	Source       string `json:"source,omitempty"`
+}
+
+// TextLookupRemoveParams: text_lookup.remove's parameters: the saved word to forget.
+type TextLookupRemoveParams struct {
+	Contribution string `json:"contribution"`
+	Word         string `json:"word"`
+}
+
+// TextLookupSavedResult: what text_lookup.save and text_lookup.remove answer: whether the word is saved afterwards.
+type TextLookupSavedResult struct {
+	Saved bool `json:"saved"`
+}
+
 // SecretPurpose: what a secret value is resolved for: kind extension (an extension's secret, id its id), launcher (a
 // launcher's or model provider's key, id its name, machine the computer it goes to) or agent_run (handed to one Agent
 // run after the user approved it on the phone, id the variable's name, machine and session the Agent's).
@@ -1571,10 +1664,12 @@ type SecretsResolveResult struct {
 	Value string `json:"value"`
 }
 
-// SecretStoreField: A public field name/type; never a value or source path.
+// SecretStoreField: A public field name/type or edit action (delete, keep_value); never a value or source path.
 type SecretStoreField struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
+	Name      string `json:"name"`
+	Type      string `json:"type,omitempty"`
+	Delete    bool   `json:"delete,omitempty"`
+	KeepValue bool   `json:"keep_value,omitempty"`
 }
 
 // SecretStoreTarget: the canonical public target approved on the secret storage card.
@@ -1977,7 +2072,12 @@ type Component struct {
 	Load      *Action       `json:"load,omitempty"`
 	// An https link to lines of this file on its site, {start} and {end} standing for the lines
 	// (…/blob/<sha>/a.go#L{start}-L{end}).
-	LineURL   string   `json:"line_url,omitempty"`
+	LineURL string `json:"line_url,omitempty"`
+	// Go to definition (UI version 13): a name in the code chosen to follow it (⌘/Ctrl-click or ⌘/Ctrl+B on it; Alt+F7
+	// for its usages) calls ui.action with action and values {path, line, column (1-based, in characters), word, intent:
+	// definition or references}; ⌘[ (Ctrl+Alt+← elsewhere) calls it with {path, intent: back}. An older app leaves it
+	// out.
+	Navigate  *Action  `json:"navigate,omitempty"`
 	OldPath   string   `json:"old_path,omitempty"`
 	Status    string   `json:"status,omitempty"`
 	Additions int      `json:"additions,omitempty"`
@@ -4322,8 +4422,8 @@ type ConnectorThingGroup struct {
 	New   []string `json:"new"`
 }
 
-// ConnectorThingParent: what the thing grew out of: kind inbox (an item's id), todo (a todo's id) or session
-// (<machine>/<session>).
+// ConnectorThingParent: what the thing grew out of: kind inbox (an item's id), todo (a todo's id), session (a coding
+// Agent's <machine>/<session>) or agent (a personal Agent's <source>:<sessionKey>).
 type ConnectorThingParent struct {
 	Kind string `json:"kind"`
 	ID   string `json:"id"`
@@ -5075,6 +5175,59 @@ type ChannelEditParams struct {
 	Contribution string `json:"contribution"`
 	MessageID    string `json:"message_id"`
 	Text         string `json:"text"`
+}
+
+// KBImportCheckpointParams: the host selects the provider, source, account and chat for this import.
+type KBImportCheckpointParams struct {
+}
+
+// KBImportState: the host importer’s committed state for the selected chat.
+// A value this side does not know keeps its raw string and is not Valid.
+type KBImportState string
+
+const (
+	KBImportStatePending    KBImportState = "pending"
+	KBImportStateRunning    KBImportState = "running"
+	KBImportStateDone       KBImportState = "done"
+	KBImportStatePaused     KBImportState = "paused"
+	KBImportStateError      KBImportState = "error"
+	KBImportStateUnreadable KBImportState = "unreadable"
+)
+
+// KBImportStates are the values of KBImportState, in order.
+var KBImportStates = []KBImportState{KBImportStatePending, KBImportStateRunning, KBImportStateDone, KBImportStatePaused, KBImportStateError, KBImportStateUnreadable}
+
+// Valid reports whether v is one of KBImportStates.
+func (v KBImportState) Valid() bool {
+	switch v {
+	case KBImportStatePending, KBImportStateRunning, KBImportStateDone, KBImportStatePaused, KBImportStateError, KBImportStateUnreadable:
+		return true
+	}
+	return false
+}
+
+type KBImportCheckpointResult struct {
+	State    KBImportState `json:"state"`
+	Approval string        `json:"approval"`
+	Read     int           `json:"read"`
+	Written  int           `json:"written"`
+}
+
+type KBSentMarkersParams struct {
+	Day      string `json:"day"`
+	Approval string `json:"approval"`
+	After    int    `json:"after,omitempty"`
+}
+
+type KBSentMarker struct {
+	N          int       `json:"n"`
+	SentBy     string    `json:"sent_by"`
+	RecalledAt time.Time `json:"recalled_at,omitzero"`
+}
+
+type KBSentMarkersResult struct {
+	Markers   []KBSentMarker `json:"markers"`
+	NextAfter int            `json:"next_after,omitempty"`
 }
 
 // Values of KBKind.
@@ -7589,6 +7742,25 @@ type OffloadError struct {
 	Items  []OffloadRunItem `json:"items,omitempty"`
 }
 
+type RoutineFactsParams struct {
+	Contribution RoutineContributionID `json:"contribution"`
+	// Calendar date in the routine's time zone.
+	Date     string `json:"date"`
+	Language string `json:"language"`
+}
+
+type RoutineReportSection struct {
+	Title string `json:"title"`
+	// Plain text. The host owns report layout.
+	Body string `json:"body"`
+}
+
+// RoutineFactsResult: A read-only snapshot. Return an empty object when the contribution has nothing for this date.
+type RoutineFactsResult struct {
+	Facts    []string               `json:"facts,omitempty"`
+	Sections []RoutineReportSection `json:"sections,omitempty"`
+}
+
 // requiredJSONComponent preserves required fields only inside stream payloads.
 type requiredJSONComponent Component
 
@@ -8210,9 +8382,11 @@ var newDef = map[string]func() any{
 	"AuthRelayItem":                 func() any { return new(AuthRelayItem) },
 	"SecretProviderItem":            func() any { return new(SecretProviderItem) },
 	"RepositoryProviderItem":        func() any { return new(RepositoryProviderItem) },
+	"TextLookupItem":                func() any { return new(TextLookupItem) },
 	"DiskOffloadItem":               func() any { return new(DiskOffloadItem) },
 	"MemorySourceItem":              func() any { return new(MemorySourceItem) },
 	"RepositoryLinkLabel":           func() any { return new(RepositoryLinkLabel) },
+	"RoutineFactsItem":              func() any { return new(RoutineFactsItem) },
 	"ErrorReportsItem":              func() any { return new(ErrorReportsItem) },
 	"TunnelItem":                    func() any { return new(TunnelItem) },
 	"AgentFilterItem":               func() any { return new(AgentFilterItem) },
@@ -8284,6 +8458,14 @@ var newDef = map[string]func() any{
 	"ErrorReportsDeliver":           func() any { return new(ErrorReportsDeliver) },
 	"AuthRelayCompleteParams":       func() any { return new(AuthRelayCompleteParams) },
 	"AuthRelayResult":               func() any { return new(AuthRelayResult) },
+	"TextLookupStateParams":         func() any { return new(TextLookupStateParams) },
+	"TextLookupStateResult":         func() any { return new(TextLookupStateResult) },
+	"TextLookupLookupParams":        func() any { return new(TextLookupLookupParams) },
+	"TextLookupSense":               func() any { return new(TextLookupSense) },
+	"TextLookupLookupResult":        func() any { return new(TextLookupLookupResult) },
+	"TextLookupSaveParams":          func() any { return new(TextLookupSaveParams) },
+	"TextLookupRemoveParams":        func() any { return new(TextLookupRemoveParams) },
+	"TextLookupSavedResult":         func() any { return new(TextLookupSavedResult) },
 	"SecretPurpose":                 func() any { return new(SecretPurpose) },
 	"SecretsDescribeParams":         func() any { return new(SecretsDescribeParams) },
 	"SecretsDescribeResult":         func() any { return new(SecretsDescribeResult) },
@@ -8535,6 +8717,11 @@ var newDef = map[string]func() any{
 	"ChannelSendResult":             func() any { return new(ChannelSendResult) },
 	"ChannelTypingParams":           func() any { return new(ChannelTypingParams) },
 	"ChannelEditParams":             func() any { return new(ChannelEditParams) },
+	"KBImportCheckpointParams":      func() any { return new(KBImportCheckpointParams) },
+	"KBImportCheckpointResult":      func() any { return new(KBImportCheckpointResult) },
+	"KBSentMarkersParams":           func() any { return new(KBSentMarkersParams) },
+	"KBSentMarker":                  func() any { return new(KBSentMarker) },
+	"KBSentMarkersResult":           func() any { return new(KBSentMarkersResult) },
 	"KBConflict":                    func() any { return new(KBConflict) },
 	"KBEvidence":                    func() any { return new(KBEvidence) },
 	"KBProvenance":                  func() any { return new(KBProvenance) },
@@ -8715,6 +8902,9 @@ var newDef = map[string]func() any{
 	"OffloadRunRequest":             func() any { return new(OffloadRunRequest) },
 	"OffloadStarted":                func() any { return new(OffloadStarted) },
 	"OffloadError":                  func() any { return new(OffloadError) },
+	"RoutineFactsParams":            func() any { return new(RoutineFactsParams) },
+	"RoutineReportSection":          func() any { return new(RoutineReportSection) },
+	"RoutineFactsResult":            func() any { return new(RoutineFactsResult) },
 }
 
 // Call is one call or event of an extension point's protocol (the schemas' x-methods and x-events): who
@@ -8784,6 +8974,8 @@ var Calls = map[string]Call{
 	"kb.update":                       {Name: "kb.update", From: "program", Params: "KBUpdateParams", Result: "KBUpdateResult"},
 	"kb.owner":                        {Name: "kb.owner", From: "program", Params: "KBOwnerParams", Result: "KBOwner"},
 	"kb.recent":                       {Name: "kb.recent", From: "program", Params: "KBRecentParams", Result: "KBRecentResult"},
+	"kb.import_checkpoint":            {Name: "kb.import_checkpoint", From: "program", Params: "KBImportCheckpointParams", Result: "KBImportCheckpointResult"},
+	"kb.sent_markers":                 {Name: "kb.sent_markers", From: "program", Params: "KBSentMarkersParams", Result: "KBSentMarkersResult"},
 	"kb.put_recording":                {Name: "kb.put_recording", From: "program", Params: "KBPutRecordingParams", Result: "KBPutRecordingResult"},
 	"event.kb.changed":                {Name: "event.kb.changed", From: "hub", Params: "KBChangedEvent", Result: "", Event: true},
 	"event.kb.forgotten":              {Name: "event.kb.forgotten", From: "hub", Params: "KBForgottenEvent", Result: "", Event: true},
@@ -8836,4 +9028,5 @@ var Calls = map[string]Call{
 	"offload.run":                     {Name: "offload.run", From: "hub", Params: "OffloadRunParams", Result: "OffloadRunResult"},
 	"offload.job":                     {Name: "offload.job", From: "hub", Params: "OffloadJobParams", Result: "OffloadJob"},
 	"offload.cancel":                  {Name: "offload.cancel", From: "hub", Params: "OffloadJobParams", Result: "Empty"},
+	"routine_facts.collect":           {Name: "routine_facts.collect", From: "hub", Params: "RoutineFactsParams", Result: "RoutineFactsResult"},
 }

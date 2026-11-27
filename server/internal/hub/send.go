@@ -345,12 +345,19 @@ func (h *Hub) sendMessageOnce(w http.ResponseWriter, r *http.Request, m *Machine
 			SessionRef: assistantwire.SessionRef{MachineID: m.cfg.ID, SessionID: sid},
 			At:         time.Now().UTC(),
 		}
-		if (terminal || !m.isAssistant(spokeSession)) && isText && personSent(r.Context()) {
+		// A person's own app supplies the text for every conversation, including a supervisor / direction
+		// conversation: its needs_user decision cards are answered there too, and this event reaches the manager
+		// before the message is persisted, so the text cannot be recovered from transcript history at this point.
+		// The text carries the send's client_msg_id, the same id its session.assistant_sent names: a choice that
+		// must not settle before delivery waits for it (#13041).
+		if isText && personSent(r.Context()) {
 			spoke.Text = text
 			spoke.ClientMsgID = wireids.ClientMsgID(clientMsgID)
-			spoke.Source = assistantwire.OwnerInputApp
+			// Owner provenance (#15641) marks owner input to an Agent only, never the assistant's own conversations.
 			if terminal {
 				spoke.Source = assistantwire.OwnerInputTerminal
+			} else if !m.isAssistant(spokeSession) {
+				spoke.Source = assistantwire.OwnerInputApp
 			}
 		}
 		h.asstOf(h.sessionOwner(m.cfg.ID, sid)).userSpoke(r.Context(), spoke)
@@ -721,9 +728,6 @@ func keepableMessage(p map[string]any) map[string]any {
 func (h *Hub) keepUndelivered(ctx context.Context, m *Machine, sid string, msg map[string]any, code, why string) (int, []byte, bool) {
 	kctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	var res struct {
-		Undelivered *proto.UndeliveredMessage `json:"undelivered"`
-	}
 	tried := time.Time{}
 	if code == assistantwire.CodeDeliveryUnknown {
 		tried = sendTimingOf(ctx).start
@@ -733,10 +737,10 @@ func (h *Hub) keepUndelivered(ctx context.Context, m *Machine, sid string, msg m
 	if p.Role == roleFull || p.Role == roleAnswer {
 		credential = p.ID
 	}
-	err := h.asstOf(h.sessionOwner(m.cfg.ID, sid)).call(kctx, assistantwire.MethodKeepUndelivered, assistantwire.KeepUndeliveredParams{
+	res, err := callAssistant(kctx, h.asstOf(h.sessionOwner(m.cfg.ID, sid)), assistantwire.KeepUndeliveredMethod, assistantwire.KeepUndeliveredParams{
 		MachineID: m.cfg.ID, SessionID: sid, Params: msg, Human: personSent(ctx), Lang: string(h.contextLang(ctx)), Code: code, Error: why, TriedAt: tried,
 		CredentialID: credential,
-	}, &res)
+	})
 	if err != nil || res.Undelivered == nil {
 		h.logf("send to %s/%s: not kept for later: %v", m.cfg.ID, sid, err)
 		return 0, nil, false

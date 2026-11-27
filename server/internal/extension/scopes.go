@@ -20,6 +20,7 @@ const (
 	ScopeDeviceRelayPrefix       = extwire.ScopeDeviceRelayPrefix
 	ScopeInboxRead               = extwire.ScopeInboxRead
 	ScopeInboxWrite              = extwire.ScopeInboxWrite
+	ScopeKBImportStatus          = extwire.ScopeKBImportStatus
 	ScopeKBRead                  = extwire.ScopeKBRead
 	ScopeKBWrite                 = extwire.ScopeKBWrite
 	ScopeSentRead                = extwire.ScopeSentRead
@@ -50,7 +51,7 @@ const (
 )
 
 // HubScopes are the scopes, in the order the install screen lists them.
-var HubScopes = []string{ScopeKBRead, ScopeKBWrite, ScopeSentRead, ScopeInboxRead, ScopeInboxWrite, ScopeAgentsRead, ScopeAgentsControl,
+var HubScopes = []string{ScopeKBRead, ScopeKBWrite, ScopeKBImportStatus, ScopeSentRead, ScopeInboxRead, ScopeInboxWrite, ScopeAgentsRead, ScopeAgentsControl,
 	ScopeAgentsArchiveIdle, ScopeAgentsPermissionMode, ScopeMachinesRead, ScopeMachinesPair, ScopeBrowserRun, ScopeNotify, ScopePushGrading, ScopeAssistantAsk, ScopeSpaces, ScopeAssistantRead, ScopeAssistantMemoryRead, ScopeAssistantEntriesRead,
 	ScopeTodosRead, ScopeTodosWrite, ScopeTasksSchedule, ScopeDecisionsRaise, ScopeBotsFeishuIdentity, ScopeBotsFeishuHandoff, ScopeLeadersRead, ScopeLeadersWrite, ScopeAssistantDispatchPolicy, ScopeAssistantStartDefaults, ScopeDispatchGuard, ScopeModels,
 	ScopeTranscription, ScopeMarketRefreshOwn, ScopeAssistantEvents, ScopeLarkMessagesRead}
@@ -73,7 +74,7 @@ func InEveryScope(s string) bool {
 	if strings.HasPrefix(s, ScopeDeviceRelayPrefix) {
 		return false
 	}
-	return s != ScopeAgentsArchiveIdle && s != ScopeAgentsPermissionMode && s != ScopePushGrading && s != ScopeAssistantStartDefaults && s != ScopeDecisionsRaise && s != ScopeDispatchGuard && s != ScopeMachinesPair && s != ScopeBrowserRun && s != ScopeMarketRefreshOwn && s != ScopeSpaces && s != ScopeTasksSchedule && s != ScopeLarkMessagesRead && s != ScopeBotsFeishuHandoff
+	return s != ScopeKBImportStatus && s != ScopeAgentsArchiveIdle && s != ScopeAgentsPermissionMode && s != ScopePushGrading && s != ScopeAssistantStartDefaults && s != ScopeDecisionsRaise && s != ScopeDispatchGuard && s != ScopeMachinesPair && s != ScopeBrowserRun && s != ScopeMarketRefreshOwn && s != ScopeSpaces && s != ScopeTasksSchedule && s != ScopeLarkMessagesRead && s != ScopeBotsFeishuHandoff
 }
 
 // EveryScope is the scopes of a token of every scope (InEveryScope), in HubScopes' order.
@@ -83,6 +84,7 @@ func EveryScope() []string {
 
 var scopeTitles = map[string]string{
 	ScopeKBRead:                  "scope_kb_read",
+	ScopeKBImportStatus:          "scope_kb_import_status",
 	ScopeKBWrite:                 "scope_kb_write",
 	ScopeSentRead:                "scope_sent_read",
 	ScopeInboxRead:               "scope_inbox_read",

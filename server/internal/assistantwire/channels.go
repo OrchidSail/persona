@@ -358,9 +358,18 @@ type FeishuFeatures struct {
 	AnswerNewCard bool `json:"answer_new_card"`
 	// TopicCot: a topic run also shows its thinking and tools in a native agent message beside the progress card.
 	TopicCot bool `json:"topic_cot"`
+	// DMCot: a private-chat run also shows its thinking and tools in a native agent message beside the progress card
+	// (#16847). Off by default.
+	DMCot bool `json:"dm_cot"`
+	// CotAnswer: a run whose agent message is allowed (dm_cot, topic_cot) gets its answer inside that message and no
+	// progress or answer card; cards take over when the message cannot carry it (#16847). Off by default.
+	CotAnswer bool `json:"cot_answer"`
 	// ReadGroup: "@bot /read <task>" from the owner in a group reads the group before the task (#11803,
 	// FeishuFromRead).
 	ReadGroup bool `json:"read_group"`
+	// ReadGroupDirect: a /read's answer goes straight into the group under the owner's message. Off: it goes to the
+	// owner's private chat first, and into the group only when the owner presses its button (#14437).
+	ReadGroupDirect bool `json:"read_group_direct"`
 }
 
 // FeishuStatus is feishu.status's answer.

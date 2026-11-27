@@ -47,6 +47,7 @@ type agyStep struct {
 	Source                   string          `json:"source"`
 	Status                   string          `json:"status"`
 	CreatedAt                string          `json:"created_at"`
+	UpdatedAt                string          `json:"updated_at"`
 	Content                  string          `json:"content"`
 	ClientMsgID              string          `json:"client_msg_id"`
 	Thinking                 string          `json:"thinking"`
@@ -70,6 +71,7 @@ type agyStep struct {
 	branch                   string
 	record                   [32]byte
 	rendered                 [32]byte
+	backgroundStart          string
 }
 
 type agyStepMemo struct {
@@ -89,7 +91,8 @@ type agyTranscriptUsage struct {
 	compacted     bool
 	hasUsage      bool
 	contextStats  transcript.ContextStats
-	first         string    // the first message the user typed, as shown (agyUserText): an untitled pane's title (agytitle.go)
+	first         string // the first message the user typed, as shown (agyUserText): an untitled pane's title (agytitle.go)
+	turn          agyTurnEvidence
 	modTime       time.Time // transcript file mtime in UTC, used as fallback UpdatedAt for herdr agy panes
 }
 
@@ -282,11 +285,23 @@ func (f *agyFold) add(raw []byte) {
 			for floor >= 0 && steps[floor].seq > step.seq {
 				floor--
 			}
+			updatesRunning := false
+			if floor >= 0 {
+				prev := steps[floor]
+				if prev.seq == step.seq && step.Type == prev.Type && prev.CreatedAt == step.CreatedAt {
+					updatesRunning = isAgyStepRunning(prev.Status)
+					if prev.Type == "GENERIC" {
+						step.backgroundStart = prev.backgroundStart
+						if step.backgroundStart == "" && updatesRunning && agyBackgroundNotice(prev.Content) != "" {
+							step.backgroundStart = prev.Content
+						}
+					}
+				}
+			}
 			if step.seq < last.seq && (floor < 0 || steps[floor].seq != step.seq) {
 				at = floor + 1
 				rev.native = fmt.Sprintf("%x", step.record[:10])
-			} else if step.seq < last.seq && floor >= 0 && steps[floor].seq == step.seq &&
-				isAgyStepRunning(steps[floor].Status) && step.Type == steps[floor].Type && step.CreatedAt == steps[floor].CreatedAt {
+			} else if step.seq < last.seq && (updatesRunning || step.backgroundStart != "") {
 				// An earlier RUNNING step (such as a background tool call) finished after later steps were logged.
 				// Update it in place without treating it as a branch rewind or discarding later steps.
 				step.branch = steps[floor].branch
@@ -377,8 +392,8 @@ func agyContextEndNames() string {
 // kept as the user's text.
 var (
 	agyContextResourceLabel = lazyre.New(`Content of persona-context://[^\s<>]+:\r?\n`)
-	agyContextResourceOpen  = lazyre.New(`(?i)^<(?:persona|jarvis)-context\b[^>]*>`)
-	agyContextResourceTag   = lazyre.New(`(?i)<(?:persona|jarvis)-context\b[^>]*>|</(?:persona|jarvis)-context\s*>`)
+	agyContextResourceOpen  = lazyre.New(`(?i)^<` + compat.ContextPattern() + `\b[^>]*>`)
+	agyContextResourceTag   = lazyre.New(`(?i)<` + compat.ContextPattern() + `\b[^>]*>|</` + compat.ContextPattern() + `\s*>`)
 	agyViewErrorsTrailing   = lazyre.New(`(?is)(?:^|\n)<persona-view-errors\b[^>]*>.*?</persona-view-errors>` + agySpace + `*$`)
 )
 
@@ -395,6 +410,11 @@ func isAgyInterruptedStep(step agyStep) bool {
 		text = step.Content
 	}
 	return agyInterruptedError.MatchString(strings.TrimSpace(text))
+}
+
+func isAgyCompactCommand(text string) bool {
+	fields := strings.Fields(strings.TrimSpace(text))
+	return len(fields) > 0 && strings.EqualFold(fields[0], "/compact")
 }
 
 func agyUserText(text string) string {
@@ -823,17 +843,28 @@ func mapAgySteps(steps []agyStep, fallback time.Time, receipts map[string]bool) 
 			notified = delivered != ""
 		case "USER_INPUT":
 			if step.Source == "" || step.Source == "USER_EXPLICIT" {
-				history.usage.turns++
 				delivered, notified = "", false
 				text := agyUserText(step.Content)
+				if isAgyCompactCommand(text) {
+					add("0", "system", proto.KindNotice, transcript.CompactNotice).ClientMsgID = step.ClientMsgID
+					break
+				}
+				history.usage.turns++
 				if text != "" {
 					add("0", "user", proto.KindText, text).ClientMsgID = step.ClientMsgID
 				}
 				addMedia("user", "", step.ClientMsgID, agyAttachedImagePaths(text))
 			}
 		case "CHECKPOINT":
+			pre := history.usage.contextTokens
+			if _, stepCtx, _, ok := step.tokenUsage(); ok && stepCtx > 0 {
+				pre = stepCtx
+			}
 			history.usage.observeCheckpoint()
-			add("0", "system", proto.KindNotice, transcript.CompactedNotice)
+			it := add("0", "system", proto.KindNotice, transcript.CompactedNotice)
+			if pre > 0 {
+				it.Compact = &proto.Compact{PreTokens: pre}
+			}
 		case "PLANNER_RESPONSE":
 			stepModel := step.normalizedModel()
 			stepUsage, hasUsage := history.usage.observePlanner(step)

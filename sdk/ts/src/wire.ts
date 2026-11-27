@@ -304,6 +304,11 @@ export interface Permissions {
    */
   agent_runtimes?: boolean;
   /**
+   * The routine sends its local date and language to this extension and may include its facts and report sections in
+   * the briefing.
+   */
+  routine_facts?: boolean;
+  /**
    * It receives the error and crash reports of the hub and the user's devices, scrubbed (no message text, tokens,
    * user names, machine names or IP addresses). Needed by contributes.error_reports.
    */
@@ -359,10 +364,12 @@ export interface Contributes {
   triage_templates?: TriageTemplateItem[];
   agent_filters?: AgentFilterItem[];
   tunnels?: TunnelItem[];
+  routine_facts?: RoutineFactsItem[];
   error_reports?: ErrorReportsItem[];
   auth_relay?: AuthRelayItem[];
   secret_providers?: SecretProviderItem[];
   repository_providers?: RepositoryProviderItem[];
+  text_lookup?: TextLookupItem[];
   memory_sources?: MemorySourceItem[];
   disk_offload?: DiskOffloadItem[];
   messaging?: MessagingItem[];
@@ -608,6 +615,28 @@ export interface RepositoryProviderItem {
 }
 
 /**
+ * Identifies one text_lookup dictionary within its extension.
+ */
+export type TextLookupContributionID = string & { readonly __brand: "TextLookupContributionID" };
+/** A TextLookupContributionID from its raw string. */
+export function textLookupContributionID(raw: string): TextLookupContributionID {
+  return raw as TextLookupContributionID;
+}
+
+/**
+ * A dictionary the apps ask for the meaning of a word the user taps (text_lookup.state, text_lookup.lookup,
+ * text_lookup.save, text_lookup.remove). Needs the program to speak the protocol. Only English (languages ["en"]) for
+ * now.
+ */
+export interface TextLookupItem {
+  id: TextLookupContributionID;
+  /** What the dictionary is called, in a few words. */
+  name?: string;
+  /** The languages it looks up. Only "en" is accepted for now; omitted means ["en"]. */
+  languages?: string[];
+}
+
+/**
  * A provider that moves items from a computer to storage elsewhere, lists what it already holds and brings items back
  * (docs/server/machine-usage-map.md "Extension point disk_offload"): the disk usage map draws its inventory beside
  * the computer's disk and offers Offload; the manager asks the program (offload.inventory, offload.run, offload.job,
@@ -664,6 +693,24 @@ export interface RepositoryLinkLabel {
  */
 export type RepositoryLinkKind = "issue" | "pull_request" | (string & {});
 export const REPOSITORY_LINK_KINDS = ["issue", "pull_request"] as const;
+
+/**
+ * Identifies one routine facts source within its extension.
+ */
+export type RoutineContributionID = string & { readonly __brand: "RoutineContributionID" };
+/** A RoutineContributionID from its raw string. */
+export function routineContributionID(raw: string): RoutineContributionID {
+  return raw as RoutineContributionID;
+}
+
+/**
+ * A source of facts and report sections for a scheduled briefing. Requires an RPC runtime and
+ * permissions.routine_facts.
+ */
+export interface RoutineFactsItem {
+  id: RoutineContributionID;
+  title: string;
+}
 
 /**
  * It is given the error and crash reports of the hub and the user's devices (error_reports.deliver): needs the
@@ -1555,6 +1602,80 @@ export interface AuthRelayResult {
 }
 
 /**
+ * text_lookup.state's parameters: which contribution to ask for the words the user saved and whether saved words are
+ * underlined.
+ */
+export interface TextLookupStateParams {
+  contribution: string;
+}
+
+/**
+ * What text_lookup.state answers. words is capped by the manager at 5000.
+ */
+export interface TextLookupStateResult {
+  underline_saved: boolean;
+  words?: string[];
+}
+
+/**
+ * text_lookup.lookup's parameters: the word the user tapped, an optional sentence around it, the word's language and
+ * the language of the app.
+ */
+export interface TextLookupLookupParams {
+  contribution: string;
+  word: string;
+  context?: string;
+  lang: string;
+  ui_lang: string;
+}
+
+/**
+ * One meaning of a looked-up word.
+ */
+export interface TextLookupSense {
+  pos?: string;
+  text: string;
+}
+
+/**
+ * What text_lookup.lookup answers: found is false when the dictionary has no entry.
+ */
+export interface TextLookupLookupResult {
+  found: boolean;
+  word: string;
+  lemma?: string;
+  phonetic?: string;
+  senses?: TextLookupSense[];
+  saved: boolean;
+}
+
+/**
+ * text_lookup.save's parameters: the word to remember, an optional sentence around it and where the user saved it
+ * from.
+ */
+export interface TextLookupSaveParams {
+  contribution: string;
+  word: string;
+  context?: string;
+  source?: string;
+}
+
+/**
+ * text_lookup.remove's parameters: the saved word to forget.
+ */
+export interface TextLookupRemoveParams {
+  contribution: string;
+  word: string;
+}
+
+/**
+ * What text_lookup.save and text_lookup.remove answer: whether the word is saved afterwards.
+ */
+export interface TextLookupSavedResult {
+  saved: boolean;
+}
+
+/**
  * What a secret value is resolved for: kind extension (an extension's secret, id its id), launcher (a launcher's or
  * model provider's key, id its name, machine the computer it goes to) or agent_run (handed to one Agent run after the
  * user approved it on the phone, id the variable's name, machine and session the Agent's).
@@ -1600,11 +1721,13 @@ export interface SecretsResolveResult {
 }
 
 /**
- * A public field name/type; never a value or source path.
+ * A public field name/type or edit action (delete, keep_value); never a value or source path.
  */
 export interface SecretStoreField {
   name: string;
-  type: string;
+  type?: string;
+  delete?: boolean;
+  keep_value?: boolean;
 }
 
 /**
@@ -2101,6 +2224,13 @@ export interface CodeComponent {
    * (…/blob/<sha>/a.go#L{start}-L{end}).
    */
   line_url?: string;
+  /**
+   * Go to definition (UI version 13): a name in the code chosen to follow it (⌘/Ctrl-click or ⌘/Ctrl+B on it; Alt+F7
+   * for its usages) calls ui.action with action and values {path, line, column (1-based, in characters), word,
+   * intent: definition or references}; ⌘[ (Ctrl+Alt+← elsewhere) calls it with {path, intent: back}. An older app
+   * leaves it out.
+   */
+  navigate?: Action;
 }
 
 /**
@@ -4637,7 +4767,8 @@ export interface ConnectorThingGroup {
 }
 
 /**
- * What the thing grew out of: kind inbox (an item's id), todo (a todo's id) or session (<machine>/<session>).
+ * What the thing grew out of: kind inbox (an item's id), todo (a todo's id), session (a coding Agent's
+ * <machine>/<session>) or agent (a personal Agent's <source>:<sessionKey>).
  */
 export interface ConnectorThingParent {
   kind: string;
@@ -5513,6 +5644,57 @@ export interface ChannelEditParams {
   contribution: string;
   message_id: string;
   text: string;
+}
+
+/**
+ * The host selects the provider, source, account and chat for this import.
+ */
+export interface KBImportCheckpointParams {
+}
+
+/**
+ * The host importer’s committed state for the selected chat.
+ */
+export type KBImportState = "pending" | "running" | "done" | "paused" | "error" | "unreadable";
+export const KBIMPORT_STATES: readonly KBImportState[] = ["pending", "running", "done", "paused", "error", "unreadable"];
+
+/** A KBImportState this app does not know, kept as it came. */
+export interface UnknownKBImportState {
+  unknown: string;
+}
+
+/** A raw KBImportState: one this app knows, or UnknownKBImportState with the raw value. */
+export function parseKBImportState(raw: string): KBImportState | UnknownKBImportState {
+  const known = KBIMPORT_STATES.find((value) => value === raw);
+  if (known !== undefined) {
+    return known;
+  }
+  const unknown: UnknownKBImportState = { unknown: raw };
+  return unknown;
+}
+
+export interface KBImportCheckpointResult {
+  state: KBImportState;
+  approval: string;
+  read: number;
+  written: number;
+}
+
+export interface KBSentMarkersParams {
+  day: string;
+  approval: string;
+  after?: number;
+}
+
+export interface KBSentMarker {
+  n: number;
+  sent_by: string;
+  recalled_at?: string;
+}
+
+export interface KBSentMarkersResult {
+  markers: KBSentMarker[];
+  next_after?: number;
 }
 
 export type KBKind = "projects" | "chats" | "people" | "docs" | "meetings" | "events" | "recordings" | "topics" | (string & {});
@@ -8040,6 +8222,27 @@ export interface OffloadError {
   items?: OffloadRunItem[];
 }
 
+export interface RoutineFactsParams {
+  contribution: RoutineContributionID;
+  /** Calendar date in the routine's time zone. */
+  date: string;
+  language: string;
+}
+
+export interface RoutineReportSection {
+  title: string;
+  /** Plain text. The host owns report layout. */
+  body: string;
+}
+
+/**
+ * A read-only snapshot. Return an empty object when the contribution has nothing for this date.
+ */
+export interface RoutineFactsResult {
+  facts?: string[];
+  sections?: RoutineReportSection[];
+}
+
 /** One call or event of an extension point's protocol: who sends it, and the definitions its params and
  * its answer hold to (no result: any JSON; an event has no answer). */
 export interface Call {
@@ -8108,6 +8311,8 @@ export const CALLS: Record<string, Call> = {
   "kb.update": { from: "program", params: "KBUpdateParams", result: "KBUpdateResult" },
   "kb.owner": { from: "program", params: "KBOwnerParams", result: "KBOwner" },
   "kb.recent": { from: "program", params: "KBRecentParams", result: "KBRecentResult" },
+  "kb.import_checkpoint": { from: "program", params: "KBImportCheckpointParams", result: "KBImportCheckpointResult" },
+  "kb.sent_markers": { from: "program", params: "KBSentMarkersParams", result: "KBSentMarkersResult" },
   "kb.put_recording": { from: "program", params: "KBPutRecordingParams", result: "KBPutRecordingResult" },
   "event.kb.changed": { from: "hub", params: "KBChangedEvent", event: true },
   "event.kb.forgotten": { from: "hub", params: "KBForgottenEvent", event: true },
@@ -8160,4 +8365,5 @@ export const CALLS: Record<string, Call> = {
   "offload.run": { from: "hub", params: "OffloadRunParams", result: "OffloadRunResult" },
   "offload.job": { from: "hub", params: "OffloadJobParams", result: "OffloadJob" },
   "offload.cancel": { from: "hub", params: "OffloadJobParams", result: "Empty" },
+  "routine_facts.collect": { from: "hub", params: "RoutineFactsParams", result: "RoutineFactsResult" },
 };

@@ -51,7 +51,7 @@ CATALOG = os.environ.get("MOCK_SESSIONS_CATALOG") == "1" and os.environ.get("MOC
 
 def features():
     # Match proto.Features, retaining the existing terminal fixture switches.
-    return ["error_codes", "client_hello", "heartbeat", "app_ping", "client_msg_id", "send_refusals",
+    base = ["error_codes", "client_hello", "heartbeat", "app_ping", "client_msg_id", "send_refusals",
             "screen_dialog", "resumable_interactions", "secret_prompts", "request_id", "file_upload", "upload_attachment",
             "tls", "endpoints", "connectors", "lark_attachments", "file_stream", "file_thumb", "git_blob", "task_push", "task_inbox",
             "machine_rename"] + ([] if os.environ.get("MOCK_MANAGERS") == "0" else ["sessions_manager"]) + (["git_write"] if os.environ.get("MOCK_GIT_WRITE") and os.environ.get("MOCK_GIT_WRITE_FEATURE") != "0" else []) + (["git_review"] if os.environ.get("MOCK_REVIEW") else []) + (["session_review"] if os.environ.get("MOCK_AGENT_REVIEW") else []) + (["terminal_stream"] if TERMINAL_STREAM else []) + (
@@ -70,6 +70,7 @@ def features():
                  ["look_uploads"] if os.environ.get("MOCK_LOOK_UPLOADS") == "basic" else
                  ["look_uploads", "look_uploads_states"])) + (
                 [] if os.environ.get("MOCK_TODO_IMAGES") == "off" else ["todo_images"])
+    return text_lookup_mock.features(base)
 
 
 def identity():
@@ -498,6 +499,7 @@ if RESUME_TERMINAL:  # the Mac mini (#5521)
 if os.path.dirname(os.path.abspath(__file__)) not in sys.path:  # python3 -I leaves the script's folder out
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import machine_alerts  # noqa: E402
+import text_lookup_mock  # noqa: E402  the dictionary a tapped word asks (#10977)
 MACHINE_ALERT_METRICS = machine_alerts.install_machines(MACHINES, SYSTEMS) if machine_alerts.ON else {}
 # The hub's own build (hello server_version, /api/v1/health version): a dated build in that mode, so the alert sheet
 # can say how far apart a node's build is.
@@ -1756,7 +1758,6 @@ TERMINAL_ONLY = "c0de0000-0000-4000-8000-000000000002"
 if os.environ.get("MOCK_TERMINAL_ONLY") == "1":
     SESSIONS.append(sess("macbook", TERMINAL_ONLY, "kiro-demo", "/Users/me/code/kiro-demo", "idle", "idle", "kiro-demo", 8, "kiro", 1, 1,
                          "", agent="kiro", launcher="kiro", read_only_reason="Persona 还不能读 kiro 的对话：手机上只能看终端、按键盘"))  # i18n-ignore
-
 
 # MOCK_OMP=1 (docs/integrations/omp.md): every computer lists the omp launcher, which takes no model, mode, effort or
 # ultracode (omp's own config decides) and starts with its first message, as the node does (control.go): a start that
@@ -10659,26 +10660,6 @@ if os.environ.get("MOCK_SECRET_RUN") in ("pending", "ran", "withheld", "long"):
             ensure_ascii=False), 1) + [
             it("assistant", "text", 0.5, text="第二条命令失败了（退出码 5）：launchd 没能加载这个任务。我先看看 plist 的权限再告诉你。")]
 
-# MOCK_SECRET_RUN=env: the explicit one-off non-sudo mode. Every command receives PERSONA_SECRET; the card warns
-# about it after showing the commands. It is separate so the original stdin fixtures stay byte for byte unchanged.
-if os.environ.get("MOCK_SECRET_RUN") == "env":
-    _env_input = {"machine": "studio", "machine_name": "Mac Studio", "delivery": "env",
-                  "purpose": "登录一次局域网设备，查看已连接客户端",
-                  "commands": ["/usr/bin/env sh -c 'test -n \"$PERSONA_SECRET\"'",
-                               "/usr/bin/curl -H \"Authorization: Bearer $PERSONA_SECRET\" https://example.test"]}
-    ITEMS[ASK1] = ITEMS[ASK1] + [
-        it("user", "text", 2, text="帮我登录一次局域网设备，看看现在连着哪些客户端，用一次就行"),
-        it("assistant", "text", 1.5, text="这次不用 sudo。每条命令都会通过 PERSONA_SECRET 拿到密码，请逐条核对后再运行。")]
-    ITEMS[ASK1].append(it("assistant", "tool_use", 1, tool_use_id="toolu_secret_run", tool_name="mcp__persona__secret_run",
-                          tool_input=_env_input))
-    INTERACTIONS.append(
-        {"id": "ix_secret_run", "machine_id": "server", "session_id": ASK1, "session_title": "Persona",
-         "kind": "permission", "created_at": ago(minutes=1), "expires_at": later(minutes=9),
-         "tool_name": "secret_run", "tool_use_id": "toolu_secret_run", "tool_input": _env_input,
-         "summary": "在 Mac Studio 上运行（%s）：\n" % _env_input["purpose"]
-                    + "\n".join("$ " + c for c in _env_input["commands"])
-                    + "\n警告：你输入的密码会通过 PERSONA_SECRET 直接传给上面列出的每一条命令。编码后的输出可能绕过脱敏。",
-         "fields": [{"key": "password", "label": "密码", "placeholder": "只用这一次，不会保存", "secret": True}]})
 
 # MOCK_SECRET_HANDOFF=1: the hand-off card (secret_handoff, #3962) in Persona's main conversation: the assistant asked to
 # start an Agent on the MacBook with two values from a made-up provider; nothing has been handed over. Its approval is
@@ -12161,7 +12142,8 @@ HELLO = {}
 FEISHU_BOT = {"enabled": True, "app_id": "cli_example0001", "domain": "https://open.feishu.cn", "has_secret": True,
               "from_config": False, "connected": True, "bot_name": "Persona", "target": "主对话",
               "source_report_delay_minutes": 10, "source_report_full_reply": False,
-              "features": {"main": True, "cards": True, "all_cards": False, "pushes": True, "sync": False, "agents": True, "read_group": False},
+              "features": {"main": True, "cards": True, "all_cards": False, "pushes": True, "sync": False, "agents": True, "read_group": False,
+                           "read_group_direct": False},
               "owner": {"name": "我", "paired_at": int(time.time()) - 86400 * 3},
               "agents": [{"title": "persona › api「修登录」 · server", "machine_id": "server", "session_id": "s1"}]}
 if os.environ.get("MOCK_BOT") == "pairing":
@@ -19174,7 +19156,7 @@ def session_catalog(rows, revision, state_of):
     """catalog=1 (sessions_catalog): the filtered rows' projects and spaces, as the hub's sessionCatalogOf builds them.
     A directory whose computer names a network remote (CATALOG_ORIGINS) is that repository's project wherever it is
     checked out; any other goes by its folder's name. needs_you (left out when 0) is by the state the list filters by."""
-    places, groups, names = {}, {}, {}
+    places, groups, names, folders = {}, {}, {}, {}
     waiting = lambda n: {"needs_you": n} if n else {}
     for s in rows:
         needs = 1 if state_of(s) == "needs_you" else 0
@@ -19186,6 +19168,11 @@ def session_catalog(rows, revision, state_of):
         at[0] += 1; at[1] += needs
         if group and s.get("space_name"):
             names.setdefault((s["machine_id"], group), s["space_name"])
+        # a space's folder: the one most of its rows are in (workspace_cwd, else cwd), the first among equals
+        folder = s.get("workspace_cwd") or s.get("cwd") or ""
+        if group and folder:
+            tally = folders.setdefault((s["machine_id"], group), {})
+            tally[folder] = tally.get(folder, 0) + 1
     projects = {}
     for (mid, path), (n, needs) in places.items():
         origin = CATALOG_ORIGINS.get((mid, path), "")
@@ -19204,7 +19191,11 @@ def session_catalog(rows, revision, state_of):
             project["name"] = origin.rsplit("/", 1)[-1] if origin else folder_name(first["path"])
         if origin:
             project["origin"] = origin
-    spaces = [{"machine_id": mid, "id": group, "name": names.get((mid, group), group), "total": n, **waiting(needs)} for (mid, group), (n, needs) in groups.items()]
+    def space_path(key):
+        tally = folders.get(key)
+        return {"path": max(tally, key=tally.get)} if tally else {}  # max keeps the first of equals
+    spaces = [{"machine_id": mid, "id": group, "name": names.get((mid, group), group), **space_path((mid, group)), "total": n, **waiting(needs)}
+              for (mid, group), (n, needs) in groups.items()]
     return {"revision": revision, "total": len(rows),
             "projects": sorted(projects.values(), key=lambda p: (not p["id"], -p["total"], p["name"].lower(), p["id"])),
             "spaces": sorted(spaces, key=lambda p: (not p["id"], -p["total"], p["name"].lower(), p["machine_id"], p["id"]))}
@@ -19353,6 +19344,10 @@ def paged_sessions(query):
     def just_finished(s):
         return state_of(s) == "idle" and bool((s.get("work") or {}).get("just_finished"))
 
+    def pane_source(s):
+        source = pane_origin(s)
+        return "" if agents_only and source == "terminal" and state_of(s) == "offline" else source
+
     def matching(rows):
         rows = [s for s in rows if (not agents_only or agent_row(s))
                 and (not roots or not s.get("folded_under")) and (not under or s.get("folded_under") == under)
@@ -19365,7 +19360,7 @@ def paged_sessions(query):
                 and (not todo or (s.get("todo") or {}).get("id", "") == ("" if todo == "none" else todo))
                 and (not waiting or bool(s.get("background_waiting")) == (waiting in ("1", "true")))
                 and (not just or just_finished(s) == (just in ("1", "true")))
-                and (not origin or pane_origin(s) == origin) and (not not_origin or pane_origin(s) != not_origin)
+                and (not origin or pane_source(s) == origin) and (not not_origin or pane_source(s) != not_origin)
                 and (not search or search in "\n".join(str(s.get(k, "")) for k in ("title", "cwd", "space_name", "slot_name", "last_text")).lower())]
         rows.sort(key=LIST_TUPLE)
         rows.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
@@ -19390,8 +19385,10 @@ def paged_sessions(query):
                 active[mid] = active.get(mid, 0) + 1
             values = {"machine": s["machine_id"], "project": s.get("repo_root") or s.get("workspace_cwd") or s.get("cwd", ""),
                       "group": s.get("space_id") or s.get("workspace_id", ""), "state": state_of(s), "todo": (s.get("todo") or {}).get("id", ""),
-                      "pane_source": pane_origin(s)}
+                      "pane_source": pane_source(s)}
             for key, value in values.items():
+                if key == "pane_source" and not value:
+                    continue
                 counts[key][value] = counts[key].get(value, 0) + 1
         return counts, 200
     since = query.get("since", [None])[0]
@@ -21895,9 +21892,21 @@ def personal_rows():
     rows = [("muse", "周报助手", 0.1, 2), ("grok_bot", "旅行规划", 1.5, 0), ("cue", "读书笔记", 5, 1), ("muse", "代码评审", 30, 0),
             ("grok_bot", "健身记录", 80, 0), ("cue", "菜谱整理", 200, 0)]
     if os.environ.get("MOCK_PERSONAL_UPGRADE"): rows[0] = ("muse", "Upgrade preference fixture", 0.1, 2)
-    return [{"id": "lark-bridge:%s:%d" % (prov, i), "source": "lark-bridge", "sessionKey": "%s:%d" % (prov, i), "provider": prov,
-             "title": title, "canSend": True, "unreadCount": unread, "rankTimeMs": now - int(hours * 3600 * 1000), "hasAvatar": False}
-            for i, (prov, title, hours, unread) in enumerate(rows)]
+    # What the Messages page draws beside each (docs/extensions/lark-migration.md "Personal Agents in Messages"): the
+    # latest message, and the allowance at its service as a charge: plenty (show false, an older account's default, still
+    # drawn), low, used up, none, an old reading.
+    previews = [("周报草稿好了", False), ("帮我再找找周末的票", True), ("第三章的要点整理完了", False), ("", False), ("", False), ("", False)]
+    quotas = [{"state": "ok", "percent": 70, "show": False, "resetsAt": now + 5 * 3600 * 1000}, {"state": "low", "remaining": 0.15},
+              {"state": "exhausted", "remaining": 0}, None, {"state": "ok", "percent": 55, "stale": True}, None]
+    out = []
+    for i, (prov, title, hours, unread) in enumerate(rows):
+        row = {"id": "lark-bridge:%s:%d" % (prov, i), "source": "lark-bridge", "sessionKey": "%s:%d" % (prov, i), "provider": prov,
+               "title": title, "canSend": True, "unreadCount": unread, "rankTimeMs": now - int(hours * 3600 * 1000), "hasAvatar": False}
+        text, mine = previews[i]
+        if text: row.update(previewText=text, previewIsMine=mine)
+        if quotas[i]: row["quota"] = quotas[i]
+        out.append(row)
+    return out
 def personal_listed(hidden):
     return [r for r in personal_rows() if (r["id"] in PERSONAL_HIDDEN) == hidden] if PERSONAL_STATE["state"] in ("configured", "partial", "partial_setup") else []
 # MOCK_GIT_WRITE=1 (#6121): the Git panel's writes on a made-up repository that changes as they are made
@@ -28008,6 +28017,7 @@ class H(BaseHTTPRequestHandler):
             return self.send_json(listing)
         if doctor_route(self, p, "GET"): return
         if machine_alerts.route(self, "GET", MACHINES, SYSTEMS, metric_latest, broadcast): return
+        if text_lookup_mock.route(self, "GET", p, q, b"", broadcast): return
         if p.startswith("/api/v1/machines/") and p.endswith("/launchers"):
             mid = p.split("/")[4]
             return self.send_json(with_own_service_unavailable({"launchers": machine_launchers(mid)}, mid, self.headers.get("Accept-Language")))
@@ -28361,6 +28371,7 @@ class H(BaseHTTPRequestHandler):
         if chat_pins_route(self, p, parse_qs(urlparse(self.path).query)): return
         if doctor_route(self, p, "POST"): return
         if self.command == "POST" and machine_alerts.route(self, "POST", MACHINES, SYSTEMS, metric_latest, broadcast): return
+        if text_lookup_mock.route(self, self.command, p, {}, self.last_body, broadcast): return
         if history_route(self, p, parse_qs(urlparse(self.path).query)): return
         if plugins_route(self, p, self.last_body): return
         if os.environ.get("MOCK_TERMINAL_PANES") and re.fullmatch(r"/api/v1/machines/[^/]+/(panes/(close|close_finished|split|agent|git)|tabs/(close|rename))", p):
@@ -33798,6 +33809,16 @@ def features():
 import todo_view_mock  # noqa: E402
 MOCK_HELP.extend(todo_view_mock.HELP)
 _todo_view = todo_view_mock if todo_view_mock.install(globals()) else None
+
+
+# MOCK_TEXT_LOOKUP=1|off (#10977, scripts/mock/text_lookup_mock.py): an Inbox row with English text to tap.
+if text_lookup_mock.ENABLED:
+    INBOX.insert(0, text_lookup_mock.inbox_row(ago(minutes=5)))
+
+
+MOCK_HELP.append("MOCK_TEXT_LOOKUP=1|off  Word lookup (#10977): features carry text_lookup; 1: Relingo answers GET/POST "
+                 "/api/v1/text-lookup… from a made-up dictionary (context, deploy, latency…); off: available false. "
+                 "MOCK_TEXT_LOOKUP_UNDERLINE=1, MOCK_TEXT_LOOKUP_LATENCY=S; GET /mock/text-lookup?available=&underline=&fail=&latency=")
 
 
 if __name__ == "__main__":

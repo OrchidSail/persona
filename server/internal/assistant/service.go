@@ -15,8 +15,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nwverse/persona/server/internal/moduleswitch"
-
 	"github.com/nwverse/persona/server/internal/apierr"
 	"github.com/nwverse/persona/server/internal/assistant/kernel"
 	"github.com/nwverse/persona/server/internal/assistant/kernel/seam"
@@ -30,6 +28,7 @@ import (
 	"github.com/nwverse/persona/server/internal/knowledgeuihost"
 	"github.com/nwverse/persona/server/internal/modapi"
 	"github.com/nwverse/persona/server/internal/modelhttp"
+	"github.com/nwverse/persona/server/internal/moduleswitch"
 	"github.com/nwverse/persona/server/internal/prompts"
 	"github.com/nwverse/persona/server/internal/proto"
 	"github.com/nwverse/persona/server/internal/remoteimage"
@@ -96,6 +95,7 @@ type Service struct {
 	moduleSwitch    moduleswitch.Set
 	modulesOff      []string // the ids the modules setting switched off at start (loadModules): built-in and client-only
 	compactRecovery compactRecoveryCache
+	agyNodePush     agyNodeConfigPush
 	// nodeRecovery tracks node online/boot timestamps to run recovery sweeps after outages or reboots (#14781).
 	nodeRecovery nodeRecoveryBook
 	// sendFanout: whom each conversation woke with conversation_send lately (conversation_fanout.go).
@@ -265,6 +265,8 @@ type Service struct {
 	extEvents        extEventBook           // extension_event.go
 	phoneKept        keptPhoneTools         // fleet_tools.go: the phone's tools as the hub last listed them
 	agentNames       agentNamingBook        // agent_naming.go
+	taskActivity     taskActivityBook       // task_close_activity.go: owner input/view activity, not read receipts
+	taskCloseStops   taskCloseStopBook      // tasks_close_stops.go: stopped Agents of completed tasks
 	prefs            settingsBook           // profile.go
 	guard            dispatchGuardBook      // dispatch_guard.go
 	main             mainBook               // start.go
@@ -334,11 +336,13 @@ type Service struct {
 	attention      attentionClock         // attention.go: the attention mode as last read, and its end
 	deploy         deployProbe            // deploy_check.go: is the work in the running hub
 	prEventRoute   prEventRouteBook       // pr_status_route.go: opt-in direct PR-event routing dedupe
+	prFeedback     prFeedbackBook         // pr_feedback.go: per-PR feedback cursors and routing serialization
 	parkReplies    parkReplyBook          // park_reply.go: bounded source reads for explicitly bound person replies
 
-	reviewDismissals taskReviewDismissalBook // task_review_dismissals.go
-	repoRootsMu      sync.Mutex              // pr_number_ref.go: one write of the repository roots at a time
-	repoMirrors      repoMirrorSyncState     // repo_mirrors.go: opt-in low-frequency periodic mirror sync
+	reviewDismissals  taskReviewDismissalBook // task_review_dismissals.go
+	supervisorSettles supervisorSettleBook    // decision_supervisor_reply.go: exact choices waiting for their send (#13041)
+	repoRootsMu       sync.Mutex              // pr_number_ref.go: one write of the repository roots at a time
+	repoMirrors       repoMirrorSyncState     // repo_mirrors.go: opt-in low-frequency periodic mirror sync
 	// ownerVerifiesAll: every deployed task asks the owner to verify, not only the big ones (ownerVerifies; tests).
 	ownerVerifiesAll         bool
 	later                    laterBook    // later.go: questions that can wait for a briefing
@@ -416,6 +420,12 @@ type Service struct {
 	editWriteHook func(id string)
 	// acceptSweepHook, when set, runs in the acceptance sweeps' unlocked window, after a todo is read (tests).
 	acceptSweepHook func(id string)
+	// deadlineDefaultHook, when set, runs in the deadline sweep after it found no owner choice on its way for decision
+	// id and before it takes the default or marks the reminder (tests: the choice arrives in between).
+	deadlineDefaultHook func(id string)
+	// supervisorSettleHook, when set, runs as a delivered owner choice of decision id is about to be settled: it is
+	// claimed in the book, and the card's action lock is not taken yet (tests: the deadline sweep runs in between).
+	supervisorSettleHook func(id string)
 	// sendsSettleHook, when set, runs in sendsSettle once the task is opened again, before the turn held for it is
 	// taken up (tests).
 	sendsSettleHook func()
@@ -523,7 +533,7 @@ func New(o Options) *Service {
 	s.taskRoutes()
 	s.viewActionRoutes()
 	s.todayRoutes()
-	s.briefRoutes()
+	s.todoAcceptRoute()
 	s.todoRoutes()
 	s.agentRoutes()
 	s.sessionReviewRoutes()
@@ -1193,12 +1203,29 @@ func (s *Service) UserSpoke(ctx context.Context, r SessionRef) {
 }
 
 func (s *Service) userSpokeText(ctx context.Context, r SessionRef, text string) {
+	s.rememberTaskCloseExcerpt(r, text)
+	s.rememberSessionActivity(ctx, r.MachineID, r.SessionID)
+	s.userSpokeMessage(ctx, r, text, "")
+}
+
+// userSpokeMessage is session.user_spoke as the hub tells it: the owner's text when a person's own app sent it, and
+// the send's client_msg_id ("" from an older hub or a client that names none), which its session.assistant_sent
+// carries too.
+func (s *Service) userSpokeMessage(ctx context.Context, r SessionRef, text, clientMsgID string) {
+	s.rememberTaskCloseExcerpt(r, text)
+	s.rememberSessionActivity(ctx, r.MachineID, r.SessionID)
 	s.availOwnerSpoke(r, time.Now()) // before anything else: what the conversation is doing as the message comes (availability.go)
 	s.noteMainAutoCompactInput(r.MachineID, r.SessionID)
 	if exitText(text) {
 		s.retireTodoWork([2]string{r.MachineID, r.SessionID}) // /exit or /quit starts no turn that could cancel the wake
 	}
 	s.agentDecisionSpoke(ctx, r, time.Now(), text)
+	// A supervisor / direction conversation is never a task's active worker session, so the
+	// Agent-chat path above finds nothing for it. Settle the needs_user cards it supervises by
+	// reverse lookup instead (decision_supervisor_reply.go). Provenance-marked input is ignored.
+	if s.activeTodoOf(r.MachineID, r.SessionID) == "" {
+		s.supervisorDecisionSpoke(ctx, r, time.Now(), text, clientMsgID)
+	}
 	s.ownerHeard(r.SessionID)
 	go s.ownerAppeared(context.WithoutCancel(ctx), "user_spoke", r.SessionID)
 	s.clearToolLoop([2]string{r.MachineID, r.SessionID}, loopUserInput)
@@ -1220,10 +1247,10 @@ func (s *Service) userSpokeText(ctx context.Context, r SessionRef, text string) 
 
 // TurnStarted: one of a task's agents is working; what was going to be done about an agent's last turn is off.
 func (s *Service) TurnStarted(ctx context.Context, r SessionRef) {
-	s.approvalAnswerTurnStarted(r)
 	if s.meetingTurnStarted(r.MachineID, r.SessionID, true) {
 		return // a meeting's batch started it: a side exchange (meeting_turns.go)
 	}
+	s.approvalAnswerTurnStarted(r)
 	s.turnStartedObserved(ctx, r, true, startRow{})
 }
 
@@ -1240,7 +1267,9 @@ func (s *Service) turnStartedObserved(ctx context.Context, r SessionRef, newTurn
 // triaged; a new conversation is named after its first turn.
 func (s *Service) TurnEnded(ctx context.Context, r SessionRef) {
 	s.a2aRecipientIdle(ctx, a2aRef{r.MachineID, r.SessionID})
-	s.approvalAnswerTurnEnded(r)
+	if ctx.Value(approvalEndHandledKey{}) == nil {
+		s.approvalAnswerTurnEnded(r)
+	}
 	meeting := s.meetingTurnEnded(r.MachineID, r.SessionID)
 	if !meeting && ctx.Value(supervisionEndKey{}) == nil {
 		end := s.remedyTurnEnded(ctx, r.SessionID)

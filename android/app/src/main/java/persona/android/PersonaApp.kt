@@ -131,7 +131,14 @@ class PersonaApp : Application() {
                 .collect {
                     persona.platform.shortcuts.PersonaWidget.refresh(this@PersonaApp)
                     persona.platform.shortcuts.AskPersonaWidget.refresh(this@PersonaApp)
+                    persona.platform.shortcuts.MainChatWidget.refresh(this@PersonaApp)
                 }
+        }
+        // MainChatWidget also honors the app's explicit light/dark override.
+        scope.launch {
+            appearance.scheme.drop(1).collect {
+                persona.platform.shortcuts.MainChatWidget.refresh(this@PersonaApp)
+            }
         }
         // A tiered look moved to another tier: the new tier is downloaded whole before the face changes. The two events
         // are taken off the event flow first, so the download holds up no other live event (#4038).

@@ -223,7 +223,8 @@ func archiveSnapshot(s proto.Session) proto.Session {
 		SourceKind: s.SourceKind, SourceThreadID: s.SourceThreadID, SourceInstanceID: s.SourceInstanceID,
 		ParentThreadID: s.ParentThreadID, ParentSessionID: s.ParentSessionID, RootSessionID: s.RootSessionID, IsSubagent: s.IsSubagent,
 		UpdatedAt: s.UpdatedAt, LastText: string(preview),
-		Status: proto.StatusOffline, State: proto.StateOffline,
+		ReadOnlyReason: s.ReadOnlyReason,
+		Status:         proto.StatusOffline, State: proto.StateOffline,
 		Capabilities: caps,
 	}
 }
@@ -341,6 +342,7 @@ func (svc *Service) applyArchives(ctx context.Context, machine string, list []pr
 		if next == nil && !list[i].Assistant {
 			list[i].Archived = rec.Archived
 			list[i].ArchiveChangedAt = archiveChangedAt(rec.ChangedAt)
+			overlayClosedArchive(&list[i], rec) // as markAgentArchives does
 		}
 	}
 	var saveErr error
@@ -442,8 +444,26 @@ func markAgentArchives(machine string, list []proto.Session, records map[string]
 		}
 		list[i].Archived = rec.Archived && !restoring && !active
 		list[i].ArchiveChangedAt = archiveChangedAt(rec.ChangedAt)
+		overlayClosedArchive(&list[i], rec)
 	}
 	return listed.String()
+}
+
+// overlayClosedArchive shows an archived row whose Agent was stopped and closed with a reason (a closed task's,
+// archiveRetiredTaskAgent) as that archive: the reason, offline, read-only, its terminal still viewable and the stop
+// cause the node reports, without live controls. A row that works again keeps what its node says.
+func overlayClosedArchive(row *proto.Session, rec agentArchive) {
+	if !row.Archived || rec.ClosedAt.IsZero() || rec.Session.ReadOnlyReason == "" || agentArchiveBusy(*row) {
+		return
+	}
+	row.ReadOnlyReason = rec.Session.ReadOnlyReason
+	row.Status, row.State = proto.StatusOffline, proto.StateOffline
+	caps := &proto.SessionCapabilities{Read: true, Terminal: row.PaneID != ""}
+	if current := row.Capabilities; current != nil {
+		caps.Terminal = caps.Terminal || current.Terminal
+		caps.StopCause = current.StopCause
+	}
+	row.Capabilities = caps
 }
 
 func lookupArchiveKey(machine, session string, records map[string]agentArchive, listed *strings.Builder) (agentArchive, bool) {

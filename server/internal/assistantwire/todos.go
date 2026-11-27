@@ -3,6 +3,7 @@ package assistantwire
 import (
 	"time"
 
+	"github.com/nwverse/persona/server/internal/buswire"
 	"github.com/nwverse/persona/server/internal/proto"
 )
 
@@ -41,7 +42,8 @@ type TodoLink struct {
 	TodoID    string `json:"todo_id"`
 	Title     string `json:"title"` // the todo's
 	// Task: the todo is a task an assistant conversation opened (its agents' cards name it: proto.Interaction.TaskTitle).
-	Task bool `json:"task,omitempty"`
+	Task      bool `json:"task,omitempty"`
+	Cancelled bool `json:"cancelled,omitempty"` // completed ownership ended by cancellation, not completion
 }
 
 // TodoHandoff is assistant.todo_handoff's params: an agent is handed work for a todo (POST /api/v1/sessions or
@@ -110,3 +112,9 @@ const (
 	// id, or looks at the to-do, instead of sending the words again.
 	CodeSendInDoubt = "send_in_doubt"
 )
+
+// TodoHandoffMethod binds a to-do handoff to its prepared text and status.
+var TodoHandoffMethod = buswire.Method[TodoHandoff, TodoHandoffResult]{Name: MethodTodoHandoff}
+
+// TodoLinkMethod binds a to-do link request to the linked to-do's title.
+var TodoLinkMethod = buswire.Method[TodoLinkParams, TodoLinkResult]{Name: MethodTodoLink}

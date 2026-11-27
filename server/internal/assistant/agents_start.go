@@ -3,6 +3,7 @@ package assistant
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -56,6 +57,9 @@ func (s *Service) AgentStartParams(ctx context.Context, p AgentStartParams) (map
 		}
 		clearStandardSpeed(params)
 	} else {
+		if model, _ := params["model"].(string); model != "" {
+			params["explicit_model"] = model
+		}
 		tierCtx, _ := withTierStart(ctx, p.MachineID)
 		own, err := s.resolveStart(tierCtx, params, false)
 		if err != nil {
@@ -70,10 +74,26 @@ func (s *Service) AgentStartParams(ctx context.Context, p AgentStartParams) (map
 		if m, ok := s.device(ctx, p.MachineID); ok {
 			note, agent, err := s.fitNewLauncher(withPersonStart(ctx), m, own, params)
 			if err != nil {
+				if code, _ := relayErrCode(err); code == proto.CodeLauncherOutOfScope || code == proto.CodeLauncherOwnService {
+					return nil, err
+				}
 				return nil, badRequest(err, s.appLang(ctx, p.Lang))
 			}
 			if err := checkStartSpeed(params, agent, ""); err != nil {
 				return nil, badRequest(err, s.appLang(ctx, p.Lang))
+			}
+			if params["model_aliases"] != nil {
+				raw, err := json.Marshal(params["model_aliases"])
+				var aliases proto.ModelAliases
+				if err != nil || json.Unmarshal(raw, &aliases) != nil {
+					return nil, badRequest(fmt.Errorf("model_aliases must be an object of model IDs"), s.appLang(ctx, p.Lang))
+				}
+				if err := aliases.Validate(); err != nil {
+					return nil, badRequest(err, s.appLang(ctx, p.Lang))
+				}
+				if err := checkAliasAgent(aliases, agent); err != nil {
+					return nil, badRequest(err, s.appLang(ctx, p.Lang))
+				}
 			}
 			if mode, _ := params["permission_mode"].(string); mode != "" && own.permission == "" && !agent.supportsPermissionMode(mode) {
 				delete(params, "permission_mode")

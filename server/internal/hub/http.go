@@ -32,6 +32,7 @@ import (
 	"github.com/nwverse/persona/server/internal/identity"
 	"github.com/nwverse/persona/server/internal/lazyre"
 	"github.com/nwverse/persona/server/internal/link"
+	"github.com/nwverse/persona/server/internal/nodeproto"
 	"github.com/nwverse/persona/server/internal/proto"
 	"github.com/nwverse/persona/server/internal/rpc"
 	"github.com/nwverse/persona/server/internal/sessionlist"
@@ -962,18 +963,19 @@ func writeSessionLists(w http.ResponseWriter, lists []stampedList) {
 }
 
 type sessionStartRequest struct {
-	MachineID        string        `json:"machine_id"`
-	Cwd              string        `json:"cwd"`
-	Launcher         string        `json:"launcher"`
-	AgentType        string        `json:"agent_type,omitempty"`
-	WorkSession      bool          `json:"work_session,omitempty"`
-	Model            string        `json:"model,omitempty"` // picked in "New agent" for this start; empty: applyModel's
-	Prompt           string        `json:"prompt"`
-	ClientMsgID      string        `json:"client_msg_id,omitempty"`
-	Images           []proto.Image `json:"images,omitempty"`
-	ResumeSessionID  string        `json:"resume_session_id"`
-	WorkspaceID      string        `json:"workspace_id"`
-	DesktopProjectID string        `json:"desktop_project_id"`
+	ModelAliases     proto.ModelAliases `json:"model_aliases,omitempty"`
+	MachineID        string             `json:"machine_id"`
+	Cwd              string             `json:"cwd"`
+	Launcher         string             `json:"launcher"`
+	AgentType        string             `json:"agent_type,omitempty"`
+	WorkSession      bool               `json:"work_session,omitempty"`
+	Model            string             `json:"model,omitempty"` // picked in "New agent" for this start; empty: applyModel's
+	Prompt           string             `json:"prompt"`
+	ClientMsgID      string             `json:"client_msg_id,omitempty"`
+	Images           []proto.Image      `json:"images,omitempty"`
+	ResumeSessionID  string             `json:"resume_session_id"`
+	WorkspaceID      string             `json:"workspace_id"`
+	DesktopProjectID string             `json:"desktop_project_id"`
 	// Host: the machine's enabled engine host to open in (herdr, orca, paseo…; #2576); empty: its default host.
 	// Checked by the node (an older node ignores it and starts in its engine).
 	Host           string `json:"host,omitempty"`
@@ -982,6 +984,7 @@ type sessionStartRequest struct {
 	// LauncherDefaultEffort keeps an explicit launcher's effort at its native default.
 	LauncherDefaultEffort bool   `json:"launcher_default_effort,omitempty"`
 	Speed                 string `json:"speed,omitempty"`
+	ServiceTier           string `json:"service_tier,omitempty"`
 	Ultracode             *bool  `json:"ultracode,omitempty"`
 	// Goal: a one-line condition the node sets with /goal after the first message is in (node/startgoal.go); a
 	// start it cannot take there answers 409 start_goal_unsupported before anything starts.
@@ -1019,6 +1022,14 @@ func (h *Hub) startSession(w http.ResponseWriter, r *http.Request) {
 // handoff: p carries generated context (context_handoff.go), not words someone typed; indirect: the request was
 // marked "via" (viaMarked). Neither counts as the owner's input.
 func (h *Hub) startSessionWith(w http.ResponseWriter, r *http.Request, p sessionStartRequest, handoff, indirect bool) {
+	if err := p.ModelAliases.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if len(p.ModelAliases) != 0 && p.ResumeSessionID != "" {
+		writeErr(w, http.StatusBadRequest, errors.New("model_aliases require a new Claude Code session"))
+		return
+	}
 	orig := p
 	replay := heldStartReplayOf(r.Context())
 	if strings.HasPrefix(p.ClientMsgID, proto.A2ADeliveryPrefix) {
@@ -1083,6 +1094,10 @@ func (h *Hub) startSessionWith(w http.ResponseWriter, r *http.Request, p session
 	}
 	if p.AgentType != "" && !agentTypeRe.MatchString(p.AgentType) {
 		writeErr(w, http.StatusBadRequest, errors.New("unsupported agent type"))
+		return
+	}
+	if p.ServiceTier != "" && !m.announces(nodeproto.SessionStartServiceTier) {
+		writeErrCode(w, http.StatusConflict, proto.CodeNodeOutdated, i18n.Err("hub-machine.node_no_session_start_speed"))
 		return
 	}
 	opID := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Persona-Op-Id")))
@@ -1422,6 +1437,7 @@ type client struct {
 	mu             sync.Mutex
 	traffic        trafficAttribution // inferred once from the upgrade; hello may refine platform
 	subs           map[[2]string]bool
+	termSubs       map[[3]string]bool       // canonical machine, session, requested machine; independent of stream retries
 	fsw            map[[3]string]fsWatchReq // {machine id, cwd, asked id} -> the folders this browser has open there (fswatch.go)
 	phone          bool
 	phoneID        string
@@ -1963,6 +1979,7 @@ func (h *Hub) onClientMessage(ctx context.Context, c *client, data []byte) {
 		c.mu.Unlock()
 		if !already {
 			m.watcherJoined(msg.SessionID)
+			h.fleetClientsChanged()
 		}
 		m.replayLiveTools(c, msg.SessionID)
 		// Not in the read loop: the node may take up to watchCallTimeout to answer the watch (watcherJoined). The
@@ -1985,6 +2002,7 @@ func (h *Hub) onClientMessage(ctx context.Context, c *client, data []byte) {
 		c.mu.Unlock()
 		if had {
 			m.watcherLeft(msg.SessionID)
+			h.fleetClientsChanged()
 			go m.syncUnwatch(msg.SessionID)
 		}
 	case "register_phone":

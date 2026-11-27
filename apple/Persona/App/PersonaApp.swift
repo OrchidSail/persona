@@ -111,6 +111,7 @@ struct PersonaApp: App {
                 PushRegistrar.shared.foreground() // notifications allowed in Settings since a denial: register now (#1861)
                 model.resumeLinks()
                 model.refreshExtensionSurfaces()
+                model.textLookup.foreground() // the lookup extension turned on or off elsewhere (#10977), at most once a minute
                 #if os(iOS)
                 model.refreshPageVisibility()
                 HomeWidgetWriter.shared.tellHub() // whether the hub should wake it for its widgets (#5721)
@@ -149,8 +150,7 @@ struct PersonaApp: App {
                 ClipboardOfferWatcher.shared.left()
                 // The Live Activity follows the first group's hub (LiveActivityController.report): without a push route
                 // there it would only go stale (#12982).
-                let group = model.links.first?.api.group
-                LiveActivityController.shared.left(pushReaches: group.flatMap { PushHealthStore.shared.health.routes[$0]?.reaches })
+                LiveActivityController.shared.left(health: PushHealthStore.shared.health, group: model.links.first?.api.group)
                 #endif
                 // A suspended app's socket looks alive to the hub until it times out, and phone_* calls sent to it hang.
                 // Closed, the hub knows the phone is away and wakes it with a silent push instead; and nothing opens it

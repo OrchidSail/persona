@@ -1,10 +1,10 @@
 // Actual extension-page navigation, with owner-bound socket sessions retained below the top of the stack.
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { LegacyExtensionUI } from "./ExtensionView";
-import { pageHref } from "./ExtensionView";
+import { composeAssistant, pageHref } from "./ExtensionView";
 import { appUIStreamPage, type AppUIStreamPage, type NativePagePermission } from "../../lib/extension-ui-app-stream";
 import { NATIVE_STREAM_COMPONENTS, type StreamPageIdentity } from "../../lib/extension-ui-stream";
-import { isPhoneConnectorSettingsURL, MAX_STACK, uiContext, type UIPush } from "../../lib/extension-ui";
+import { composeText, isPhoneConnectorSettingsURL, MAX_STACK, uiContext, type UIPush } from "../../lib/extension-ui";
 import { credentialOwner, enc, errorText } from "../../lib/api";
 import { endInteraction, getState, useStore } from "../../lib/store";
 import { apiOp } from "../../lib/ops";
@@ -103,7 +103,13 @@ function ConnectedPage(props: Props & { legacy: (props: Props) => ReactNode; onL
           toast(t("lib-extension-ui.phone_settings_android_only"), "ok");
         } else {
           if (result.toast) toast(result.toast, "ok");
-          if (result.open_url) openLink(result.open_url);
+          if (result.open_url) {
+            // A page's own quick prompt goes into the assistant's main composer without sending it (#16697); every
+            // other answer's URL opens as a link.
+            const prompt = composeText(result.open_url);
+            if (prompt) composeAssistant(prompt);
+            else openLink(result.open_url);
+          }
         }
         if (result.push) callbacks.current.push(result.push);
         if (result.pop) callbacks.current.pop();

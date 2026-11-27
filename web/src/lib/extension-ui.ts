@@ -12,20 +12,22 @@ import { itemHeaders } from "./manager-choice";
 import { extRoot } from "./extension-api";
 import { areaBands, colorOf, hue, imageLoadable, readV6 } from "./extension-ui-v6";
 import { isHttps, isObject, readAction, readPush } from "./extension-ui-read";
+import { decodeSettingsPrefill } from "./settings-prefill";
 import { t } from "../i18n";
 import type { Comment, Hunk, Thread, TreeEntry } from "./code-view";
 import type { UIColor, UIImageSource, UIRowAction, UIRowControl, UISpark, UITile } from "./extension-ui-v6";
 import { HEALTH_INTAKE_UI } from "./health-intake-ui";
 import { SUBSCRIPTIONS_UI } from "./subscriptions-ui";
+import type { SceneCamera, SceneLabel, ScenePin, SceneShape } from "./extension-wire";
 
 export { isHttps };
 
 /**
- * The UI version the web draws (context.ui_version): all of 12, the map canvas (views/extensions/ViewBody12.tsx), the
- * graph canvas (views/extensions/ViewBody10.tsx), the columns layout's (views/extensions/ViewBody8.tsx) and a tile's
- * gauge (views/extensions/ViewBody9.tsx) too.
+ * The UI version the web draws (context.ui_version): all of 13, including a code's navigate (CodeViews.tsx), the map
+ * canvas (ViewBody12.tsx), the lazy 3D scene (ViewBody11.tsx), the graph canvas (ViewBody10.tsx), the columns layout
+ * (ViewBody8.tsx) and a tile's gauge (ViewBody9.tsx).
  */
-export const UI_VERSION = 12;
+export const UI_VERSION = 13;
 
 export type UITone = "neutral" | "positive" | "caution" | "danger";
 
@@ -140,6 +142,8 @@ export interface UIItem {
   suggestions?: boolean;
   /** code: a link to lines on the site, {start} and {end} filled in */
   line_url?: string;
+  /** UI version 13, code: go to definition, find usages and back (values path, line, column, word, intent) */
+  navigate?: UIAction;
   /** UI version 6: image */
   src?: UIImageSource;
   alt?: string;
@@ -170,6 +174,11 @@ export interface UIItem {
   folded?: string[];
   layout?: UIGraph["layout"];
   direction?: UIGraph["direction"];
+  /** UI version 11: an orthographic 3D scene, drawn by ViewBody11.tsx. */
+  camera?: SceneCamera;
+  shapes?: SceneShape[];
+  labels?: SceneLabel[];
+  pins?: ScenePin[];
   /** UI version 12 (#14730, #14998), map: viewport framing, markers, routes, verified https links, static flag and stop list toggle */
   viewport?: UIMapViewport;
   markers?: UIMapMarker[];
@@ -490,7 +499,7 @@ export interface UIContextSent extends UIContext {
   locale?: string;
   platform: "web" | "desktop";
   ui_version: number;
-  /** Component types in the current UI version that the web client does not render (scene requires native 3D). */
+  /** Component types in the current UI version that the web client does not render. */
   unsupported?: string[];
 }
 
@@ -504,7 +513,7 @@ export function uiContext(context?: UIContext): UIContextSent {
   }
   const locale = typeof navigator !== "undefined" ? navigator.language || undefined : undefined;
   const platform = typeof window !== "undefined" && window.personaDesktop ? "desktop" : "web";
-  const out: UIContextSent = { platform, ui_version: UI_VERSION, unsupported: ["scene"] };
+  const out: UIContextSent = { platform, ui_version: UI_VERSION };
   if (tz) out.tz = tz;
   if (locale) out.locale = locale;
   if (context?.launcher) out.launcher = context.launcher;
@@ -651,19 +660,22 @@ export function blocks(items: UIItem[]): UIBlock[] {
  * open the inbox item's own source page (an inbox_item's open_url persona://inbox/<item>/source, for the item it is
  * drawn for); `settings`: the in-app path of an extension's own settings (open_url persona://settings/extensions/<id>);
  * `ask`: the text for the assistant's main conversation (open_url persona://ask?text=…), taken only from the manager's
- * own subscription pages (`extension` SUBSCRIPTIONS_UI, docs/extensions/subscriptions.md "Pages").
+ * own subscription pages (`extension` SUBSCRIPTIONS_UI, docs/extensions/subscriptions.md "Pages"); `compose`: the text
+ * of one of this extension's own quick prompts, to put in the main conversation's composer without sending it
+ * (open_url persona://compose?prompt=<id>&text=<text>, docs/extensions/extensions.md "Declarative UI").
  */
 export function outcome(
   r: UIActionResult,
   item?: string,
   extension?: string,
-): { view?: UIView; items?: UIItem[]; reload: boolean; toast?: string; url?: string; source?: true; settings?: string; ask?: string; track?: Route; push?: UIPush; pop?: true } {
+): { view?: UIView; items?: UIItem[]; reload: boolean; toast?: string; url?: string; source?: true; settings?: string; ask?: string; compose?: string; track?: Route; push?: UIPush; pop?: true } {
   const url = r.open_url && isHttps(r.open_url) ? r.open_url : undefined;
   const track = r.open_url ? extensionTrackRoute(r.open_url) : undefined;
   const source = !!item && !!r.open_url && inboxSourceItem(r.open_url) === item;
   const settings = r.open_url ? extensionSettingsHref(r.open_url) : undefined;
   const phoneSettings = !!r.open_url && isPhoneConnectorSettingsURL(r.open_url);
   const ask = extension === SUBSCRIPTIONS_UI && r.open_url ? askText(r.open_url) : undefined;
+  const compose = r.open_url ? composeText(r.open_url) : undefined;
   const push = readPush(r.push);
   const pop = r.pop === true && !push;
   return {
@@ -676,6 +688,7 @@ export function outcome(
     ...(source ? { source: true as const } : {}),
     ...(settings ? { settings } : {}),
     ...(ask ? { ask } : {}),
+    ...(compose ? { compose } : {}),
     ...(track ? { track } : {}),
     ...(push ? { push } : {}),
     ...(pop ? { pop: true as const } : {}),
@@ -700,6 +713,24 @@ export function askText(link: string): string | undefined {
   if (!c.startsWith("persona://ask?")) return undefined;
   const text = new URLSearchParams(c.slice("persona://ask?".length)).get("text") ?? "";
   return text.trim() && text.length <= 8000 ? text : undefined;
+}
+
+/** The text of a persona://compose?prompt=<id>&text=<text> link (an older name's scheme too), or undefined. The hub
+ *  has already checked that both match one of this extension's own quick prompts; the page only reads the text. */
+export function composeText(link: string): string | undefined {
+  const c = canonicalAppURL(link);
+  let u: URL;
+  try {
+    u = new URL(c);
+  } catch {
+    return undefined;
+  }
+  if (u.protocol !== "persona:" || u.username || u.password || u.host.toLowerCase() !== "compose" || (u.pathname !== "" && u.pathname !== "/") || u.hash) return undefined;
+  const params = u.searchParams;
+  if ([...params.keys()].sort().join(",") !== "prompt,text") return undefined;
+  const id = params.get("prompt") ?? "", text = params.get("text") ?? "";
+  if (!id.trim() || id.length > 64 || /\s/.test(id)) return undefined;
+  return text.trim() && [...text].length <= 8000 ? text : undefined;
 }
 
 /** How deep the pages pushed on one another go (docs/extensions/extensions.md "Page navigation"): a push past it replaces the top one. */
@@ -772,11 +803,12 @@ export function inboxSourceItem(url: string): string | undefined {
 
 /**
  * The in-app path of an extension's settings page that persona://settings/extensions/<id> names (the id escaped as one
- * path segment): /settings?tab=extensions&extension=<id>. undefined for any other link, and for an id the hub keeps for
- * itself (one starting with "-") or one with a "/".
+ * path segment): /settings?tab=extensions&extension=<id>. A bounded ?set=<url-encoded JSON object> proposes ordinary
+ * values for that same page and is preserved. undefined for any other link, and for an id the hub keeps for itself (one
+ * starting with "-") or one with a "/".
  */
 export function extensionSettingsHref(url: string): string | undefined {
-  const m = /^persona:\/\/settings\/extensions\/([^/?#]+)$/.exec(canonicalAppURL(url));
+  const m = /^persona:\/\/settings\/extensions\/([^/?#]+)(?:\?([^#]*))?$/.exec(canonicalAppURL(url));
   if (!m) return undefined;
   let id: string;
   try {
@@ -785,7 +817,11 @@ export function extensionSettingsHref(url: string): string | undefined {
     return undefined;
   }
   if (!id || id.startsWith("-") || id.includes("/")) return undefined;
-  return `/settings?tab=extensions&extension=${encodeURIComponent(id)}`;
+  const href = `/settings?tab=extensions&extension=${encodeURIComponent(id)}`;
+  if (m[2] === undefined || m[2] === "") return href;
+  if (!m[2].startsWith("set=") || /[&;#]/.test(m[2])) return undefined;
+  const set = new URLSearchParams(m[2]).get("set");
+  return decodeSettingsPrefill(set) ? `${href}&set=${encodeURIComponent(set!)}` : undefined;
 }
 
 /**
@@ -805,6 +841,7 @@ export const KNOWN_ITEMS: readonly string[] = [
   "header", "breadcrumb", "file_tree", "code", "diff", "comment_thread", "composer", // UI version 4
   "image", "grid", "carousel", // UI version 6
   "graph", // UI version 10
+  "scene", // UI version 11
   "map", // UI version 12
 ];
 
@@ -848,6 +885,9 @@ function drawable(it: unknown): it is UIItem {
     // UI version 10: a graph with nodes that read at all; the rest of the reading is readGraph's
     case "graph":
       return Array.isArray(it.nodes) && it.nodes.some((n: Record<string, unknown>) => isObject(n) && typeof n.id === "string" && typeof n.title === "string" && !!n.title);
+    // UI version 11: a scene with a description and shapes that can be drawn
+    case "scene":
+      return typeof it.alt === "string" && !!it.alt && Array.isArray(it.shapes) && it.shapes.length > 0;
     // UI version 12: an interactive map with required alt text and valid geometry
     case "map":
       return Boolean(readMap(it));
@@ -1150,6 +1190,10 @@ function readItem(it: UIItem): UIItem {
     if (graph?.selected) out.selected = graph.selected;
     else delete out.selected;
   }
+  // UI version 11: a scene's pins carry the same checked actions as rows and tiles.
+  if (it.type === "scene" && Array.isArray(raw.pins)) {
+    out.pins = raw.pins.filter(isObject).map((pin) => ({ ...pin, action: readAction(pin.action) })) as ScenePin[];
+  }
   if (it.type === "map") {
     const map = readMap(raw);
     if (map) {
@@ -1167,7 +1211,7 @@ function readItem(it: UIItem): UIItem {
     }
   }
   // UI version 4: the other places an action sits, each read the same way
-  for (const k of ["expand", "load", "comment", "reply", "context", "mark_viewed", "draft"] as const) if (k in raw) out[k] = readAction(raw[k]);
+  for (const k of ["expand", "load", "comment", "reply", "context", "mark_viewed", "draft", "navigate"] as const) if (k in raw) out[k] = readAction(raw[k]);
   // UI version 6: a row's control and extra actions, a grid's or a carousel's tiles
   readV6(out as unknown as Record<string, unknown>, raw);
   if ("line_url" in raw && !isHttps(String(raw.line_url).replaceAll("{start}", "1").replaceAll("{end}", "1"))) delete out.line_url;
