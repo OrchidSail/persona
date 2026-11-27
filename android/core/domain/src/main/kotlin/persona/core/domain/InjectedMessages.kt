@@ -24,9 +24,7 @@ private val noticeLines = mapOf("done" to "做完了", "needs" to "在等你", "
 
 /** What [raw] is when it is one of Persona's messages for the model; null for anything else. */
 fun parseInjected(raw: String): Injected? {
-    var text = raw
-    while (true) text = leadContext.find(text)?.let { text.substring(it.range.last + 1) } ?: break
-    text = text.trim()
+    val text = ProtocolCompatibility.stripLeadingContextBlocks(raw).trim()
     val head = text.substringBefore('\n')
     val rest = if ('\n' in text) text.substringAfter('\n') else ""
     return when {
