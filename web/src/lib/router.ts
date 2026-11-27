@@ -1,3 +1,4 @@
+import { machineLocation, machinePath, type MachineLocation } from "./machine-route";
 import { assistantPath } from "./compatibility";
 // A tiny history router: the hub serves index.html for every path that isn't a file.
 import { useSyncExternalStore } from "react";
@@ -20,7 +21,7 @@ export type Route =
   | { name: "persona-new" }
   // `view` is the page's `?view=chat|term`; without it the page shows what it showed last (lib/session-view.ts)
   // `at`: the message to land on (?at=<item id>, the hub's links to one message, docs/protocol/deep-links.md)
-  // `standalone`: explicit full-page open for a subagent ("Open as page", prevents redirecting back to parent panel)
+  // `standalone`: explicit full-page open for a subagent or a blocked terminal, even when the chat normally redirects
   | { name: "session"; mid: string; sid: string; view?: SessionView; work?: true; at?: string; standalone?: true }
   // one herdr tab (a slot) of a workspace; `sid` picks its pane (lib/herdr-tree.ts resolveTab)
   | { name: "tab"; mid: string; space: string; slot: string; sid?: string; view?: SessionView; work?: true; at?: string }
@@ -49,7 +50,7 @@ export type Route =
   | { name: "routines" }
   | { name: "kb"; kind?: string; id?: string }
   | { name: "machines" }
-  | { name: "machine"; mid: string }
+  | ({ name: "machine"; mid: string } & MachineLocation)
   // one space of a machine by its name (lib/space-page.ts): its agents, the todos it hangs on, what can be done to it
   | { name: "space"; mid: string; space: string; workspace?: string }
   // the terminal browser (docs/integrations/terminal.md "Standalone terminal"): every pane of every machine; `id` is the terminal opened (an agent
@@ -141,7 +142,11 @@ export function parse(path: string, search = ""): Route {
     const workspace = new URLSearchParams(search).get("workspace");
     return { name: "space", mid: p[1], space: p[2], ...(workspace && { workspace }) };
   }
-  if (p[0] === "machines") return p[1] ? { name: "machine", mid: p[1] } : { name: "machines" };
+  if (p[0] === "machines") {
+    if (!p[1]) return { name: "machines" };
+    const view = machineLocation(p, search);
+    return view ? { name: "machine", mid: p[1], ...view } : notFound(path, search);
+  }
   if (p[0] === "terminal") {
     const list = new URLSearchParams(search).get("view");
     const shown = list === "sessions" || list === "terminals" ? { view: list as "sessions" | "terminals" } : {};
@@ -244,7 +249,7 @@ export function routePath(r: Route): string {
     case "machines":
       return "/machines";
     case "machine":
-      return `/machines/${encodeURIComponent(r.mid)}`;
+      return machinePath(r.mid, r);
     case "space":
       return `/space/${encodeURIComponent(r.mid)}/${encodeURIComponent(r.space)}` + (r.workspace ? "?" + new URLSearchParams({ workspace: r.workspace }) : "");
     case "terminal": {
@@ -333,6 +338,7 @@ export function navigate(r: Route | string, replace = false, state: Record<strin
   // the query is part of the address (/s/…?view=term): the same page with another view is somewhere else.
   // A replace still applies at the same address: reselecting a drill-down as a root clears its entry state (#12055).
   if (to === location.pathname + location.search && !replace) return;
+  if (!replace && typeof r !== "string" && r.name === "machine") state = { ...state, machineBack: location.pathname + location.search };
   returnedTo = "";
   // From inside an open overlay (a drawer's link, a sheet's action): the new page takes the overlay's entry, so Back
   // from it goes to the page under the overlay, not to a dead copy of it (#1996). A replace keeps the entry's state:

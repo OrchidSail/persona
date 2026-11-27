@@ -366,17 +366,20 @@ func (s *Service) gateDeployStage(ctx context.Context, t Todo, stage, pr, machin
 	return deliveryStage(d.State), false
 }
 
-// gateDelivery checks a judged delivery that says live (deliveryLive) against the running hub: held, it is merged
-// (or pr) with why. replies name the PR (else the todo's).
-func (s *Service) gateDelivery(ctx context.Context, t Todo, d TodoDelivery, pr string) TodoDelivery {
-	if d.State != deliveryLive {
-		return d
-	}
+// gateDelivery checks a judged delivery against the running hub using an owned or saved PR.
+// A reply naming another PR needs independent confirmation before it can count as merged or deployed.
+func (s *Service) gateDelivery(ctx context.Context, t Todo, d TodoDelivery, pr string, otherPR bool) TodoDelivery {
 	if pr == "" {
 		pr = t.PRURL
 	}
+	if otherPR && pr == "" && d.State != deliveryNone {
+		return TodoDelivery{} // no delivery status to save and no progress to apply
+	}
+	if d.State != deliveryLive && !(otherPR && (d.State == deliveryMerged || d.State == deliveryOff)) {
+		return d
+	}
 	r := s.checkDeployed(ctx, pr)
-	if !r.held() {
+	if !r.held() && (!otherPR || r.State == deployIn && (d.State != deliveryMerged || r.Merge != "")) {
 		return d
 	}
 	h := s.heldDelivery(ctx, r, s.knownDeployMerge(ctx, t, pr))
@@ -428,11 +431,12 @@ func (s *Service) saveStagesLocked(ctx context.Context, id string) {
 // prStatusPassMost bounds one pass of PR observations (sweepPRStatusesBounded), apart from the deploy checks' time.
 var prStatusPassMost = time.Minute
 
-// sweepPRStatusesBounded is sweepPRStatuses with its own deadline (prStatusPassMost).
+// sweepPRStatusesBounded is sweepPRStatuses, then sweepParkIssues, with its own deadline (prStatusPassMost).
 func (s *Service) sweepPRStatusesBounded(now time.Time) {
 	ctx, cancel := context.WithTimeout(context.Background(), prStatusPassMost)
 	defer cancel()
 	s.sweepPRStatuses(ctx, now)
+	s.sweepParkIssues(ctx, now) // parks waiting on a GitHub issue (#14050)
 }
 
 // sweepDeploys looks again at the held tasks: once the running hub contains the work, the task is deployed (its

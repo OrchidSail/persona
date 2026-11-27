@@ -213,6 +213,9 @@ func (s *Service) applyScope(ctx context.Context, t Todo, c scopeChange) (TaskBr
 		}
 		if _, _, err := s.updateSupervision(ctx, id, func(v *Supervision) bool {
 			v.DoneWhen, v.ExpectMinutes = slices.Clone(brief.Criteria), brief.ExpectNow
+			if len(added)+len(dropped) > 0 {
+				v.recordAssignments(o.Agents, ev.At)
+			}
 			if len(added)+len(dropped) > 0 && (v.State == reviewAccepted || v.State == reviewCancelled) {
 				// The terminal review covered the old criteria, not this new scope (#6880).
 				v.State = ""
@@ -270,13 +273,14 @@ func (s *Service) rescopeWithEvent(ctx context.Context, t Todo, self, supervisor
 
 // toolTaskScope is the assistant's task_scope: the supervisor of a task changes what it is to do or what done means,
 // as an entry in its brief's log.
-func (s *Service) toolTaskScope(ctx context.Context, self string, args json.RawMessage) (string, error) {
+func (s *Service) toolTaskScope(ctx context.Context, machine, self string, args json.RawMessage) (string, error) {
 	var a struct {
 		TodoID        string    `json:"todo_id"`
 		Change        string    `json:"change"`
 		Why           string    `json:"why"`
 		DoneWhen      *[]string `json:"done_when"`
 		ExpectMinutes int       `json:"expect_minutes"`
+		InboxItem     string    `json:"inbox_item"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "", fmt.Errorf("arguments: %v", err)
@@ -309,6 +313,13 @@ func (s *Service) toolTaskScope(ctx context.Context, self string, args json.RawM
 	if err := s.cardlessOwnerWaitGuard(ctx, t); err != nil {
 		return "", err
 	}
+	source := PlanTask{InboxItem: a.InboxItem}
+	if err := s.planInboxSource(ctx, machine, self, &source); err != nil {
+		return "", err
+	}
+	if err := s.checkExistingTaskInbox(self, source, t); err != nil {
+		return "", err
+	}
 	c := scopeChange{By: self, Change: a.Change, Why: a.Why, Expect: a.ExpectMinutes}
 	if a.DoneWhen != nil {
 		c.DoneWhen = cleanDoneWhen(*a.DoneWhen)
@@ -325,6 +336,15 @@ func (s *Service) toolTaskScope(ctx context.Context, self string, args json.RawM
 	}
 	if err != nil {
 		return "", err
+	}
+	var agents []SessionRef
+	for _, a := range t.Agents {
+		if a.ReleasedAt == nil && a.DismissedAt == nil {
+			agents = append(agents, SessionRef{MachineID: a.MachineID, SessionID: a.SessionID})
+		}
+	}
+	if err := s.linkExistingTaskInbox(ctx, self, source, t.ID, t.ID, agents); err != nil {
+		return "", fmt.Errorf("scope updated on task %s, but its Inbox link was not saved: %w", t.ID, err)
 	}
 	s.clearOverdue(t.ID)
 	var b strings.Builder

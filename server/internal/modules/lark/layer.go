@@ -48,6 +48,8 @@ type Host interface {
 	// Unreachable: the call did not reach the hub or did not come back; Offline: the hub is not connected.
 	Unreachable(err error) bool
 	Offline(err error) bool
+	// Answered reports a definitive hub refusal, so a status failure does not consume a push retry.
+	Answered(err error) bool
 	StepParts(l i18n.Lang, it proto.Item) (verb, detail string)
 	// RunProgress is what run r's progress card shows besides its steps (the channels' live state of it).
 	RunProgress(r *channel.Run) assistantwire.RunProgress
@@ -78,7 +80,6 @@ type Host interface {
 	WorkbenchInbox() []assistantwire.WorkbenchItem
 	WorkbenchItem(id string) (assistantwire.WorkbenchItem, bool)
 	WorkbenchBoard(ctx context.Context, l i18n.Lang, web string, now time.Time) []assistantwire.WorkbenchBoardRow
-	SessionNames(ctx context.Context, sess proto.Session) (primary, secondary string)
 	NextMeeting(ctx context.Context, now time.Time) *assistantwire.WorkbenchMeeting
 	TodayBody(ctx context.Context) json.RawMessage
 	TasksOverview(ctx context.Context) (cards []*botcard.Card, fallbacks []string)
@@ -124,6 +125,10 @@ type Host interface {
 	ConclusionQuestion(ctx context.Context, ev *botcard.MessageEvent, content *botcard.Content, f assistantwire.FeishuFeatures) bool
 	AcceptReply(ctx context.Context, messageID, text string, media bool, parent, root string) bool
 	ApproveOwnerAction(ctx context.Context, ev botcard.MessageEvent, text, action string) bool
+	// ProjectReviewOwnerInput queues the owner's paired-chat message ref ("feishu:<message id>"), sent to the
+	// conversation machine/session, for a configured project review that takes owner inputs; nil when none takes it.
+	// An error means it could not be committed, and the message is not taken.
+	ProjectReviewOwnerInput(ctx context.Context, ref, machine, session string) error
 
 	// The commands (commands.go, models.go): stopping a conversation's turn (kind is the toast's), the lists to pick
 	// a conversation or an agent from, what a /status card shows, the standing board, and the main conversation's
@@ -156,8 +161,10 @@ type Host interface {
 	EndedText(l i18n.Lang, status, fallback string) string
 	ResolutionText(l i18n.Lang, ix proto.Interaction, r proto.Resolution) string
 	ResolveInteraction(ctx context.Context, id string, r proto.Resolution, action string) (bool, error)
+	ResolveInteractionAt(ctx context.Context, id string, r proto.Resolution, action string, expected *time.Time) (bool, error)
 	ValidateClarifyQuestion(text string) error
 	ClarifyInteraction(ctx context.Context, id, question, clientMsgID, action, chatID, messageID string) (bool, error)
+	ClarifyInteractionAt(ctx context.Context, id, question, clientMsgID, action, chatID, messageID string, expected *time.Time) (bool, error)
 	AcceptAction(ctx context.Context, a *botcard.CardAction) (kind, text string)
 	LaterHandled(ctx context.Context, id string) (bool, error)
 	TabName(ctx context.Context, prompt string) string
@@ -175,7 +182,11 @@ type Host interface {
 	AskView(ctx context.Context, ix proto.Interaction) assistantwire.AskView
 	AskRoute(ctx context.Context, ix proto.Interaction) assistantwire.AskRoute
 	AskSensitive(ctx context.Context, ix proto.Interaction) bool
+	// AskDirect admits an eligible owner-decision Assistant write approval independently of all_cards.
+	AskDirect(ctx context.Context, ix proto.Interaction) bool
 	AskState(id string) (ended, pending bool)
+	// AskStateFor binds the terminal marker and announcement to ix's exact occurrence.
+	AskStateFor(ix proto.Interaction) (ended, pending bool)
 	AskPending(id string) (proto.Interaction, bool)
 
 	// The nudges (nudge.go): a card's agent gone, a prepared card's deadline, the standing board told a card was
@@ -207,6 +218,11 @@ type Host interface {
 	// OpenTodo makes the to-do, binds it, records its source, has the main conversation supervise it and shows it
 	// in its feed; anything failing takes it back.
 	OpenTodo(ctx context.Context, t assistantwire.ChatOpenTodo) (todoID string, err error)
+	// What a proxy reply asks of the core (handoff.go): start its guest, and ask the owner before a confirm reply
+	// is posted. The guest is registered before the node starts it.
+	StartHandoffGuest(ctx context.Context, handoff, text, launcher string) (machine, session string, err error)
+	RaiseHandoffDecision(ctx context.Context, handoff string, req assistantwire.OutsideDecisionRequest) (id string, err error)
+	WithdrawHandoffDecision(ctx context.Context, id string)
 }
 
 // Layer is the module's assistant layer, what the core asks of it (internal/larkhost.Layer): the outbound channel port
@@ -246,17 +262,15 @@ func (l *Layer) Reply(ctx context.Context, to assistantwire.ChannelTarget, reply
 
 // AnswerCards lays out an answer as the bot's cards, each with the text it goes as when the card is refused.
 func (l *Layer) AnswerCards(lang i18n.Lang, name func(*url.URL) string, answer string, quiet bool, steps []string, foot string) ([]*botcard.Card, []string) {
-	acs := answerCards(lang, name, answer, quiet, steps, foot)
+	return answerCardParts(answerCards(lang, name, answer, quiet, steps, foot))
+}
+
+func answerCardParts(acs []botAnswerCard) ([]*botcard.Card, []string) {
 	cards, fallbacks := make([]*botcard.Card, len(acs)), make([]string, len(acs))
 	for i, ac := range acs {
 		cards[i], fallbacks[i] = ac.card, ac.fallback
 	}
 	return cards, fallbacks
-}
-
-// MissingPiecesNote says which pieces of an answer did not get to Feishu (1-based) and where the whole is.
-func (l *Layer) MissingPiecesNote(lang i18n.Lang, missing []int) string {
-	return missingPiecesNote(lang, missing)
 }
 
 // UpdateCard edits a card the bot sent.
@@ -376,6 +390,11 @@ func (l *Layer) RememberThread(messageID string, t assistantwire.ChatTarget, tit
 	l.chat().rememberBotThread(messageID, t, title)
 }
 
+// RememberTopicSession binds a group chat topic to a conversation target so follow-up replies route back to it.
+func (l *Layer) RememberTopicSession(ctx context.Context, chatID, threadID string, t assistantwire.ChatTarget, title string) {
+	l.chat().rememberTopicSession(ctx, chatID, threadID, t, title)
+}
+
 // Send passes a message of the chat on to its target and starts the run that answers it.
 func (l *Layer) Send(ctx context.Context, ev *botcard.MessageEvent, content botcard.Content, t assistantwire.ChatTarget) error {
 	return l.chat().botSend(ctx, ev, content, t)
@@ -437,7 +456,7 @@ func (l *Layer) AskBack(ix proto.Interaction, grace time.Duration) {
 }
 
 // AsksCatchUp closes the cards whose interaction is over for good; pending are the interactions up now.
-func (l *Layer) AsksCatchUp(ctx context.Context, pending map[string]bool) {
+func (l *Layer) AsksCatchUp(ctx context.Context, pending map[string]proto.Interaction) {
 	l.chat().closeEndedBotCards(ctx, pending, true)
 }
 
