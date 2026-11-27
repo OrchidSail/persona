@@ -105,7 +105,9 @@
     <string name="phonetools_control_perm_notif_title">Notification access</string>
     <string name="phonetools_control_perm_notif_detail">Reads incoming SMS or push verification codes in memory for automatic login.</string>
     <string name="phonetools_control_perm_overlay_title">Display over other apps</string>
-    <string name="phonetools_control_perm_overlay_detail">Shows live task status, manual takeover, and emergency stop controls. Falls back to accessibility overlay when off.</string>
+    <string name="phonetools_control_perm_overlay_detail">Fallback floating overlay for task status, manual takeover, and emergency stop when accessibility overlay is unavailable.</string>
+    <string name="phonetools_control_perm_post_notif_title">Notification permission</string>
+    <string name="phonetools_control_perm_post_notif_detail">Shows high-priority heads-up banners with quick actions when remote tasks need your help.</string>
     <string name="phonetools_control_open_settings">Open settings</string>
     <string name="phonetools_control_bg_notice">Allow unrestricted battery use so the Hub connection stays active while switching to other apps.</string>
     <string name="phonetools_control_bg_action">Battery settings</string>

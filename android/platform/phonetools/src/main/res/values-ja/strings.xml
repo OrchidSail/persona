@@ -104,7 +104,9 @@
     <string name="phonetools_control_perm_notif_title">通知へのアクセス</string>
     <string name="phonetools_control_perm_notif_detail">自動ログインのため、受信した SMS や通知の認証コードをメモリ内でのみ読み取ります。</string>
     <string name="phonetools_control_perm_overlay_title">他のアプリの上に重ねて表示</string>
-    <string name="phonetools_control_perm_overlay_detail">タスク状況、手動操作への切替、緊急停止を表示します。未許可時はユーザー補助オーバーレイにフォールバックします。</string>
+    <string name="phonetools_control_perm_overlay_detail">ユーザー補助オーバーレイが利用できない場合のフォールバックとして、タスク状況・手動切替・緊急停止を表示します。</string>
+    <string name="phonetools_control_perm_post_notif_title">通知の送信権限</string>
+    <string name="phonetools_control_perm_post_notif_detail">リモート操作で手動対応が必要なときや完了時に、クイック操作付きの重要通知バナーを表示します。</string>
     <string name="phonetools_control_open_settings">設定を開く</string>
     <string name="phonetools_control_bg_notice">他のアプリへ切り替えても Hub 接続を維持するため、バッテリー最適化の除外を許可してください。</string>
     <string name="phonetools_control_bg_action">バッテリー設定</string>

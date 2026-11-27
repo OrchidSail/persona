@@ -1,7 +1,13 @@
 package persona.platform.phonetools
 
+import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,6 +29,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -33,6 +40,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.core.app.ActivityCompat
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.Lifecycle
@@ -111,6 +119,7 @@ fun PhoneToolsScreen(runtime: PhoneToolsRuntime, navigator: Navigator) {
             PhoneControlSection(
                 runtime = runtime,
                 revision = revision,
+                onPermissionsChanged = { runtime.refreshPermissions(); revision++ },
                 onError = { error = it },
                 onClearError = { error = null },
             )
@@ -204,6 +213,7 @@ fun PhoneToolsScreen(runtime: PhoneToolsRuntime, navigator: Navigator) {
 private fun PhoneControlSection(
     runtime: PhoneToolsRuntime,
     revision: Int,
+    onPermissionsChanged: () -> Unit,
     onError: (String) -> Unit,
     onClearError: () -> Unit,
 ) {
@@ -220,6 +230,41 @@ private fun PhoneControlSection(
     }
     val toggleFailed = stringResource(R.string.phonetools_error_toggle)
     val settingsFailed = stringResource(R.string.phonetools_error_settings)
+    val notifPrefs = remember(context) {
+        context.getSharedPreferences(POST_NOTIF_PREFS_NAME, Context.MODE_PRIVATE)
+    }
+    var postNotifRequested by remember(context, revision) {
+        mutableStateOf(notifPrefs.getBoolean(KEY_POST_NOTIF_REQUESTED, false))
+    }
+    var pendingPostNotifLaunchAtMs by remember { mutableLongStateOf(0L) }
+    var pendingPostNotifRationaleBefore by remember { mutableStateOf(false) }
+    val postNotifLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        notifPrefs.edit().putBoolean(KEY_POST_NOTIF_REQUESTED, true).apply()
+        postNotifRequested = true
+        onPermissionsChanged()
+        if (!granted) {
+            val activity = context.findActivity()
+            val rationaleAfter = activity?.let {
+                ActivityCompat.shouldShowRequestPermissionRationale(it, Manifest.permission.POST_NOTIFICATIONS)
+            } ?: false
+            val elapsedMs = (SystemClock.elapsedRealtime() - pendingPostNotifLaunchAtMs).coerceAtLeast(0L)
+            if (shouldFallbackToNotificationSettingsAfterDenial(
+                    wasRationaleBefore = pendingPostNotifRationaleBefore,
+                    rationaleAfter = rationaleAfter,
+                    elapsedMs = elapsedMs,
+                )
+            ) {
+                try {
+                    PhoneControlPermissionsChecker.openPostNotificationSettings(context)
+                    onClearError()
+                } catch (_: Exception) {
+                    onError(settingsFailed)
+                }
+            }
+        }
+    }
     val statusText: String
     val statusTone: Status?
     when {
@@ -310,6 +355,45 @@ private fun PhoneControlSection(
                         onOpenSettings = {
                             try {
                                 PhoneControlPermissionsChecker.openOverlayPermissionSettings(context)
+                                onClearError()
+                            } catch (_: Exception) {
+                                onError(settingsFailed)
+                            }
+                        },
+                    )
+                    JDivider()
+                    PostNotificationsPermissionRow(
+                        granted = snapshot.permissions.postNotifications,
+                        onRequestGrant = {
+                            val activity = context.findActivity()
+                            val showRationale = activity?.let {
+                                ActivityCompat.shouldShowRequestPermissionRationale(it, Manifest.permission.POST_NOTIFICATIONS)
+                            } ?: false
+                            if (shouldRequestPostNotificationsRuntime(
+                                    sdkInt = Build.VERSION.SDK_INT,
+                                    granted = snapshot.permissions.postNotifications,
+                                    alreadyRequested = postNotifRequested,
+                                    shouldShowRationale = showRationale,
+                                )
+                            ) {
+                                pendingPostNotifRationaleBefore = showRationale
+                                pendingPostNotifLaunchAtMs = SystemClock.elapsedRealtime()
+                                notifPrefs.edit().putBoolean(KEY_POST_NOTIF_REQUESTED, true).apply()
+                                postNotifRequested = true
+                                postNotifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                onClearError()
+                            } else {
+                                try {
+                                    PhoneControlPermissionsChecker.openPostNotificationSettings(context)
+                                    onClearError()
+                                } catch (_: Exception) {
+                                    onError(settingsFailed)
+                                }
+                            }
+                        },
+                        onOpenSettings = {
+                            try {
+                                PhoneControlPermissionsChecker.openPostNotificationSettings(context)
                                 onClearError()
                             } catch (_: Exception) {
                                 onError(settingsFailed)
@@ -668,6 +752,80 @@ private fun ControlPermissionRow(
             )
         }
     }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun PostNotificationsPermissionRow(
+    granted: Boolean,
+    onRequestGrant: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = Tokens.Space.xs),
+        verticalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+    ) {
+        Text(
+            stringResource(R.string.phonetools_control_perm_post_notif_title),
+            style = PersonaTheme.type.headline,
+            color = PersonaTheme.palette.ink,
+        )
+        Text(
+            stringResource(R.string.phonetools_control_perm_post_notif_detail),
+            style = PersonaTheme.type.caption,
+            color = PersonaTheme.palette.ink2,
+        )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+            verticalArrangement = Arrangement.spacedBy(Tokens.Space.s),
+            itemVerticalAlignment = Alignment.CenterVertically,
+        ) {
+            JTag(
+                text = stringResource(if (granted) R.string.phonetools_status_granted else R.string.phonetools_status_denied),
+                status = if (granted) Status.Unread else Status.NeedsYou,
+            )
+            if (!granted) {
+                JButton(
+                    text = stringResource(R.string.phonetools_allow_access),
+                    onClick = onRequestGrant,
+                    kind = JButtonKind.Secondary,
+                    size = JButtonSize.Small,
+                )
+            }
+            JButton(
+                text = stringResource(R.string.phonetools_system_settings),
+                onClick = onOpenSettings,
+                kind = JButtonKind.Secondary,
+                size = JButtonSize.Small,
+            )
+        }
+    }
+}
+
+internal const val POST_NOTIF_PREFS_NAME = "phone_control_permissions"
+internal const val KEY_POST_NOTIF_REQUESTED = "post_notifications_requested"
+internal const val PERMANENT_DENIAL_FAST_RETURN_MS = 350L
+
+internal fun shouldRequestPostNotificationsRuntime(
+    sdkInt: Int,
+    granted: Boolean,
+    alreadyRequested: Boolean,
+    shouldShowRationale: Boolean,
+): Boolean {
+    if (sdkInt < Build.VERSION_CODES.TIRAMISU || granted) return false
+    return !alreadyRequested || shouldShowRationale
+}
+
+internal fun shouldFallbackToNotificationSettingsAfterDenial(
+    wasRationaleBefore: Boolean,
+    rationaleAfter: Boolean,
+    elapsedMs: Long,
+): Boolean = !wasRationaleBefore && !rationaleAfter && elapsedMs in 0L until PERMANENT_DENIAL_FAST_RETURN_MS
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 /** Mount once above the app's navigation host so any screen can confirm a pending call. */

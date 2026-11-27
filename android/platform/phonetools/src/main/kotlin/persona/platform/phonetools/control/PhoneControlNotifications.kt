@@ -67,7 +67,7 @@ internal class PhoneControlNotifications(
         val nm = manager ?: return false
         return runCatching {
             ensureChannels(nm)
-            if (!nm.areNotificationsEnabled()) return@runCatching false
+            if (!canPostNotifications(nm, CHANNEL_ATTENTION)) return@runCatching false
 
             val useInlinePrimary = canInline && !request.requiresForeground
             val title = if (!appLabel.isNullOrBlank()) {
@@ -132,11 +132,11 @@ internal class PhoneControlNotifications(
         val _ = runCatching { manager?.cancel(NOTIF_ID_ATTENTION) }
     }
 
-    fun showResultNotification(status: String, summary: String, isTimeout: Boolean = false) {
-        val nm = manager ?: return
-        val _ = runCatching {
+    fun showResultNotification(status: String, summary: String, isTimeout: Boolean = false): Boolean {
+        val nm = manager ?: return false
+        return runCatching {
             ensureChannels(nm)
-            if (!nm.areNotificationsEnabled()) return@runCatching
+            if (!canPostNotifications(nm, CHANNEL_RESULT)) return@runCatching false
             val titleRes = when (status) {
                 "done" -> R.string.phonetools_notif_result_done_title
                 "cancelled" -> R.string.phonetools_notif_result_cancelled_title
@@ -165,7 +165,15 @@ internal class PhoneControlNotifications(
                 )
             }
             nm.notify(NOTIF_ID_RESULT, builder.build())
-        }
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun canPostNotifications(nm: NotificationManager, channelId: String): Boolean {
+        if (!PhoneControlPermissionsChecker.isPostNotificationsGranted(appContext)) return false
+        val channel = nm.getNotificationChannel(channelId)
+        if (channel != null && channel.importance == NotificationManager.IMPORTANCE_NONE) return false
+        return true
     }
 
     private fun ensureChannels(nm: NotificationManager) {

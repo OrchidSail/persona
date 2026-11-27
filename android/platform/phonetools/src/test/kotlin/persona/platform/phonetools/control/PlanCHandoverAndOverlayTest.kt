@@ -294,7 +294,7 @@ class PlanCHandoverAndOverlayTest {
             assertEquals("t-n1", cancelTask)
 
             notifs.cancelAttentionBanner()
-            notifs.showResultNotification("done", "已完成") // i18n-ignore: test summary
+            val _ = notifs.showResultNotification("done", "已完成") // i18n-ignore: test summary
             assertNotNull(nm.getNotificationChannel(PhoneControlNotifications.CHANNEL_RESULT))
         } finally {
             PhoneControlNotificationBridge.unregister(handler)

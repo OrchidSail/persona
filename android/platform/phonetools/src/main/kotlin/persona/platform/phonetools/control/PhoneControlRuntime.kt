@@ -206,6 +206,12 @@ class PhoneControlRuntime(
             }
         }
 
+        scope.launch {
+            PhoneControlAccessibilityService.instance.collect { service ->
+                overlay?.onAccessibilityServiceChanged(service)
+            }
+        }
+
         if (transport != null && !automation) {
             scope.launch {
                 connection.state.collectLatest { state ->
@@ -440,7 +446,7 @@ class PhoneControlRuntime(
         everUsedMainDisplayForTask = false
 
         val isTimeout = summary.contains("超时") || summary.contains("timeout", ignoreCase = true) // i18n-ignore: matches timeout status summary
-        notifications.showResultNotification(status = status, summary = summary, isTimeout = isTimeout)
+        val _ = notifications.showResultNotification(status = status, summary = summary, isTimeout = isTimeout)
     }
 
     private fun resolveAppLabel(packageName: String?): String? {

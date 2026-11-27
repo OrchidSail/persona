@@ -18,6 +18,7 @@ import android.os.Looper
 import android.provider.Settings
 import android.text.TextUtils
 import android.util.TypedValue
+import android.view.ContextThemeWrapper
 import android.view.Display
 import android.view.Gravity
 import android.view.MotionEvent
@@ -72,7 +73,16 @@ class TaskStatusOverlay(
     private val onDetachInteractiveSurface: () -> Unit = {},
     private val onInjectInteractiveMotion: (action: Int, downTime: Long, eventTime: Long, x: Float, y: Float, pressure: Float) -> Boolean = { _, _, _, _, _, _ -> false },
     private val virtualDisplaySizeProvider: () -> Pair<Int, Int> = { 1080 to 2340 },
+    private val accessibilityHostProvider: () -> Context? = { PhoneControlAccessibilityService.instance.value },
+    private val canDrawOverlaysProvider: () -> Boolean = { runCatching { Settings.canDrawOverlays(context) }.getOrDefault(false) },
+    private val windowManagerProvider: (Context) -> WindowManager? = { it.getSystemService(WindowManager::class.java) },
 ) {
+    internal data class OverlayWindowHost(
+        val hostContext: Context,
+        val windowType: Int,
+        val isAccessibilityHost: Boolean,
+    )
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private val gestureDepth = AtomicInteger(0)
 
@@ -87,6 +97,7 @@ class TaskStatusOverlay(
     private var currentMode: OverlayDisplayMode = OverlayDisplayMode.MINI_PILL
     private var mountedHostContext: Context? = null
     private var mountedWindowType: Int = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+    private var failedAccessibilityHost: Context? = null
 
     @Volatile
     var lastSummary: OverlayTaskSummary = OverlayTaskSummary(null, "idle", 0, "", isActive = false)
@@ -137,6 +148,18 @@ class TaskStatusOverlay(
     internal val currentLayoutParams: WindowManager.LayoutParams?
         get() = layoutParams
 
+    internal val activeWindowType: Int?
+        get() = if (isShowing) mountedWindowType else null
+
+    internal val activeHostContext: Context?
+        get() = if (isShowing) mountedHostContext else null
+
+    fun onAccessibilityServiceChanged(service: Context?) {
+        val _ = mainHandler.post {
+            handleAccessibilityServiceChangedOnMain(service)
+        }
+    }
+
     fun update(summary: OverlayTaskSummary) {
         lastSummary = summary
         usingVirtualDisplayMode = summary.usingVirtualDisplay
@@ -152,9 +175,13 @@ class TaskStatusOverlay(
                 showOnMain(desiredMode)
             } else if (desiredMode != currentMode) {
                 switchModeOnMain(desiredMode)
+            } else if (needsHostMigrationOnMain()) {
+                remountCurrentModeOnMain()
             }
-            updateKeepScreenOnFlagOnMain(summary.keepScreenOnForeground && !usingVirtualDisplayMode)
-            bindCurrentModeOnMain(summary)
+            if (isShowing) {
+                updateKeepScreenOnFlagOnMain(summary.keepScreenOnForeground && !usingVirtualDisplayMode)
+                bindCurrentModeOnMain(summary)
+            }
         }
     }
 
@@ -222,40 +249,166 @@ class TaskStatusOverlay(
         }
     }
 
+    internal fun resolveWindowCandidates(): List<OverlayWindowHost> = buildList {
+        val a11yHost = accessibilityHostProvider()
+        if (a11yHost != null && isDefaultDisplayAccessibilityHost(a11yHost)) {
+            add(
+                OverlayWindowHost(
+                    hostContext = a11yHost,
+                    windowType = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                    isAccessibilityHost = true,
+                ),
+            )
+        }
+        if (canDrawOverlaysProvider()) {
+            add(
+                OverlayWindowHost(
+                    hostContext = resolveAppOverlayContext(),
+                    windowType = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                    isAccessibilityHost = false,
+                ),
+            )
+        }
+    }
+
+    internal fun isDefaultDisplayAccessibilityHost(host: Context): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val displayId = runCatching { host.display?.displayId }.getOrNull()
+            if (displayId != null && displayId != Display.DEFAULT_DISPLAY) {
+                return false
+            }
+        }
+        return true
+    }
+
+    private fun viewContextFor(hostContext: Context): Context {
+        val themeRes = runCatching { context.applicationInfo?.theme ?: 0 }.getOrDefault(0)
+        return if (themeRes != 0) ContextThemeWrapper(hostContext, themeRes) else hostContext
+    }
+
+    private fun needsHostMigrationOnMain(): Boolean {
+        if (!isShowing) return false
+        val preferred = resolveWindowCandidates().firstOrNull() ?: return true
+        return when (mountedWindowType) {
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY -> {
+                !preferred.isAccessibilityHost || preferred.hostContext !== mountedHostContext
+            }
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY -> {
+                preferred.isAccessibilityHost && preferred.hostContext !== failedAccessibilityHost
+            }
+            else -> true
+        }
+    }
+
+    private fun handleAccessibilityServiceChangedOnMain(service: Context?) {
+        if (service == null || service !== failedAccessibilityHost) {
+            failedAccessibilityHost = null
+        }
+        if (!lastSummary.isActive) {
+            if (isShowing &&
+                mountedWindowType == WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY &&
+                (service == null || service !== mountedHostContext)
+            ) {
+                hideOnMain()
+            }
+            return
+        }
+        if (isShowing) {
+            if (needsHostMigrationOnMain()) {
+                remountCurrentModeOnMain()
+            }
+        } else if (resolveWindowCandidates().isNotEmpty()) {
+            val desiredMode = resolveDisplayMode(lastSummary)
+            currentMode = desiredMode
+            showOnMain(desiredMode)
+            if (isShowing) {
+                updateKeepScreenOnFlagOnMain(lastSummary.keepScreenOnForeground && !usingVirtualDisplayMode)
+                bindCurrentModeOnMain(lastSummary)
+            }
+        }
+    }
+
+    private fun remountCurrentModeOnMain() {
+        val targetMode = currentMode
+        val preservedMinimized = minimized
+        val preservedSummary = lastSummary
+        val preservedVirtual = usingVirtualDisplayMode
+        val preservedBitmap = latestPreviewBitmap
+        val preservedProtected = latestPreviewProtected
+        val prevWm = windowManager
+        val prevView = rootView
+
+        stopPulseOnMain()
+        releaseInteractiveSurfaceOnMain()
+        if (prevWm != null && prevView != null) {
+            val _ = runCatching { prevWm.removeViewImmediate(prevView) }
+        }
+        clearViewRefs()
+        windowManager = null
+        mountedHostContext = null
+        rootView = null
+        layoutParams = null
+        isShowing = false
+
+        minimized = preservedMinimized
+        lastSummary = preservedSummary
+        usingVirtualDisplayMode = preservedVirtual
+        latestPreviewBitmap = preservedBitmap
+        latestPreviewProtected = preservedProtected
+        currentMode = targetMode
+
+        showOnMain(targetMode)
+        if (isShowing) {
+            updateKeepScreenOnFlagOnMain(preservedSummary.keepScreenOnForeground && !preservedVirtual)
+            bindCurrentModeOnMain(preservedSummary)
+        }
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     private fun showOnMain(mode: OverlayDisplayMode) {
         if (isShowing) return
-        val canAppOverlay = runCatching { Settings.canDrawOverlays(context) }.getOrDefault(false)
-        val a11yService = PhoneControlAccessibilityService.instance.value
-        val candidates = buildList<Pair<Context, Int>> {
-            if (canAppOverlay) {
-                add(resolveAppOverlayContext() to WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
-            }
-            if (a11yService != null) {
-                add(a11yService to WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
-            }
-        }
+        val candidates = resolveWindowCandidates()
         if (candidates.isEmpty()) return
 
-        for ((hostContext, windowType) in candidates) {
-            val wm = hostContext.getSystemService(WindowManager::class.java) ?: continue
-            val (view, params) = buildViewAndParamsForMode(hostContext, windowType, mode, wm)
-            if (runCatching { wm.addView(view, params) }.isSuccess) {
+        for (candidate in candidates) {
+            val wm = windowManagerProvider(candidate.hostContext) ?: continue
+            val viewCtx = viewContextFor(candidate.hostContext)
+            val (view, params) = buildViewAndParamsForMode(viewCtx, candidate.windowType, mode, wm)
+            val mounted = try {
+                wm.addView(view, params)
+                true
+            } catch (_: WindowManager.BadTokenException) {
+                false
+            } catch (_: SecurityException) {
+                false
+            } catch (_: Throwable) {
+                false
+            }
+            if (mounted) {
                 windowManager = wm
-                mountedHostContext = hostContext
-                mountedWindowType = windowType
+                mountedHostContext = candidate.hostContext
+                mountedWindowType = candidate.windowType
+                if (candidate.isAccessibilityHost) {
+                    failedAccessibilityHost = null
+                }
                 rootView = view
                 layoutParams = params
                 currentMode = mode
                 isShowing = true
                 return
+            } else {
+                if (candidate.isAccessibilityHost) {
+                    failedAccessibilityHost = candidate.hostContext
+                }
+                releaseInteractiveSurfaceOnMain()
+                clearViewRefs()
             }
         }
     }
 
     private fun switchModeOnMain(nextMode: OverlayDisplayMode) {
-        val wm = windowManager ?: return
-        val hostCtx = mountedHostContext ?: return
+        val prevWm = windowManager ?: return
+        val prevHost = mountedHostContext ?: return
         val prevView = rootView
 
         if (currentMode == OverlayDisplayMode.INLINE_INTERACTIVE) {
@@ -263,8 +416,14 @@ class TaskStatusOverlay(
         }
         stopPulseOnMain()
 
-        if ((currentMode == OverlayDisplayMode.MINI_PILL && nextMode == OverlayDisplayMode.LIGHT_CARD) ||
-            (currentMode == OverlayDisplayMode.LIGHT_CARD && nextMode == OverlayDisplayMode.MINI_PILL)
+        val preferred = resolveWindowCandidates().firstOrNull()
+        val sameHost = preferred != null &&
+            preferred.windowType == mountedWindowType &&
+            (!preferred.isAccessibilityHost || preferred.hostContext === prevHost)
+
+        if (sameHost &&
+            ((currentMode == OverlayDisplayMode.MINI_PILL && nextMode == OverlayDisplayMode.LIGHT_CARD) ||
+                (currentMode == OverlayDisplayMode.LIGHT_CARD && nextMode == OverlayDisplayMode.MINI_PILL))
         ) {
             if (prevView is LinearLayout && previewContainer != null) {
                 currentMode = nextMode
@@ -274,19 +433,20 @@ class TaskStatusOverlay(
             }
         }
 
-        val (nextView, nextParams) = buildViewAndParamsForMode(hostCtx, mountedWindowType, nextMode, wm)
         if (prevView != null) {
-            val _ = runCatching { wm.removeViewImmediate(prevView) }
+            val _ = runCatching { prevWm.removeViewImmediate(prevView) }
         }
-        if (runCatching { wm.addView(nextView, nextParams) }.isSuccess) {
-            rootView = nextView
-            layoutParams = nextParams
-            currentMode = nextMode
-        } else {
-            isShowing = false
-            rootView = null
-            layoutParams = null
+        clearViewRefs()
+        windowManager = null
+        mountedHostContext = null
+        rootView = null
+        layoutParams = null
+        isShowing = false
+        currentMode = nextMode
+        if (nextMode == OverlayDisplayMode.MINI_PILL || nextMode == OverlayDisplayMode.LIGHT_CARD) {
+            minimized = (nextMode == OverlayDisplayMode.MINI_PILL)
         }
+        showOnMain(nextMode)
     }
 
     private fun buildViewAndParamsForMode(
@@ -314,6 +474,7 @@ class TaskStatusOverlay(
                 val params = WindowManager.LayoutParams(
                     w, h, windowType, baseFlags or keepFlag, PixelFormat.TRANSLUCENT,
                 ).apply {
+                    title = OVERLAY_WINDOW_TITLE
                     gravity = Gravity.TOP or Gravity.END
                     x = dimenPx(R.dimen.phonetools_overlay_margin_end)
                     y = dimenPx(R.dimen.phonetools_overlay_margin_top)
@@ -328,7 +489,9 @@ class TaskStatusOverlay(
             OverlayDisplayMode.INLINE_INTERACTIVE -> {
                 val view = buildInlineInteractiveOverlay(ctx)
                 val modalFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or keepFlag
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
+                    keepFlag
                 val params = WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.MATCH_PARENT,
@@ -336,6 +499,7 @@ class TaskStatusOverlay(
                     modalFlags,
                     PixelFormat.TRANSLUCENT,
                 ).apply {
+                    title = OVERLAY_WINDOW_TITLE
                     gravity = Gravity.CENTER
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                         layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
@@ -352,6 +516,7 @@ class TaskStatusOverlay(
                     baseFlags or keepFlag,
                     PixelFormat.TRANSLUCENT,
                 ).apply {
+                    title = OVERLAY_WINDOW_TITLE
                     gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
                     x = 0
                     y = dimenPx(R.dimen.phonetools_overlay_fullscreen_bar_top_margin)
@@ -366,7 +531,10 @@ class TaskStatusOverlay(
     }
 
     private fun hideOnMain() {
-        if (!isShowing) return
+        if (!isShowing) {
+            failedAccessibilityHost = null
+            return
+        }
         isShowing = false
         stopPulseOnMain()
         releaseInteractiveSurfaceOnMain()
@@ -378,6 +546,8 @@ class TaskStatusOverlay(
         clearViewRefs()
         windowManager = null
         mountedHostContext = null
+        mountedWindowType = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        failedAccessibilityHost = null
         rootView = null
         layoutParams = null
         minimized = true
@@ -1185,7 +1355,9 @@ class TaskStatusOverlay(
         val params = layoutParams ?: return
         params.width = if (isPill) currentPillWidthPx(lastSummary) else fixedCardWidthPx
         params.height = if (isPill) dimenPx(R.dimen.phonetools_overlay_pill_height) else computeExpandedCardHeightPx()
-        val _ = runCatching { wm.updateViewLayout(view, params) }
+        if (runCatching { wm.updateViewLayout(view, params) }.isFailure && lastSummary.isActive) {
+            remountCurrentModeOnMain()
+        }
     }
 
     private fun bindCurrentModeOnMain(summary: OverlayTaskSummary) {
@@ -1461,6 +1633,7 @@ class TaskStatusOverlay(
 
     companion object {
         const val AUTO_DISMISS_DELAY_MS = 2_500L
+        const val OVERLAY_WINDOW_TITLE = "PersonaTaskStatusOverlay"
         private const val FADE_OUT_DURATION_MS = 220L
     }
 }

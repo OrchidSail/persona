@@ -95,15 +95,17 @@ class PhoneControlSettingsUiTest {
         val a11yTitle = app.getString(R.string.phonetools_control_perm_a11y_title)
         val notifTitle = app.getString(R.string.phonetools_control_perm_notif_title)
         val overlayTitle = app.getString(R.string.phonetools_control_perm_overlay_title)
+        val postNotifTitle = app.getString(R.string.phonetools_control_perm_post_notif_title)
         val otpTitle = app.getString(R.string.phonetools_control_gate_otp_title)
         val payTitle = app.getString(R.string.phonetools_control_gate_payment_title)
 
         // Default OFF: permission guides and safety gate toggles are hidden.
         rule.onNodeWithText(masterTitle).assertExists().assertIsOff()
         rule.onNodeWithText(a11yTitle).assertDoesNotExist()
+        rule.onNodeWithText(postNotifTitle).assertDoesNotExist()
         rule.onNodeWithText(payTitle).assertDoesNotExist()
 
-        // Toggle master switch ON -> shows 3 permission guides + 2 safety gates (both ON by default).
+        // Toggle master switch ON -> shows 4 permission guides + 2 safety gates (both ON by default).
         rule.onNodeWithText(masterTitle).performClick()
         rule.waitForIdle()
         assertTrue(runtime.settings.remoteControlEnabled.value)
@@ -111,6 +113,7 @@ class PhoneControlSettingsUiTest {
         rule.onNodeWithText(a11yTitle).assertExists()
         rule.onNodeWithText(notifTitle).assertExists()
         rule.onNodeWithText(overlayTitle).assertExists()
+        rule.onNodeWithText(postNotifTitle).assertExists()
         rule.onNodeWithText(otpTitle).assertExists().assertIsOn()
         rule.onNodeWithText(payTitle).assertExists().assertIsOn()
 

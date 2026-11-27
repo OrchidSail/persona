@@ -15,6 +15,7 @@ data class PhoneControlPermissions(
     val overlay: Boolean = false,
     val screenCapture: Boolean = false,
     val batteryOptimizationIgnored: Boolean = false,
+    val postNotifications: Boolean = false,
 ) {
     fun toWire(): JsonObject = buildJsonObject {
         put("accessibility", accessibility)
@@ -22,6 +23,7 @@ data class PhoneControlPermissions(
         put("overlay", overlay)
         put("screen_capture", screenCapture)
         put("battery_optimization_ignored", batteryOptimizationIgnored)
+        put("post_notifications", postNotifications)
     }
 }
 
