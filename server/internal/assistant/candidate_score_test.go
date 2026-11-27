@@ -28,28 +28,28 @@ func TestScoreCandidates(t *testing.T) {
 	}{
 		{name: "no data anywhere: the default prior, list order",
 			in: []scoreInput{c(0, true, candidateHeadroom{}, none), c(1, true, candidateHeadroom{}, none)}, index: 0, reason: dispatchFirst,
-			// T = 30, FP = 0.5: 30 × 1.5 + 0.5 × 30 / √1 = 60
-			scores: []float64{60, 60}, skips: []string{"", ""}},
+			// T = 30, FP = 0.5: 30 × 1.5 = 45; untried, no κ term
+			scores: []float64{45, 45}, skips: []string{"", ""}},
 		{name: "measured faster and cleaner wins on score",
 			in:    []scoreInput{c(0, true, candidateHeadroom{}, none), c(1, true, candidateHeadroom{}, candidateStats{N: 10, MinutesP50: 10, FirstPass: 1})},
 			prior: pooled, index: 1, reason: dispatchScore,
-			// 0: T = 20, FP = 0.75 → 25 + 10 = 35. 1: T = 200/15, FP = 13.75/15 → 14.44 + 2.01 = 16.45
-			scores: []float64{35, 16.45}, skips: []string{"", ""}},
+			// 0: T = 20, FP = 0.75 → 25, untried. 1: T = 200/15, FP = 13.75/15 → 14.44 + 2.01 = 16.45
+			scores: []float64{25, 16.45}, skips: []string{"", ""}},
 		{name: "quota pressure counts, unknown headroom adds nothing",
 			in:    []scoreInput{c(0, true, known(0.5), none), c(1, true, candidateHeadroom{}, none)},
-			index: 1, reason: dispatchScore, scores: []float64{65, 60}, skips: []string{"", ""}},
+			index: 1, reason: dispatchScore, scores: []float64{50, 45}, skips: []string{"", ""}},
 		{name: "within one point goes to the earlier candidate",
 			in:    []scoreInput{c(0, true, known(10), none), c(1, true, candidateHeadroom{}, none)},
-			index: 0, reason: dispatchFirst, scores: []float64{60.3, 60}, skips: []string{"", ""}},
+			index: 0, reason: dispatchFirst, scores: []float64{45.3, 45}, skips: []string{"", ""}},
 		{name: "no headroom is passed over",
 			in:    []scoreInput{c(0, true, known(0), none), c(1, true, known(1), none)},
-			index: 1, reason: dispatchQuota, scores: []float64{math.NaN(), 62.73}, skips: []string{dispatchQuota, ""}},
+			index: 1, reason: dispatchQuota, scores: []float64{math.NaN(), 47.73}, skips: []string{dispatchQuota, ""}},
 		{name: "not on this computer is passed over",
 			in:    []scoreInput{c(0, false, candidateHeadroom{}, none), c(1, true, candidateHeadroom{}, none)},
-			index: 1, reason: dispatchUnavailable, scores: []float64{math.NaN(), 60}, skips: []string{dispatchUnavailable, ""}},
+			index: 1, reason: dispatchUnavailable, scores: []float64{math.NaN(), 45}, skips: []string{dispatchUnavailable, ""}},
 		{name: "quota is named over unavailable",
 			in:    []scoreInput{c(0, false, candidateHeadroom{}, none), c(1, true, known(0), none), c(2, true, candidateHeadroom{}, none)},
-			index: 2, reason: dispatchQuota, scores: []float64{math.NaN(), math.NaN(), 60}, skips: []string{dispatchUnavailable, dispatchQuota, ""}},
+			index: 2, reason: dispatchQuota, scores: []float64{math.NaN(), math.NaN(), 45}, skips: []string{dispatchUnavailable, dispatchQuota, ""}},
 		{name: "every usable over pace: the first usable",
 			in:    []scoreInput{c(0, false, candidateHeadroom{}, none), c(1, true, known(0), none), c(2, true, known(0), none)},
 			index: 1, reason: dispatchOverPace, scores: []float64{math.NaN(), math.NaN(), math.NaN()}, skips: []string{dispatchUnavailable, dispatchQuota, dispatchQuota}},
@@ -120,7 +120,8 @@ func (f *fakeRoutingStore) ModelRoutingSamples(_ context.Context, tier string, s
 func TestCandidateTierStatsReadsFourteenDays(t *testing.T) {
 	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
 	store := &fakeRoutingStore{samples: []db.ModelRoutingSample{{Tier: "dev", Launcher: "a", Model: "m", ActualMinutes: 12, FirstPass: true}}}
-	s := &Service{store: func() Store { return store }, logf: func(string, ...any) {}}
+	s := &Service{logf: func(string, ...any) {}}
+	s.setStore(func() Store { return store })
 	got := s.candidateTierStats(context.Background(), "dev", now)
 	if store.asked != "dev" || !store.since.Equal(now.AddDate(0, 0, -14)) {
 		t.Fatalf("asked %q since %v", store.asked, store.since)
@@ -132,7 +133,9 @@ func TestCandidateTierStatsReadsFourteenDays(t *testing.T) {
 	if got := s.candidateTierStats(context.Background(), "dev", now); got.Prior.N != 0 {
 		t.Fatalf("a failed read is no data, got %+v", got)
 	}
-	if got := (&Service{store: func() Store { return nil }}).candidateTierStats(context.Background(), "dev", now); got.Prior.N != 0 {
+	emptySvc := &Service{}
+	emptySvc.setStore(func() Store { return nil })
+	if got := emptySvc.candidateTierStats(context.Background(), "dev", now); got.Prior.N != 0 {
 		t.Fatalf("no store is no data, got %+v", got)
 	}
 }

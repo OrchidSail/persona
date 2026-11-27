@@ -82,6 +82,12 @@ archive **and** export, then entitlements, and keep TestFlight processing as a s
   for this platform was found in PersonaCoreC.xcframework", which reads like a broken build. Every way the builder leaves
   a simulator-only framework now says to run it with no flag first, and the docs that send people to Xcode say the same.
 
+## One recorded seen does not mean every paged list has read it (#12770)
+
+The open chat's exact read can prove a seen mark before the Agents window reads again. Dropping the mark there lets the window's older row flash Unread. Keep the recorded mark for 15 seconds, hold only rows with the pre-open `seen_at`, and end it at once on new activity. Retry filters are not enough: the ordinary chat-visibility path also sends, so it must skip a recorded mark while preserving the direct send of an already-seen chat with no settling mark.
+
+Page-carried counts need the same boundary. Publish `SessionListPage.counts` with the IDs of the rows in that answer, adjust Unread / Just finished only for held rows in that set, and leave standalone counts alone. Ask `with_counts` only on first / initial `since` reads; a cursor continuation keeps the first answer's counts. A filtered root cannot adopt the page's state-filtered counts without shrinking the other quick filters, so it keeps the separate all-state count read; filtered sections use their coupled counts. Invalid optional counts must fall back to that separate read without discarding valid rows.
+
 ## A machine's heartbeat used to tell every reader of `machines` (2026-11-18, #10231)
 
 A busy hub pushes the machines with a new `lastSeen` all the time. `AppModel.machines` was replaced on each push, so
@@ -565,6 +571,21 @@ this by changing a locale, allowing an address or rearranging the generated plis
 - Rust dependencies carry their source paths in panic metadata, so an Apple XCFramework can include the build Mac's home and Cargo registry address even when the app has no such string in its source. `check_bundle_privacy.py` correctly rejects that main executable.
 - Set `--remap-path-prefix=$HOME=/build/home --remap-path-prefix=$ROOT=/build/persona` in `native/app-core/scripts/build-apple.sh` for every Apple target. This changes only debug/panic paths, not the runtime code or the privacy scanner's exemptions; verify the actual exported archive with `check_bundle_privacy.py`.
 - A successful archive does not prove the package can ship: the bundle privacy scan runs after it, before export and upload. Keep that gate.
+
+## The Rust core's XCFramework on Linux (2026-11-27, #16944)
+
+- `cargo build -p persona-core-ffi` for an Apple target also links the crate's `cdylib`, which needs an Apple linker
+  that Linux does not have. Leave out only the cdylib (`cargo rustc --lib --crate-type staticlib,rlib`): a staticlib
+  alone gets the release profile's fat LTO, one merged object and a library unlike the Mac's, while with an rlib among
+  the crate types cargo runs no LTO, as on a Mac. The Rust dependencies compile no C, so neither needs an SDK or clang.
+- A home reached through a symbolic link (a devbox's home on another disk) leaks past
+  `--remap-path-prefix=$HOME=…`: rustup and cargo hand rustc the real path of the registry and the checkout. Remap the
+  real paths too.
+- A Linux host is not a Mac with another `uname -m`: a Linux Apple toolchain builds the arm64 simulator on an x86_64
+  machine too, and the framework has no macOS slice. Its cache key names the system, or a cache both could reach would
+  hand a Mac a full entry with no macOS slice.
+- `xcrun --show-sdk-build-version` reports the SDK's `System/Library/CoreServices/SystemVersion.plist`
+  `ProductBuildVersion`; a copy of the Xcode SDKs on Linux holds the same file, so both key the same SDK the same way.
 
 ## Resuming an interrupted TestFlight archive (#8890)
 
@@ -1225,6 +1246,10 @@ Use an invalidation revision as the task key and handle the flag after completio
 - Within one NavigationStack, pushing view-based `NavigationLink { destination }` then value-based `NavigationLink(value:)` inserts the new page **underneath**:
   taps look ineffective until Back (Settings › Machines › card, machine detail › session; Knowledge search entries also reveal a yellow warning on return, 2026-10-31). Use an entirely value-based chain (`MachineListRoute`,
   `MachineDetailRoute` + `navigationDestination(for:)`) or entirely view-based. `navigationDestination(isPresented:)` is view-based too.
+- A page pushed by view is outside the stack's path, so anything that moves the page by setting the path leaves it in front (2026-11-23, #13156).
+  In the Sidebar layout a pick in the sidebar replaces the root and the path (`SidebarPageRoots`). A task's page pushed from the conversation by
+  `detailPresentation` stayed over the Agent picked next, with the selected row already moved. `probe.sidebar-page` read `path 0, depth 2`:
+  the depth counted the page, the path did not. On a stack whose roots the sidebar swaps, push values only (`TaskDetailRoute`, `TasksStore.takeDetail`).
 - Several `NavigationLink(value:)` in one `List` row all fire on one tap, each pushing its page (an extension's machine list, a Set Up per Mac in one field row, #2446:
   Back from Mac Studio's page landed on MacBook's). `.buttonStyle(.borderless)` keeps a `Button`'s tap its own but does not stop this; push one value from a `Button`
   (`splitPush`), or give each link its own row.

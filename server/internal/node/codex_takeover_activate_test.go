@@ -119,6 +119,18 @@ func codexEventAt(kind string, at time.Time) string {
 	return string(b)
 }
 
+func requireCodexSession(t *testing.T, list []proto.Session, id string) proto.Session {
+	t.Helper()
+	s, ok := byID(list)[id]
+	if !ok {
+		t.Fatalf("missing session %s", id)
+	}
+	if s.Capabilities == nil {
+		t.Fatalf("session %s has nil Capabilities: %+v", id, s)
+	}
+	return s
+}
+
 func TestCodexHeldOpenTurnDegradesWhenStalled(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -186,11 +198,7 @@ func TestCodexHeldOpenTurnDegradesWhenStalled(t *testing.T) {
 			}
 			n.discoverCodex()
 			id := n.registerCodex(home, remoteRaw, path)
-			rows := byID(n.codexSessions(map[string]bool{}))
-			s, ok := rows[id]
-			if !ok {
-				t.Fatalf("missing session %s", id)
-			}
+			s := requireCodexSession(t, n.codexSessions(map[string]bool{}), id)
 			if s.Status != tc.wantStatus || s.ReadOnlyReason != tc.wantReason || s.Capabilities.Send {
 				t.Fatalf("status=%q reason=%q send=%v, want status=%q reason=%q",
 					s.Status, s.ReadOnlyReason, s.Capabilities.Send, tc.wantStatus, tc.wantReason)
@@ -230,7 +238,7 @@ func TestCodexHeldSharedAppServerSurfacesConnectionReason(t *testing.T) {
 			return n.codices.remoteDiags[endpoint] == codexDiagUnreachable
 		})
 		id := n.registerCodex(home, remoteRaw, path)
-		s := byID(n.codexSessions(map[string]bool{}))[id]
+		s := requireCodexSession(t, n.codexSessions(map[string]bool{}), id)
 		want := i18n.T(i18n.Default, "codex-history.shared_unreachable")
 		if s.ReadOnlyReason != want {
 			t.Fatalf("ReadOnlyReason = %q, want %q", s.ReadOnlyReason, want)
@@ -265,7 +273,7 @@ func TestCodexHeldSharedAppServerSurfacesConnectionReason(t *testing.T) {
 			return n.codices.remoteDiags[endpoint] == codexDiagHomeMismatch
 		})
 		id := n.registerCodex(home, remoteRaw, path)
-		s := byID(n.codexSessions(map[string]bool{}))[id]
+		s := requireCodexSession(t, n.codexSessions(map[string]bool{}), id)
 		want := i18n.T(i18n.Default, "codex-history.shared_home_mismatch")
 		if s.ReadOnlyReason != want {
 			t.Fatalf("ReadOnlyReason = %q, want %q", s.ReadOnlyReason, want)
@@ -289,7 +297,7 @@ func TestCodexHeldSharedAppServerSurfacesConnectionReason(t *testing.T) {
 		}
 		n.discoverCodex()
 		id := n.registerCodex(home, remoteRaw, path)
-		s := byID(n.codexSessions(map[string]bool{}))[id]
+		s := requireCodexSession(t, n.codexSessions(map[string]bool{}), id)
 		want := i18n.T(i18n.Default, "codex-history.shared_endpoint_invalid")
 		wantEP := codexResolvedEndpoint(canonicalCodexHome(home, n.home), "unix://")
 		n.codices.mu.Lock()
@@ -317,7 +325,7 @@ func TestCodexHeldSharedAppServerSurfacesConnectionReason(t *testing.T) {
 		}
 		n.discoverCodex()
 		id := n.registerCodex(home, remoteRaw, path)
-		s := byID(n.codexSessions(map[string]bool{}))[id]
+		s := requireCodexSession(t, n.codexSessions(map[string]bool{}), id)
 		want := i18n.T(i18n.Default, "codex-history.shared_not_loaded")
 		if s.ReadOnlyReason != want {
 			t.Fatalf("ReadOnlyReason = %q, want %q", s.ReadOnlyReason, want)
@@ -325,7 +333,9 @@ func TestCodexHeldSharedAppServerSurfacesConnectionReason(t *testing.T) {
 	})
 }
 
-func TestCodexTakeoverHostSelectsAvailableNonOrcaLauncher(t *testing.T) {
+// The takeover's terminal goes to the start's host, Orca too since #17044 (it resumes a Codex thread as herdr does),
+// else the first other terminal host of the set; a runtime engine is never one.
+func TestCodexTakeoverHostSelectsAvailableLauncher(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		hosts          []string
@@ -334,10 +344,12 @@ func TestCodexTakeoverHostSelectsAvailableNonOrcaLauncher(t *testing.T) {
 		wantCanResume  bool
 		wantCapability bool
 	}{
-		{"orca default falls back to herdr-core", []string{proto.EngineOrca, proto.EngineHerdrCore}, proto.EngineOrca, host.HerdrCore, true, true},
-		{"orca default falls back to tern", []string{proto.EngineOrca, proto.EngineTern}, proto.EngineOrca, host.Tern, true, true},
+		{"orca default takes it over in orca", []string{proto.EngineOrca, proto.EngineHerdrCore}, proto.EngineOrca, host.Orca, true, true},
+		{"herdr-core default takes it over in herdr-core", []string{proto.EngineOrca, proto.EngineHerdrCore}, proto.EngineHerdrCore, host.HerdrCore, true, true},
+		{"orca default with tern takes it over in orca", []string{proto.EngineOrca, proto.EngineTern}, proto.EngineOrca, host.Orca, true, true},
 		{"paseo default falls back to herdr-core", []string{proto.EnginePaseo, proto.EngineHerdrCore}, proto.EnginePaseo, host.HerdrCore, true, true},
-		{"orca alone without shared remote offers continue only", []string{proto.EngineOrca}, proto.EngineOrca, "", false, true},
+		{"paseo default falls back to orca", []string{proto.EnginePaseo, proto.EngineOrca}, proto.EnginePaseo, host.Orca, true, true},
+		{"orca alone takes it over in orca", []string{proto.EngineOrca}, proto.EngineOrca, host.Orca, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			n := remoteTestNode(t)
@@ -367,7 +379,7 @@ func TestCodexTakeoverHostSelectsAvailableNonOrcaLauncher(t *testing.T) {
 			cwd := t.TempDir()
 			path := writeCodexTestRollout(t, n.codexHome(), startThread, cwd, "codex-tui", "cli", time.Now().Add(-time.Minute))
 			id := n.registerCodex(n.codexHome(), startThread, path)
-			s := byID(n.codexSessions(map[string]bool{}))[id]
+			s := requireCodexSession(t, n.codexSessions(map[string]bool{}), id)
 			if (s.Capabilities.Takeover != nil) != tc.wantCapability {
 				t.Fatalf("takeover cap = %+v, want present=%v", s.Capabilities.Takeover, tc.wantCapability)
 			}
@@ -411,7 +423,7 @@ func TestCodexTakeoverColdActivatesOnSharedRemoteWithoutTerminalEngine(t *testin
 	n.takeovers.writers = func(codexSource) ([]codexWriter, error) { return nil, nil }
 	n.takeovers.lockHeld = func(codexSource) bool { return false }
 
-	s := byID(n.codexSessions(map[string]bool{}))[id]
+	s := requireCodexSession(t, n.codexSessions(map[string]bool{}), id)
 	if s.Capabilities.Takeover == nil || !s.Capabilities.Takeover.CanResume || s.Capabilities.Takeover.Running {
 		t.Fatalf("expected cold-activatable takeover cap, got %+v", s.Capabilities.Takeover)
 	}
@@ -478,7 +490,7 @@ func TestCodexTakeoverColdActivateMapsWriterConflictAndEncryptedFailure(t *testi
 		if _, err := n.commitCodexTakeover(context.Background(), id, plan.Token, false); refusalCode(err) != "codex_takeover_continue_only" {
 			t.Fatalf("encrypted failure err = %v, want codex_takeover_continue_only", err)
 		}
-		s := byID(n.codexSessions(map[string]bool{}))[id]
+		s := requireCodexSession(t, n.codexSessions(map[string]bool{}), id)
 		if s.Capabilities.Takeover == nil || s.Capabilities.Takeover.CanResume || s.Capabilities.Takeover.Reason != "encrypted_context" {
 			t.Fatalf("post-failure cap = %+v", s.Capabilities.Takeover)
 		}
@@ -514,7 +526,7 @@ func TestCodexTakeoverSupportsNonDefaultCodexHome(t *testing.T) {
 			return []string{"codex", "--remote", "unix:///shared/alt.sock"}, nil
 		}
 
-		s := byID(listSessions(t, n))[id]
+		s := requireCodexSession(t, listSessions(t, n), id)
 		if s.Capabilities.Takeover == nil || !s.Capabilities.Takeover.CanResume {
 			t.Fatalf("non-default home takeover cap = %+v", s.Capabilities.Takeover)
 		}
@@ -581,7 +593,7 @@ func TestCodexTakeoverInteractiveAndDesktopViewOnlyOrigins(t *testing.T) {
 		id := n.registerCodex(n.codexHome(), remoteOther, path)
 		n.takeovers.writers = func(codexSource) ([]codexWriter, error) { return nil, nil }
 		n.takeovers.lockHeld = func(codexSource) bool { return false }
-		s := byID(listSessions(t, n))[id]
+		s := requireCodexSession(t, listSessions(t, n), id)
 		if s.Capabilities.Takeover == nil || !s.Capabilities.Takeover.CanResume {
 			t.Fatalf("interactive originator cap = %+v", s.Capabilities.Takeover)
 		}
@@ -591,56 +603,64 @@ func TestCodexTakeoverInteractiveAndDesktopViewOnlyOrigins(t *testing.T) {
 		}
 	})
 
-	t.Run("desktopViewOnly offers continue when desktop app runs and activates when idle without conflict", func(t *testing.T) {
+	checkDesktopViewOnly := func(t *testing.T, originator string, terminalWhenClosed bool) {
 		n, _, cwd := codexHistoryNode(t)
 		home := n.codexHome()
 		if err := os.WriteFile(filepath.Join(home, ".codex-global-state.json"), []byte(`{"projectless-thread-ids":["`+remoteOther+`"]}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		at := time.Now().Add(-time.Minute)
-		path := writeCodexTestRollout(t, home, remoteOther, cwd, "Codex Desktop", "vscode", at, codexEventAt("task_started", at), codexEventAt("task_complete", at))
+		path := writeCodexTestRollout(t, home, remoteOther, cwd, originator, "vscode", at, codexEventAt("task_started", at), codexEventAt("task_complete", at))
 		id := n.registerCodex(home, remoteOther, path)
 		n.takeovers.writers = func(codexSource) ([]codexWriter, error) { return nil, nil }
 		n.takeovers.lockHeld = func(codexSource) bool { return false }
 
-		// Desktop stdio app-server running: conflict -> harmless continuation only.
+		// The App's bundled stdio app-server keeps the App thread in continuation-only mode.
 		desktopRunning := true
 		n.codices.scan = func() []codexProcess {
 			if desktopRunning {
-				return []codexProcess{{pid: 999999, home: home, endpoint: "stdio://"}}
+				return []codexProcess{{pid: 999999, home: home, endpoint: "stdio://", desktop: true}}
 			}
 			return nil
 		}
 		n.codices.checked = func() ([]codexProcess, bool) { return n.codices.scan(), true }
 		n.discoverCodex()
 
-		s := byID(listSessions(t, n))[id]
-		if s.Capabilities.Takeover == nil || s.Capabilities.Takeover.CanResume || s.Capabilities.Takeover.Reason != "unavailable" {
-			t.Fatalf("desktop conflict cap = %+v", s.Capabilities.Takeover)
+		s := requireCodexSession(t, listSessions(t, n), id)
+		if s.Capabilities.Terminal {
+			t.Fatal("running App offered ordinary terminal resume")
+		}
+		if takeover := s.Capabilities.Takeover; takeover == nil || takeover.CanResume || takeover.Reason != "app_running" || !takeover.AppOwned {
+			t.Fatalf("running App takeover cap = %+v", takeover)
 		}
 		plan, err := n.prepareCodexTakeover(context.Background(), id)
-		if err != nil || plan.CanResume || plan.Reason != "unavailable" || plan.ContinuationPrompt == "" {
-			t.Fatalf("desktop conflict prepare = (%+v, %v)", plan, err)
+		if err != nil || plan.CanResume || plan.Reason != "app_running" || plan.ContinuationPrompt == "" {
+			t.Fatalf("running App prepare = (%+v, %v)", plan, err)
 		}
 
 		// Desktop closed, no writer lock, no conflict: CanResume becomes true.
 		desktopRunning = false
 		n.discoverCodex()
-		s = byID(listSessions(t, n))[id]
-		if s.Capabilities.Takeover == nil || !s.Capabilities.Takeover.CanResume {
-			t.Fatalf("idle desktop cap = %+v", s.Capabilities.Takeover)
+		s = requireCodexSession(t, listSessions(t, n), id)
+		if s.Capabilities.Terminal != terminalWhenClosed {
+			t.Fatalf("closed App terminal cap = %t, want %t", s.Capabilities.Terminal, terminalWhenClosed)
+		}
+		if takeover := s.Capabilities.Takeover; takeover == nil || !takeover.CanResume || !takeover.AppOwned {
+			t.Fatalf("closed App takeover cap = %+v", takeover)
 		}
 		plan, err = n.prepareCodexTakeover(context.Background(), id)
-		if err != nil || !plan.CanResume {
-			t.Fatalf("idle desktop prepare = (%+v, %v)", plan, err)
+		if err != nil || !plan.CanResume || !plan.AppOwned {
+			t.Fatalf("closed App prepare = (%+v, %v)", plan, err)
 		}
 
 		// If desktop app starts between prepare and commit, commit must refuse writer_busy.
 		desktopRunning = true
-		if _, err := n.commitCodexTakeover(context.Background(), id, plan.Token, false); refusalCode(err) != "codex_takeover_writer_busy" {
+		if _, err := n.commitCodexTakeover(context.Background(), id, plan.Token, true); refusalCode(err) != "codex_takeover_writer_busy" {
 			t.Fatalf("desktop started mid-takeover err = %v, want codex_takeover_writer_busy", err)
 		}
-	})
+	}
+	t.Run("desktop origin respects the running App", func(t *testing.T) { checkDesktopViewOnly(t, "Codex Desktop", true) })
+	t.Run("sidebar-confirmed shared origin respects the running App", func(t *testing.T) { checkDesktopViewOnly(t, "persona", false) })
 
 	t.Run("exec, sdk, subagent, and guardian remain rejected", func(t *testing.T) {
 		n, _, cwd := codexHistoryNode(t)
@@ -882,11 +902,11 @@ func TestCodexTakeoverRowReusesListPassDesktopProbe(t *testing.T) {
 	n.takeovers.writers = func(codexSource) ([]codexWriter, error) { return nil, nil }
 	n.takeovers.lockHeld = func(codexSource) bool { return false }
 
-	// Seed the pass cache with desktop available=true (no live socket on disk) to verify codexTakeoverRowIn reuses pass.
+	// A bus seen by the list pass still reports app_running even though a fresh probe would find no live socket.
 	pass := newCodexListPass()
 	pass.desktop[src.home] = true
 	got := n.codexTakeoverRowIn(id, src, quickMeta{}, false, pass)
-	if got == nil || got.CanResume || got.Reason != "unavailable" {
+	if got == nil || got.CanResume || got.Reason != "app_running" || !got.AppOwned {
 		t.Fatalf("pass-cached desktop probe was bypassed: got %+v", got)
 	}
 

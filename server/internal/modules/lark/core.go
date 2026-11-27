@@ -31,6 +31,17 @@ type turns struct {
 	posts threadPoster
 	// book is the chat's state (chat_state.go).
 	book feishuBook
+	// handoff is the proxy replies the module has taken (handoff.go), with its own lock.
+	handoff *handoffBook
+	// detached are the cards closed when their node went away (asks.go).
+	detached detachedCards
+	// held are the /read answers held for the owner (read_held.go).
+	held readHeldBook
+	// board, wb and comp are the standing board (board.go), the pinned workbench (workbench_pin.go) and the
+	// companion bots' notices (companions.go), each with its own lock.
+	board standingBoard
+	wb    workbenchState
+	comp  companionState
 }
 
 // wait waits for the workers, or ctx.
@@ -89,20 +100,30 @@ func (s core) botUpdateCard(ctx context.Context, messageID string, card *botcard
 	return s.h.UpdateCard(ctx, messageID, card)
 }
 
+// botReplyTo writes text under messageID at to: key makes the same line, sent again, land once; full says the text is
+// a task's whole answer (the hub's full_answer).
+func (s core) botReplyTo(ctx context.Context, to feishuTarget, messageID, text, key string, full bool) error {
+	return s.appCall(ctx, FeishuText, targetParams(to, map[string]any{"reply_to": messageID, "text": text, "uuid": key, "full_answer": full}), nil)
+}
+
 func (s core) botReact(ctx context.Context, messageID, emoji string) (string, error) {
-	return s.h.React(ctx, messageID, emoji)
+	var res struct {
+		ReactionID string `json:"reaction_id"`
+	}
+	err := s.appCall(ctx, FeishuReact, map[string]any{"message_id": messageID, "emoji": emoji}, &res)
+	return res.ReactionID, err
 }
 
 func (s core) botUnreact(ctx context.Context, messageID, reactionID string) {
-	s.h.Unreact(ctx, messageID, reactionID)
+	_ = s.appCall(ctx, FeishuUnreact, map[string]any{"message_id": messageID, "reaction_id": reactionID}, nil)
 }
 
 func (s core) botMessages(ctx context.Context, messageID string) ([]botcard.Item, error) {
-	return s.h.Messages(ctx, messageID)
-}
-
-func (s core) workbenchStamp(ctx context.Context, c *botcard.Card) *botcard.Card {
-	return s.h.WorkbenchStamp(ctx, c)
+	var res struct {
+		Items []botcard.Item `json:"items"`
+	}
+	err := s.appCall(ctx, FeishuMessages, map[string]any{"message_id": messageID}, &res)
+	return res.Items, err
 }
 
 func (s core) runExt(r *channel.Run, key string) string { return s.h.RunExt(r, key) }
@@ -132,20 +153,6 @@ func (s core) rememberRun(messageID string, r *channel.Run) {
 	s.rememberBotThread(messageID, botTargetOf(r), r.Label)
 }
 
-func (s core) processPanel(l i18n.Lang, c *botcard.Card, steps []string) {
-	s.h.ProcessPanel(l, c, steps)
-}
-
-// answerCards are an answer's cards (the core's answerCards): each with the text it goes as when refused.
-func (s core) answerCards(l i18n.Lang, name func(*url.URL) string, answer string, quiet bool, steps []string, foot string) []botAnswerCard {
-	cards, fallbacks := s.h.AnswerCards(l, name, answer, quiet, steps, foot)
-	out := make([]botAnswerCard, len(cards))
-	for i, c := range cards {
-		out[i] = botAnswerCard{card: c, fallback: fallbacks[i]}
-	}
-	return out
-}
-
 // botAnswerCard is one card of an answer and the text it goes as when refused.
 type botAnswerCard struct {
 	card     *botcard.Card
@@ -160,6 +167,10 @@ const readChatKey = "read_chat"
 
 // readRun: the run answers a "/read" in a group.
 func readRun(ext map[string]string) bool { return ext[readChatKey] != "" }
+
+// readDirectKey is set ("1") on a /read's run asked with the read_group_direct switch on: its answer goes straight
+// into the group. Without it the answer is held for the owner (read_held.go, #14437).
+const readDirectKey = "read_direct"
 
 // cloneExt is a copy of a run's channel values.
 func cloneExt(m map[string]string) map[string]string {
@@ -189,6 +200,8 @@ type runLive struct {
 	// kit is the progress card as a CardKit entity, streamed into (stream.go); nil before it is sent, or for a card
 	// sent as a message.
 	kit *cardKit
+	// readNoted: a held /read's owner was told it is being worked on (readWorking), once per run.
+	readNoted bool
 }
 
 // Abort stops the run's agent-message worker (the core dropped the run). Never called under the channels' lock.

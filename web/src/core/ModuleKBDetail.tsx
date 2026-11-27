@@ -2,7 +2,8 @@
 // knowledge kind (`kbKinds`) adds parts to the page of each entry of that kind (the recording module: a meeting's
 // minutes, conversation and transcript). The page (views/knowledge/KBDetail.tsx) lays itself out as a function of those
 // parts; this draws it with the module's parts once the module's code is in, and with none before (its chunk loads when
-// such an entry opens, never at start) or when no module that is on names the kind.
+// such an entry opens, never at start). A default panel may supply a Core read-only detail for a kind whose data stays
+// available with the module off (recordings); other kinds without an enabled module draw with no parts.
 import { useEffect, useState, type ComponentType } from "react";
 import { loadModule, moduleKBKindAt, moduleState, useModuleStates, type ModuleKBDetailParts, type ModuleKBDetailProps } from "./module-host";
 
@@ -39,23 +40,36 @@ export function loadKBDetailParts(kind: string): Promise<ComponentType<ModuleKBD
 }
 
 /** The page of a knowledge entry, with the parts the module that names its kind adds. */
-export function ModuleKBDetail(props: ModuleKBDetailProps) {
+export function ModuleKBDetail({ readOnly: ReadOnly, ...props }: ModuleKBDetailProps & { readOnly?: ComponentType<ModuleKBDetailProps> }) {
   const id = useKBKindModule(props.kind);
-  const [Parts, setParts] = useState<ComponentType<ModuleKBDetailProps> | null>(() => (id ? drawn.get(id) ?? null : null));
+  const [loaded, setLoaded] = useState<{ id: string; Component: ComponentType<ModuleKBDetailProps> | null } | null>(() =>
+    id ? { id, Component: drawn.get(id) ?? null } : null,
+  );
   const { kind } = props;
   useEffect(() => {
-    if (!id) return setParts(null);
+    if (!id) {
+      setLoaded(null);
+      return;
+    }
+    const cached = drawn.get(id) ?? null;
+    setLoaded({ id, Component: cached });
+    if (cached) return;
     let live = true;
     loadKBDetailParts(kind).then(
-      (parts) => live && setParts(() => parts),
+      (parts) => live && setLoaded({ id, Component: parts }),
       // the page stays as it is without the module's parts: its own sections still work
-      (err) => console.error(err),
+      (err) => {
+        if (live) setLoaded({ id, Component: null });
+        console.error(err);
+      },
     );
     return () => {
       live = false;
     };
   }, [id, kind]);
-  if (!id || !Parts) return <>{props.children(NO_PARTS)}</>;
+  if (!id) return ReadOnly ? <ReadOnly {...props} /> : <>{props.children(NO_PARTS)}</>;
+  const Parts = loaded?.id === id ? loaded.Component : drawn.get(id) ?? null;
+  if (!Parts) return <>{props.children(NO_PARTS)}</>;
   return <Parts {...props} />;
 }
 

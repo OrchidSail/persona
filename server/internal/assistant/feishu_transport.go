@@ -5,8 +5,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/nwverse/persona/server/internal/assistantwire"
 	"github.com/nwverse/persona/server/internal/botcard"
-	"github.com/nwverse/persona/server/internal/i18n"
 	"github.com/nwverse/persona/server/internal/larkhost"
 )
 
@@ -15,12 +15,7 @@ import (
 // botPost sends a card: as a reply to replyTo, else into the owner's chat; one Feishu refuses goes as rich text
 // (fallback).
 func (s *Service) botPost(ctx context.Context, replyTo string, card *botcard.Card, fallback string) (string, error) {
-	return s.botPostKeyed(ctx, replyTo, card, fallback, "")
-}
-
-// botPostKeyed is botPost with a key for a send into the chat that may be made again: the same key lands once.
-func (s *Service) botPostKeyed(ctx context.Context, replyTo string, card *botcard.Card, fallback, key string) (string, error) {
-	return s.botPostTo(ctx, feishuTarget{}, replyTo, card, fallback, key)
+	return s.botPostTo(ctx, feishuTarget{}, replyTo, card, fallback, "")
 }
 
 // feishuTarget says where a feishu.post / feishu.text goes beyond the default (larkhost.Target): the chat to send into
@@ -64,13 +59,13 @@ func (s *Service) botPostContent(ctx context.Context, to feishuTarget, replyTo, 
 	if key != "" {
 		p["uuid"] = key
 	}
-	reminder, _ := ctx.Value(todoReminderSendKey{}).(*todoReminderSend)
-	if reminder != nil {
-		p["todo_reminder_pairing"] = map[string]any{"owner": reminder.owner, "paired_at": reminder.pairedAt}
+	pairing, reminder := assistantwire.LarkReminderPairingOf(ctx)
+	if reminder {
+		p["todo_reminder_pairing"] = map[string]any{"owner": pairing.Owner, "paired_at": pairing.PairedAt}
 	}
 	targetParams(to, p)
 	err := s.appCall(ctx, AppFeishu, FeishuPost, p, &res)
-	if reminder != nil && err == nil && res.MessageID == "" {
+	if reminder && err == nil && res.MessageID == "" {
 		err = errors.New("todo reminder: delivery receipt unavailable")
 	}
 	if err == nil {
@@ -104,50 +99,6 @@ func (s *Service) botNoteTo(ctx context.Context, to feishuTarget, messageID, tex
 	}
 }
 
-// botReplyTo writes text under messageID at to: key makes the same line, sent again, land once; full says the text is
-// a task's whole answer (the hub's full_answer).
-func (s *Service) botReplyTo(ctx context.Context, to feishuTarget, messageID, text, key string, full bool) error {
-	return s.appCall(ctx, AppFeishu, FeishuText, targetParams(to, map[string]any{"reply_to": messageID, "text": text, "uuid": key, "full_answer": full}), nil)
-}
-
-// botSay sends a line of text into the owner's chat.
-func (s *Service) botSay(ctx context.Context, text string) {
-	if err := s.appCall(ctx, AppFeishu, FeishuText, map[string]any{"text": text}, nil); err != nil {
-		s.logf("bots: say: %v", err)
-	}
-}
-
 func (s *Service) botUpdateCard(ctx context.Context, messageID string, card *botcard.Card) error {
 	return s.appCall(ctx, AppFeishu, FeishuUpdateCard, map[string]any{"message_id": messageID, "card": s.workbenchStamp(ctx, card).JSON()}, nil)
-}
-
-func (s *Service) botReact(ctx context.Context, messageID, emoji string) (string, error) {
-	var res struct {
-		ReactionID string `json:"reaction_id"`
-	}
-	err := s.appCall(ctx, AppFeishu, FeishuReact, map[string]any{"message_id": messageID, "emoji": emoji}, &res)
-	return res.ReactionID, err
-}
-
-func (s *Service) botUnreact(ctx context.Context, messageID, reactionID string) {
-	_ = s.appCall(ctx, AppFeishu, FeishuUnreact, map[string]any{"message_id": messageID, "reaction_id": reactionID}, nil)
-}
-
-func (s *Service) botMessages(ctx context.Context, messageID string) ([]botcard.Item, error) {
-	var res struct {
-		Items []botcard.Item `json:"items"`
-	}
-	err := s.appCall(ctx, AppFeishu, FeishuMessages, map[string]any{"message_id": messageID}, &res)
-	return res.Items, err
-}
-
-// botName is a user's name (the hub's contact lookup; "someone" when it can't be read).
-func (s *Service) botName(ctx context.Context, openID string, lang i18n.Lang) string {
-	var res struct {
-		Name string `json:"name"`
-	}
-	if err := s.appCall(ctx, AppFeishu, FeishuUserName, map[string]any{"open_id": openID}, &res); err != nil || res.Name == "" {
-		return i18n.T(lang, "assistant-feishu.unknown_sender")
-	}
-	return res.Name
 }

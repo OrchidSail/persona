@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nwverse/persona/server/internal/buswire"
 	"github.com/nwverse/persona/server/internal/proto"
 )
 
@@ -255,9 +256,24 @@ const (
 	MethodAgentResumeParams = "agents.resume_params"
 	// MethodAgentTabName: {prompt} → {name}: a herdr tab's name for an Agent started with prompt ("" when none).
 	MethodAgentTabName = "agents.tab_name"
+	// EventAgentTabNameStarted: AgentTabNameStart, one way: a start has its session, so its model name can finish off the caller's path.
+	EventAgentTabNameStarted = "agents.tab_name_started"
 	// EventSessionSeen: SessionSeen, one way: the user looked at a session in an app.
 	EventSessionSeen = "session.seen"
 )
+
+// AgentTabNameMethod asks the manager for an Agent tab name.
+var AgentTabNameMethod = buswire.Method[AgentTabNameParams, AgentTabNameResult]{Name: MethodAgentTabName}
+
+// AgentTabNameParams carries the prompt used to name the tab.
+type AgentTabNameParams struct {
+	Prompt string `json:"prompt"`
+}
+
+// AgentTabNameResult carries the tab name, which can be empty.
+type AgentTabNameResult struct {
+	Name string `json:"name"`
+}
 
 // AgentStartParams is agents.start_params's params: Params are POST /api/v1/sessions's (the node's session.start);
 // NameFrom is what the tab is named from now ("": not now: it has a name, resumes a session, or is named later). Lang
@@ -268,6 +284,24 @@ type AgentStartParams struct {
 	NameFrom  string         `json:"name_from,omitempty"`
 	Lang      string         `json:"lang,omitempty"`
 }
+
+// AgentTabNameStart is agents.tab_name_started's params: the started session and the placeholder its tab still has to
+// carry before the late automatic name may replace it. NameFrom is the prompt or name hint, without project context.
+type AgentTabNameStart struct {
+	MachineID       AgentMachineID `json:"machine_id"`
+	SessionID       AgentSessionID `json:"session_id"`
+	TabID           AgentTabID     `json:"tab_id"`
+	ExpectedTabName string         `json:"expected_tab_name"`
+	NameFrom        string         `json:"name_from"`
+}
+
+// The distinct ID types keep a late rename from accidentally crossing computers, sessions and terminal tabs. They are
+// named strings only at this wire boundary; their JSON bytes are unchanged.
+type (
+	AgentMachineID string
+	AgentSessionID string
+	AgentTabID     string
+)
 
 // AgentResumeParams is agents.resume_params's params: Params are the message's (the node's session.send; the hub
 // sends none and puts the answer's over its own: a message may carry pictures).

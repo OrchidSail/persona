@@ -202,6 +202,11 @@ extension Theme {
         /// New Worktree…: another checkout of a workspace's repository (docs/integrations/terminal.md「New worktree…」).
         static let newWorktree = "plus.rectangle.on.folder"
         static let retry = "arrow.clockwise"
+        /// Look a word up in the text_lookup extension (the edit menu's Look Up in <provider>, #10977).
+        static let lookUpWord = glossary
+        /// Save a looked-up word to the extension's list, and the word saved there (the lookup card's Save / Saved).
+        static let saveWord = "bookmark"
+        static let savedWord = "bookmark.fill"
         /// Put a computer's own Persona files right (Machine Details › What This Computer Can Do › Repair).
         static let repair = "wrench.adjustable"
         /// Loads the in-app page again (the link sheet's header).
@@ -746,6 +751,8 @@ extension Theme {
         static let memory = "brain"
         /// Search (a list's, the sidebar's).
         static let search = "magnifyingglass"
+        /// A session's title as what a search reads (the Agents list's Search In › Title, #7443).
+        static let sessionTitle = "textformat"
         /// The knowledge base (~/.persona/data).
         static let knowledge = "books.vertical"
         /// A knowledge-base topic (#7251): what Persona learned on one subject.
@@ -817,9 +824,10 @@ extension Theme {
         static let mobileData = "cellularbars"
         /// The calendar event a meeting recording is named after (docs/apple/recording.md).
         static let calendarEvent = "calendar.day.timeline.left"
-        /// A meeting's minutes (#2710): a key point, a decision, a question left open (action items are `todo`).
+        /// A meeting's minutes (#2710): a key point, a decision, a disagreement (#16728), a question left open (action items are `todo`).
         static let keyPoint = "text.bubble.fill"
         static let decision = "signature"
+        static let disagreement = "bubble.left.and.exclamationmark.bubble.right"
         static let openQuestion = "questionmark.circle.dashed"
         /// A meeting's minutes as a whole (the watch's Meeting Minutes).
         static let minutes = "note.text"

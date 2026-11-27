@@ -97,6 +97,7 @@ export function ModelProfileEditor({
   conflict,
   onSave,
   onCapture,
+  onDelete,
   onReload,
   onCancel,
 }: {
@@ -113,6 +114,7 @@ export function ModelProfileEditor({
   conflict: boolean;
   onSave: (input: ModelProfileSaveInput) => Promise<void>;
   onCapture?: () => Promise<void>;
+  onDelete?: () => void;
   onReload: () => Promise<void>;
   onCancel: () => void;
 }) {
@@ -540,18 +542,33 @@ export function ModelProfileEditor({
             )}
           </div>
         )}
-        <div className="flex items-center justify-end gap-2">
-          <Button tone="quiet" disabled={busy} onClick={onCancel}>
-            {t("common.cancel")}
-          </Button>
-          <Button
-            tone="primary"
-            busy={saving ?? busy}
-            disabled={!canSave || (!dirty && !conflict)}
-            onClick={handleSave}
-          >
-            {t("settings-modelprofiles.save")}
-          </Button>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            {onDelete && (
+              <Button
+                tone="quiet"
+                className="text-red enabled:hover:text-red"
+                testId="profile-editor-delete-button"
+                disabled={busy}
+                onClick={onDelete}
+              >
+                {t("settings-modelprofiles.delete")}
+              </Button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button tone="quiet" disabled={busy} onClick={onCancel}>
+              {t("common.cancel")}
+            </Button>
+            <Button
+              tone="primary"
+              busy={saving ?? busy}
+              disabled={!canSave || (!dirty && !conflict)}
+              onClick={handleSave}
+            >
+              {t("settings-modelprofiles.save")}
+            </Button>
+          </div>
         </div>
       </div>
     </div>
@@ -802,8 +819,15 @@ function LauncherOverrideCard({
     onChange(next);
   };
 
+  const applyBindingPatch = (patch: Partial<{ model: string; effort: string }>) => {
+    const next: LauncherDraftEntry = { ...entry, ...patch };
+    // Launcher overrides treat omitted `model` as "leave unchanged" and reject `model: ""` (err_launcher_model).
+    if ("model" in patch && !patch.model?.trim()) delete next.model;
+    onChange(next);
+  };
+
   const binding = launcherBindingState(launcherList.list, entry, { model: managed?.model || provider?.model });
-  useCanonicalLauncherBinding(binding.legacy, (patch) => onChange({ ...entry, ...patch }));
+  useCanonicalLauncherBinding(binding.legacy, applyBindingPatch);
   const explicitVariant = Boolean(entry.model && binding.folded);
   const effortValue = !explicitVariant && entry.effort === undefined ? UNSET_EFFORT : binding.value;
 
@@ -854,8 +878,15 @@ function LauncherOverrideCard({
               placeholder={managed?.model || provider?.model || t("settings-modelprofiles.leave_unchanged")}
               onChange={(value) => {
                 const patch = binding.pickModel(value);
-                if (patch.effort === "") onChange({ ...entry, ...patch });
-                else setField("model", value.trim() ? value : undefined);
+                if (patch.effort === "") applyBindingPatch(patch);
+                else if (explicitVariant && entry.effort === "") {
+                  // Leaving an explicit folded variant clears the synthetic `effort: ""` written by `asVariant`.
+                  const next: LauncherDraftEntry = { ...entry };
+                  if (value.trim()) next.model = value;
+                  else delete next.model;
+                  delete next.effort;
+                  onChange(next);
+                } else setField("model", value.trim() ? value : undefined);
               }}
             />
           </div>
@@ -872,7 +903,7 @@ function LauncherOverrideCard({
               onChange={(e) => {
                 const v = e.target.value;
                 if (v === UNSET_EFFORT) setField("effort", undefined);
-                else onChange({ ...entry, ...binding.pickEffort(v) });
+                else applyBindingPatch(binding.pickEffort(v));
               }}
             >
               {!explicitVariant && <option value={UNSET_EFFORT}>{t("settings-modelprofiles.leave_unchanged")}</option>}
@@ -1272,7 +1303,7 @@ function TierCandidateCard({
           onChange={(e) => {
             const nextLauncher = e.target.value;
             if (nextLauncher === candidate.launcher) return;
-            onChange({ launcher: nextLauncher, model: "", effort: "", permission_mode: "" });
+            onChange({ launcher: nextLauncher, model: "", effort: "", permission_mode: "", speed: "", originalModel: undefined });
           }}
         >
           <option value="">{t("settings-modelprofiles.tier_launcher_placeholder")}</option>

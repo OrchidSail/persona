@@ -273,6 +273,44 @@ test('a wake batch reaches a watcher before the first live text of the new excha
   assert.deepEqual(events[0].params.items.map(item => item.id), ['reply#0', 'reply#-1'])
 })
 
+test('live text waits for held catch-up wake batches and flushes pending items before sending delta', async (t) => {
+  const n = await startFakeNode(t)
+  let releaseCatchup
+  let inCatchup = false
+  const catchup = new Promise((resolve) => { releaseCatchup = resolve })
+  const rt = createRuntime(minimal({
+    items: async () => {
+      inCatchup = true
+      await catchup
+      return { items: [{ id: 'reply#0', seq: 1, kind: 'text' }], history: 'h', to_seq: 1 }
+    },
+  }), { runtime: 'toy', socketPath: n.path })
+  t.after(() => { releaseCatchup?.(); rt.stop() })
+  rt.start()
+  await n.ready
+  const watching = n.peer.call('session.watch', { session_id: 's1', since_seq: 0 })
+  await until('driver is catching up', () => inCatchup)
+  rt.append('s1', { items: [{ id: 'reply#-1', seq: 2, kind: 'notice', wake: true }], fromSeq: 1, toSeq: 2, history: 'h' })
+  rt.stream('s1', 'Resumed progress.')
+  await new Promise((r) => setTimeout(r, 40))
+  assert.equal(n.all('session.delta').length, 0, 'delta must not overtake held wake items during catch-up')
+  releaseCatchup()
+  await watching
+  await until('resumed progress streams after wake', () => n.last('session.delta')?.text === 'Resumed progress.')
+  const events = n.events.filter((entry) => entry.event === 'session.items' || entry.event === 'session.delta')
+  assert.deepEqual(events.map((entry) => entry.event), ['session.items', 'session.delta'])
+  assert.equal(events[0].params.items.some((item) => item.wake === true), true)
+
+  // A buffered non-wake batch must also flush before a following live delta.
+  const before = n.events.length
+  rt.append('s1', { items: [{ id: 'step#0', seq: 3, kind: 'thinking', text: 'Working' }], fromSeq: 2, toSeq: 3, history: 'h' })
+  rt.stream('s1', 'Next line.')
+  await until('next delta arrives after buffered item', () => n.last('session.delta')?.text === 'Next line.')
+  const tail = n.events.slice(before).filter((entry) => entry.event === 'session.items' || entry.event === 'session.delta')
+  assert.deepEqual(tail.map((entry) => entry.event), ['session.items', 'session.delta'])
+  assert.deepEqual(tail[0].params.items.map((item) => item.id), ['step#0'])
+})
+
 test('in-place item updates under the same history go out without advancing seq and coalesce by id', async (t) => {
   const n = await startFakeNode(t)
   const rt = createRuntime(minimal({ items: async () => ({ items: [], history: 'h1', to_seq: 5 }) }), { runtime: 'toy', socketPath: n.path, retryMs: 20 })
@@ -1462,4 +1500,69 @@ test('supervision_policy and assistant_environment are explicit assistant-only c
   assert.equal(noSend.hello.caps.assistant, false)
   assert.equal(noSend.hello.caps.supervision_policy, undefined, 'never advertised when start/send are incomplete')
   assert.equal(noSend.hello.caps.assistant_environment, undefined)
+})
+
+test('hello carries codex_claims only when codexClaims names an app-server instance (#12571)', async (t) => {
+  const plain = await startFakeNode(t)
+  const unclaimed = createRuntime(minimal(), { runtime: 'plain', socketPath: plain.path, retryMs: 20 })
+  t.after(() => unclaimed.stop())
+  unclaimed.start()
+  await plain.ready
+  assert.equal(plain.hello.codex_claims, undefined, 'absent without the option')
+
+  const n = await startFakeNode(t, { features: ['prefer_running', 'codex_claims'] })
+  let asked = 0
+  const rt = createRuntime(minimal(), {
+    runtime: 'codexd',
+    socketPath: n.path,
+    retryMs: 20,
+    codexClaims: () => {
+      asked++
+      return [{ home: '/srv/codex', endpoint: 'unix:///srv/codex/app.sock' }, { endpoint: 'ws://127.0.0.1:4500', note: 'x' }, { home: 7 }, null, {}]
+    },
+  })
+  t.after(() => rt.stop())
+  rt.start()
+  await n.ready
+  assert.deepEqual(n.hello.codex_claims, [{ home: '/srv/codex', endpoint: 'unix:///srv/codex/app.sock' }, { endpoint: 'ws://127.0.0.1:4500' }],
+    'only the entries that name a home or an endpoint, with nothing else')
+  assert.equal(asked, 1, 'a function is asked once per hello')
+  await until('the node took the claims', () => rt.nodeHas('codex_claims'))
+
+  const old = await startFakeNode(t)
+  const listed = createRuntime(minimal(), { runtime: 'listed', socketPath: old.path, retryMs: 20, codexClaims: [{ home: '/srv/codex' }] })
+  t.after(() => listed.stop())
+  listed.start()
+  await old.ready
+  assert.deepEqual(old.hello.codex_claims, [{ home: '/srv/codex' }], 'a list is sent as it is')
+  assert.equal(listed.nodeHas('codex_claims'), false, 'a node without the feature ignores the claims')
+
+  for (const codexClaims of [[], [{}], () => { throw new Error('not yet') }]) {
+    const none = await startFakeNode(t)
+    const logged = []
+    const quiet = createRuntime(minimal(), { runtime: 'none', socketPath: none.path, retryMs: 20, codexClaims, log: (line) => logged.push(line) })
+    t.after(() => quiet.stop())
+    quiet.start()
+    await none.ready
+    assert.equal(none.hello.codex_claims, undefined, 'nothing to claim sends no codex_claims')
+    if (typeof codexClaims === 'function') assert.ok(logged.some((line) => line.includes('codexClaims: not yet')), 'a failing function is logged')
+  }
+})
+
+test('compactionSettled notifies the node with session_id and optional error', async (t) => {
+  const n = await startFakeNode(t)
+  const rt = createRuntime(minimal(), { runtime: 'toy', socketPath: n.path, retryMs: 20, refreshMs: 0 })
+  t.after(() => rt.stop())
+  assert.equal(rt.compactionSettled('s1'), false)
+  assert.equal(rt.compactionSettled(''), false)
+  assert.equal(rt.compactionSettled(null), false)
+  await rt.start()
+  await n.ready
+  assert.equal(rt.compactionSettled('s1'), true)
+  assert.equal(rt.compactionSettled('s1', 'boom'), true)
+  await until('both compaction settlement events received', () => n.all('session.compaction.settled').length === 2)
+  assert.deepEqual(n.all('session.compaction.settled'), [
+    { session_id: 's1' },
+    { session_id: 's1', error: 'boom' },
+  ])
 })

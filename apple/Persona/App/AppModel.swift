@@ -11,7 +11,9 @@ import PersonaWire
 final class AppModel {
     static let shared: AppModel = {
         NativeStateMigration.prepare()
-        return AppModel()
+        let model = AppModel()
+        InboxStore.bindAfterLaunch(to: model)
+        return model
     }()
 
     /// Every hub paired and the groups they form (HubStore, docs/protocol/multi-hub.md). Changed only through the group
@@ -20,6 +22,8 @@ final class AppModel {
     /// The keychain could not be read at launch (before the first unlock after boot): `registry` is empty because it is
     /// unknown, not because nothing is paired. Nothing is written until it reads (`retryRegistry`).
     @ObservationIgnored private(set) var registryUnreadable = false
+    @ObservationIgnored private let readHubRegistry: () -> HubStore.Loaded
+    @ObservationIgnored private let hubSelectionDefaults: UserDefaults
     /// The credentials upgrade in flight (upgradeCredentials).
     @ObservationIgnored var credentialsUpgrade: Task<Void, Never>?
     /// Pairing tokens this launch traded for the device's own, to that token (DeviceCredentialTrade): a socket or a
@@ -40,6 +44,10 @@ final class AppModel {
     var config: ServerConfig? { hub?.config }
     /// Persona's looks (docs/apple/persona.md): the chosen one, what the hub offers, the packages on the phone.
     let personas: PersonaStore
+    /// Word lookup through a `text_lookup` extension (#10977, docs/apple/ios.md "Word lookup (text_lookup)"): inert until
+    /// the hub-level hub says one answers.
+    @ObservationIgnored private(set) lazy var textLookup = TextLookupModel(deps: .init(
+        api: { [weak self] in self?.api }, features: { [weak self] in self?.hubFeatures ?? [] }))
     /// Which paths conversations mention are there on their machines (only those are linked).
     let filePresence = FilePresence()
     /// Which machine ports links point at are listening (docs/operations/ports.md).
@@ -169,6 +177,8 @@ final class AppModel {
             }
         }
         sessionIndex = index
+        // A row the Agents list showed unseen and seen since, here or elsewhere, keeps its place (#12514).
+        if !shownThisVisit.isEmpty { holdNotedSeen(Array(shownThisVisit.keys)) }
         for (key, cell) in sideCells {
             let now = SideSessions(fold, parent: key)
             if cell.value != now { cell.value = now }
@@ -263,7 +273,7 @@ final class AppModel {
     /// Pending interactions by `uid` (the hub's id, with the group for another group).
     private(set) var interactions: [String: Interaction] = [:] {
         didSet {
-            saveSnapshot(); countBadges(); withdrawSettled(Set(oldValue.keys).subtracting(interactions.keys))
+            saveSnapshot(); countBadges(); withdrawSettled(oldValue.filter { interactions[$0.key] == nil })
             PermissionDiff.prewarm(interactions.lazy.filter { oldValue[$0.key] == nil }.map(\.value))
             lookUpCardSessions()
         }
@@ -349,7 +359,7 @@ final class AppModel {
 
     /// `directoryVisibleInteractions` with a resolver the caller reads the same pass with.
     func directoryVisibleInteractions(reading session: (SessionKey) -> Session?) -> [Interaction] {
-        pendingInteractions.filter { session($0.sessionKey)?.hiddenByDirectory != true }
+        aggregatePendingInteractions.filter { session($0.sessionKey)?.hiddenByDirectory != true }
     }
 
     /// The sessions whose visibility the cards and counts read from an exact lookup when no list holds them: pending
@@ -440,6 +450,14 @@ final class AppModel {
     /// Interactions ended locally (answered, cancelled or gone), by `uid`: neither the full list nor a card frame brings
     /// them back (#1688, #1521). By `uid`, not the hub's id: another group's card with the same id is another card.
     @ObservationIgnored var endedInteractionIDs: Set<String> = []
+    /// Locally ended occurrences with a creation time. A strictly later occurrence of the same id is a new card;
+    /// `endedInteractionIDs` retains the legacy id-only entries and hub withdrawals (#11310).
+    private struct InteractionOccurrence {
+        var wire: String?
+        var date: Date?
+    }
+    @ObservationIgnored private var endedInteractionOccurrences: [String: InteractionOccurrence] = [:]
+    private static let endedInteractionOccurrenceLimit = 500
     /// The terminal dialogs of several questions this device answers in, by session (#2970, ScreenStepsLogic).
     var screenTrails: [SessionKey: ScreenTrail] = [:]
     /// A screen card answered in such a dialog, shown greyed until the next card of the dialog comes.
@@ -553,6 +571,10 @@ final class AppModel {
     }
     /// An Inbox item a link asked to open (`HubPage.inboxItem`): the Inbox pushes it and clears this.
     var inboxToOpen: InboxOpenRequest?
+    #if os(iOS)
+    let pageVisibility = HubPageVisibility()
+    @ObservationIgnored var deferredNavigationEntry: (page: HubPage, group: String)?
+    #endif
     /// A to-do, knowledge entry or computer a link opened where no screen handles links itself (`HubLinkSheet`), over
     /// everything.
     var linkSheet: HubLinkSheet?
@@ -577,6 +599,8 @@ final class AppModel {
             #endif
             // The shell routes it now, not when a view is next drawn (docs/apple/shell.md).
             if selectedTab != oldValue { tabRouter?.route(selectedTab, in: self) }
+            // A to-dos push held while the Persona tab was not in front is read as it comes back.
+            if selectedTab != oldValue { TodoStore.frontChanged() }
             #if os(visionOS)
             // The Inbox's own tab, which the TabView keeps up: picked, or routed to again while in front (a widget).
             if selectedTab == .mail { inboxEntries += 1 }
@@ -626,6 +650,23 @@ final class AppModel {
     /// its chat is left (`AgentListOrder.held`, #2213; user, 2026-11-05: it moves to Idle only after you leave).
     private(set) var heldInList: SessionKey?
     private(set) var heldJustFinished = false
+    /// The rows the Agents list showed as Unread or Just finished during this visit and seen since (opened here, marked
+    /// here, or seen elsewhere), by the section each was shown in (#12514). With `SeenRows.stay` each keeps its place
+    /// there, drawn as Seen (`AgentListOrder.heldSeen`), until the list is refreshed (`releaseSeen`); Mark All as Seen
+    /// lets its rows go at once. In memory only: a new launch starts without any.
+    private(set) var seenThisVisit: [SessionKey: AgentListOrder.Held] = [:]
+    /// The rows the list showed as Unread or Just finished during this visit that are still unseen, by that section
+    /// (`noteShownUnseen`). Not watched: a row that finishes changes nothing the list derives until it is seen, when it
+    /// moves into `seenThisVisit` (`markSeen`, `holdNotedSeen`).
+    @ObservationIgnored private(set) var shownThisVisit: [SessionKey: AgentListOrder.Held] = [:]
+    /// Tests: a choice of their own, whatever this device's setting.
+    @ObservationIgnored var seenRowsForTests: SeenRows?
+    @ObservationIgnored private let seenRowsChoice = SeenRowsChoice()
+    /// What a row read from Unread or Just finished does once seen, on this device (`SeenRows`).
+    var seenRows: SeenRows { seenRowsForTests ?? seenRowsChoice.mode }
+    /// The Agents list's notice opened Settings for that choice (#12514): its page brings the choice into sight once
+    /// (`LayoutSettingsPage`).
+    @ObservationIgnored var revealSeenRowsSetting = false
     private(set) var assistantConfig: APIClient.AssistantState? {
         didSet {
             if let g = hub?.group, let a = assistantConfig {
@@ -638,6 +679,12 @@ final class AppModel {
     /// instead of a made-up launcher name (#4200). Held settings (or a restored snapshot) keep the page usable. An
     /// answer that names no launcher sets it too (current hubs always name one; purely defensive against old hubs).
     private(set) var assistantConfigLoadFailed = false
+    /// Distinguishes visits to the same hub and assistant when an earlier request is still in flight.
+    @ObservationIgnored private var assistantPageGeneration = 0
+    /// The conversation-backed directions the settings were read again for because the page's conversations did not
+    /// list them (`refreshDirectionTree`): once each. One the hub never lists there (archived, on another computer, in
+    /// another space) read them again on every tree push before.
+    @ObservationIgnored private var directionsReadFor: Set<String> = []
     /// The directions' names by leader conversation id (`GET /api/v1/assistant/leaders`): the sidebar's Directions group
     /// shows these instead of the conversations' titles. Read again with the assistant; empty without leaders.
     private(set) var directionNames: [String: String] = [:]
@@ -831,8 +878,11 @@ final class AppModel {
     static let demoKey = "demo.on"
 
     /// `personas`: a store of its own (tests: a folder and defaults of their own); the app's otherwise.
-    init(stateFolder: URL? = nil, personas store: PersonaStore? = nil) {
+    init(stateFolder: URL? = nil, personas store: PersonaStore? = nil,
+         readHubRegistry: @escaping () -> HubStore.Loaded = { HubStore.read() }, hubSelectionDefaults: UserDefaults = .standard) {
         self.stateFolder = stateFolder
+        self.readHubRegistry = readHubRegistry
+        self.hubSelectionDefaults = hubSelectionDefaults
         personas = store ?? PersonaStore()
         RetiredPreferences.clear(from: .standard)
         Task.detached(priority: .utility) { LarkAttachment.staging.sweep() }
@@ -848,7 +898,7 @@ final class AppModel {
             UserDefaults.standard.removeObject(forKey: Self.demoKey)
         }
         #endif
-        switch HubStore.read() {
+        switch readHubRegistry() {
         case .registry(let r): registry = r
         case .unreadable:
             // Not "unpaired": launched before the first unlock after boot (a push in the background). Nothing is
@@ -864,7 +914,7 @@ final class AppModel {
             registryUnreadable = false
         }
         #endif
-        hubGroup = UserDefaults.standard.string(forKey: Self.hubGroupKey) ?? ""
+        hubGroup = hubSelectionDefaults.string(forKey: Self.hubGroupKey) ?? ""
         if let raw = Self.savedPlace?.string(forKey: "app.tab"), let tab = AppTab(rawValue: raw) {
             selectedTab = tab
         }
@@ -899,6 +949,7 @@ final class AppModel {
             // All-day recording: the erases and deletes the watch hasn't confirmed go now that a send reaches it
             // (docs/assistant/day-recap.md「Erasing」「Deleting」), paired with a hub or not.
             RecordingDayReceiver.shared.sessionActivated()
+            RecordingModule.tellWatch() // what the hub says of recording, as last remembered (#15214)
             guard let self, self.isPaired, !self.isDemo else { return }
             WatchSync.shared.push(persona: self.personas.chosenID)
             self.pushWatchConfigs()
@@ -964,7 +1015,10 @@ final class AppModel {
     /// The keychain could not be read at launch: try again (the app came to the front, the phone was unlocked), and
     /// once it reads, start as a launch with it would have.
     func retryRegistry() {
-        guard registryUnreadable, case .registry(let r) = HubStore.read() else { return }
+        guard registryUnreadable, case .registry(let r) = readHubRegistry() else { return }
+        #if os(iOS)
+        defer { resumeNavigationEntry() }
+        #endif
         registryUnreadable = false
         registry = r
         buildLinks()
@@ -989,6 +1043,14 @@ final class AppModel {
         }
     }
 
+    /// Remember both an explicit pick and the fallback when a group's last pairing is removed. A later launch may
+    /// need that choice before protected pairing data is readable.
+    func rememberHubGroup(_ group: String) {
+        guard hubGroup != group else { return }
+        hubGroup = group
+        hubSelectionDefaults.set(group, forKey: Self.hubGroupKey)
+    }
+
     /// One link per group of the registry, keeping the ones that are already there (their sockets stay open).
     func buildLinks() {
         let wanted = registry.groups
@@ -1006,10 +1068,13 @@ final class AppModel {
         links = out
         for link in links where !link.isDemo { link.live.route = routePicker(link.group) }
         arrangeAddresses()
-        if link(hubGroup) == nil, let first = links.first { hubGroup = first.group }
+        if link(hubGroup) == nil, let first = links.first { rememberHubGroup(first.group) }
         applyPersonaPalette()
         relabelMachines()
         syncExtensionSurfaces()
+        #if os(iOS)
+        pageVisibility.follow(hub?.group, link: hub.map(ObjectIdentifier.init))
+        #endif
     }
 
 
@@ -1146,6 +1211,7 @@ final class AppModel {
             if let id = identity?.hubID, !id.isEmpty, let had = h.hubID { return had == id }
             return h.config.url == new.url // a hub that does not say who it is: the same address
         }
+        var replacedPrevious: (device: String?, watch: String?, hubID: String?, url: URL)?
         if let i = same, DeviceCredentialTrade.keepsDevice(r.hubs[i], pairing: new, traded: tradedTokens) {
             // The same pairing link again (scanned twice, opened from the camera as well): it was traded for this
             // device's own token already. Writing it back would leave the app on a token the hub drops in minutes.
@@ -1154,7 +1220,9 @@ final class AppModel {
             group = r.hubs[i].group
             tunnels.adopt(SSHTunnels.pairingID, as: r.hubs[i].id)
         } else if let i = same {
-            // The same hub paired again (a new pairing link): its new credential replaces the old one.
+            // The same hub paired again (a new pairing link): remember the prior credentials so upgradeCredentials
+            // sends them in `replaces`, even for pairings created before PreviousDeviceCredentials existed.
+            replacedPrevious = (r.hubs[i].deviceID, r.hubs[i].watchDeviceID, r.hubs[i].hubID ?? identity?.hubID, r.hubs[i].config.url)
             r.hubs[i].config = new
             r.hubs[i].deviceID = deviceID
             r.hubs[i].tradedPairing = nil
@@ -1192,7 +1260,15 @@ final class AppModel {
         link.live.connect(registry.primary(group)?.config ?? new)
         pushWatchConfigs()
         PushRegistrar.shared.registerIfPossible()
-        Task { await upgradeCredentials() }
+        Task {
+            if let prev = replacedPrevious {
+                await Task.detached {
+                    if let d = prev.device { PreviousDeviceCredentials.record(d, slot: .device, hubID: prev.hubID, url: prev.url) }
+                    if let w = prev.watch { PreviousDeviceCredentials.record(w, slot: .watch, hubID: prev.hubID, url: prev.url) }
+                }.value
+            }
+            await upgradeCredentials()
+        }
     }
 
 
@@ -1281,6 +1357,9 @@ final class AppModel {
 
     /// Sign Out of everything: every group, every hub (Settings › Disconnect with one group, a revoked credential of this device).
     func unpair() {
+        assistantPageGeneration += 1
+        directionsReadFor = []
+        directionNames = [:]
         forgetSeen()
         updateHeldRetryReceipts { _ in [] }
         LarkChatOutbox.forget()
@@ -1472,6 +1551,9 @@ final class AppModel {
         interactions.values.sorted { ($0.createdAt ?? .distantPast) < ($1.createdAt ?? .distantPast) }
     }
 
+    /// One request wherever cards are aggregated. `pendingInteractions` also retains display copies for conversations.
+    var aggregatePendingInteractions: [Interaction] { pendingInteractions.filter { !$0.isDisplayMirror } }
+
     /// The hub-level group's Persona conversations (each hub has its own Persona), newest first.
     var assistantConversations: [Session] { assistantLists(for: hub?.group ?? "").open }
 
@@ -1512,11 +1594,14 @@ final class AppModel {
     /// Loads the assistant config; with no remembered conversation, picks up the newest one.
     func refreshAssistant() async {
         guard let api else { return }
+        let generation = assistantPageGeneration
+        func isCurrent() -> Bool { generation == assistantPageGeneration && showsPage(of: api) }
         do {
             let st = try await api.assistant()
-            guard showsPage(of: api) else { return } // another group or manager was picked meanwhile
+            guard isCurrent() else { return } // another group or manager was picked meanwhile
             let previousMain = assistantMain
-            assistantConfig = st
+            // Unchanged settings tell no reader (and write no snapshot): the tree's pushes used to read them again.
+            if st != assistantConfig { assistantConfig = st }
             // A different main for the manager that was cleared: the empty page is over, and someone looking at it
             // sees what the hub has. Another manager's refresh does not drop this one's flag.
             if mainClear.note(group: api.group, manager: assistantManagerID ?? "", mainSessionID: st.main),
@@ -1557,12 +1642,12 @@ final class AppModel {
             // own too; the hub keeps whichever came last), unless the user picked one by hand (#1855): then it stays.
             let tz = TimeZone.current.identifier
             if Self.syncsZone(st, device: tz), let updated = try? await api.setAssistant(timezone: tz) {
-                guard showsPage(of: api) else { return }
+                guard isCurrent() else { return }
                 assistantConfig = updated
             }
-            guard showsPage(of: api) else { return }
-            await refreshDirectionInfo(api, leaders: st.leaders ?? [])
-            guard showsPage(of: api) else { return }
+            guard isCurrent() else { return }
+            await refreshDirectionInfo(api, leaders: st.leaders ?? [], generation: generation)
+            guard isCurrent() else { return }
             // A hub that names no launcher gets the same retry state as a failed read (#4200): current hubs always
             // resolve one (their default), so an empty answer means an old hub — show Couldn't Load Settings instead of an
             // endless Reading or a made-up name.
@@ -1572,13 +1657,13 @@ final class AppModel {
             if directionTree == nil { Task { await refreshDirectionTree(api, followLeaders: false) } }
         } catch {
             // Settings that already name a launcher stay usable; with none held the page shows Couldn't Load Settings (#4200).
-            if showsPage(of: api), (assistantConfig?.launcher ?? "").isEmpty { assistantConfigLoadFailed = true }
+            if isCurrent(), (assistantConfig?.launcher ?? "").isEmpty { assistantConfigLoadFailed = true }
         }
     }
 
     /// The directions' names and outside metadata for `leaders`: none without leaders; a hub that cannot list them
     /// keeps what is held (or none), and the sidebar shows those conversations' titles. Counts come from the tree alone.
-    private func refreshDirectionInfo(_ api: APIClient, leaders: [String]) async {
+    private func refreshDirectionInfo(_ api: APIClient, leaders: [String], generation: Int) async {
         guard !leaders.isEmpty else {
             if !directionNames.isEmpty { directionNames = [:] }
             outsideDirectionFallback = [:]
@@ -1586,7 +1671,7 @@ final class AppModel {
             if outside != outsideDirections { outsideDirections = outside }
             return
         }
-        guard let list = try? await api.leaders(), showsPage(of: api) else { return }
+        guard let list = try? await api.leaders(), generation == assistantPageGeneration, showsPage(of: api) else { return }
         let names = APIClient.directionNames(list)
         if names != directionNames { directionNames = names }
         // This response may land after the tree. Keep newly announced flat rows, but never replace a tree row's counts
@@ -1656,9 +1741,14 @@ final class AppModel {
         }
         // An unlisted conversation-backed direction needs the whole settings read so its row appears without a relaunch.
         // An outside direction is already complete here: treating its opaque id as a missing conversation would reread
-        // the assistant after every tree push (#8236).
+        // the assistant after every tree push (#8236). Each is read for once: a direction whose conversation the settings
+        // never list (archived, on another computer, in another space) would otherwise reread them on every push.
         let known = Set((assistantConfig?.conversations ?? []).map(\.sessionID))
-        if followLeaders, tree.hasUnlistedConversation(known: known) { await refreshAssistant() }
+        let unread = tree.unlistedConversations(known: known).subtracting(directionsReadFor)
+        if followLeaders, !unread.isEmpty {
+            directionsReadFor.formUnion(unread)
+            await refreshAssistant()
+        }
     }
 
     /// The Couldn't Load Settings retry: the page flips back to Reading at once, and repeated taps share the one request (#4200).
@@ -1716,7 +1806,18 @@ final class AppModel {
         do {
             if let main = assistantMain { // an ended one is resumed by the hub
                 assistantCurrent = main
-                try await api.send(main, text: text)
+                let retryKey = DirectSendRetryKey(key: main, text: text, imageFingerprints: [])
+                let id = directSendID(for: retryKey)
+                let socket = socket(main.group)
+                do {
+                    try await OpRetry.untilDelivered(keepTrying: { socket?.takesWrites == true }) {
+                        try await api.send(main, text: text, clientMsgID: id.uuidString, opID: id)
+                    }
+                    directSendRetries.sent(retryKey)
+                } catch {
+                    if Self.directSendDidNotDeliver(error) { directSendRetries.sent(retryKey) }
+                    throw error
+                }
             } else {
                 // Settings not read yet: whether it has a main conversation is unknown, and a plain one replaces none.
                 let makesMain = assistantConfig != nil
@@ -2354,7 +2455,10 @@ final class AppModel {
     private func drainChildRefresh(_ key: SessionKey, initialAPI: APIClient) async {
         while true {
             let api = childRefreshAPIs[key] ?? initialAPI
-            await childIndex.refresh(parent: key, api: api)
+            await childIndex.refresh(parent: key, api: api) { [weak self] rows in
+                guard let self else { return rows }
+                return self.seenOutbox.landRows(rows, at: Date())
+            }
             childRowsRead(key)
             var gate = childHints[key] ?? FetchHint()
             let pending = gate.finish()
@@ -2384,6 +2488,20 @@ final class AppModel {
                 childHints[key] = gate
             }
         }
+    }
+
+    /// Reads a paged parent's folded side sessions while the Agents list names an unread side (#13524, web `HoldSides`):
+    /// shares `childIndex` and `childHints` with `refreshOpenChildren`, no timer, no-op on complete-list hubs.
+    func refreshUnreadSides(_ key: SessionKey) async {
+        guard sideFoldGroups.contains(key.group),
+              features(key.group).contains(ChildSessions.feature),
+              sessionLists.isPaged(key.group),
+              let api = api(key.group),
+              socket(key.group)?.state == .connected else { return }
+        let parent = sessionsByMachine[key.machineRef]?.first { $0.sessionID == key.sessionID } ?? session(key)
+        guard (parent?.children?.sidesUnread ?? 0) > 0 else { return }
+        if childIndex.isLoaded(key), childIndex.knownNow(key).contains(where: SideFold.isSideRow) { return }
+        await runChildRefresh(key, api: api, hint: nil, force: false)
     }
 
     private func finishChildRefresh(for key: SessionKey) {
@@ -2953,15 +3071,118 @@ final class AppModel {
         }
     }
 
+    private func occurrence(_ ix: Interaction) -> InteractionOccurrence {
+        InteractionOccurrence(wire: ix.createdAtWire, date: ix.createdAt)
+    }
+
+    private func laterOccurrence(_ candidate: InteractionOccurrence, than ended: InteractionOccurrence) -> Bool {
+        if let a = candidate.wire, let b = ended.wire, let comparison = JSON.compareOccurrenceTimes(a, b) {
+            return comparison == .orderedDescending
+        }
+        guard let current = candidate.date, let previous = ended.date else { return false }
+        return current > previous
+    }
+
+    private func sameOccurrence(_ lhs: InteractionOccurrence, _ rhs: InteractionOccurrence) -> Bool {
+        if lhs.wire == rhs.wire { return lhs.date == rhs.date }
+        if let a = lhs.wire, let b = rhs.wire, JSON.compareOccurrenceTimes(a, b) == .orderedSame { return true }
+        // A locally constructed card may have a Date but no original wire text.
+        if (lhs.wire == nil || rhs.wire == nil), let a = lhs.date, let b = rhs.date { return a == b }
+        return false
+    }
+
+    private func endedInteraction(_ ix: Interaction) -> Bool {
+        if endedInteractionIDs.contains(ix.uid) { return true }
+        guard let ended = endedInteractionOccurrences[ix.uid] else { return false }
+        return !laterOccurrence(occurrence(ix), than: ended)
+    }
+
+    private func markEndedInteraction(_ ix: Interaction) {
+        markEndedOccurrence(ix.uid, occurrence(ix))
+    }
+
+    private func markEndedOccurrence(_ uid: String, _ current: InteractionOccurrence) {
+        guard !endedInteractionIDs.contains(uid) else { return }
+        guard current.date != nil else { endedInteractionIDs.insert(uid); return }
+        if let previous = endedInteractionOccurrences[uid] {
+            if laterOccurrence(previous, than: current) { return }
+            if !sameOccurrence(previous, current), !laterOccurrence(current, than: previous) {
+                // Mixed legacy/dated identities cannot be ordered. Only the
+                // currently displayed occurrence may supersede that marker.
+                guard let live = interactions[uid], sameOccurrence(occurrence(live), current) else { return }
+            }
+        }
+        if endedInteractionOccurrences[uid] == nil, endedInteractionOccurrences.count >= Self.endedInteractionOccurrenceLimit,
+           let first = endedInteractionOccurrences.keys.first {
+            endedInteractionOccurrences.removeValue(forKey: first)
+        }
+        endedInteractionOccurrences[uid] = current
+    }
+
+    private func hasLaterOccurrence(_ ix: Interaction) -> Bool {
+        hasLaterOccurrence(ix.uid, than: occurrence(ix))
+    }
+
+    private func hasLaterOccurrence(_ uid: String, than candidate: InteractionOccurrence) -> Bool {
+        var ownsCurrent = false
+        if let current = interactions[uid] {
+            let live = occurrence(current)
+            if laterOccurrence(live, than: candidate) { return true }
+            ownsCurrent = sameOccurrence(live, candidate)
+            if !ownsCurrent, !laterOccurrence(candidate, than: live) { return true }
+        }
+        if let ended = endedInteractionOccurrences[uid] {
+            if laterOccurrence(ended, than: candidate) { return true }
+            if !sameOccurrence(ended, candidate), !laterOccurrence(candidate, than: ended), !ownsCurrent { return true }
+        }
+        return false
+    }
+
+    func forgetEndedInteraction(_ ix: Interaction) {
+        if let ended = endedInteractionOccurrences[ix.uid] {
+            // A failed old request may clear its own optimistic end, never the
+            // terminal marker a successful same-ID replacement left behind.
+            let current = occurrence(ix)
+            if laterOccurrence(ended, than: current) { return }
+            let ownsCurrent = interactions[ix.uid].map { sameOccurrence(occurrence($0), current) } ?? false
+            if !sameOccurrence(ended, current), !laterOccurrence(current, than: ended), !ownsCurrent { return }
+            endedInteractionOccurrences.removeValue(forKey: ix.uid)
+            return
+        }
+        // ID-only markers are the optimistic kind made for cards with no
+        // creation time. A dated card cannot clear an ambiguous legacy end.
+        if occurrence(ix).date == nil { endedInteractionIDs.remove(ix.uid) }
+    }
+
+    func retainEndedInteractions(_ keep: (String) -> Bool) {
+        endedInteractionIDs = endedInteractionIDs.filter(keep)
+        endedInteractionOccurrences = endedInteractionOccurrences.filter { keep($0.key) }
+    }
+
     /// One group's pending interactions (the other groups' stay). `askedAt`: when the hub was asked for this list; the
     /// pushes delivered before then that it does not have are over (#3513).
     func replaceInteractions(_ group: String, _ list: [Interaction], askedAt: Date? = nil) {
         var all = interactions.filter { $0.value.group != group }
-        for ix in list where all[ix.uid] == nil && !endedInteractionIDs.contains(ix.uid) {
-            all[ix.uid] = ix
+        for ix in list where !endedInteraction(ix) {
+            if let current = all[ix.uid] {
+                // A reconnect snapshot may carry a newer same-ID occurrence than
+                // the last live card; an older snapshot never replaces a newer one.
+                if laterOccurrence(occurrence(ix), than: occurrence(current)) { all[ix.uid] = ix }
+            } else {
+                all[ix.uid] = ix
+            }
         }
-        let new = all.values.filter { interactions[$0.uid] == nil }
-        if all != interactions { interactions = all }
+        let new = all.values.filter { ix in
+            guard let previous = interactions[ix.uid] else { return true }
+            return laterOccurrence(occurrence(ix), than: occurrence(previous))
+        }
+        // Interaction's compatibility equality compares Date only. A snapshot that changes only the wire timestamp's
+        // nanoseconds is still a different occurrence and must be installed before the older one can return.
+        let changed = all.count != interactions.count || all.contains { entry in
+            guard let previous = interactions[entry.key] else { return true }
+            return previous != entry.value || !sameOccurrence(occurrence(previous), occurrence(entry.value))
+        }
+        if changed { interactions = all }
         for ix in new { noteScreenCard(ix, live: false) }
         if let askedAt {
             interactionsListedAt[group] = askedAt
@@ -3092,7 +3313,9 @@ final class AppModel {
     /// replaces its inside, docs/apple/ios-state.md).
     func applySessions(_ byMachine: [MachineRef: [Session]], complete: Bool = true) {
         if complete { reconcileHeldRetries(byMachine) }
-        let byMachine = seenOutbox.land(byMachine, at: Date())
+        let marksBefore = seenOutbox.marks.count
+        let byMachine = seenOutbox.land(byMachine, at: Date(), dropMissing: complete)
+        if seenOutbox.marks.count != marksBefore { seenRevision &+= 1 }
         var lists = sessionsByMachine
         var olds: [(old: [Session], new: [Session])] = []
         for (machineID, list) in byMachine {
@@ -3240,6 +3463,11 @@ final class AppModel {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.sessionsCoalesce) { [weak self] in self?.applyPendingSessions() }
     }
 
+    /// A display copy is another place to answer the same request, not another arrival to announce.
+    static func announcesInteraction(_ ix: Interaction, replacing previous: Interaction?) -> Bool {
+        !ix.isDisplayMirror && Delegated.announces(ix, replacing: previous)
+    }
+
     func handle(_ ev: ServerEvent, group: String) {
         #if DEBUG || PERF_SIGNPOST
         PerfTrace.push(Self.perfName(ev))
@@ -3247,11 +3475,15 @@ final class AppModel {
         let isHub = group == hub?.group
         switch ev {
         case .hello(let hello):
+            #if os(iOS)
+            if isHub { refreshPageVisibility() }
+            #endif
             let previousSurfaceCapabilities = extensionSurfaceCapabilities
             link(group)?.received(hello)
             if let link = link(group), !link.isDemo { Task { await link.agentsDisplay.refresh() } }
             // The hub may turn modules off, or on again (#13849, docs/apple/ios.md "Modules"); kept per hub.
             ModuleState.shared.heard(Set(hello.features), from: group, isHub: isHub)
+            if isHub { RecordingModule.tellSurfaces() } // the watch, the widgets and the control follow the recording module too (#15214)
             #if os(iOS)
             if isHub { Task { await HealthIntakeSync.shared.refresh(model: self) } }
             #endif
@@ -3263,12 +3495,15 @@ final class AppModel {
             // Whether this hub lists one manager's sessions may have come with this hello (`sessions_manager`).
             Task { await sessionLists.rescope(group, model: self) }
             if isHub { PersonalAgentSync.shared.received([]) }
+            // Whether words can be looked up may have changed while the socket was down, or with this hello's features.
+            if isHub { textLookup.refresh() }
             // The direction tree changes while the socket is down: read it again on every (re)connect (#4352).
             if isHub, let hubAPI = api { Task { await refreshDirectionTree(hubAPI) } }
             // Its features say again whether this hub's filing routes are there (#11516), whichever hub is picked now; a
             // page open on the current hub reads again (`hubHellos`).
             DirectionFilings.shared.hello(group)
             if isHub { hubHellos += 1 }
+            ExtensionUIRegistry.shared.invalidate(extension: HealthIntakeUI.id, ui: nil, group: group)
             // `assistant_pages` sent while the socket was down is gone: a hub with Dashboards has its places read again.
             if isHub, hubHellos > 1, hello.features.contains(DashboardsUI.feature) { extensionPlacesChanged() }
             #if os(iOS)
@@ -3374,7 +3609,8 @@ final class AppModel {
         case .inbox:
             if isHub { InboxStore.shared.reload() }
         case .todos:
-            if isHub { TodoStore.shared.reload() }
+            // Every report of a running Agent pushes this: the store spaces its reads and asks the revision first.
+            if isHub { TodoStore.shared.pushed() }
         case .savedPrompts(let manager):
             // another device changed the list: only the shown assistant's is read again (#9436)
             if isHub, SavedPromptStore.concerns(eventManager: manager, shownManager: api?.shownManager) { SavedPromptStore.shared.reload() }
@@ -3382,6 +3618,8 @@ final class AppModel {
             #if os(iOS)
             if isHub { StarredStore.shared.invalidate(manager: manager) }
             #endif
+        case .textLookupChanged:
+            if isHub { textLookup.refresh() }
         case .personas:
             // The new tier's package is downloaded whole before the face changes. The list changed
             // just now: a refresh already under way may have asked before, so it is read again after that one (#2405).
@@ -3394,6 +3632,7 @@ final class AppModel {
         case .managers:
             // Settings › Managers reads the roster again (ManagersView watches this).
             if isHub { managersRevision += 1 }
+            if isHub { textLookup.refresh() }
             Task { await refreshManagerRoster(group) }
         case .directions:
             // The direction tree changed (#4352): read it again. Its answer is the default manager's alone, so another
@@ -3403,7 +3642,10 @@ final class AppModel {
             // The kept Dashboards pages changed (#15017): the drawer's and the sidebar's places are read again. Only the
             // default manager of the hub shown has them (`ExtensionSlots.shared` names none).
             if isHub { extensionPlacesChanged() }
-        case .healthIntake:
+        case .healthStrength:
+            if isHub { healthIntakeRevision += 1 }
+            ExtensionUIRegistry.shared.invalidate(extension: HealthIntakeUI.id, ui: nil, group: group)
+        case .healthIntake, .healthItems:
             if isHub { healthIntakeRevision += 1 }
             #if os(iOS)
             if isHub { HomeWidgetData.shared.intakeChanged() }
@@ -3432,6 +3674,8 @@ final class AppModel {
             // counts only for the copy of the manager that sent it.
             op.manager = pushedBy(manager)
             if isHub { ExtensionOperations.shared.received(op) }
+            // An install, upgrade or uninstall that ended may add or take away the lookup extension.
+            if isHub, !op.isActive { textLookup.refresh() }
         case .extensionAuth(let id, let auth, let manager):
             if isHub { ExtensionAuthStore.shared.received(id, auth, manager: pushedBy(manager)) }
         case .pluginBadge(let plugin, let id, let badge, let manager):
@@ -3439,6 +3683,7 @@ final class AppModel {
             if isHub, pushedBy(manager) == nil { ExtensionSlots.shared.received(plugin: plugin, id: id, badge: badge) }
         case .extensionInvalidate(let ext, let id):
             ExtensionUIRegistry.shared.invalidate(extension: ext, ui: id, group: group)
+            if isHub, ext == textLookup.state.extensionID { textLookup.refresh() }
             if ext == SubscriptionsUI.id { SubscriptionsRefresh.shared.changed() } // the entry rows' counts
             ExtensionWidgetReconciliation.invalidate(group: group, owner: ext, contribution: id)
         #if os(iOS)
@@ -3512,20 +3757,26 @@ final class AppModel {
             // Ended here (answered, cancelled, gone) stays ended, as in the full list (`replaceInteractions`, #1688): the
             // pending-card snapshot after a hello that resumed still lists a card until the node ends it, and one this
             // device had answered came back answerable (#1521). A failed answer takes the id out first (`putBack`).
-            guard !endedInteractionIDs.contains(ix.uid) else { break }
-            let announces = Delegated.announces(ix, replacing: interactions[ix.uid])
+            guard !endedInteraction(ix) else { break }
+            if let current = interactions[ix.uid], laterOccurrence(occurrence(current), than: occurrence(ix)) {
+                break // a delayed older live event cannot replace the newer pending occurrence
+            }
+            let announces = Self.announcesInteraction(ix, replacing: interactions[ix.uid])
             interactions[ix.uid] = ix
             noteScreenCard(ix, live: true)
             if announces { Haptics.attention() }
             summariesChanged()
         case .interactionResolved(let id, let assistant):
+            if withdrawTodoAsk(id, group: group) { return }
             let uid = group.isEmpty ? id : group + "|" + id
             endedInteractionIDs.insert(uid)
             answering.hubEnded(uid)
-            if answerAttempts.progress(uid) != .sending { answerAttempts.finish(uid) }
+            if answerAttempts.progress(uid) != .sending { answerAttempts.finishEvent(uid) }
             if let assistant, let ix = interactions[uid] { keepDelegated(ix, assistant) }
             interactions[uid] = nil
             summariesChanged()
+        case .interactionResolvedOccurrence(let id, let assistant, let createdAt):
+            interactionResolvedOccurrence(id, assistant: assistant, createdAt: createdAt, group: group)
         case .interactionReanswered(let id, let answers):
             noteReanswer(group.isEmpty ? id : group + "|" + id, answers)
         case .toolCall(let callID, let name, let args):
@@ -3537,6 +3788,18 @@ final class AppModel {
             if APIError.isTimeoutText(message) { break } // retried by the next poll / push; not shown
             if let key { chat(key).error = message } else { toast = Toast(message, style: .error) }
         }
+    }
+
+    private func interactionResolvedOccurrence(_ id: String, assistant: AssistantAnswer?, createdAt: String, group: String) {
+        let uid = group.isEmpty ? id : group + "|" + id
+        let ended = InteractionOccurrence(wire: createdAt, date: JSON.parseDate(createdAt))
+        if hasLaterOccurrence(uid, than: ended) { return }
+        markEndedOccurrence(uid, ended)
+        answering.hubEnded(uid, occurrence: createdAt)
+        if answerAttempts.progress(uid) != .sending { answerAttempts.finishEvent(uid, occurrence: createdAt) }
+        if let assistant, let ix = interactions[uid] { keepDelegated(ix, assistant) }
+        interactions[uid] = nil
+        summariesChanged()
     }
 
     #if DEBUG || PERF_SIGNPOST
@@ -3552,7 +3815,7 @@ final class AppModel {
         case .live: "live"
         case .delta: "delta"
         case .interaction: "interaction"
-        case .interactionResolved: "interaction_resolved"
+        case .interactionResolved, .interactionResolvedOccurrence: "interaction_resolved"
         case .interactionReanswered: "interaction_reanswered"
         case .toolCall: "tool_call"
         case .hookEvent: "hook"
@@ -3564,10 +3827,13 @@ final class AppModel {
         case .todos: "todos"
         case .savedPrompts: "assistant_saved_prompts"
         case .starredMessages: "assistant_starred"
+        case .textLookupChanged: "text_lookup_changed"
         case .personas: "personas"
         case .look: "look"
         case .managers: "managers"
         case .directions: "directions"
+        case .healthStrength: "health_strength"
+        case .healthItems: "health_items"
         case .healthIntake: "health_intake"
         case .assistantPages: "assistant_pages"
         case .assistantFeed: "assistant_feed"
@@ -3655,8 +3921,8 @@ final class AppModel {
         await resolve(ix, r)
     }
 
-    /// `handoffCard`: the hand-off card's own buttons answer; an approval of one from anywhere else is refused here, as
-    /// the hub would refuse it (`SecretHandoff`).
+    /// `handoffCard`: the hand-off or explicit env card's own buttons answer; an approval of one from anywhere else is
+    /// refused here, as the hub would refuse it (`SecretHandoff`, `SecretRunRequest.delivery`).
     func resolve(_ ix: Interaction, _ r: Resolution, handoffCard: Bool = false) async {
         // To the hub of the interaction's own group (docs/protocol/multi-hub.md「Connections and routing」).
         // A stopped Agent's work card still takes the answers that send it nothing: put off, or dismissed (#6839).
@@ -3669,26 +3935,34 @@ final class AppModel {
             toast = Toast(String(localized: "Approve it on its card in the chat."), style: .error)
             return
         }
+        let env = SecretRunRequest(ix.toolInput)?.delivery == "env" && r.allow == true
+        if env && !handoffCard {
+            toast = Toast(String(localized: "Approve it on its card in the chat."), style: .error)
+            return
+        }
         // No network: the card stays as it is (taking it away and bringing it back a moment later read as "done").
         guard connection.networkUp else { notDone(); return }
+        // A stale tap must not optimistically withdraw a replacement already on screen.
+        guard !hasLaterOccurrence(ix) else { return }
         // A question's card stays where it is, greyed and marked "Sending…", until the hub has the answer: its picks and
         // text stay for a retry (#6279). Every other card goes at once and comes back if its answer fails.
         let keepsCard = ix.kind == .question || r.ownerApprovalPhrase != nil
-        guard let op = answerAttempts.begin(ix.uid, r) else { return } // its answer is on the way: a second tap sends nothing
+        let attemptOccurrence = ix.createdAtWire
+        guard let op = answerAttempts.begin(ix.uid, r, occurrence: attemptOccurrence) else { return } // its answer is on the way: a second tap sends nothing
         if !keepsCard {
+            markEndedInteraction(ix)
             interactions[ix.uid] = nil
-            endedInteractionIDs.insert(ix.uid)
         }
-        answering.begin(ix.uid)
-        defer { answering.finish(ix.uid) }
+        answering.begin(ix.uid, occurrence: attemptOccurrence)
+        defer { answering.finish(ix.uid, occurrence: attemptOccurrence) }
         // One op id for this answer: a retry through a hub restart (the request died with the old process, a proxy
         // answered 502) goes with it again, and the hub presses the keys once. The card waits meanwhile, for up to a
         // minute (OpRetry.limit), then shows the error (a question's) or comes back with it.
-        func over() {
-            answerAttempts.finish(ix.uid)
-            guard keepsCard else { return }
+        func over() -> Bool {
+            guard answerAttempts.finish(ix.uid, op: op), !hasLaterOccurrence(ix) else { return false }
+            markEndedInteraction(ix)
             interactions[ix.uid] = nil
-            endedInteractionIDs.insert(ix.uid)
+            return true
         }
         do {
             if let phrase = r.ownerApprovalPhrase {
@@ -3696,11 +3970,19 @@ final class AppModel {
                     try await api.replyOwnerApproval(ix, phrase: phrase, opID: op)
                     return true
                 }
-                over()
+                guard over() else { return }
                 Haptics.success()
                 return
             }
-            let res = try await OpRetry.untilDelivered { try await api.resolve(ix.id, r, opID: op, handoffCard: handoff) }
+            let res = try await OpRetry.untilDelivered {
+                try await api.resolve(ix.id, r, opID: op, occurrence: attemptOccurrence,
+                                      handoffCard: (handoff || env) && handoffCard, secretRunEnv: env && handoffCard)
+            }
+            guard answerAttempts.owns(ix.uid, op: op) else { return }
+            guard !hasLaterOccurrence(ix) else {
+                answerAttempts.finish(ix.uid, op: op)
+                return
+            }
             if res.already == true, let existing = res.resolution, existing.answeredBy == AssistantAnswer.assistant, ix.kind == .question {
                 // The assistant answered first: its answer shows in the chat, where the user may change it.
                 keepDelegated(ix, AssistantAnswer(answers: existing.answers ?? [:], reason: existing.reason ?? ""))
@@ -3710,40 +3992,51 @@ final class AppModel {
                 let text = (lines.first?.answer.isEmpty == false) ? String(localized: "Already answered: \(lines.first!.answer)") : String(localized: "Already answered")
                 toast = Toast(text, style: .success)
             }
-            over()
+            guard over() else { return }
             if r.cancel == true, res.already != true || res.resolution?.cancel == true, let closed = Answered.answerLines(ix, r).first {
                 // Match Android's receipt for closing a question without an answer; keep another answer's "already" receipt.
                 toast = Toast(closed.answer, style: .success)
             }
             Haptics.success()
         } catch let e as APIError where e.code == "prompt_changed" {
+            guard answerAttempts.owns(ix.uid, op: op) else { return }
+            guard !hasLaterOccurrence(ix) else {
+                answerAttempts.finish(ix.uid, op: op)
+                return
+            }
             // Nothing pressed: the terminal's dialog changed. The hub has ended a screen card and sends one for what is
             // there now; a Codex card it keeps open goes back.
-            answerAttempts.finish(ix.uid)
-            putBack(ix)
+            answerAttempts.finish(ix.uid, op: op)
+            putBack(ix, occurrence: attemptOccurrence)
             Haptics.attention()
             toast = Toast(String(localized: "The dialog in the terminal changed, so no keys were pressed. Check the new one and answer again."), style: .error)
         } catch let e as APIError where e.status == 410 {
+            guard answerAttempts.owns(ix.uid, op: op) else { return }
             let reason = Answered.endedText(e.fields["status"])
-            over()
+            guard over() else { return }
             toast = Toast(reason, style: .error)
         } catch {
-            if keepsCard, answering.putsBack(ix.uid), interactions[ix.uid] != nil, !error.isOffline, !error.isQuiet {
+            guard answerAttempts.owns(ix.uid, op: op) else { return }
+            if hasLaterOccurrence(ix) {
+                // The old answer's failure belongs to an occurrence that is no longer shown.
+                answerAttempts.finish(ix.uid, op: op)
+            } else if keepsCard, answering.putsBack(ix.uid, occurrence: attemptOccurrence), interactions[ix.uid] != nil, !error.isOffline, !error.isQuiet {
                 // The card shows the error and Retry itself.
-                answerAttempts.fail(ix.uid, error.localizedDescription)
+                answerAttempts.fail(ix.uid, error.localizedDescription, occurrence: attemptOccurrence)
                 Haptics.error()
             } else {
-                answerAttempts.finish(ix.uid)
-                putBack(ix)
+                answerAttempts.finish(ix.uid, op: op)
+                putBack(ix, occurrence: attemptOccurrence)
                 show(error)
             }
         }
     }
 
     /// A card whose answer failed, back among the pending ones, unless the hub has ended it meanwhile (#3922).
-    private func putBack(_ ix: Interaction) {
-        guard answering.putsBack(ix.uid) else { return }
-        endedInteractionIDs.remove(ix.uid)
+    private func putBack(_ ix: Interaction, occurrence attemptOccurrence: String? = nil) {
+        guard answering.putsBack(ix.uid, occurrence: attemptOccurrence), !hasLaterOccurrence(ix) else { return }
+        if endedInteractionIDs.contains(ix.uid), occurrence(ix).date != nil { return }
+        forgetEndedInteraction(ix)
         interactions[ix.uid] = ix
     }
 
@@ -4114,47 +4407,151 @@ final class AppModel {
             settleSend(key, msg.id, outcome)
         }
     }
-    func send(_ key: SessionKey, text: String, images: [ImagePayload] = [], haptic: Bool = true) async -> Bool {
+    private struct DirectSendRetryKey: Hashable {
+        var key: SessionKey
+        var text: String
+        var imageFingerprints: [String]
+    }
+    /// Failed direct sends (`askPersona`, `send`) whose delivery is uncertain keep their id on retry so the hub
+    /// deduplicates delivery; cleared once delivered or definitively refused without typing.
+    @ObservationIgnored private var directSendRetries = RetryIDs<DirectSendRetryKey>()
+
+    private func directSendID(for key: DirectSendRetryKey) -> UUID {
+        UUID(uuidString: directSendRetries.id(for: key)) ?? UUID()
+    }
+
+    private nonisolated static func directSendDidNotDeliver(_ error: Error) -> Bool {
+        guard let api = error as? APIError else { return false }
+        if api.fields["delivered"] == "none" { return true }
+        if (400..<500).contains(api.status), api.status != 408, api.status != 429,
+           api.fields["delivered"] != "unknown", api.fields["delivered"] != "yes" {
+            return true
+        }
+        return false
+    }
+
+    func send(_ key: SessionKey, text: String, images: [ImagePayload] = [], haptic: Bool = true, clientMsgID: UUID? = nil) async -> Bool {
         guard allowSend(key), let api = api(key.group) else { return false }
         readiness.failure = nil // the refusal card goes with the next try
+        let retryKey = DirectSendRetryKey(key: key, text: text, imageFingerprints: images.map { DeviceCredentialTrade.fingerprint($0.mime + ":" + $0.data) })
+        let id = clientMsgID ?? directSendID(for: retryKey)
+        let socket = socket(key.group)
         do {
-            try await api.send(key, text: text, images: images, launcher: assistantLaunchers[key], model: assistantModels[key])
+            try await OpRetry.untilDelivered(keepTrying: { socket?.takesWrites == true }) {
+                try await api.send(key, text: text, images: images, launcher: assistantLaunchers[key], model: assistantModels[key],
+                                   clientMsgID: id.uuidString, opID: id)
+            }
+            if clientMsgID == nil { directSendRetries.sent(retryKey) }
             if haptic { Haptics.tap() }
             return true
         } catch {
+            if clientMsgID == nil, Self.directSendDidNotDeliver(error) { directSendRetries.sent(retryKey) }
             show(error)
             return false
         }
     }
 
+    /// Bumped whenever local seen marks change so paged Unread counts update immediately (#13524).
+    private(set) var seenRevision: UInt64 = 0
+
+    func seenMark(_ key: SessionKey) -> SeenOutbox.Mark? { seenOutbox.marks[key] }
+
     /// The user looked at this session: finished work stops being "unread" (docs/protocol/agent-states.md).
     func markSeen(_ key: SessionKey) {
         sendSeen(key)
-        // Optimistic: flip the local copy right away.
+        // Optimistic: flip the local copy right away (in `sessionsByMachine`, `childIndex`, or both on paged hubs).
+        var machineChanged = false
         if var list = sessionsByMachine[key.machineRef], let i = list.firstIndex(where: { $0.sessionID == key.sessionID }),
            list[i].needsSeen() {
-            if key == visibleSession && (list[i].state == .unread || list[i].showsJustFinished(muted: isMuted(list[i]))) {
-                heldInList = key
-                heldJustFinished = list[i].state == .idle
+            if list[i].state == .unread || list[i].showsJustFinished(muted: isMuted(list[i])) {
+                let place: AgentListOrder.Held = list[i].state == .idle ? .justFinished : .unread
+                if key == visibleSession {
+                    heldInList = key
+                    heldJustFinished = place == .justFinished
+                }
+                // Opened after the list showed it unseen, or marked from its menu: it stays where it was until the list is
+                // refreshed (#12514). A chat that finished while it was open was never in that place: it is held only
+                // while open, as before.
+                if seenRows == .stay, key != visibleSession || shownThisVisit[key] != nil || seenThisVisit[key] != nil {
+                    shownThisVisit[key] = nil
+                    if seenThisVisit[key] != place { seenThisVisit[key] = place }
+                }
             }
             list[i].markLocallySeen()
             sessionsByMachine[key.machineRef] = list
+            machineChanged = true
+        }
+        let childChanged = childIndex.markLocallySeen([key])
+        if childChanged && !machineChanged { sessionsChanged() }
+        if machineChanged || childChanged {
+            seenRevision &+= 1
             sessionLists.markSeen([key], model: self)
         }
     }
 
+    /// The Agents list shows these rows as Unread or Just finished (`AgentListProjection.needsSeen`): with
+    /// `SeenRows.stay` each keeps that place once it is seen, here or elsewhere (#12514). Noted where the list does not
+    /// watch (`shownThisVisit`), so a row that finishes derives the list once, not again for being noted.
+    func noteShownUnseen(_ rows: [SessionKey: AgentListOrder.Held]) {
+        guard seenRows == .stay, !rows.isEmpty else { return }
+        shownThisVisit.merge(rows) { _, shown in shown }
+        // Seen in the meantime (the list was derived before a push said so), or a held row shown in another section again.
+        holdNotedSeen(rows.keys)
+    }
+
+    /// The noted rows that are seen now, here or elsewhere, keep the place they were shown in (#12514); a held row the list
+    /// shows unseen again in another section is held there once seen. Called for every change of the lists
+    /// (`sessionsChanged`): the one place a row seen on another device, herdr or the Codex app lands.
+    private func holdNotedSeen(_ keys: some Sequence<SessionKey>) {
+        var held = seenThisVisit, changed = false
+        for key in keys {
+            guard let place = shownThisVisit[key] else { continue }
+            if let s = sessionIndex[key], s.isQuiet, !s.needsSeen() {
+                shownThisVisit[key] = nil
+            } else if held[key] == nil {
+                continue
+            }
+            if held[key] != place {
+                held[key] = place
+                changed = true
+            }
+        }
+        if changed { seenThisVisit = held }
+    }
+
+    /// Lets these rows go from the places they were held in (a section's Clear Seen, Mark All as Seen).
+    func releaseSeen(_ keys: some Sequence<SessionKey>) {
+        var rest = seenThisVisit
+        for key in keys {
+            rest[key] = nil
+            shownThisVisit[key] = nil
+        }
+        if rest.count != seenThisVisit.count { seenThisVisit = rest }
+    }
+
+    /// The list is refreshed (pull to refresh, a quick filter chosen, another computer, hub or assistant, the setting
+    /// changed): every row seen during the visit goes where its state puts it. `shown`: the rows the list shows as unseen
+    /// now (`AgentListProjection.needsSeen`), which start the next visit.
+    func releaseAllSeen(keeping shown: [SessionKey: AgentListOrder.Held] = [:]) {
+        shownThisVisit = seenRows == .stay ? shown : [:]
+        if !seenThisVisit.isEmpty { seenThisVisit = [:] }
+    }
+
     func keepSeen(in list: SessionListModel<Session>) {
         guard !seenOutbox.marks.isEmpty else { return }
-        list.keepSeen { seenOutbox.marks[$0] != nil }
+        let now = Date()
+        list.keepSeen { seenOutbox.holds($0, at: now) }
     }
 
     /// Retire marks and their held row when their pairing is forgotten. Reconnecting keeps both.
     func forgetSeen(in groups: Set<String>? = nil) {
         seenOutbox.forget(groups: groups)
+        seenRevision &+= 1
         if let heldInList, groups?.contains(heldInList.group) ?? true {
             self.heldInList = nil
             heldJustFinished = false
         }
+        releaseSeen((Array(seenThisVisit.keys) + shownThisVisit.keys).filter { groups?.contains($0.group) ?? true })
     }
 
     private func sendSeen(_ key: SessionKey) {
@@ -4165,6 +4562,9 @@ final class AppModel {
     /// Over the socket while it answers its pings, else over HTTP. Nothing says whether the socket's went through: an
     /// unread one not taken within `SeenOutbox.confirmWithin` goes again over HTTP (#1588).
     private func deliverSeen(_ key: SessionKey, overHTTP: Bool = false) {
+        // A recorded mark is settling for other lists, not waiting to be sent again (#12770). With no mark, an
+        // already-seen chat keeps the existing direct send on return.
+        guard seenOutbox.marks[key]?.recordedAt == nil else { return }
         if !overHTTP, let socket = socket(key.group), socket.state == .connected, !socket.stalled {
             seenOutbox.sent(key, .socket, at: Date())
             socket.send(["type": "seen", "machine_id": key.machineID, "session_id": key.sessionID])
@@ -4193,22 +4593,31 @@ final class AppModel {
         }
     }
 
-    /// Mark All as Read: every finished-unread one of these, in one update of the list.
+    /// Mark All as Read: every finished-unread one of these, in one update of the list. They leave their sections at once,
+    /// with the ones already seen there (#12514): a batch says the user is done with them.
     func markSeen(_ keys: [SessionKey]) {
+        releaseSeen(keys)
         let unread = keys.filter { key in sessionIndex[key].map { $0.needsSeen(muted: isMuted($0)) } == true }
         guard !unread.isEmpty else { return }
         for key in unread { sendSeen(key) }
         var lists = sessionsByMachine
+        var machinesChanged = false
         for (machine, keys) in Dictionary(grouping: unread, by: \.machineRef) {
             guard var list = lists[machine] else { continue }
             var remaining = Set(keys.map(\.sessionID))
             for i in list.indices {
                 if remaining.isEmpty { break }
-                if remaining.remove(list[i].sessionID) != nil { list[i].markLocallySeen() }
+                if remaining.remove(list[i].sessionID) != nil {
+                    list[i].markLocallySeen()
+                    machinesChanged = true
+                }
             }
             lists[machine] = list
         }
-        sessionsByMachine = lists
+        if machinesChanged { sessionsByMachine = lists }
+        let childrenChanged = childIndex.markLocallySeen(Set(unread))
+        if childrenChanged && !machinesChanged { sessionsChanged() }
+        seenRevision &+= 1
         sessionLists.markSeen(unread, model: self)
         Haptics.success()
     }
@@ -4974,11 +5383,16 @@ final class AppModel {
 
     /// Another group was picked for the hub-level pages: their data starts over from that group's.
     func hubChanged() {
+        assistantPageGeneration += 1
+        directionsReadFor = []
+        directionNames = [:]
         ModuleState.shared.follow(hub?.group ?? "", features: hub?.features ?? []) // the modules this hub allows (#13849)
+        RecordingModule.tellSurfaces()
         if let g = hub?.group {
             assistantConfig = heldAssistant(g)
         }
         directionTree = nil // the other hub's to-dos and sessions; `refreshAssistant` below reads this one's
+        textLookup.reset() // the other hub's lookup extension, or none; nothing of the last hub's carries over
         outsideDirections = [:]
         outsideDirectionFallback = [:]
         directionTreeLanded = directionTreeAsk // and a read already under way answers for the other one
@@ -4995,6 +5409,7 @@ final class AppModel {
         SavedPromptStore.shared.reload()
         #if os(iOS)
         refreshStarred(reset: true)
+        refreshPageVisibility()
         #endif
         followScope()
         // The avatar is the new hub's from now, before its list is read below: a card tapped meanwhile goes to it.
@@ -5023,7 +5438,12 @@ final class AppModel {
         assistantLauncherRequestRevision += 1
         assistantConfig = heldAssistant(hub?.group ?? "")
         // The tree is the default manager's: kept through a re-read of it, dropped for any other.
+        if switched {
+            assistantPageGeneration += 1
+            directionsReadFor = []
+        }
         if switched || !assistantShows(nil) {
+            directionNames = [:]
             directionTree = nil // the other manager's; `refreshAssistant` below reads this one's
             outsideDirections = [:]
             outsideDirectionFallback = [:]
@@ -5039,6 +5459,9 @@ final class AppModel {
         if switched {
             if let a = assistantCurrent, let s = session(a), s.assistant, !s.inSpace, !assistantShows(s.manager) { assistantCurrent = assistantMain }
             assistantSwitches += 1
+            // Another assistant's computers on the Agents list: it starts again, as for another computer or hub (#12514). The
+            // rows it noted unseen stay noted: those still shown keep their place once read, even when the rows did not change.
+            releaseAllSeen(keeping: shownThisVisit)
             // the "/" list offers the new assistant's saved prompts, never the one before's (#9436)
             SavedPromptStore.shared.forget()
             SavedPromptStore.shared.reload()
@@ -5106,7 +5529,7 @@ final class AppModel {
         // A directory-hidden session's cards count nowhere, as the pages leave them out (`directoryVisibleInteractions`).
         let session = cardSessionResolver()
         // A card its task's supervisor holds is the supervisor's until it passes it up (`Interaction.supervisorHeld`).
-        for ix in interactions.values where session(ix.sessionKey)?.hiddenByDirectory != true && !ix.supervisorHeld {
+        for ix in interactions.values where !ix.isDisplayMirror && session(ix.sessionKey)?.hiddenByDirectory != true && !ix.supervisorHeld {
             guard scope.has(ix.manager ?? session(ix.sessionKey)?.manager, group: ix.group) else { continue }
             // A quiet task's agent asking is the main conversation's to tell (#1731): its count goes there, not on Agents.
             switch place(ix.sessionKey) {
@@ -5489,8 +5912,8 @@ final class AppModel {
 
     func watchSummary() -> WatchSummary {
         // A quiet task's agent and its questions are the main conversation's (#1731).
-        let (live, asking) = QuietTasks.leavingOut(sessions: allSessions.filter { $0.status.isLive }, interactions: pendingInteractions,
-                                                   quiet: isQuiet)
+        let (live, asking) = QuietTasks.leavingOut(sessions: allSessions.filter { $0.status.isLive },
+                                                   interactions: aggregatePendingInteractions, quiet: isQuiet)
         // Connectors' items too: the watch lists them read-only under their own label (#2727).
         let inbox = InboxStore.shared.items.filter { !$0.isDone && $0.triage == .action }
         // A task's agent asking: the watch names the task (docs/assistant/unified-entry.md「Steps」). Muted agents and spaces

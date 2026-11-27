@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/server/internal/lazyre"
 	"github.com/nwverse/persona/server/internal/prompts"
@@ -196,8 +197,10 @@ func rowDelta(key, old, text string) (delta prompts.TurnSection, ok bool) {
 // With 60 open to-dos it is hundreds of characters, and it changed on most messages (a title, a flag, the snapshot
 // switching between ids only and ids with titles): it was told again whole each time. Of these only the items that
 // came or went are told (inlineDelta); the count of all of them is a section of its own ("- 开放待办：共 N 件").
+const openTodoIndexKey = "- 开放待办索引"
+
 var inlineIDs = map[string]func(item string) string{
-	"- 开放待办索引": inlineTodo,
+	openTodoIndexKey: inlineTodo,
 }
 
 // inlineTodoID is the id an index item starts with.
@@ -285,22 +288,35 @@ func turnSectionLen(s prompts.TurnSection) int {
 	return len(prompts.RenderTurnContext(prompts.TurnContext{Sections: []prompts.TurnSection{s}}))
 }
 
-// contextDelta is the block for a message and what the conversation will have seen once it is sent: everything when
-// seen is nil, else the sections that are new or changed (changedSection), the time always, and the names of the
-// snapshot's sections that are gone, so what the conversation has equals the snapshot again. A line before the
-// snapshot's own sections (what the conversation is, a one-time notice) is never told gone: it is not the state of
-// something, and one that is no longer repeated still holds. "" when there is no snapshot.
+// contextDelta is the block for a message and what the conversation will have seen once it is sent. A full block
+// starts over, except that the open to-do index is omitted without a baseline and otherwise goes through inlineDelta:
+// its count and todo_list guidance are already a section of their own. Other sections are sent whole; a block of
+// changes keeps the existing row and inline deltas, the time always, and the names of sections that are gone.
 func contextDelta(seen map[string]string, snapshot string) (string, map[string]string) {
+	return contextDeltaMode(seen, seen == nil, snapshot)
+}
+
+// contextDeltaMode is contextDelta with full stated separately: after a compaction seen can hold only the last open
+// to-do index, kept as a comparison baseline even though the model no longer has the old blocks. next always retains
+// the raw index so a later block of changes can still be compared with it.
+func contextDeltaMode(seen map[string]string, full bool, snapshot string) (string, map[string]string) {
 	sections := snapshotSections(snapshot)
 	if len(sections) == 0 {
 		return "", seen
 	}
 	next := make(map[string]string, len(sections))
-	c := prompts.TurnContext{Full: seen == nil}
+	c := prompts.TurnContext{Full: full}
 	for _, s := range sections {
 		old, known := seen[s.key]
 		switch {
-		case !known:
+		case full && inlineIDs[s.key] != nil:
+			// A restart has no baseline: do not call every current item new. With one, only actual changes go out.
+			if known && old != s.text {
+				if delta, skip, ok := inlineDelta(s.key, old, s.text); ok && !skip {
+					c.Sections = append(c.Sections, delta)
+				}
+			}
+		case full || !known:
 			c.Sections = append(c.Sections, prompts.TurnSection{Text: s.text})
 		case old != s.text:
 			if section, skip := changedSection(s, old); !skip {
@@ -311,14 +327,16 @@ func contextDelta(seen map[string]string, snapshot string) (string, map[string]s
 		}
 		next[s.key] = s.text
 	}
-	for k, v := range seen {
-		if _, still := next[k]; still {
-			continue
-		}
-		if name, listed := strings.CutPrefix(k, listMark); listed {
-			c.Gone = append(c.Gone, name)
-		} else {
-			next[k] = v
+	if !full {
+		for k, v := range seen {
+			if _, still := next[k]; still {
+				continue
+			}
+			if name, listed := strings.CutPrefix(k, listMark); listed {
+				c.Gone = append(c.Gone, name)
+			} else {
+				next[k] = v
+			}
 		}
 	}
 	slices.Sort(c.Gone)
@@ -336,8 +354,13 @@ func (n *Node) turnContext(id string, c contextAnswer) (block string, commit fun
 	}
 	n.mu.Lock()
 	seen := n.ctxSent[id]
+	full := seen == nil
+	history := seen
+	if full && n.ctxOpenTodoIndex[id] != "" {
+		history = map[string]string{openTodoIndexKey: n.ctxOpenTodoIndex[id]}
+	}
 	n.mu.Unlock()
-	block, next := contextDelta(seen, c.Text)
+	block, next := contextDeltaMode(history, full, c.Text)
 	snapshot := block != ""
 	st, _ := n.state.get(id)
 	if c.RecoveryID == "" || st.RecoveryPending != c.RecoveryID {
@@ -373,6 +396,14 @@ func (n *Node) turnContext(id string, c contextAnswer) (block string, commit fun
 			n.ctxSent = map[string]map[string]string{}
 		}
 		n.ctxSent[id] = next
+		if index := next[openTodoIndexKey]; index != "" {
+			if n.ctxOpenTodoIndex == nil {
+				n.ctxOpenTodoIndex = map[string]string{}
+			}
+			n.ctxOpenTodoIndex[id] = index
+		} else {
+			delete(n.ctxOpenTodoIndex, id)
+		}
 		n.mu.Unlock()
 	}
 }
@@ -389,6 +420,7 @@ func (n *Node) contextCompacted(id string) {
 	})
 	n.mu.Lock()
 	delete(n.ctxSent, id)
+	// ctxOpenTodoIndex survives only to compare the next full block's index; it is not context the model still has.
 	n.mu.Unlock()
 	n.forgetFallback(id)     // the refused turns are summarized away: its own model again (#3788)
 	n.clearModelRecovery(id) // the temporary switch ended with the refused turns (#7824)
@@ -441,6 +473,12 @@ type contextAnswer struct {
 // assistantContext asks the hub for the live snapshot (prompts.AssistantContext) and the view errors to report. The
 // hub answers from what it read lately and waits only briefly for a new read, so this doesn't hold the message up.
 func (n *Node) assistantContext(id string) contextAnswer {
+	return n.assistantContextFor(id, "")
+}
+
+// assistantContextFor is assistantContext with the current turn's user text (capped to 4 KiB) so the hub can attach
+// entity-triggered local memory for the main conversation without waiting on any model.
+func (n *Node) assistantContextFor(id, query string) contextAnswer {
 	if n.peer == nil {
 		return contextAnswer{}
 	}
@@ -448,7 +486,17 @@ func (n *Node) assistantContext(id string) contextAnswer {
 	defer cancel()
 	st, _ := n.state.get(id)
 	res := contextAnswer{requested: true, requestedRecoveryID: st.RecoveryPending}
-	if err := n.peer.Call(ctx, "assistant.context", map[string]any{"session_id": id, "recovery_id": st.RecoveryPending, "prepare_recovery": true}, &res); err != nil {
+	params := map[string]any{"session_id": id, "recovery_id": st.RecoveryPending, "prepare_recovery": true}
+	if q := strings.TrimSpace(query); q != "" {
+		if len(q) > 4096 {
+			q = q[:4096]
+			for len(q) > 0 && !utf8.ValidString(q) {
+				q = q[:len(q)-1]
+			}
+		}
+		params["query"] = q
+	}
+	if err := n.peer.Call(ctx, "assistant.context", params, &res); err != nil {
 		n.logger.Printf("assistant context: %v", err)
 		return contextAnswer{requested: true, requestedRecoveryID: st.RecoveryPending}
 	}

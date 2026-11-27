@@ -50,6 +50,9 @@ type tierChange struct {
 // editTiers applies e to ps (fresh from the store; changed in place) and says what changed in which profile. Only the
 // tiers are checked: something else in a profile that no longer holds (a deleted provider) does not stop a tier edit.
 func editTiers(ps *modelProfiles, e tierEdit, now time.Time) ([]tierChange, error) {
+	if len(ps.Profiles) == 0 {
+		return nil, errModelProfileEmpty
+	}
 	targets := e.Profiles
 	if len(targets) == 0 {
 		for _, p := range ps.Profiles {
@@ -228,14 +231,8 @@ func (s *Service) setModelTiers(ctx context.Context, v json.RawMessage) (*ownCha
 	if e.Launcher != nil {
 		launchers = append(launchers, strings.TrimSpace(*e.Launcher))
 	}
-	for _, l := range slices.Compact(slices.Sorted(slices.Values(launchers))) {
-		// before the card, and outside models.mu: a computer may be asked for its launchers
-		if err := s.tierLauncherCheck(ctx, l); err != nil {
-			return nil, err
-		}
-	}
 	s.models.mu.Lock()
-	ps, _, err := s.modelProfilesLocked(ctx)
+	ps, err := s.modelProfilesLocked(ctx)
 	var changes []tierChange
 	if err == nil {
 		changes, err = editTiers(&ps, e, time.Now().UTC())
@@ -243,6 +240,12 @@ func (s *Service) setModelTiers(ctx context.Context, v json.RawMessage) (*ownCha
 	s.models.mu.Unlock()
 	if err != nil {
 		return nil, err
+	}
+	for _, l := range slices.Compact(slices.Sorted(slices.Values(launchers))) {
+		// Before the card, and outside models.mu: a computer may be asked for its launchers.
+		if err := s.tierLauncherCheck(ctx, l); err != nil {
+			return nil, err
+		}
 	}
 	for _, c := range changes {
 		if c.After == nil {
@@ -261,7 +264,13 @@ func (s *Service) setModelTiers(ctx context.Context, v json.RawMessage) (*ownCha
 		return nil, errors.New("no database on this hub")
 	}
 	revision := ps.Revision
-	return &ownChange{applyChecksProposal: true, cardText: func(l i18n.Lang) string {
+	profileAfter := map[string]ModelProfile{}
+	for _, change := range changes {
+		if i := slices.IndexFunc(ps.Profiles, func(p ModelProfile) bool { return p.ID == change.ID }); i >= 0 {
+			profileAfter[change.ID] = cloneModelProfile(ps.Profiles[i])
+		}
+	}
+	return &ownChange{applyChecksProposal: true, revision: &revision, modelProfileWrite: true, profileAfter: profileAfter, cardText: func(l i18n.Lang) string {
 		lines := make([]string, 0, len(changes))
 		for _, c := range changes {
 			lines = append(lines, i18n.T(l, "assistant-settings_tool.change_model_tier", i18n.Args{"profile": c.Name, "tier": c.Tier,
@@ -286,7 +295,7 @@ func tierCardText(l i18n.Lang, t *ModelTier) string {
 }
 
 // saveTierEdit makes the edit the user approved, at the revision its card was made from, and only when it still changes
-// what the card said: templates never saved are made again from the configuration, at the same revision.
+// what the card said.
 func (s *Service) saveTierEdit(ctx context.Context, revision int64, e tierEdit, card []tierChange) (string, error) {
 	s.models.mu.Lock()
 	text, active, err := s.saveTierEditLocked(ctx, revision, e, card)
@@ -298,7 +307,7 @@ func (s *Service) saveTierEdit(ctx context.Context, revision int64, e tierEdit, 
 }
 
 func (s *Service) saveTierEditLocked(ctx context.Context, revision int64, e tierEdit, card []tierChange) (string, string, error) {
-	ps, seeded, err := s.modelProfilesLocked(ctx)
+	ps, err := s.modelProfilesLocked(ctx)
 	if err != nil {
 		return "", "", err
 	}
@@ -317,9 +326,6 @@ func (s *Service) saveTierEditLocked(ctx context.Context, revision int64, e tier
 	state, err := s.readModelProfileState(ctx)
 	if err != nil {
 		return "", "", err
-	}
-	if seeded {
-		state.seed()
 	}
 	// one event for the edit, however many profiles it changed: <profile>.tiers.<name> each
 	event := ModelProfileEvent{At: now, Action: "save", By: ProfileActor{Kind: "assistant"}}
@@ -360,6 +366,9 @@ func (s *Service) getModelTiers(ctx context.Context) (string, error) {
 	v, err := s.modelProfilesView(ctx)
 	if err != nil {
 		return "", err
+	}
+	if len(v.Profiles) == 0 {
+		return "", errModelProfileEmpty
 	}
 	var b strings.Builder
 	for _, p := range v.Profiles {

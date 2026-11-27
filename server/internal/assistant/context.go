@@ -43,6 +43,12 @@ func (s *Service) Context(ctx context.Context, p ContextParams) ContextResult {
 		snapshot = s.contextSnapshot(ctx, s.snapshotScope(ctx, p.SessionID), background)
 		// The memory extension's standing entries this conversation may use, a section of its own (memory_extension_source.go).
 		snapshot = s.withStandingMemory(ctx, p.MachineID, p.SessionID, snapshot)
+		// Main chat: deterministically attach <=1536B of non-sensitive local memory for high-discriminability entities mentioned in this turn.
+		if section := s.mainEntityMemorySection(ctx, p.MachineID, p.SessionID, p.Query); section != "" {
+			snapshot = appendSnapshotSection(snapshot, section)
+		}
+		// Leader sessions: attach bound-project extension memory and active scoped user decisions on start/resume/compaction.
+		snapshot = s.withLeaderMemory(ctx, p.MachineID, p.SessionID, snapshot)
 	}
 	c := prompts.AssistantContext{ScheduledWorkPlan: cleanRound && s.settings(ctx).workGuideOn(), Snapshot: snapshot, Owner: s.owner(ctx),
 		Main: s.isMain(ctx, p.SessionID), Leader: s.isLeader(ctx, p.SessionID), Background: background}
@@ -189,6 +195,14 @@ func scopeSnapshot(snap prompts.Snapshot, scope string) prompts.Snapshot {
 	mine := func(o prompts.SnapshotOwner) bool { return scope == "" || o.Origin == scope || o.Supervisor == scope }
 	snap.Scoped = scope != ""
 	snap.Tasks, _ = firstOf(snap.Tasks, snapshotTaskLimit, func(t prompts.SnapshotTask) bool { return mine(t.Owner) })
+	if snap.Scoped {
+		for i := range snap.Tasks {
+			if snap.Tasks[i].Owner.Supervisor == scope || snap.Tasks[i].Owner.Origin == scope {
+				snap.Tasks[i].OriginID, snap.Tasks[i].OriginTitle, snap.Tasks[i].OriginLink = "", "", ""
+				snap.Tasks[i].SupervisedElsewhere = false
+			}
+		}
+	}
 	snap.Approvals, _ = firstOf(snap.Approvals, snapshotApprovalLimit, func(a prompts.SnapshotApproval) bool { return mine(a.Owner) })
 	var accepts int
 	snap.Unaccepted, accepts = firstOf(snap.Unaccepted, snapshotAcceptLimit, func(a prompts.SnapshotAccept) bool { return mine(a.Owner) })
@@ -370,6 +384,7 @@ func (s *Service) ProfileChanged(context.Context) {
 	s.prefs.mu.Lock()
 	s.prefs.at = time.Time{}
 	s.prefs.mu.Unlock()
+	s.invalidateLauncherListCache("")
 	// A manager.json pin may have changed the supervision interval even though the saved settings did not.
 	s.rescheduleSupervision()
 }
@@ -395,6 +410,8 @@ func snapshotAgentGroup(c proto.Session, now time.Time) snapshotAgentGroupKind {
 	switch {
 	case c.State == proto.StateNeedsYou, silentRow(c), upstreamRow(c):
 		return snapshotAgentNeedsYou // a turn with no output or a persistent upstream stall needs visibility (#10187, #13372)
+	case unverifiedAgyTurn(c):
+		return snapshotAgentOutside
 	case c.State == proto.StateWorking:
 		return snapshotAgentWorking
 	case c.AwaitsReply && c.State == proto.StateIdle && recent:

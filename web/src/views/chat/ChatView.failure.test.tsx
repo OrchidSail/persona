@@ -600,7 +600,7 @@ describe("a message that did not go, in an agent's chat (#1122)", () => {
     await flush();
     expect(kept).toBe(true); // the composer does not put the words back
     expect(failed()?.textContent).toContain("你好");
-    expect(host.querySelector("[data-outbox] [role=alert]")?.textContent).toContain("没发出去：会话已结束");
+    expect(host.querySelector("[data-outbox] [role=alert]")?.textContent).toContain("发送失败：会话已结束");
     expect(button("重试")).toBeDefined();
     expect(button("删除")).toBeDefined();
     expect(localStorage.getItem("draft:hub/c1")).toBeNull();
@@ -910,7 +910,7 @@ describe("a message the node held back for an ultracode change (#3428)", () => {
     await act(async () => void (went = await captured.onSend!({ text: "再看看测试", images: [] })));
     await flush();
     expect(went).toBe(true); // the box is free: its stop button too, while the turn runs
-    expect(host.textContent).toContain("等 ultracode 的切换在这一轮结束后生效，再发这条");
+    expect(host.textContent).toContain("此消息将在本轮结束、ultracode 切换生效后自动发送");
     expect(host.textContent).toContain("再看看测试");
     expect(host.querySelector('[data-testid="readiness-failure"]')).toBeNull();
     reply = () => json({});
@@ -918,7 +918,7 @@ describe("a message the node held back for an ultracode change (#3428)", () => {
     await flush();
     expect(bodies.map((b) => b.text)).toEqual(["再看看测试", "再看看测试"]);
     expect(bodies[1].client_msg_id).not.toBe(bodies[0].client_msg_id);
-    expect(host.textContent).not.toContain("等 ultracode 的切换");
+    expect(host.textContent).not.toContain("ultracode 切换生效后自动发送");
   });
 
   it("not through in time: it stays as a failed bubble that says why, the box empty", async () => {
@@ -1090,6 +1090,43 @@ describe("accepted messages waiting for their transcript copy (#2792)", () => {
       act(() => root.render(null));
       vi.useRealTimers();
     }
+  });
+
+  it("keeps attached pictures on a sent message after switching to another conversation and back (#13830)", async () => {
+    const images = [
+      { mime: "image/jpeg", data: "AAAA" },
+      { mime: "image/png", data: "BBBB" },
+    ];
+    act(() => root.render(<ChatView key="c1" mid="hub" sid="c1" />));
+    await flush();
+    await act(async () => void (await captured.onSend!({ text: "Look at these two pictures", images })));
+    await flush();
+    const id = bodies[0].client_msg_id;
+    const key = `outbox-msg:hub/c1/${id}`;
+    expect(host.querySelectorAll("[data-user-bubble] img")).toHaveLength(2);
+    expect(localStorage.getItem(key)).not.toContain("AAAA");
+
+    // Switch to another conversation and back in the same tab (hosts key ChatView by conversation).
+    act(() => root.render(<ChatView key="c2" mid="hub" sid="c2" />));
+    await flush();
+    act(() => root.render(<ChatView key="c1" mid="hub" sid="c1" />));
+    await flush();
+    const restoredImgs = [...host.querySelectorAll(`[data-outbox="${id}"] [data-user-bubble] img`)].map((img) => img.getAttribute("src"));
+    expect(restoredImgs).toEqual(["data:image/jpeg;base64,AAAA", "data:image/png;base64,BBBB"]);
+    expect(host.querySelector(`[data-outbox="${id}"] [data-user-bubble]`)?.getAttribute("data-send-state")).toBe("sent");
+
+    // When the transcript echo arrives, the outbox entry settles and its images render from the transcript.
+    transcript.items = [
+      { id: "u1#0", seq: 1, role: "user", kind: "text", text: "Look at these two pictures", client_msg_id: id },
+      { id: "u1#1", seq: 1, role: "user", kind: "image", image: { mime: "image/jpeg", lazy: true }, client_msg_id: id },
+      { id: "u1#2", seq: 1, role: "user", kind: "image", image: { mime: "image/png", lazy: true }, client_msg_id: id },
+    ];
+    act(() => root.render(<ChatView key="c1" mid="hub" sid="c1" />));
+    await flush();
+    expect(host.querySelector(`[data-outbox="${id}"]`)).toBeNull();
+    expect(host.querySelectorAll("[data-user-bubble]")).toHaveLength(1);
+    expect(host.querySelectorAll("[data-user-bubble] img")).toHaveLength(2);
+    expect(localStorage.getItem(key)).toBeNull();
   });
 });
 

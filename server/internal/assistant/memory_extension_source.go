@@ -1,8 +1,10 @@
 package assistant
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -139,7 +141,8 @@ func (c *memoryExtensionCache) read(ctx context.Context, gen uint64, done chan s
 
 // memoryReadBounds are the bounds of memory_extension_wire.go, for the extensions' manager.
 func memoryReadBounds() extmgr.MemoryReadBounds {
-	return extmgr.MemoryReadBounds{PageLimit: memoryExtensionPageLimit, Pages: memoryExtensionPages, Entries: memoryExtensionMost,
+	return extmgr.MemoryReadBounds{PageLimit: memoryExtensionPageLimit, MaxPages: memoryExtensionMaxPages,
+		ReadTimeout: memoryExtensionReadTimeout, TotalMost: memoryExtensionTotalMost,
 		CallTimeout: memoryExtensionCallTimeout, AnswerMost: memoryExtensionAnswerMost}
 }
 
@@ -157,6 +160,7 @@ func memoryExtensionMerge(reads []extmgr.MemorySourceRead) (memoryExtensionBatch
 			continue
 		}
 		b := memoryExtensionBatchOf(r.Pages)
+		out.StandingBytes = max(out.StandingBytes, b.StandingBytes)
 		added := false
 		for _, e := range b.Entries {
 			if seen[e.ID] {
@@ -179,7 +183,7 @@ func memoryExtensionMerge(reads []extmgr.MemorySourceRead) (memoryExtensionBatch
 // standingOnly is b with its standing entries only: only those are meant for a standing channel; the others come in
 // by relevance in a recall, a hand-off or the Inbox.
 func (b memoryExtensionBatch) standingOnly() memoryExtensionBatch {
-	out := memoryExtensionBatch{Tagged: b.Tagged, Names: b.Names}
+	out := memoryExtensionBatch{Tagged: b.Tagged, Names: b.Names, StandingBytes: b.StandingBytes}
 	for _, e := range b.Entries {
 		if e.Standing {
 			out.Entries = append(out.Entries, e)
@@ -188,28 +192,34 @@ func (b memoryExtensionBatch) standingOnly() memoryExtensionBatch {
 	return out
 }
 
-// about is b with the entries tag names: one of its subjects, or its text, holds it (case aside).
+// about keeps entries matching every whitespace-separated query term (case-insensitive substring matches). A term
+// may occur in text, a subject, the facet or a category; different terms may match different fields. Visibility is
+// still enforced by assembleExtension after this filter, so naming a sensitive category never grants access to it.
 func (b memoryExtensionBatch) about(tag string) memoryExtensionBatch {
-	tag = strings.ToLower(strings.TrimSpace(tag))
-	if tag == "" {
+	terms := strings.Fields(strings.ToLower(tag))
+	if len(terms) == 0 {
 		return b
 	}
-	out := memoryExtensionBatch{Tagged: b.Tagged, Names: b.Names}
+	out := memoryExtensionBatch{Tagged: b.Tagged, Names: b.Names, StandingBytes: b.StandingBytes}
 	for _, e := range b.Entries {
-		if strings.Contains(strings.ToLower(e.Text), tag) || containsFold(e.Tags, tag) {
+		fields := []string{strings.ToLower(e.Text), strings.ToLower(e.Facet)}
+		for _, values := range [][]string{e.Tags, e.Categories} {
+			for _, v := range values {
+				fields = append(fields, strings.ToLower(v))
+			}
+		}
+		matches := true
+		for _, term := range terms {
+			if !slices.ContainsFunc(fields, func(field string) bool { return strings.Contains(field, term) }) {
+				matches = false
+				break
+			}
+		}
+		if matches {
 			out.Entries = append(out.Entries, e)
 		}
 	}
 	return out
-}
-
-func containsFold(list []string, s string) bool {
-	for _, v := range list {
-		if strings.EqualFold(v, s) {
-			return true
-		}
-	}
-	return false
 }
 
 // assembleExtension is the memory extension's entries in b as f takes them, the ledger's left out: the standing
@@ -223,6 +233,7 @@ func (s *Service) assembleExtension(ctx context.Context, f assembleFor, b memory
 	if len(all) == 0 {
 		return assembled{}
 	}
+	f.ExtensionStanding = b.standingBudget()
 	return assembleEntries(all, f, info)
 }
 
@@ -353,16 +364,140 @@ type recalledMemory struct {
 
 // recallExtensionMemory is the memory extension's entries a recall in conversation session returns (scene 2): its own
 // track's, general ones from elsewhere and sensitive ones from elsewhere only when the conversation carries their
-// categories; with tag only those it names; the most important within memoryRecallMax.
+// categories; with tag, full-term matches come first and remaining budget is backfilled by multi-term hit count and
+// subject/rank relevance; at most memoryRecallMax bytes.
 func (s *Service) recallExtensionMemory(ctx context.Context, session, tag string) []recalledMemory {
-	b := s.extensionMemoryBatch(ctx).about(tag)
+	b := s.extensionMemoryBatch(ctx)
 	if len(b.Entries) == 0 {
 		return nil
 	}
+	// Enforce visibility and category checks before scoring so hidden or sensitive entries never leak.
 	a := s.assembleExtension(ctx, s.assembleForConversation(ctx, session, assembleRecall), b)
+	if len(a.Entries) == 0 {
+		return nil
+	}
+	terms := uniqueQueryTerms(tag)
+	if len(terms) == 0 {
+		var out []recalledMemory
+		for _, e := range mostImportantWithin(a.Entries, memoryRecallMax) {
+			out = append(out, recalledMemory{ID: e.ID, Text: e.Text})
+		}
+		return out
+	}
+	byID := make(map[string]memoryExtensionEntry, len(b.Entries))
+	for _, orig := range b.Entries {
+		byID[memoryExtensionIDPrefix+orig.ID] = orig
+	}
+	type scored struct {
+		entry        proto.AssistantEntry
+		fullMatch    bool
+		matchedTerms int
+		score        int
+		rank         int
+		order        int
+	}
+	var candidates []scored
+	for idx, e := range a.Entries {
+		orig := byID[e.ID]
+		matched, subjectHits, exactSubjectHits := scoreRecallEntry(orig, terms)
+		if matched == 0 {
+			continue
+		}
+		candidates = append(candidates, scored{
+			entry:        e,
+			fullMatch:    matched == len(terms),
+			matchedTerms: matched,
+			score:        exactSubjectHits*40 + subjectHits*15 + matched*10 + orig.Rank,
+			rank:         orig.Rank,
+			order:        idx,
+		})
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	slices.SortStableFunc(candidates, func(x, y scored) int {
+		if x.fullMatch != y.fullMatch {
+			if x.fullMatch {
+				return -1
+			}
+			return 1
+		}
+		if c := cmp.Compare(y.matchedTerms, x.matchedTerms); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(y.score, x.score); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(y.rank, x.rank); c != 0 {
+			return c
+		}
+		return cmp.Compare(y.order, x.order)
+	})
+	left := memoryRecallMax
 	var out []recalledMemory
-	for _, e := range mostImportantWithin(a.Entries, memoryRecallMax) {
-		out = append(out, recalledMemory{ID: e.ID, Text: e.Text})
+	for _, c := range candidates {
+		if len(c.entry.Text) > left {
+			continue
+		}
+		left -= len(c.entry.Text)
+		out = append(out, recalledMemory{ID: c.entry.ID, Text: c.entry.Text})
+		if left == 0 {
+			break
+		}
 	}
 	return out
+}
+
+func uniqueQueryTerms(tag string) []string {
+	var out []string
+	for _, t := range strings.Fields(strings.ToLower(tag)) {
+		if t != "" && !slices.Contains(out, t) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func scoreRecallEntry(e memoryExtensionEntry, terms []string) (matched, subjectHits, exactSubjectHits int) {
+	textLower := strings.ToLower(e.Text)
+	facetLower := strings.ToLower(e.Facet)
+	tagsLower := make([]string, len(e.Tags))
+	for i, v := range e.Tags {
+		tagsLower[i] = strings.ToLower(v)
+	}
+	catsLower := make([]string, len(e.Categories))
+	for i, v := range e.Categories {
+		catsLower[i] = strings.ToLower(v)
+	}
+	for _, term := range terms {
+		inTag := false
+		exactTag := false
+		for _, v := range tagsLower {
+			if strings.Contains(v, term) {
+				inTag = true
+				if v == term {
+					exactTag = true
+				}
+			}
+		}
+		inFacet := facetLower != "" && strings.Contains(facetLower, term)
+		inText := strings.Contains(textLower, term)
+		inCat := false
+		for _, v := range catsLower {
+			if strings.Contains(v, term) {
+				inCat = true
+				break
+			}
+		}
+		if inTag || inFacet || inText || inCat {
+			matched++
+			if inTag || inFacet {
+				subjectHits++
+			}
+			if exactTag || facetLower == term {
+				exactSubjectHits++
+			}
+		}
+	}
+	return matched, subjectHits, exactSubjectHits
 }

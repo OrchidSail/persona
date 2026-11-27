@@ -6,7 +6,8 @@ import { lazy, Suspense, useRef, useState } from "react";
 import { t } from "../../../i18n";
 import { ApiError } from "../../../lib/api";
 import { opErrorText, writeTextFile } from "../../../lib/file-ops";
-import { dirName, fileName, joinPath, languageOf, type FileContent } from "../../../lib/files";
+import { dirName, fileName, joinPath, type FileContent } from "../../../lib/files";
+import { languageOf } from "../../../lib/files-syntax";
 import { Button, Dialog, Loading, toast } from "../../../ui/atoms";
 
 const CodeEditor = lazy(() => import("./CodeEditor"));
@@ -103,7 +104,19 @@ export function FileEdit({ mid, cwd, file, text, onDone }: {
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col" data-testid="file-edit">
+    <div
+      className="flex min-h-0 flex-1 flex-col"
+      data-testid="file-edit"
+      onKeyDown={(e) => {
+        if (e.key !== "Escape" || e.defaultPrevented || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 || asking) return;
+        if ([...document.querySelectorAll("[role=menu],[role=dialog],[role=alertdialog]")].some((el) => !el.closest("[data-closing],[inert]"))) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (saving) return;
+        if (dirty) setAsking("discard");
+        else onDone(false);
+      }}
+    >
       <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-3">
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold text-ink">{fileName(file.path)}</p>

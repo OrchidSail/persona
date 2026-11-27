@@ -2,6 +2,7 @@ package persona.core.designsystem
 
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -112,10 +113,12 @@ fun AssistantTrayBar(
 @Composable
 fun AssistantTrayEntry(label: String, count: Int, tone: AssistantTrayTone, expanded: Boolean,
     description: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
-    when (PersonaTheme.style) {
-        AppStyle.Glass -> GlassDockCapsule(label, count, tone, expanded, description, onClick, modifier, enabled)
-        AppStyle.Brief -> BriefTrayEntry(label, count, tone, expanded, description, onClick, modifier, enabled)
-        AppStyle.Board -> BoardTrayEntry(label, count, tone, expanded, description, onClick, modifier, enabled)
+    CompactTouchLayout {
+        when (PersonaTheme.style) {
+            AppStyle.Glass -> GlassDockCapsule(label, count, tone, expanded, description, onClick, modifier, enabled)
+            AppStyle.Brief -> BriefTrayEntry(label, count, tone, expanded, description, onClick, modifier, enabled)
+            AppStyle.Board -> BoardTrayEntry(label, count, tone, expanded, description, onClick, modifier, enabled)
+        }
     }
 }
 
@@ -273,4 +276,19 @@ private fun BoardTrayEntry(label: String, count: Int, tone: AssistantTrayTone, e
 fun AssistantTrayMark(tone: AssistantTrayTone?, modifier: Modifier = Modifier) {
     Box(modifier.size(AssistantTrayTokens.markSize).clip(CircleShape)
         .background(tone?.let { assistantTrayColor(it) } ?: PersonaTheme.palette.ink3))
+}
+
+/**
+ * Smooth horizontal overflow fade for the tray entry bar, using the same edge mask as [JAgentFilterCapsule].
+ * Draws nothing when all entries fit inside the available width.
+ */
+@Composable
+fun Modifier.assistantTrayEdgeFade(scrollState: ScrollState): Modifier {
+    val palette = PersonaTheme.palette
+    val reduceMotion = PersonaTheme.reduceMotion
+    val spec: AnimationSpec<Float> = if (reduceMotion) SharedMotion.instant() else SharedMotion.reveal()
+    val leading = animateFloatAsState(if (scrollState.canScrollBackward) 1f else 0f, spec, label = "tray-bar-fade-leading")
+    val trailing = animateFloatAsState(if (scrollState.canScrollForward) 1f else 0f, spec, label = "tray-bar-fade-trailing")
+    val fade = AgentFilterTokens.fade * LocalDensity.current.fontScale.coerceAtLeast(1f)
+    return agentFilterEdgeFade(palette.background, fade, { leading.value }, { trailing.value })
 }

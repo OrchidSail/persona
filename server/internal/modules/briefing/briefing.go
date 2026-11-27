@@ -1,11 +1,5 @@
-// Package briefing is the daily briefing module (docs/architecture/core-and-modules.md, the pilot of #13408): the
-// facts a scheduled routine with facts on opens with, and its wait-row setting. It reaches the core only through
-// modapi.
-//
-// What it owns so far: the assistant.briefing_waits setting (its value, defaults, checks and card text) and the wait
-// rules the briefing's per-direction rows follow (when stopped work is waiting, how the rows are ordered and bounded).
-// The facts' gathering, the Lark card and the delivery still live in internal/assistant (briefing*.go) and move here
-// as the host learns to serve them.
+// Package briefing gathers scheduled routine facts, writes the conversation feed, renders the
+// delivery cards and handles the feed's deferred questions. It reaches the core through modapi.
 package briefing
 
 import (
@@ -30,12 +24,20 @@ func (Module) Info() modapi.Info {
 	return info
 }
 
-// Register adds the wait setting and the routine facts' wait rules.
+// Register adds the wait setting and the routine facts' wait rules and runtime runner.
 func (Module) Register(h modapi.Host) error {
 	if err := h.AddSetting(modapi.Setting{Key: SettingKey, Value: value, Check: check, Describe: describe}); err != nil {
 		return err
 	}
-	return h.AddScheduleFacts(modapi.ScheduleFacts{Setting: SettingKey, Waits: func(stored json.RawMessage) modapi.WaitRules {
-		return waitsOf(stored)
-	}})
+	r := newRunner(h)
+	if err := h.AddHubRoute(handleLaterRoute, r.handleLater); err != nil {
+		return err
+	}
+	return h.AddScheduleFacts(modapi.ScheduleFacts{
+		Setting: SettingKey,
+		Waits: func(stored json.RawMessage) modapi.WaitRules {
+			return waitsOf(stored)
+		},
+		Runner: r,
+	})
 }

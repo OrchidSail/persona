@@ -132,9 +132,9 @@ func TestExtensionTrustDecidesReads(t *testing.T) {
 	}
 
 	// A removed extension's trust goes with it: installed again, it starts as a third party's.
-	var none map[string]any
-	if err := askConversations(t, s, assistantwire.MethodExtensionTrustForget, `{"extension":"qa-memory"}`, &none); err != nil {
-		t.Fatal(err)
+	var none json.RawMessage
+	if err := askConversations(t, s, assistantwire.MethodExtensionTrustForget, `{"extension":"qa-memory"}`, &none); err != nil || string(none) != `{}` {
+		t.Fatalf("forget trust reply: %s, %v", none, err)
 	}
 	if _, kept := st.trusts["qa-memory"]; kept || !s.extensionHides(s.withExtensionReader(ctx, "qa-memory"), SpaceHealth) {
 		t.Fatal("a removed extension is still the user's own")
@@ -145,7 +145,7 @@ func TestExtensionTrustDecidesReads(t *testing.T) {
 // or a scoped device gets 403; the user's own changes are kept, and a track's own categories cannot be taken away.
 func TestInfoAccessRoutesAreTheUsers(t *testing.T) {
 	s, st := trustService(t)
-	for _, role := range []string{roleExtension, "scoped"} {
+	for _, role := range []string{roleExtension, "agent", "scoped"} {
 		if w := serveAs(s, role, http.MethodPut, "/api/v1/assistant/extension-trust/qa-memory", `{"trust":"owner","categories":[]}`); w.Code != http.StatusForbidden {
 			t.Errorf("%s set trust: %d", role, w.Code)
 		}

@@ -37,27 +37,28 @@ import (
 
 // toolNames are the tools only assistant conversations get; their descriptions and schemas are in prompts/mcp
 // (docs/assistant/prompts.md).
-var toolNames = []string{"resource_status", "ask_user", "notify_user", "supervision_finish", "schedule_followup", "schedule_routine", "schedule_state_set", "delete_routine", "list_followups",
+var toolNames = []string{"resource_status", "ask_user", "ask_user_withdraw", "notify_user", "supervision_finish", "schedule_followup", "schedule_routine", "schedule_state_set", "delete_routine", "list_followups",
 	"cancel_followup", "list_places", "save_place", "machines_list", "machine_redeploy", "agents_list", "agent_read", "agent_send", "agent_switch", "agents_switch", "agent_interrupt", "agent_start", "agent_supervise", "agent_transfer", "agent_archive", "agent_unarchive", "agent_autoname", "agent_autoname_receipt", "interaction_answer", "ask_escalate", "inbox_suggest", "inbox_draft",
-	"inbox_folders", "inbox_move", "inbox_post", "kb_search", "kb_list", "kb_get", "kb_update", "kb_history_plan", "kb_history_status", "kb_history_stop", "kb_history_resume", "persona_settings", "secret_run", "skill_import",
-	"model_profiles_list", "model_profile_get", "model_profile_switch", "model_profile_rollback",
-	"repositories_list", "repository_get", "repository_add", "view_show", "view_update", "view_get",
+	"inbox_folders", "inbox_move", "inbox_post", "message_send", "kb_search", "kb_list", "kb_get", "kb_update", "kb_history_plan", "kb_history_status", "kb_history_stop", "kb_history_resume", "persona_settings", "secret_run", "skill_import",
+	"model_profiles_list", "model_profile_get", "model_profile_switch", "model_profile_rollback", "model_profile_capture",
+	"model_profile_deactivate", "model_profile_clear", "model_probe", "launcher_import",
+	"repositories_list", "repository_get", "repository_add", "view_show", "view_update", "view_get", pageToolName,
 	"conversations_list", "conversations_switch", "conversation_read", "conversation_rename", "conversation_archive", "conversation_unarchive",
 	"conversation_tags_set",
 	"conversation_new", "conversation_send", "task_plan", "task_plan_withdraw", "task_review", "task_scope", "task_decided", "task_start_screen", "task_start_keys", "task_retry",
 	"todo_workspace", "todo_repositories_get", "todo_repositories_set", "todo_repository_links_set", "todo_repository_links_add", "todo_list", "todo_get", "todo_create", "todo_update", "todo_complete", "todo_reopen", "todo_delete", "concern_report",
-	"direction_name", "leader_progress", "decision_record", "decisions_query", "health_intake"}
+	"direction_name", "leader_progress", "decision_record", "decisions_query"}
 
 // Tools are the assistant's tools (assistant.tools).
 func (s *Service) Tools(ctx context.Context) []proto.Tool {
 	tools := toolsNamed(withKnowledgeUI(toolNames, s))
-	if !s.healthOn() { // the Health module's tool (health_layer.go)
-		tools = slices.DeleteFunc(tools, func(t proto.Tool) bool { return t.Name == healthhost.Tool })
-	}
 	// A bare Service has no settings store and is used by registry tests. With no
 	// store the opt-in is false; do not call the nil store function just to hide it.
-	if s.store != nil && ownerReplyApprovalOn(s.settings(ctx)) {
+	if s.storeFn.Load() != nil && ownerReplyApprovalOn(s.settings(ctx)) {
 		tools = append(tools, toolsNamed([]string{ownerActionPrepareTool})...)
+	}
+	if s.storeFn.Load() != nil && s.settings(ctx).todosV2On() {
+		tools = append(tools, toolsNamed([]string{"todo_split", "todo_merge"})...)
 	}
 	if s.urgentOn(ctx) {
 		tools = append(tools, toolsNamed([]string{"urgent_call"})...)
@@ -92,6 +93,9 @@ func (s *Service) tool(ctx context.Context, call ToolCall) proto.ToolResult {
 	if len(args) == 0 {
 		args = json.RawMessage(`{}`)
 	}
+	if res, refused := s.inboxVisibilityToolRefusal(ctx, call.MachineID, call.SessionID, "", call.Name, args); refused {
+		return res
+	}
 	if res, refused := s.meetingRefuses(ctx, call.MachineID, call.SessionID, call.Name, true); refused {
 		return res // a meeting's batch started this turn: only reading tools (meeting_turns.go)
 	}
@@ -100,6 +104,8 @@ func (s *Service) tool(ctx context.Context, call ToolCall) proto.ToolResult {
 		return s.resourceTool(ctx, call.MachineID, call.SessionID, call.Name, args)
 	case "persona_settings":
 		return s.toolPersonaSettings(ctx, call, args) // settings_tool.go
+	case externalSourcesReadTool, externalSourcesWriteTool:
+		return s.toolExternalSources(ctx, call, args)
 	case "task_plan", "agent_start", "conversation_new":
 		// The optional dispatch policy is checked first: it can refuse a model's call where the task-agent refusal
 		// below still lets a scheduled conversation through. The hub's own starts (an inbox hand-off) come through
@@ -145,8 +151,8 @@ func (s *Service) appTool(ctx context.Context, app string, call ToolCall, args j
 }
 
 func (s *Service) runTool(ctx context.Context, machine, self, name string, args json.RawMessage) (string, error) {
-	if name == "health_intake" && s.agentCallerSpace(ctx, machine, self) != SpaceHealth {
-		return "", errors.New("health_intake is only available in a known Health conversation")
+	if slices.Contains(healthToolNames, name) && s.agentCallerSpace(ctx, machine, self) != SpaceHealth {
+		return "", errors.New(name + " is only available in a known Health conversation")
 	}
 	// What is said in a space stays there (docs/assistant/health.md "How directories and memory are isolated"): a space
 	// whose policy says so writes nothing to the knowledge base, nor changes or starts what is imported into it
@@ -164,8 +170,8 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 		return s.toolEntries(ctx, machine, self, name, args)
 	case spaceStateTool: // a space track's conversations only (track_space_md.go)
 		return s.toolSpaceStateUpdate(ctx, machine, self, args)
-	case "health_intake":
-		return s.healthTool(ctx, args)
+	case "health_intake", "health_strength":
+		return s.healthTool(ctx, healthhost.ToolCall{Name: name, Machine: machine, Session: self, Args: args})
 	case "repository_add":
 		return s.toolRepositoryAdd(ctx, machine, self, args)
 	case "repositories_list", "repository_get":
@@ -174,16 +180,25 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 		return s.toolSupervisionFinish(ctx, self, args)
 	case "ask_user":
 		return s.toolAskUser(ctx, machine, self, args)
+	case "ask_user_withdraw":
+		return s.toolAskUserWithdraw(ctx, machine, self, args)
 	case ownerActionPrepareTool:
 		return s.toolOwnerActionPrepare(ctx, machine, self, args)
 	case "view_show", "view_update", "view_get":
 		return s.toolView(ctx, machine, self, name, args)
+	case pageToolName: // Dashboards (pages_tool.go)
+		return s.toolPage(ctx, machine, self, args)
 	case "task_plan":
 		return s.toolTaskPlanFrom(ctx, machine, self, args)
 	case "task_plan_withdraw":
 		return s.toolTaskPlanWithdraw(ctx, self, args) // tasks_start.go
-	case "model_profiles_list", "model_profile_get", "model_profile_switch", "model_profile_rollback":
-		return s.toolModelProfile(ctx, self, name, args)
+	case "model_profiles_list", "model_profile_get", "model_profile_switch", "model_profile_rollback", "model_profile_capture",
+		"model_profile_deactivate", "model_profile_clear":
+		return s.toolModelProfile(ctx, machine, self, name, args)
+	case "model_probe":
+		return s.toolModelProbe(ctx, args)
+	case "launcher_import":
+		return s.toolLauncherImport(ctx, ToolCall{MachineID: machine, SessionID: self}, args)
 	case "task_start_screen": // a failed start's kept tab (start_remedy.go)
 		return s.toolTaskStartScreen(ctx, self, args)
 	case "task_start_keys":
@@ -191,7 +206,7 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 	case "task_retry":
 		return s.toolTaskRetry(ctx, self, args)
 	case "task_scope":
-		return s.toolTaskScope(ctx, self, args) // task_brief_scope.go
+		return s.toolTaskScope(ctx, machine, self, args) // task_brief_scope.go
 	case "task_decided":
 		return s.toolTaskDecided(ctx, machine, self, args) // task_decided.go
 	case "task_review":
@@ -209,7 +224,7 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 					return string(body), marshalErr
 				}
 				if a.Verdict == reviewAccepted || a.Verdict == reviewNeedsUser {
-					s.promoteSupervision(self)
+					err = s.promoteSupervision(self)
 				}
 			}
 		}
@@ -220,7 +235,7 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 		return s.toolTodoRepositoryLinksAdd(ctx, machine, self, name, args)
 	case "todo_repositories_get", "todo_repositories_set", "todo_repository_links_set":
 		return s.toolTodoRepositories(ctx, machine, self, name, args)
-	case "todo_list", "todo_get", "todo_create", "todo_update", "todo_complete", "todo_reopen", "todo_delete":
+	case "todo_list", "todo_get", "todo_create", "todo_update", "todo_complete", "todo_reopen", "todo_delete", "todo_split", "todo_merge":
 		return s.toolTodo(ctx, machine, self, name, args) // todo_tools.go
 	case "direction_name":
 		return s.toolDirectionName(ctx, self, args) // direction_progress.go
@@ -268,8 +283,16 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 	case "inbox_move":
 		return s.toolInboxMove(ctx, args)
 	case "inbox_post":
+		if s.isPageRoutineConversation(ctx, machine, self) {
+			return "", errors.New("inbox_post is not available to a dashboard routine; update the dashboard with page patch instead")
+		}
 		return s.toolInboxPost(ctx, machine, self, args) // inbox_post.go
+	case "message_send":
+		return s.toolMessageSend(ctx, machine, self, args)
 	case "notify_user":
+		if s.isPageRoutineConversation(ctx, machine, self) {
+			return "", errors.New("notify_user is not available to a dashboard routine; update the dashboard with page patch and Persona handles alerts")
+		}
 		var a struct {
 			Title      string `json:"title"`
 			Body       string `json:"body"`
@@ -298,6 +321,9 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 		if s.exitPolicy(ctx, a.Title+"\n"+a.Body, self, space).Redact {
 			a.Title, a.Body = s.redactedNotice(ctx, s.lang(ctx), space)
 		}
+		if err := s.promoteSupervision(self); err != nil {
+			return "", err
+		}
 		// Asked for explicitly: every device, the Feishu bot too, and no separate push when this turn ends. pushResult holds
 		// it to its track's push_cap (track_attention.go), and the track tells immersive mode where it is from.
 		res, err := s.pushResult(withCard(ctx, cardNotifyUser), Notification{Subtitle: "Persona", DeviceID: machine, SessionID: self, Title: a.Title, Body: a.Body,
@@ -316,7 +342,6 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			copies = s.channelsCopied(machine, self, a.Title, a.Body)
 		}
 		s.recordNotify(ctx, machine, self, notifyMissed(res)) // an interruption when a device took it (north_star.go)
-		s.promoteSupervision(self)
 		return notifyAnswerText(s.lang(ctx), res, copies.wait(notifyCopyWait)), nil
 	case "urgent_call":
 		return s.toolUrgentCall(ctx, machine, self, args) // urgent_call_tool.go
@@ -362,6 +387,15 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 		if !s.taskInSpace(ctx, a.ID, space) { // another space's task is as good as none (health.go)
 			return "", fmt.Errorf("no task %q", a.ID)
 		}
+		if task, ok := s.pageRoutineTask(ctx, a.ID); ok && task.PageID != "" {
+			if st, hasStore := s.pageStore(); hasStore {
+				if caller, err := s.pageCallerOf(ctx, machine, self, false); err != nil {
+					return "", err
+				} else if _, err := s.writablePage(ctx, st, caller, task.PageID); err != nil {
+					return "", err
+				}
+			}
+		}
 		ok, err := s.deleteTaskFrom(ctx, a.ID, self) // this conversation may ask for it again (scheduleOwn)
 		if err != nil {
 			return "", err
@@ -398,6 +432,7 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			Machine   string `json:"machine"`
 			SessionID string `json:"session_id"`
 			Text      string `json:"text"`
+			InboxItem string `json:"inbox_item"`
 			// DismissNotice: close a notice that Enter only closes (no options) before sending; any other dialog
 			// still refuses the send.
 			DismissNotice bool `json:"dismiss_notice"`
@@ -412,6 +447,9 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			// user (agent_resume.go, #8099). Ignored for an agent that runs.
 			Resume    bool   `json:"resume"`
 			ResumeWhy string `json:"resume_why"`
+			// ResumeTodoID: with resume, re-link this stopped agent onto the still-open to-do it last worked on,
+			// instead of adopting it as a new task (agent_resume.go, #13192).
+			ResumeTodoID string `json:"todo_id"`
 		}
 		if err := json.Unmarshal(args, &a); err != nil {
 			return "", fmt.Errorf("arguments: %w", err)
@@ -429,6 +467,9 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			// i18n-ignore: original MCP refusal for the model, not API error, push or approval-card copy; keep the source reason verbatim.
 			return "", fmt.Errorf("这个 Agent 仅支持查看：%s", c.ReadOnlyReason)
 		}
+		if err := s.externalSessionRefusal(ctx, self, am, c); err != nil {
+			return "", err
+		}
 		if strings.TrimSpace(a.Text) == "" {
 			return "", fmt.Errorf("text is empty")
 		}
@@ -443,23 +484,47 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			}
 		}
 		resume := ""
+		// A same-session resume onto the agent's own still-open to-do (#13192): non-empty only while the link is
+		// reactivated, so a failed start can release it again (sendFailed).
+		resumeTodo := ""
 		if stoppedAgent(c) { // read-only (#4754): a message does not start it; only a resume asked for does (#8099)
 			if exitText(a.Text) {
 				return fmt.Sprintf("%s has already stopped: nothing was sent.", agentLabel(c)), nil
 			}
 			if !a.Resume {
+				if strings.TrimSpace(a.ResumeTodoID) != "" {
+					return "", errors.New("todo_id on agent_send only works with resume: send again with resume true and resume_why")
+				}
 				return "", stoppedRefusal(c)
 			}
 			resume = cleanWhy(a.ResumeWhy)
+			if a.Task != nil && strings.TrimSpace(a.ResumeTodoID) != "" {
+				return "", errors.New("task and todo_id are alternatives: task adopts the agent as a new task, todo_id resumes it onto its existing to-do")
+			}
+			if strings.TrimSpace(a.ResumeTodoID) != "" {
+				todo, err := s.resumeTodoForAgent(ctx, self, am, c, a.ResumeTodoID)
+				if err != nil {
+					return "", fmt.Errorf("%w. Nothing was started or sent", err)
+				}
+				resumeTodo = todo.ID
+			}
 			if err := s.resumeAllowed(ctx, self, am, c, resume, a.Task); err != nil {
+				if resumeTodo != "" {
+					s.rollbackResumeTodo(context.WithoutCancel(ctx), resumeTodo, am.ID, c.SessionID)
+				}
 				return "", err
 			}
+		} else if strings.TrimSpace(a.ResumeTodoID) != "" {
+			return "", errors.New("todo_id on agent_send is for a stopped agent: this one is running, send it without todo_id")
 		}
 		atts, err := cleanAttachments(a.Attachments)
 		if err == nil {
 			atts, err = s.checkAttachments(ctx, machine, self, atts)
 		}
 		if err != nil {
+			if resumeTodo != "" {
+				s.rollbackResumeTodo(context.WithoutCancel(ctx), resumeTodo, am.ID, c.SessionID)
+			}
 			return "", fmt.Errorf("%w; nothing was sent", err)
 		}
 		if a.Task != nil { // refused before the user is asked to confirm a send that would not go
@@ -468,6 +533,25 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			}
 		} else if err := s.exitAllowed(ctx, self, am, c, a.Text, len(atts)); err != nil {
 			return "", err
+		}
+		source := PlanTask{InboxItem: strings.TrimSpace(a.InboxItem)}
+		if err := s.ensureTodosLoaded(ctx); err != nil {
+			return "", err
+		}
+		inboxTodo, onTask := s.openTodoOfAgent(am.ID, c.SessionID)
+		mayLink := a.Task != nil || onTask && othersTask(c, inboxTodo, self) == nil
+		if handoff != nil {
+			inboxTodo, mayLink = s.todoNow(handoff.origin)
+		}
+		if !exitText(a.Text) && mayLink {
+			if err := s.planInboxSource(ctx, machine, self, &source); err != nil {
+				return "", err
+			}
+			if err := s.checkExistingTaskInbox(self, source, inboxTodo); err != nil {
+				return "", err
+			}
+		} else if source.InboxItem != "" {
+			return "", fmt.Errorf("inbox_item requires work on your own open task; nothing was sent")
 		}
 		summary := agentLabel(c) + " · " + am.Name + "\n\n" + a.Text
 		if resume != "" { // the phone says it resumes the agent, and why
@@ -478,15 +562,57 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			words = strings.Join(append([]string{a.Task.Title, a.Text}, a.Task.DoneWhen...), "\n\n")
 		}
 		if ok, outcome, err := s.confirmOutbound(ctx, machine, self, name, words, summary, args); err != nil {
+			if resumeTodo != "" {
+				s.rollbackResumeTodo(context.WithoutCancel(ctx), resumeTodo, am.ID, c.SessionID)
+			}
 			return "", err
 		} else if !ok {
+			if resumeTodo != "" {
+				s.rollbackResumeTodo(context.WithoutCancel(ctx), resumeTodo, am.ID, c.SessionID)
+			}
 			return outboundNotDone(outcome, "The user declined on the phone: nothing was sent to that agent.", "nothing was sent to that agent"), nil
+		}
+		if err := s.externalSessionRefusal(ctx, self, am, c); err != nil {
+			return "", err
+		}
+		if err := s.checkExistingTaskInbox(self, source, inboxTodo); err != nil {
+			return "", fmt.Errorf("%w; nothing was sent", err)
 		}
 		var task *handedTask
 		if a.Task != nil {
 			if task, err = s.handTask(ctx, self, am, c, *a.Task, a.Text); err != nil {
 				return "", err
 			}
+			if err := s.checkExistingTaskInbox(self, source, task.todo); err != nil {
+				return "", task.sendFailed(ctx, s, fmt.Errorf("%w; nothing was sent", err))
+			}
+		}
+		persistInbox := func(ctx context.Context, result string) (string, error) {
+			if source.InboxItem == "" {
+				return result, nil
+			}
+			// Delivery succeeded; ending the send's wait must not discard its durable Inbox link.
+			sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			id := inboxTodo.ID
+			if task != nil {
+				id = task.todo.ID
+			}
+			agentTodo := id
+			if handoff != nil {
+				agentTodo = handoff.Target.TodoID
+			}
+			if err := s.linkExistingTaskInbox(sctx, self, source, id, agentTodo, []SessionRef{{MachineID: am.ID, SessionID: c.SessionID}}); err != nil {
+				if task != nil && task.made && errors.Is(err, errInboxTaskClaimed) {
+					// Delivery cannot be undone, but a refused claim must not leave a duplicate task.
+					if undoErr := s.removeTodo(sctx, task.todo.ID); undoErr != nil {
+						return "", fmt.Errorf("message delivered to the Agent, but its Inbox link was not saved: %w; newly created task %s remains because rollback failed: %v; do not resend the message", err, task.todo.ID, undoErr)
+					}
+					return "", fmt.Errorf("message delivered to the Agent, but its Inbox link was not saved: %w; newly created task %s was removed without stopping the Agent; do not resend the message", err, task.todo.ID)
+				}
+				return "", fmt.Errorf("message delivered to the Agent, but its Inbox link was not saved: %w; do not resend the message", err)
+			}
+			return result + fmt.Sprintf(" Inbox item %s now links to task %s and this Agent.", source.InboxItem, id), nil
 		}
 		text := a.Text
 		if a.Task == nil {
@@ -521,8 +647,12 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			inputID = "wait_" + randomHex(16)
 			params["client_msg_id"] = inputID
 		}
-		finish := func(receipt string) string {
-			return s.waitAgentReply(ctx, receipt, inputID, wait, fixedWaitTarget(am.ID, c.SessionID))
+		finish := func(sendCtx context.Context, receipt string) (string, error) {
+			receipt, err := persistInbox(sendCtx, receipt)
+			if err != nil {
+				return receipt, err
+			}
+			return s.waitAgentReply(ctx, receipt, inputID, wait, fixedWaitTarget(am.ID, c.SessionID)), nil
 		}
 		var handed handedAttachments
 		if mentioned := s.mentionedAttachments(ctx, machine, self, a.Text, atts); len(atts)+len(mentioned) > 0 {
@@ -532,11 +662,18 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 		sending, _ := params["text"].(string)
 		// A resume goes through the user's Resume's node call, the text as its first message (agent_resume.go).
 		if resume != "" {
-			receipt, err := s.resumeAndSend(ctx, self, am, c, params, resume, a.Text, handed.said(), task)
+			result, err := s.resumeAndSend(ctx, self, am, c, params, resume, a.Text, handed.said(), task)
 			if err != nil {
-				return "", err
+				if resumeTodo != "" && startResultUnknown(err) {
+					// The node may still start the session: keep the link so its next turn stays supervised.
+					return result, err
+				}
+				if resumeTodo != "" {
+					s.rollbackResumeTodo(context.WithoutCancel(ctx), resumeTodo, am.ID, c.SessionID)
+				}
+				return result, err
 			}
-			return finish(receipt), nil
+			return finish(ctx, result)
 		}
 		if c.Status != proto.StatusOffline {
 			// A running agent takes it at once. A send of more for an accepted task holds a turn of the agent that
@@ -577,23 +714,23 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 				return "", task.sendFailed(ctx, s, err)
 			}
 			if handoff != nil {
-				return finish(fmt.Sprintf("Handoff %s confirmed for %s. It is waiting for %s to report the result.",
-					handoff.ID, handoff.origin, handoff.Target.Title) + handed.said()), nil
+				return finish(lctx, fmt.Sprintf("Handoff %s confirmed for %s. It is waiting for %s to report the result.",
+					handoff.ID, handoff.origin, handoff.Target.Title)+handed.said())
 			}
 			if sent.CompactAfterTurn {
-				return finish(fmt.Sprintf("Queued for %s on %s: it is in the middle of a turn and its context is nearly full, so once "+
-					"the turn ends it is compacted with its own /compact and then reads the message.", agentLabel(c), am.Name) +
-					handed.said() + task.sent(ctx, s, a.Text)), nil
+				return finish(lctx, fmt.Sprintf("Queued for %s on %s: it is in the middle of a turn and its context is nearly full, so once "+
+					"the turn ends it is compacted with its own /compact and then reads the message.", agentLabel(c), am.Name)+
+					handed.said()+task.sent(ctx, s, a.Text))
 			}
 			if sent.Compacted {
-				return finish(fmt.Sprintf("Sent to %s on %s after compacting its nearly full context with its own /compact.",
-					agentLabel(c), am.Name) + handed.said() + task.sent(ctx, s, a.Text)), nil
+				return finish(lctx, fmt.Sprintf("Sent to %s on %s after compacting its nearly full context with its own /compact.",
+					agentLabel(c), am.Name)+handed.said()+task.sent(ctx, s, a.Text))
 			}
 			if sent.Queued {
-				return finish(fmt.Sprintf("Queued for %s on %s: it is in the middle of a turn and reads the message once what it is doing now ends.",
-					agentLabel(c), am.Name) + handed.said() + task.sent(ctx, s, a.Text)), nil
+				return finish(lctx, fmt.Sprintf("Queued for %s on %s: it is in the middle of a turn and reads the message once what it is doing now ends.",
+					agentLabel(c), am.Name)+handed.said()+task.sent(ctx, s, a.Text))
 			}
-			return finish(fmt.Sprintf("Sent to %s on %s.", agentLabel(c), am.Name) + handed.said() + task.sent(ctx, s, a.Text)), nil
+			return finish(lctx, fmt.Sprintf("Sent to %s on %s.", agentLabel(c), am.Name)+handed.said()+task.sent(ctx, s, a.Text))
 		}
 		// Not running and not read-only: a branch nothing has started yet (node fork.go), or a node from before #4754
 		// that still resumes a stopped agent. Its node starts it first, which can take minutes and goes on if this call
@@ -609,7 +746,7 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 		if err != nil {
 			return "", task.sendFailed(sctx, s, err)
 		}
-		return finish(fmt.Sprintf("Resumed %s on %s (same session, directory and launcher) and sent.", agentLabel(c), am.Name) + handed.said() + task.sent(sctx, s, a.Text)), nil
+		return finish(sctx, fmt.Sprintf("Resumed %s on %s (same session, directory and launcher) and sent.", agentLabel(c), am.Name)+handed.said()+task.sent(sctx, s, a.Text))
 	case "agent_switch": // moves a running agent to another launcher and goes on with it (agent_switch.go, #5973)
 		return s.toolAgentSwitch(ctx, machine, self, args)
 	case "agents_switch": // moves many running agents to another launcher at once (agents_switch.go, #6008)
@@ -632,17 +769,18 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			return "", waitErr
 		}
 		var a struct {
-			Machine           string `json:"machine"`
-			Cwd               string `json:"cwd"`
-			Prompt            string `json:"prompt"`
-			SkipProjectMemory bool   `json:"skip_project_memory"`
-			Launcher          string `json:"launcher"`
-			Model             string `json:"model"`
-			Effort            string `json:"effort"`
-			Speed             string `json:"speed"`
-			PermissionMode    string `json:"permission_mode"`
-			Tier              string `json:"tier"`
-			Host              string `json:"host"` // agy (the Antigravity companion) or an engine host; "": the hub's choice (start_host.go)
+			Machine           string             `json:"machine"`
+			Cwd               string             `json:"cwd"`
+			Prompt            string             `json:"prompt"`
+			SkipProjectMemory bool               `json:"skip_project_memory"`
+			ModelAliases      proto.ModelAliases `json:"model_aliases"`
+			Launcher          string             `json:"launcher"`
+			Model             string             `json:"model"`
+			Effort            string             `json:"effort"`
+			Speed             string             `json:"speed"`
+			PermissionMode    string             `json:"permission_mode"`
+			Tier              string             `json:"tier"`
+			Host              string             `json:"host"` // agy (the Antigravity companion) or an engine host; "": the hub's choice (start_host.go)
 			Worktree          struct {
 				Branch string `json:"branch"`
 			} `json:"worktree"`
@@ -653,9 +791,14 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			// approves on the phone (secret_handoff.go).
 			SecretEnv map[string]string `json:"secret_env"`
 		}
-		_ = json.Unmarshal(args, &a)
 		if err := checkSecretEnvArg(args); err != nil {
 			return "", fmt.Errorf("%w; no agent was started", err)
+		}
+		if err := json.Unmarshal(args, &a); err != nil {
+			return "", errors.New("invalid agent_start arguments; no agent was started")
+		}
+		if err := a.ModelAliases.Validate(); err != nil {
+			return "", err
 		}
 		if a.PermissionMode = strings.TrimSpace(a.PermissionMode); a.PermissionMode != "" && !slices.Contains(proto.PermissionModes, a.PermissionMode) {
 			return "", fmt.Errorf("invalid permission_mode %q; no agent was started", a.PermissionMode)
@@ -730,6 +873,9 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			}
 			return "", fmt.Errorf("%w; no agent was started", err)
 		}
+		if err := checkAliasAgent(a.ModelAliases, fit); err != nil {
+			return "", err
+		}
 		if err := checkHostLauncher(run, fit); err != nil {
 			return "", fmt.Errorf("%w; no agent was started", err)
 		}
@@ -746,19 +892,20 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			tier = "" // the tier's launcher is not what runs
 			tierChoice = nil
 		}
-		// traex, omp…: no effort or permission mode (launcher_modes.go). One this call names is refused before the user is asked, rather
-		// than by the computer after they said yes; one a tier filled in is dropped. pi, cursor: dropped either way.
+		// Check the caller's choices before approval. Drop unsupported settings inherited from the tier or purpose.
 		if !startTakesModes(fit.agent) {
 			launcher, _ := run["launcher"].(string)
 			if err := startModesRefused(launcher, fit.agent, own.permission, own.effort); err != nil {
 				return "", fmt.Errorf("%w; no agent was started", err)
 			}
-			a.Effort = ""
 			a.PermissionMode = ""
-			delete(run, "effort")
 			delete(run, "permission_mode")
 		} else if mode, _ := run["permission_mode"].(string); mode != "" && own.permission == "" && !fit.supportsPermissionMode(mode) {
 			delete(run, "permission_mode")
+		}
+		if !startTakesEffort(fit.agent) {
+			a.Effort = ""
+			delete(run, "effort")
 		}
 		// The admission gate refuses a too-busy computer before the user is asked to approve anything.
 		gated, _ := run["launcher"].(string)
@@ -807,16 +954,19 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 		// conversation's turn and given agentStartTimeout instead of the old 100s.
 		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentStartTimeout)
 		defer cancel()
-		// The tab is named from the prompt as written; unless this start opts out, its project's background goes before it (#2820).
-		title := s.tabName(sctx, a.Prompt)
+		// Start with a local placeholder; the model names the returned session in the background.
+		title := localTabName(a.Prompt)
 		params := map[string]any{"cwd": a.Cwd, "launcher": a.Launcher, "model": a.Model, "effort": a.Effort, "speed": a.Speed, "permission_mode": a.PermissionMode, "tab_name": title, "title": title}
+		if own.model != "" {
+			params["explicit_model"] = own.model
+		}
+		if len(a.ModelAliases) != 0 {
+			params["model_aliases"] = a.ModelAliases
+		}
 		if a.Host != "" {
 			params["host"] = a.Host
 		}
 		prompt := a.Prompt
-		if !a.SkipProjectMemory {
-			prompt = s.withProjectContext(sctx, am.ID, a.Cwd, self, a.Prompt)
-		}
 		if a.Ultracode {
 			params["ultracode"] = true
 		}
@@ -846,6 +996,9 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 		if err := s.applyOmpStartDefaults(sctx, am, own, fit, params); err != nil {
 			return "", err
 		}
+		if !a.SkipProjectMemory {
+			prompt = s.withProjectContextForAgent(sctx, am.ID, a.Cwd, self, fit.agent, prompt)
+		}
 		params["prompt"] = s.withCloseoutBrief(sctx, am.ID, prompt, false)
 		if err := checkStartSpeed(params, fit, ""); err != nil {
 			return "", fmt.Errorf("%w; no agent was started", err)
@@ -855,7 +1008,6 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			if err := startModesRefused(picked, fit.agent, own.permission, own.effort); err != nil {
 				return "", fmt.Errorf("%w; no agent was started", err)
 			}
-			delete(params, "effort")          // Model configuration's, not this call's
 			delete(params, "permission_mode") // Model configuration's or tier's, not this call's
 		} else {
 			mode, _ := params["permission_mode"].(string)
@@ -869,6 +1021,9 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			} else if mode == "" {
 				delete(params, "permission_mode")
 			}
+		}
+		if !startTakesEffort(fit.agent) {
+			delete(params, "effort")
 		}
 		if !s.isWorkMachine(am.ID) {
 			params["prompt"] = params["prompt"].(string) + "\n\n" + s.taskHandoff(sctx, am.ID, fit)
@@ -1016,7 +1171,7 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			if startResultUnknown(err) {
 				// The node may already have the session and a running agent although the answer never came back:
 				// do not report failure (the model would start it again, duplicating the run).
-				return s.startedWithoutAnswer(ctx, decision, am, picked, fit.snapshot, a.Cwd, note, expectID, knownIDs, task, told), nil
+				return s.startedWithoutAnswer(ctx, decision, am, picked, fit.snapshot, a.Cwd, note, expectID, knownIDs, task, told, params["tab_name"].(string), a.Prompt), nil
 			}
 			if ferr := s.failAgentStartTodo(ctx, task.ID, clip(oneLine(err.Error()), 200)); ferr != nil {
 				s.logf("task %s: fail: %v", task.ID, ferr)
@@ -1024,6 +1179,7 @@ func (s *Service) runTool(ctx context.Context, machine, self, name string, args 
 			return "", err
 		}
 		s.nameStartedAgent(sctx, am.ID, res.Session, title)
+		s.nameAgentTabLater(agentTabNameStart(am.ID, res.Session, title, a.Prompt))
 		s.recordStartSuccess(ctx, am.ID, ranLauncher(launcher, res.Instead, res.Session))
 		if tierChoice != nil {
 			row := modelRoutingOf(*tierChoice, am.ID)
@@ -1199,11 +1355,12 @@ var liveSendWait = 90 * time.Second
 // and by the older bounded adoption heuristic otherwise. A failed pre-start list disables only the heuristic, not an
 // exact expectID match. Otherwise the pending task stays visible for a later sessions.changed to complete the link.
 // The confirmed session's Agent kind wins, with the explicitly resolved launcher kind as fallback (#11545).
-func (s *Service) startedWithoutAnswer(ctx context.Context, decision *placement, m Device, launcher, launcherKind, cwd, note, expectID string, knownIDs map[string]bool, task Todo, told string) string {
+func (s *Service) startedWithoutAnswer(ctx context.Context, decision *placement, m Device, launcher, launcherKind, cwd, note, expectID string, knownIDs map[string]bool, task Todo, told, requestedName, nameFrom string) string {
 	confirmed := func(sess proto.Session, source string) string {
 		// The machine confirmed this identity even if linking its task fails.
 		decision.SessionID = sess.SessionID
 		s.savePlacement(ctx, decision)
+		s.nameAgentTabLater(agentTabNameStart(m.ID, sess, requestedName, nameFrom))
 		closed, linkErr := s.linkStartedAgentTask(ctx, task, m, cwd, sess.SessionID, cmp.Or(sess.Agent, launcherKind))
 		return fmt.Sprintf("Started on %s in %s: session %s (the start took longer than the wait; the session was "+
 			"confirmed %s), a task of this conversation (its card is in the conversation; %s).%s",
@@ -1265,6 +1422,10 @@ type question struct {
 	answer chan proto.Resolution
 	// userSpoke is set (under questions.mu) when the question was withdrawn because the user wrote in the conversation.
 	userSpoke bool
+	// withdrawn and withdrawnReason are set (under questions.mu) when the originating conversation explicitly withdrew
+	// its own pending ask_user card through ask_user_withdraw.
+	withdrawn       bool
+	withdrawnReason string
 	// later: asked with wait false (ask_later.go): no call waits on answer, its end is told to the conversation as a
 	// message; telling (under questions.mu) while that is being done. A waiting one becomes later when it lets go of
 	// its turn (ask_release.go): release is then closed, and the call returns.
@@ -1282,8 +1443,10 @@ var errUserSpoke = errors.New("the user wrote in the conversation")
 
 // questions are the questions out to the user, by interaction id: they go to the hub in the snapshot.
 type questions struct {
-	mu sync.Mutex
-	m  map[string]*question
+	mu       sync.Mutex
+	m        map[string]*question
+	terminal map[string]endedAskQuestion
+	order    []string
 }
 
 func (s *Service) toolAskUser(ctx context.Context, machine, sessionID string, args json.RawMessage) (string, error) {
@@ -1345,13 +1508,18 @@ func (s *Service) toolAskUser(ctx context.Context, machine, sessionID string, ar
 	if proto.HasDuplicateQuestionText(ix.Questions) {
 		return "", i18n.Err("hub-hub.duplicate_question")
 	}
-	s.promoteSupervision(sessionID)
+	if err := s.promoteSupervision(sessionID); err != nil {
+		return "", err
+	}
 	if a.Wait != nil && !*a.Wait {
 		return s.askLaterStart(ctx, ix)
 	}
 	r, err := s.ask(ctx, ix)
 	if errors.Is(err, errUserSpoke) {
 		return prompts.RenderQuestionUserSpoke(), nil
+	}
+	if errors.Is(err, errWithdrawnByOrigin) {
+		return askUserWithdrawnResult(ix.ID, r.Reason), nil
 	}
 	if errors.Is(err, errReleased) { // a message waits for the conversation: the card stays up, unwaited (ask_release.go)
 		return prompts.RenderQuestionReleased(prompts.QuestionAskedLater{ID: ix.ID,
@@ -1422,9 +1590,15 @@ func (s *Service) ask(ctx context.Context, ix proto.Interaction) (proto.Resoluti
 	case r := <-q.answer:
 		s.questions.mu.Lock()
 		spoke := q.userSpoke
+		withdrawn := q.withdrawn
+		reason := q.withdrawnReason
 		s.questions.mu.Unlock()
 		if spoke && r.Dismiss && r.Reason == proto.DismissedInChat { // not an answer that got in first
 			return r, errUserSpoke
+		}
+		if withdrawn && r.Cancel {
+			r.Reason = reason
+			return r, errWithdrawnByOrigin
 		}
 		return r, nil
 	case <-q.release:
@@ -1447,7 +1621,7 @@ func (s *Service) withdrawAskUser(session string) {
 	var mine []*question
 	for _, q := range s.questions.m {
 		// One asked without waiting holds no turn: its card stays up and can still be answered (ask_later.go).
-		if q.ix.SessionID == session && q.ix.ToolName == "ask_user" && !q.userSpoke && !q.later {
+		if q.ix.SessionID == session && q.ix.ToolName == "ask_user" && !q.userSpoke && !q.withdrawn && !q.later {
 			q.userSpoke = true
 			mine = append(mine, q)
 		}
@@ -1541,11 +1715,26 @@ func (s *Service) Action(ctx context.Context, a Action) (ActionResult, error) {
 	// its turn takes to do so (ask_release.go): the answer goes to the call or is told as a message, never lost between.
 	s.questions.mu.Lock()
 	if !q.later {
+		delivered := false
 		select {
 		case q.answer <- r:
+			delivered = true
 		default: // answered already
 		}
+		if delivered && q.ix.ToolName == "ask_user" && !q.withdrawn {
+			status := endStatus(r)
+			if s.askExpiredResolution(q.ix, r) {
+				status = "expired"
+			}
+			s.questions.recordTerminalLocked(q.ix, status, "")
+		}
 		s.questions.mu.Unlock()
+		return ActionResult{OK: true}, nil
+	}
+	if q.withdrawn && r.Cancel {
+		delete(s.questions.m, a.InteractionID)
+		s.questions.mu.Unlock()
+		s.publish(context.WithoutCancel(ctx))
 		return ActionResult{OK: true}, nil
 	}
 	s.questions.mu.Unlock()
@@ -1597,7 +1786,7 @@ func (s *Service) findAgent(ctx context.Context, machine, id string) (Device, pr
 	return s.findAgentInSpace(ctx, machine, id, nil)
 }
 
-// findAgentInSpace resolves a full id or prefix among eligible sessions. An empty
+// findAgentInSpace resolves a full id, prefix, or exact session alias among eligible sessions. An empty
 // machine searches all of them. A nil space preserves the lookup for other callers.
 func (s *Service) findAgentInSpace(ctx context.Context, machine, id string, space *string) (Device, proto.Session, error) {
 	id = strings.TrimSpace(id)
@@ -1606,6 +1795,9 @@ func (s *Service) findAgentInSpace(ctx context.Context, machine, id string, spac
 	}
 	var found *Device
 	var session proto.Session
+	var aliasDev *Device
+	var aliasSess proto.Session
+	aliasMatches := 0
 	for _, m := range s.devices(ctx) {
 		if machine != "" {
 			if want, ok := s.machineByName(ctx, machine); !ok || want.ID != m.ID {
@@ -1622,11 +1814,20 @@ func (s *Service) findAgentInSpace(ctx context.Context, machine, id string, spac
 					return Device{}, proto.Session{}, fmt.Errorf("session_id %s is ambiguous; use the full id and machine", id)
 				}
 				found, session = &m, c
+			} else if slices.Contains(c.Aliases(), id) {
+				aliasMatches++
+				aliasDev, aliasSess = &m, c
 			}
 		}
 	}
 	if found != nil {
 		return *found, session, nil
+	}
+	if aliasMatches == 1 {
+		return *aliasDev, aliasSess, nil
+	}
+	if aliasMatches > 1 {
+		return Device{}, proto.Session{}, fmt.Errorf("session_id %s is ambiguous; use the full id and machine", id)
 	}
 	return Device{}, proto.Session{}, fmt.Errorf("no agent %s (use agents_list)", id)
 }
@@ -1664,6 +1865,9 @@ func (s *Service) describeAgents(ctx context.Context, state, machine, query stri
 			what = "要授权 " + ix.ToolName + "：" + ix.Summary
 		} else if ix.Kind == proto.IxScreen {
 			what = "终端对话框等你处理"
+			if safeScreenDialog(ix) {
+				what = "终端对话框：" + terminalQuestionText(ix) // i18n-ignore: agents_list output for the model
+			}
 		}
 		session := ix.SessionID
 		source := [2]string{ix.MachineID, session}
@@ -1726,7 +1930,8 @@ func (s *Service) describeAgents(ctx context.Context, state, machine, query stri
 					continue
 				}
 			case "active":
-				if st := agentsListState(c); st != proto.StateNeedsYou && st != proto.StateWorking && st != proto.StateUnread && !c.AwaitsReply {
+				if st := agentsListState(c); st != proto.StateNeedsYou && st != proto.StateWorking && st != proto.StateUnread &&
+					!unverifiedAgyTurn(c) && !c.AwaitsReply {
 					continue // a seen one still asking the user is active too (#5096)
 				}
 			case "done":
@@ -1896,7 +2101,12 @@ func (s *Service) toolAgentRead(ctx context.Context, machine, id string, turns i
 	if err := s.call(ctx, m.ID, DeviceSessionItems, map[string]any{"session_id": c.SessionID, "turns": min(turns, 10)}, &res); err != nil {
 		return "", err
 	}
-	head := fmt.Sprintf("%s on %s (%s, %s)", agentLabel(c), m.Name, stateNames[c.State], c.Cwd)
+	state := stateNames[c.State]
+	if agyTerminalSession(c) {
+		c.State = c.FoldedState()
+		state = agentsListLabel(c)
+	}
+	head := fmt.Sprintf("%s on %s (%s, %s)", agentLabel(c), m.Name, state, c.Cwd)
 	return transcriptText(head, sessionLink(s.webBase(ctx), m.ID, c.SessionID, false), res.Items), nil
 }
 
@@ -1942,6 +2152,9 @@ func agentsListState(c proto.Session) string {
 	if silentRow(c) || upstreamRow(c) {
 		return proto.StateNeedsYou
 	}
+	if unverifiedAgyTurn(c) {
+		return proto.StateUnknown
+	}
 	return c.State
 }
 
@@ -1951,11 +2164,19 @@ func agentsListLabel(c proto.Session) string {
 	case upstreamRow(c):
 		return "上游不可用" // i18n-ignore: agents_list output for the model, as the lines around it
 	case !silentRow(c):
-		return stateNames[c.State]
+		return stateNames[agentsListState(c)]
 	case c.TurnErrorKind == proto.TurnErrorStopped:
 		return "被停下了，没做完" // i18n-ignore: agents_list output for the model, as the lines around it
 	}
 	return "中断了，没做完" // i18n-ignore: agents_list output for the model, as the lines around it
+}
+
+func agyTerminalSession(c proto.Session) bool {
+	return c.Agent == "agy" && c.PaneID != "" && c.SourceKind != "runtime"
+}
+
+func unverifiedAgyTurn(c proto.Session) bool {
+	return agyTerminalSession(c) && !c.NativeTurnVerified && (c.State == proto.StateWorking || c.State == proto.StateUnread)
 }
 
 // kbUpdateText is the words a kb_update writes (names, notes, summaries, log lines, profile items), not its ids, links
@@ -2003,4 +2224,15 @@ func withKBWriteCheck(ctx context.Context, check func(text string) error) contex
 func kbWriteCheckOf(ctx context.Context) func(text string) error {
 	check, _ := ctx.Value(kbWriteCheckKey{}).(func(text string) error)
 	return check
+}
+
+var healthToolNames = []string{healthhost.Tool, healthhost.StrengthTool}
+
+// healthTools are advertised only to callers whose Health space is known from
+// the session snapshot or the node's attested caller directory.
+func (s *Service) healthTools(ctx context.Context, machine, session string) []proto.Tool {
+	if !s.healthOn() || s.agentCallerSpace(ctx, machine, session) != SpaceHealth {
+		return nil
+	}
+	return localizedMCPTools(toolsNamed(healthToolNames), s.toolLanguage(ctx))
 }

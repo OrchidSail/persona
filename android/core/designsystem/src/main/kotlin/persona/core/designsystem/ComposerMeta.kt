@@ -17,6 +17,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import persona.core.designsystem.icons.PhIcon
@@ -87,6 +89,7 @@ fun ComposerMetaChip(
             .then(if (fill != null) Modifier.background(fill) else Modifier)
             .then(if (borderColor != null) Modifier.border(Tokens.Size.hairline, borderColor, shape) else Modifier)
             .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClick = onClick) else Modifier)
+            .semantics { this.selected = selected }
             .padding(
                 horizontal = if (selected) Tokens.Space.s else Tokens.Space.sm,
                 vertical = Tokens.Space.xxs,

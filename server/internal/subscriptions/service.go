@@ -56,6 +56,9 @@ type Connectors interface {
 type Options struct {
 	Store      Store
 	Connectors Connectors
+	// ReadAllowed fences one subscription before connector calls or stored content reads. Nil permits every read; a
+	// false answer pauses only that subscription, never an unrelated source on the same manager.
+	ReadAllowed func(ctx context.Context, sub Subscription) bool
 	// Location is the user's time zone: {{since_date}}, daily_at, times without a zone.
 	Location func() *time.Location
 	// Audit records a change (plugin_audit): on connector, action by whom, with detail that holds no content.
@@ -117,7 +120,7 @@ type Service struct {
 	gates    map[string]*gate
 	busy     map[string]bool // connectors whose subscriptions are running now
 	running  int
-	asked    map[string]bool      // subscriptions asked to run now
+	asked    map[string]time.Time // subscriptions asked to run now (due at or after the stored time; zero means immediately)
 	kicked   map[string]time.Time // when a connector's changed event makes each of its subscriptions due (ConnectorChanged)
 	wake     chan struct{}
 
@@ -162,10 +165,14 @@ func New(o Options) *Service {
 		o.Delivered = func(Subscription) {}
 	}
 	return &Service{o: o, catalogs: map[string]catalogEntry{}, reading: map[string]bool{}, gates: map[string]*gate{},
-		busy: map[string]bool{}, asked: map[string]bool{}, kicked: map[string]time.Time{}, wake: make(chan struct{}, 1), pushed: map[string][]time.Time{}}
+		busy: map[string]bool{}, asked: map[string]time.Time{}, kicked: map[string]time.Time{}, wake: make(chan struct{}, 1), pushed: map[string][]time.Time{}}
 }
 
 func (s *Service) now() time.Time { return s.o.Clock.Now().UTC() }
+
+func (s *Service) readAllowed(ctx context.Context, sub Subscription) bool {
+	return s.o.ReadAllowed == nil || s.o.ReadAllowed(ctx, sub)
+}
 
 // shown is s as the API shows it: off while both destinations are off, its floor of intervals filled in.
 func shown(sub Subscription) Subscription {
@@ -482,6 +489,9 @@ func (s *Service) check(ctx context.Context, c ConnectorInfo, sourceID string, r
 	}
 	if !c.ready() {
 		return fail(&Problem{CodeNotConnected, "The connector cannot be reached now."})
+	}
+	if sub != nil && !s.readAllowed(ctx, *sub) {
+		return fail(&Problem{CodeNotConnected, "The source is paused by private-chat visibility."})
 	}
 	sources, err := s.catalog(ctx, c, time.Minute)
 	if err != nil {
@@ -949,7 +959,7 @@ func (s *Service) RunNow(ctx context.Context, id string, by Actor) (Subscription
 		return Subscription{}, pushOnly("pull")
 	}
 	s.mu.Lock()
-	s.asked[id] = true
+	s.asked[id] = time.Time{}
 	s.mu.Unlock()
 	s.o.Audit(ctx, sub.Connector, "subscription_run_now", by, map[string]any{"subscription": id})
 	s.poke()

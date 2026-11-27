@@ -3,6 +3,7 @@ package assistant
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -56,6 +57,9 @@ func (s *Service) AgentStartParams(ctx context.Context, p AgentStartParams) (map
 		}
 		clearStandardSpeed(params)
 	} else {
+		if model, _ := params["model"].(string); model != "" {
+			params["explicit_model"] = model
+		}
 		tierCtx, _ := withTierStart(ctx, p.MachineID)
 		own, err := s.resolveStart(tierCtx, params, false)
 		if err != nil {
@@ -65,14 +69,31 @@ func (s *Service) AgentStartParams(ctx context.Context, p AgentStartParams) (map
 			return nil, badRequest(fmt.Errorf("purpose %q requires engine launch for session.start", "agent.new"), s.appLang(ctx, p.Lang))
 		}
 		// Held to what the computer has (#2640): a launcher picked that it lacks is refused, a default it lacks gives
-		// way to one it has.
+		// way to one it has. A person's New Agent start: a default of Claude's desktop app opens in the app where the
+		// computer has it (models_desktop.go).
 		if m, ok := s.device(ctx, p.MachineID); ok {
-			note, agent, err := s.fitNewLauncher(ctx, m, own, params)
+			note, agent, err := s.fitNewLauncher(withPersonStart(ctx), m, own, params)
 			if err != nil {
+				if code, _ := relayErrCode(err); code == proto.CodeLauncherOutOfScope || code == proto.CodeLauncherOwnService {
+					return nil, err
+				}
 				return nil, badRequest(err, s.appLang(ctx, p.Lang))
 			}
 			if err := checkStartSpeed(params, agent, ""); err != nil {
 				return nil, badRequest(err, s.appLang(ctx, p.Lang))
+			}
+			if params["model_aliases"] != nil {
+				raw, err := json.Marshal(params["model_aliases"])
+				var aliases proto.ModelAliases
+				if err != nil || json.Unmarshal(raw, &aliases) != nil {
+					return nil, badRequest(fmt.Errorf("model_aliases must be an object of model IDs"), s.appLang(ctx, p.Lang))
+				}
+				if err := aliases.Validate(); err != nil {
+					return nil, badRequest(err, s.appLang(ctx, p.Lang))
+				}
+				if err := checkAliasAgent(aliases, agent); err != nil {
+					return nil, badRequest(err, s.appLang(ctx, p.Lang))
+				}
 			}
 			if mode, _ := params["permission_mode"].(string); mode != "" && own.permission == "" && !agent.supportsPermissionMode(mode) {
 				delete(params, "permission_mode")
@@ -93,9 +114,8 @@ func (s *Service) AgentStartParams(ctx context.Context, p AgentStartParams) (map
 	clearStandardSpeed(params)
 	s.setPlanThen(ctx, p.MachineID, params)
 	if name, _ := params["tab_name"].(string); strings.TrimSpace(name) == "" && p.NameFrom != "" {
-		if name := s.tabName(ctx, p.NameFrom); name != "" {
-			params["tab_name"] = name
-		}
+		// Start locally; agents.tab_name_started asks the model after the hub has the session identity.
+		params["tab_name"] = localTabName(p.NameFrom)
 	}
 	return params, nil
 }
@@ -139,9 +159,20 @@ func (s *Service) AgentResumeParams(ctx context.Context, p AgentResumeParams) (m
 	return params, nil
 }
 
-// tabName is a short name for the herdr tab of a new agent, from its first message (purpose agent.title, a few
-// seconds at most). "" when there is no message or the model fails: the node names it agent-<n>.
+// tabNameSyncTimeout is the agent.title budget on the paths that still answer a caller: the
+// agents.tab_name bus method and the autonameTabs batch. It stays at the original eight seconds;
+// only the detached start-naming job uses the longer agentTitleAsyncTimeout. A var so tests can
+// compress it.
+var tabNameSyncTimeout = 8 * time.Second
+
+// tabName is tabNameWithTimeout with the short synchronous budget.
 func (s *Service) tabName(ctx context.Context, prompt string) string {
+	return s.tabNameWithTimeout(ctx, prompt, tabNameSyncTimeout)
+}
+
+// tabNameWithTimeout asks agent.title for a short herdr tab name using the given model budget. ""
+// when there is no message or the model fails: the node names it agent-<n>.
+func (s *Service) tabNameWithTimeout(ctx context.Context, prompt string, timeout time.Duration) string {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return ""
@@ -149,19 +180,30 @@ func (s *Service) tabName(ctx context.Context, prompt string) string {
 	if r := []rune(prompt); len(r) > 1500 {
 		prompt = string(r[:1500])
 	}
-	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	// Reasoning models think first: 20 tokens came back empty.
-	text, err := s.purposeModel("agent.title").Complete(cctx, prompts.RenderTabName(), prompt, 200)
+	// Reasoning models think first: 20 tokens came back empty. Thinking is off for this short tab name, and a
+	// cut-off chain-of-thought line is rejected before tabSlug turns it into "we-need-answer-title".
+	r, err := s.purposeModel("agent.title").Chat(cctx, ai.Request{
+		System:          prompts.RenderTabName(),
+		Messages:        []ai.Message{{Role: ai.RoleUser, Content: prompt}},
+		MaxTokens:       200,
+		DisableThinking: true,
+	})
 	if err != nil {
 		if !ai.IsPaused(err) {
 			s.logf("tab name: %v", err)
 		}
 		return ""
 	}
-	name := tabSlug(text)
+	cleaned := stripTitleThinking(r.Text)
+	if titleReplyIsThinkingLeak(cleaned) {
+		s.logf("tab name: dropped thinking leakage %q", clip(oneLine(r.Text), 80))
+		return ""
+	}
+	name := tabSlug(cleaned)
 	if name == "" {
-		s.logf("tab name: nothing usable in %q", clip(oneLine(text), 80))
+		s.logf("tab name: nothing usable in %q", clip(oneLine(r.Text), 80))
 	}
 	return name
 }
@@ -180,6 +222,10 @@ func (s *Service) nameStartedAgent(ctx context.Context, machine string, c proto.
 	}
 	return title
 }
+
+// localTabName starts an Agent without a model call. The existing fixed placeholder covers prompts with no ASCII
+// words and, unlike a meaningful local slug, remains eligible for the ordinary background naming pass if a late event is lost.
+func localTabName(prompt string) string { return cmp.Or(tabSlug(prompt), "persona") }
 
 // tabSlug keeps what a tab name may be: lowercase ASCII letters and digits, single hyphens, at most 24 characters.
 func tabSlug(s string) string {
