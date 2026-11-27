@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/nwverse/persona/server/internal/apierr"
+	"github.com/nwverse/persona/server/internal/assistantwire"
 	"github.com/nwverse/persona/server/internal/i18n"
 	"github.com/nwverse/persona/server/internal/proto"
 	"github.com/nwverse/persona/server/internal/workspacenaming"
@@ -178,6 +179,14 @@ func (s *Service) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if n := in.IdleAutoCompactTokens; n != nil && (*n < minIdleAutoCompactTokens || *n > maxIdleAutoCompactTokens) {
 		apierr.Write(w, http.StatusBadRequest, i18n.Err("assistant-profile.bad_idle_auto_compact_tokens"))
+		return
+	}
+	if m := in.AgyIdleAutoCompactMinutes; m != nil && !assistantwire.AgyIdleMinutesValid(*m) {
+		apierr.Write(w, http.StatusBadRequest, i18n.Err("assistant-profile.bad_agy_idle_auto_compact_minutes"))
+		return
+	}
+	if n := in.AgyIdleAutoCompactTokens; n != nil && !assistantwire.AgyIdleTokensValid(*n) {
+		apierr.Write(w, http.StatusBadRequest, i18n.Err("assistant-profile.bad_agy_idle_auto_compact_tokens"))
 		return
 	}
 	if m := in.IdleReleaseMinutes; m != nil && (*m < minIdleReleaseMinutes || *m > maxIdleReleaseMinutes) {
@@ -371,6 +380,15 @@ func (s *Service) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if in.IdleAutoCompactTokens != nil {
 			v.IdleAutoCompactTokens = in.IdleAutoCompactTokens
+		}
+		if in.AgyIdleAutoCompact != nil {
+			v.AgyIdleAutoCompact = in.AgyIdleAutoCompact
+		}
+		if in.AgyIdleAutoCompactMinutes != nil {
+			v.AgyIdleAutoCompactMinutes = in.AgyIdleAutoCompactMinutes
+		}
+		if in.AgyIdleAutoCompactTokens != nil {
+			v.AgyIdleAutoCompactTokens = in.AgyIdleAutoCompactTokens
 		}
 		if in.IdleReleaseMinutes != nil {
 			v.IdleReleaseMinutes = in.IdleReleaseMinutes
@@ -654,7 +672,7 @@ func (s *Service) runtimeAssistantLauncher(ctx context.Context, machine, launche
 	var res struct {
 		Launchers []proto.Launcher `json:"launchers"`
 	}
-	if err := s.call(ctx, machine, DeviceLaunchersList, map[string]any{}, &res); err != nil {
+	if err := s.cachedLauncherList(ctx, machine, launcherListReadOpts{}, &res); err != nil {
 		return false
 	}
 	return slices.ContainsFunc(res.Launchers, func(l proto.Launcher) bool { return l.Name == launcher && l.Assistant })

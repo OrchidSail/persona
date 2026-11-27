@@ -72,14 +72,17 @@ type Settings struct {
 	Former []FormerMain `json:"former_main,omitempty"`
 	// MainTasksQuiet: tasks the main conversation opens are told only there, not pushed, on the Live Activity or in
 	// task badges (#1731). nil is on (the default); the view always says what is in effect.
-	MainTasksQuiet         *bool `json:"main_tasks_quiet,omitempty"`
-	IdleAutoCompact        *bool `json:"idle_auto_compact,omitempty"`
-	IdleAutoCompactMinutes *int  `json:"idle_auto_compact_minutes,omitempty"`
-	IdleAutoCompactTokens  *int  `json:"idle_auto_compact_tokens,omitempty"`
-	CacheKeepalive         *bool `json:"cache_keepalive,omitempty"`
-	CacheKeepaliveMinutes  *int  `json:"cache_keepalive_minutes,omitempty"`
-	CacheKeepaliveMax      *int  `json:"cache_keepalive_max,omitempty"`
-	IdleReleaseMinutes     *int  `json:"idle_release_minutes,omitempty"` // #12008, idle_compact_settings.go
+	MainTasksQuiet            *bool `json:"main_tasks_quiet,omitempty"`
+	IdleAutoCompact           *bool `json:"idle_auto_compact,omitempty"`
+	IdleAutoCompactMinutes    *int  `json:"idle_auto_compact_minutes,omitempty"`
+	IdleAutoCompactTokens     *int  `json:"idle_auto_compact_tokens,omitempty"`
+	AgyIdleAutoCompact        *bool `json:"agy_idle_auto_compact,omitempty"`
+	AgyIdleAutoCompactMinutes *int  `json:"agy_idle_auto_compact_minutes,omitempty"`
+	AgyIdleAutoCompactTokens  *int  `json:"agy_idle_auto_compact_tokens,omitempty"`
+	CacheKeepalive            *bool `json:"cache_keepalive,omitempty"`
+	CacheKeepaliveMinutes     *int  `json:"cache_keepalive_minutes,omitempty"`
+	CacheKeepaliveMax         *int  `json:"cache_keepalive_max,omitempty"`
+	IdleReleaseMinutes        *int  `json:"idle_release_minutes,omitempty"` // #12008, idle_compact_settings.go
 	// StartRequestedTasks: a task_plan task the user asked for in so many words starts without the card's "Start"
 	// (#2559). nil is on (the default).
 	StartRequestedTasks     *bool  `json:"start_requested_tasks,omitempty"`
@@ -108,8 +111,9 @@ type Settings struct {
 	MainBackgroundFolded *bool `json:"main_background_folded,omitempty"`
 	// FoldRoutineRelayReplies opts the main chat into quiet completed relay reports when its background rounds fold.
 	FoldRoutineRelayReplies *bool `json:"fold_routine_relay_replies,omitempty"`
-	// MainCompactWindow: the compaction window, in tokens, the main conversation is held to when its launcher declares a
-	// larger one (#7314, main_compact_window.go); nil is 400000, 0 follows the launcher.
+	// MainCompactWindow: the compaction window, in tokens, the main conversation and each leader conversation are held to
+	// when their launcher declares a larger one (#7314, #15318, main_compact_window.go); nil is 400000, 0 follows the
+	// launcher.
 	MainCompactWindow *int `json:"main_compact_window,omitempty"`
 	// RecentTaskChats: the apps' sidebar Recent lists the chats a scheduled task or the background supervisor started
 	// too, by last activity with the others (#8324; since #6228 they are only in All chats). Display only, one value
@@ -282,6 +286,9 @@ type Settings struct {
 	// ChatReplyHinted: the one-time hint that the feature exists was given to a conversation (chat_reply.go). The
 	// assistant writes it itself; PUT /api/v1/assistant does not.
 	ChatReplyHinted bool `json:"chat_reply_hinted,omitempty"`
+	// ChatReplyMutedChats are Lark chats (by feed ID) where chat_reply relays are stopped even while
+	// assistant.chat_reply_relay is on (chat_reply.go). Written through persona_settings; PUT /api/v1/assistant does not.
+	ChatReplyMutedChats []chatReplyMutedChat `json:"chat_reply_muted_chats,omitempty"`
 	// BackgroundSupervisor is the background supervisor's conversation, on BackgroundSupervisorMachineID, started at
 	// BackgroundSupervisorAt: made on first use, "" until then. BackgroundSupervisorAnnounced: the main conversation
 	// was told once that it follows up its tasks. The assistant writes these itself; PUT /api/v1/assistant does not.
@@ -289,6 +296,13 @@ type Settings struct {
 	BackgroundSupervisorMachineID string     `json:"background_supervisor_machine_id,omitempty"`
 	BackgroundSupervisorAt        *time.Time `json:"background_supervisor_at,omitempty"`
 	BackgroundSupervisorAnnounced bool       `json:"background_supervisor_announced,omitempty"`
+}
+
+// chatReplyMutedChat is one Lark chat excluded from chat_reply relays (chat_reply.go,
+// persona_settings assistant.chat_reply_relay_muted_chats).
+type chatReplyMutedChat struct {
+	Chat  string `json:"chat"`
+	Title string `json:"title,omitempty"`
 }
 
 // FormerMain is a main conversation that was replaced, and until when it was the main one.
@@ -892,6 +906,7 @@ func (s *Service) settingsChanged(ctx context.Context) {
 	s.syncAutoSupervision(ctx)          // the automatic-supervision switch takes effect now (supervise_switch.go)
 	s.transcriptionSettingsChanged(ctx) // only another contribution chosen drops the readiness answer
 	s.ProfileChanged(ctx)
+	s.syncAgyIdleCompactionToNodes(ctx)
 	s.revalidateFailedStartDeferrals(ctx)
 	s.publish(ctx)
 }
@@ -920,19 +935,22 @@ type assistantView struct {
 	EffectiveWorkspaceRules workspacenaming.Rules  `json:"effective_workspace_rules"`
 	SystemDefaults          *workspacenaming.Rules `json:"system_defaults,omitempty"`
 	Settings
-	Manager                string             `json:"manager"`
-	PermissionDefaults     permissionDefaults `json:"permission_defaults"`
-	Cwd                    string             `json:"cwd"`
-	Conversations          []proto.Session    `json:"conversations"`
-	NotesEffective         string             `json:"notes_effective"`  // what the assistant is told about the user
-	MainTasksQuiet         bool               `json:"main_tasks_quiet"` // in effect (the setting's own is left out while unset)
-	IdleAutoCompact        bool               `json:"idle_auto_compact"`
-	IdleAutoCompactMinutes int                `json:"idle_auto_compact_minutes"`
-	IdleAutoCompactTokens  int                `json:"idle_auto_compact_tokens"`
-	CacheKeepalive         bool               `json:"cache_keepalive"`
-	CacheKeepaliveMinutes  int                `json:"cache_keepalive_minutes"`
-	CacheKeepaliveMax      int                `json:"cache_keepalive_max"`
-	IdleReleaseMinutes     int                `json:"idle_release_minutes"`
+	Manager                   string             `json:"manager"`
+	PermissionDefaults        permissionDefaults `json:"permission_defaults"`
+	Cwd                       string             `json:"cwd"`
+	Conversations             []proto.Session    `json:"conversations"`
+	NotesEffective            string             `json:"notes_effective"`  // what the assistant is told about the user
+	MainTasksQuiet            bool               `json:"main_tasks_quiet"` // in effect (the setting's own is left out while unset)
+	IdleAutoCompact           bool               `json:"idle_auto_compact"`
+	IdleAutoCompactMinutes    int                `json:"idle_auto_compact_minutes"`
+	IdleAutoCompactTokens     int                `json:"idle_auto_compact_tokens"`
+	AgyIdleAutoCompact        bool               `json:"agy_idle_auto_compact"`
+	AgyIdleAutoCompactMinutes int                `json:"agy_idle_auto_compact_minutes"`
+	AgyIdleAutoCompactTokens  int                `json:"agy_idle_auto_compact_tokens"`
+	CacheKeepalive            bool               `json:"cache_keepalive"`
+	CacheKeepaliveMinutes     int                `json:"cache_keepalive_minutes"`
+	CacheKeepaliveMax         int                `json:"cache_keepalive_max"`
+	IdleReleaseMinutes        int                `json:"idle_release_minutes"`
 	// StartRequestedTasks is in effect, like MainTasksQuiet.
 	StartRequestedTasks     bool   `json:"start_requested_tasks"`
 	TaskWorkspacePreference string `json:"task_workspace_preference"`
@@ -1031,6 +1049,7 @@ func (s *Service) view(ctx context.Context, withArchived bool, space ...string) 
 		StartRequestedTasks: quietOn(v.StartRequestedTasks), RecordingDays: recordingAudioDaysOf(v), RecordingAudioDays: recordingAudioDaysOf(v),
 		RecordingTextDays: recordingTextDaysOf(v), MinutesDays: kb.MinutesDaysFor(minutesDaysSetting(v), recordingTextDaysOf(v)),
 		IdleAutoCompact: s.idleAutoCompact(ctx), IdleAutoCompactMinutes: s.idleAutoCompactMinutes(ctx), IdleAutoCompactTokens: s.idleAutoCompactTokens(ctx),
+		AgyIdleAutoCompact: s.agyIdleAutoCompact(ctx), AgyIdleAutoCompactMinutes: s.agyIdleAutoCompactMinutes(ctx), AgyIdleAutoCompactTokens: s.agyIdleAutoCompactTokens(ctx),
 		CacheKeepalive: cacheKeepaliveOf(v).Enabled, CacheKeepaliveMinutes: cacheKeepaliveOf(v).IntervalMinutes, CacheKeepaliveMax: cacheKeepaliveOf(v).MaxRequests,
 		IdleReleaseMinutes: s.idleReleaseMinutes(ctx), MeetingAttendanceDefault: meetingAttendanceOf(v), KBTopics: quietOn(v.KBTopics),
 		Dashboards:                  v.Dashboards != nil && *v.Dashboards,
