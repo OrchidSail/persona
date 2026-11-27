@@ -10,7 +10,7 @@ Use repositories_list or repository_get when needed; an explicit repository URL 
 
 Saved workspace naming plan on existing todo: {"backend":{"operation_id":"<id>"}}. Multi-repo container: {"container":{"selected_repo_ids":[...]}} (or operation_id with todo_id). Optional host picks enabled engine; selected repos must be ready.
 
-Workspace: "new" isolates; {"new":{"branch":"task/my-change"}} names it (default task/<todo id>); reuse needs a clean, unused checkout. {"existing":"<cwd or id>","queue":true} selects it without switching; busy queues FIFO only if requested or owner waits. "none" creates nothing. Omitted: readonly=none, otherwise configured default or new when busy. Only the engine creates workspaces; failure stops dispatch, acceptance keeps them. Respect org read-only refusals.
+Workspace: "new" isolates; {"new":{"branch":"task/my-change"}} names it (default task/<todo id>); reuse needs a clean, unused checkout. {"existing":"<cwd or id>","queue":true} selects it without switching; busy queues FIFO only if requested or owner waits. "scratch" creates/reuses a node-managed isolated dir (omit cwd) for non-repo tasks. "none" creates nothing. Omitted: readonly=none, otherwise configured default or new when busy. Only the engine creates workspaces; failure stops dispatch, acceptance keeps them. Respect org read-only refusals.
 
 `wait_seconds` observes up to 50 seconds after dispatch, appending `Inline observation` JSON: `completed`(this input's `reply`), `question`(pending `interaction_id`), `timeout`/`cancelled`/`unavailable`/`interrupted`/`failed`, with known input/session ids. Observation never answers questions, accepts tasks, resends or cancels work; normal supervision/`task_review` applies. Older nodes may time out rather than return an unrelated reply. Only an immediately dispatchable single-task plan waits; approval cards and multi-task plans return immediately.{{template "shared/mcp_language" .}}
 
@@ -46,6 +46,7 @@ Workspace: "new" isolates; {"new":{"branch":"task/my-change"}} names it (default
         ],
         "anyOf": [
           {"required": ["cwd"]},
+          {"type": "object", "required": ["workspace"], "properties": {"workspace": {"type": "string", "enum": ["scratch"]}}},
           {"type": "object", "required": ["workspace", "todo_id"], "properties": {"workspace": {"type": "object", "required": ["backend"]}}},
           {"type": "object", "required": ["workspace"], "properties": {"workspace": {"type": "object", "required": ["container"]}}}
         ],
@@ -86,13 +87,13 @@ Workspace: "new" isolates; {"new":{"branch":"task/my-change"}} names it (default
           },
           "cwd": {
             "type": "string",
-            "description": "Abs or ~/ dir, unless workspace.backend/container supplies it."
+            "description": "Abs or ~/ dir, unless workspace is scratch/backend/container."
           },
           "workspace": {
             "type": ["string", "object"],
             "description": "workspace policy; omit for default; existing: path or workspace id",
             "oneOf": [
-              { "type": "string", "enum": ["new", "none"] },
+              { "type": "string", "enum": ["new", "none", "scratch"] },
               { "type": "object", "required": ["backend"], "additionalProperties": false, "properties": { "backend": { "type": "object", "required": ["operation_id"], "additionalProperties": false, "properties": { "operation_id": { "type": "string", "minLength": 1 }, "host": { "type": "string" } } } } },
               { "type": "object", "required": ["container"], "additionalProperties": false, "properties": { "container": { "type": "object", "additionalProperties": false, "properties": { "selected_repo_ids": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }, "operation_id": { "type": "string", "minLength": 1 }, "host": { "type": "string" } } } } },
               { "type": "object", "required": ["existing"], "additionalProperties": false, "properties": { "existing": { "type": "string", "minLength": 1 }, "queue": { "type": "boolean" } } },
