@@ -1640,17 +1640,17 @@ func (w *agyWarmWorker) transportError(launcher string, callErr error) error {
 	return errors.New("model.run: " + msg)
 }
 
-// isAgyNormalStopReason reports whether an ACP session/prompt stopReason is a normal terminal stop.
-// Matching cold CLI semantics (which returns any SUCCESS result), empty, end_turn, max_tokens,
-// max_turn_requests, and refusal preserve the aggregated text and warm worker; cancelled or unknown
-// stop reasons fail closed and destroy the worker.
 func isAgyTimeoutErr(ctx context.Context, err error) bool {
 	return ctx.Err() != nil || errors.Is(err, os.ErrDeadlineExceeded)
 }
 
+// isAgyNormalStopReason reports whether an ACP session/prompt stopReason is a normal terminal stop.
+// Matching cold CLI semantics (which returns any SUCCESS result), end_turn, max_tokens,
+// max_turn_requests, and refusal preserve the aggregated text and warm worker; empty, cancelled,
+// or unknown stop reasons fail closed and destroy the worker.
 func isAgyNormalStopReason(stopReason string) bool {
 	switch stopReason {
-	case "", "end_turn", "max_tokens", "max_turn_requests", "refusal":
+	case "end_turn", "max_tokens", "max_turn_requests", "refusal":
 		return true
 	default:
 		return false

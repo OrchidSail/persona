@@ -1604,8 +1604,16 @@ func TestModelRunAgyWarmStopReasons(t *testing.T) {
 		})
 	}
 
-	for _, reason := range []string{"cancelled", "unexpected_error"} {
-		t.Run("abnormal_stop_"+reason, func(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reason string
+	}{
+		{"empty", ""},
+		{"cancelled", "cancelled"},
+		{"unexpected_error", "unexpected_error"},
+	} {
+		reason := tc.reason
+		t.Run("abnormal_stop_"+tc.name, func(t *testing.T) {
 			fx := setupFakeAgyWarm(t, nil)
 			if _, err := runModelWithNode(t, fx.node, proto.ModelRunParams{Launcher: "agy", Prompt: "warmup"}); err != nil {
 				t.Fatal(err)
@@ -1620,8 +1628,8 @@ func TestModelRunAgyWarmStopReasons(t *testing.T) {
 				Launcher: "agy",
 				Prompt:   "STOP_REASON:" + reason,
 			})
-			if err == nil || !strings.Contains(err.Error(), reason) {
-				t.Fatalf("stopReason=%s: expected fail-closed error, got %v", reason, err)
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("stopReason %q", reason)) {
+				t.Fatalf("stopReason=%q: expected fail-closed error, got %v", reason, err)
 			}
 			if _, statErr := os.Stat(dir1); !os.IsNotExist(statErr) {
 				t.Fatalf("stopReason=%s: workerDir leaked: %s", reason, dir1)
