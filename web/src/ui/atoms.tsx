@@ -173,6 +173,7 @@ export function Button({
   title,
   href,
   expanded,
+  "aria-pressed": pressed,
   testId,
   size,
   ref,
@@ -191,6 +192,8 @@ export function Button({
   href?: string;
   /** A button that shows or hides something: whether it is shown (aria-expanded). */
   expanded?: boolean;
+  /** A toggle: whether it is on (aria-pressed). */
+  "aria-pressed"?: boolean;
   /** The id of what it shows or hides. */
   "aria-controls"?: string;
   /** A fuller name for screen readers, starting with the visible words, as "Show 2 more in Export". */
@@ -238,6 +241,7 @@ export function Button({
       // the spinner is aria-hidden, so without this a busy button just reads as disabled
       aria-busy={busy || undefined}
       aria-expanded={expanded}
+      aria-pressed={pressed}
       data-testid={testId}
       onClick={onClick}
       className={cx(
@@ -260,6 +264,24 @@ export function Spinner({ size = 12 }: { size?: number }) {
       className={`inline-block shrink-0 rounded-full border-[1.5px] border-line-strong border-t-ink-2 ${BUSY_MOTION}`}
       style={{ width: size, height: size, ...spinStyle(700) }}
     />
+  );
+}
+
+/** `animated`: crossfade tone changes (#2757). `wrap`: keep long explanatory chips inside a narrow row. */
+export function Pill({ children, tone, animated, wrap, size }: { children: React.ReactNode; tone?: "accent" | "green" | "red" | "orange"; animated?: boolean; wrap?: boolean; size?: "sm" }) {
+  return (
+    <span
+      style={animated ? { transitionTimingFunction: EASE } : undefined}
+      className={cx(
+        animated && "transition-[background-color,color,box-shadow] duration-300",
+        "inline-flex items-center rounded-full text-[11px] font-medium",
+        size === "sm" ? "px-1" : "px-1.5",
+        wrap ? "min-h-5 max-w-full whitespace-normal break-words py-0.5" : "h-5 shrink-0 whitespace-nowrap",
+        tone === "accent" ? "bg-accent-tint text-accent-ink" : tone === "green" ? "bg-green-tint text-green" : tone === "red" ? "bg-red-tint text-red" : tone === "orange" ? "bg-orange-tint text-orange" : "bg-inset text-ink-2 shadow-hairline",
+      )}
+    >
+      {children}
+    </span>
   );
 }
 
@@ -859,7 +881,7 @@ function MenuPanel({
         ])}
       </div>
       {failure && (
-        <div role="alert" className="mx-1 mt-1 max-h-28 overflow-y-auto border-t border-line px-1 pt-1.5 pb-1 text-[11.5px] break-words whitespace-pre-wrap text-red">
+        <div role="alert" className="mx-1 mt-1 max-h-28 overflow-y-auto border-t border-line px-1 pt-1.5 pb-1 text-submeta break-words whitespace-pre-wrap text-red">
           {failure}
         </div>
       )}
@@ -1111,6 +1133,7 @@ export function Dialog({
   footer,
   labelledBy,
   describedBy,
+  closeOnBack = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -1122,11 +1145,13 @@ export function Dialog({
   labelledBy?: string;
   /** The id of the text that says what the dialog asks. */
   describedBy?: string;
+  /** A drill-down is a history entry even on wider screens. */
+  closeOnBack?: boolean;
 }) {
   const panel = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const sheet = useMedia(SHEET_QUERY);
-  useCloseOnBack(open, onClose, sheet);
+  useCloseOnBack(open, onClose, sheet || closeOnBack);
   useEscapeClose(open, onClose);
   // The dialog itself takes the focus, so a phone's keyboard does not come up for its first field (one with autoFocus
   // took it already). On close it goes back to the opener, unless the close moved it outside on purpose.

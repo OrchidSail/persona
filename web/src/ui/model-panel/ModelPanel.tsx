@@ -45,14 +45,16 @@ export interface ModelPanelProps {
   /** Applies a whole setup (a row, a favorite, a recent entry); true when it was applied: the panel then records it in
    *  Recent and closes. false: the caller has said why; the panel stays open with the old setup. */
   onPick: (config: PanelConfig) => Promise<boolean>;
-  /** A flyout edit (effort, Fast) on the model that runs now: applied at once, the flyout stays open. */
-  onApplyCurrent?: (patch: { effort?: string; fast?: boolean }) => Promise<boolean>;
+  /** A live effort or speed edit on the current model keeps the panel open. */
+  onApplyCurrent?: (patch: PanelOverride) => Promise<boolean>;
   /** Refreshes a provider's catalog (also used for Retry). */
   onReload?: (provider: string) => void;
   /** Forgets a typed model ID (#1644). */
   onForget?: (provider: string, model: string) => void;
   /** Drawn inside the flyout of the model that runs now, under its controls (Claude Code's ultracode switch, #3428). */
   currentExtra?: ReactNode;
+  /** Resets an explicit choice in currentExtra when the current setup is reset. */
+  currentExtraReset?: () => void;
   /** The launcher's existing quota answer, read by the chat for this computer; unknown providers have no entry. */
   quotas?: Readonly<Record<string, LauncherQuotaAnswer>>;
   /** A strip above the search (a Persona chat's "Following the default" / "Picked for this chat", #5033). */
@@ -105,7 +107,7 @@ interface Geometry {
 
 const rowsOf = (list: HTMLElement | null) => (list ? [...list.querySelectorAll<HTMLElement>("[data-panel-row], [data-panel-launcher]")] : []);
 
-export function ModelPanel({ anchor, onClose, providers, state, scope, onPick, onApplyCurrent, onReload, onForget, quotas, currentExtra, header, follow, presets, onPreset, engines, onHelp, onConfigure, held }: ModelPanelProps): ReactNode {
+export function ModelPanel({ anchor, onClose, providers, state, scope, onPick, onApplyCurrent, onReload, onForget, quotas, currentExtra, currentExtraReset, header, follow, presets, onPreset, engines, onHelp, onConfigure, held }: ModelPanelProps): ReactNode {
   const store = usePanelStore(scope);
   const listId = useId();
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set(state.current ? [state.current.provider] : []));
@@ -473,8 +475,9 @@ export function ModelPanel({ anchor, onClose, providers, state, scope, onPick, o
       if (d && row.setup.effort && row.setup.effort !== d) patch.effort = d;
       // no default known: back to none, the model's own (an Agent not started yet; a running one sends nothing for it)
       else if (!d && row.setup.effort) patch.effort = "";
-      if (row.setup.fast) patch.fast = false;
+      if (row.setup.speed && row.setup.speed !== "standard" && row.model.speeds?.some((choice) => choice.id === "standard")) patch.speed = "standard";
       if (Object.keys(patch).length && !(await applyLive(row, patch))) return;
+      currentExtraReset?.();
     }
     store.resetOverride(row.provider.id, row.model.id);
   };
@@ -645,52 +648,58 @@ export function ModelPanel({ anchor, onClose, providers, state, scope, onPick, o
     );
   };
 
-  // a provider's rows by family (lib/model-families.ts): a family's header and its fold, then its rows
-  const renderBlocks = (s: PanelSection) =>
-    s.blocks
-      ? s.blocks.map((b) =>
-          b.family ? (
-            <div key={b.key} role="group" aria-label={b.family.label} data-panel-family={b.family.key}>
-              <div className="flex min-w-0 items-center gap-2 px-3 pt-1.5 pb-0.5">
-                <span aria-hidden className="min-w-0 truncate text-submeta leading-[1.4] text-ink-3">
-                  {b.family.label}
-                </span>
-                {b.older > 0 && (
-                  <button
-                    type="button"
-                    aria-expanded={Boolean(b.open)}
-                    aria-label={
-                      b.open
-                        ? t("ui-modelpanel.hide_older_of", {
-                            family: b.family.label,
-                          })
-                        : t("ui-modelpanel.older_of", {
-                            family: b.family.label,
-                            count: b.older,
-                          })
-                    }
-                    data-panel-fold={b.key}
-                    disabled={picking}
-                    onClick={() => toggleFamily(b.key)}
-                    className="ml-auto flex shrink-0 items-center gap-0.5 rounded-control px-1.5 py-0.5 text-submeta leading-[1.4] whitespace-nowrap text-ink-3 transition-colors duration-150 outline-none enabled:hover:bg-hover-2 enabled:hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed"
-                  >
-                    {b.open
-                      ? t("ui-modelpanel.hide_older")
-                      : t("ui-modelpanel.older", {
-                          count: b.older,
-                        })}
-                    <Icon name="chevron" size={11} className={cx("shrink-0 transition-transform duration-150", b.open && "rotate-180")} />
-                  </button>
-                )}
-              </div>
-              {b.rows.map(renderRow)}
-            </div>
-          ) : (
-            <div key={b.key}>{b.rows.map(renderRow)}</div>
-          ),
-        )
-      : s.rows.map(renderRow);
-  const flyMode = (row: PanelRow): FlyoutMode => (row.kind === "favorite" ? "favorite" : row.customized ? "customized" : "recommended");
+  // a provider's rows by family (lib/model-families.ts): a family's header and its fold, then its rows;
+  // trailing unclassified/custom rows sit under a localized "Other" header so they never appear under the last family
+  const renderBlocks = (s: PanelSection) => {
+    if (!s.blocks) return s.rows.map(renderRow);
+    const hasFamilies = s.blocks.some((b) => Boolean(b.family));
+    return s.blocks.map((b) => {
+      const heading = b.family?.label ?? (b.other && hasFamilies ? t("ui-modelpanel.other") : undefined);
+      return heading ? (
+        <div key={b.key} role="group" aria-label={heading} data-panel-family={b.family?.key ?? "other"}>
+          <div className="flex min-w-0 items-center gap-2 px-3 pt-1.5 pb-0.5">
+            <span aria-hidden className="min-w-0 truncate text-submeta leading-[1.4] text-ink-3">
+              {heading}
+            </span>
+            {b.family && b.older > 0 && (
+              <button
+                type="button"
+                aria-expanded={Boolean(b.open)}
+                aria-label={
+                  b.open
+                    ? t("ui-modelpanel.hide_older_of", {
+                        family: b.family.label,
+                      })
+                    : t("ui-modelpanel.older_of", {
+                        family: b.family.label,
+                        count: b.older,
+                      })
+                }
+                data-panel-fold={b.key}
+                disabled={picking}
+                onClick={() => toggleFamily(b.key)}
+                className="ml-auto flex shrink-0 items-center gap-0.5 rounded-control px-1.5 py-0.5 text-submeta leading-[1.4] whitespace-nowrap text-ink-3 transition-colors duration-150 outline-none enabled:hover:bg-hover-2 enabled:hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed"
+              >
+                {b.open
+                  ? t("ui-modelpanel.hide_older")
+                  : t("ui-modelpanel.older", {
+                      count: b.older,
+                    })}
+                <Icon name="chevron" size={11} className={cx("shrink-0 transition-transform duration-150", b.open && "rotate-180")} />
+              </button>
+            )}
+          </div>
+          {b.rows.map(renderRow)}
+        </div>
+      ) : (
+        <div key={b.key}>{b.rows.map(renderRow)}</div>
+      );
+    });
+  };
+  const flyMode = (row: PanelRow): FlyoutMode => {
+    if (row.kind === "favorite") return "favorite";
+    return row.customized || (row.kind === "model" && row.current && currentExtraReset) ? "customized" : "recommended";
+  };
   const loading = sections.some((s) => s.loading);
   const empty = searching ? !found.length && !matches.length && !loading : !sections.length;
   const notes = [
@@ -883,8 +892,8 @@ export function ModelPanel({ anchor, onClose, providers, state, scope, onPick, o
             {columns && <LevelColumn row={levelRow} disabled={levelOff(levelRow)} onLevel={(effort) => levelRow && void chooseLevel(levelRow, effort)} />}
           </div>
           <div className="flex shrink-0 items-center gap-2 border-t border-line px-3.5 py-[9px]">
-            {columns && levelRow?.model.fast && levelRow.kind !== "preset" && (
-              <SpeedSwitch fast={Boolean(levelRow.setup.fast)} disabled={picking || Boolean(applying) || !rowCustomizable(levelRow, state, live)} onFast={(on) => void edit(levelRow, { fast: on })} />
+            {columns && levelRow?.model.speeds && levelRow.kind !== "preset" && (
+              <SpeedSwitch options={levelRow.model.speeds} speed={levelRow.setup.speed} disabled={picking || Boolean(applying) || !rowCustomizable(levelRow, state, live)} onSpeed={(speed) => void edit(levelRow, { speed })} />
             )}
             {columns && levelRow?.kind === "model" && levelRow.current && currentExtra && <div data-panel-extra className="min-w-0">{currentExtra}</div>}
             <button
@@ -906,7 +915,7 @@ export function ModelPanel({ anchor, onClose, providers, state, scope, onPick, o
           rowEl={fly.el}
           panelEl={panel.current}
           row={flyRow}
-          setup={applying?.key === flyRow.key ? { ...flyRow.setup, ...applying.patch } : flyRow.setup}
+          setup={applying?.key === flyRow.key && applying.patch.effort !== undefined ? { ...flyRow.setup, effort: applying.patch.effort } : flyRow.setup}
           mode={flyMode(flyRow)}
           starred={flyRow.kind === "favorite" || flash === flyRow.key}
           disabled={picking || Boolean(applying)}
@@ -920,7 +929,7 @@ export function ModelPanel({ anchor, onClose, providers, state, scope, onPick, o
             void apply(() => onPick(setup), setup);
           }}
           onEffort={(effort) => void edit(flyRow, { effort })}
-          onFast={(on) => void edit(flyRow, { fast: on })}
+          onSpeed={(speed) => void edit(flyRow, { speed })}
           onReset={() => void reset(flyRow)}
           onStar={() => star(flyRow)}
           onClose={closeFly}

@@ -333,7 +333,9 @@ func TestCodexHeldSharedAppServerSurfacesConnectionReason(t *testing.T) {
 	})
 }
 
-func TestCodexTakeoverHostSelectsAvailableNonOrcaLauncher(t *testing.T) {
+// The takeover's terminal goes to the start's host, Orca too since #17044 (it resumes a Codex thread as herdr does),
+// else the first other terminal host of the set; a runtime engine is never one.
+func TestCodexTakeoverHostSelectsAvailableLauncher(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		hosts          []string
@@ -342,10 +344,12 @@ func TestCodexTakeoverHostSelectsAvailableNonOrcaLauncher(t *testing.T) {
 		wantCanResume  bool
 		wantCapability bool
 	}{
-		{"orca default falls back to herdr-core", []string{proto.EngineOrca, proto.EngineHerdrCore}, proto.EngineOrca, host.HerdrCore, true, true},
-		{"orca default falls back to tern", []string{proto.EngineOrca, proto.EngineTern}, proto.EngineOrca, host.Tern, true, true},
+		{"orca default takes it over in orca", []string{proto.EngineOrca, proto.EngineHerdrCore}, proto.EngineOrca, host.Orca, true, true},
+		{"herdr-core default takes it over in herdr-core", []string{proto.EngineOrca, proto.EngineHerdrCore}, proto.EngineHerdrCore, host.HerdrCore, true, true},
+		{"orca default with tern takes it over in orca", []string{proto.EngineOrca, proto.EngineTern}, proto.EngineOrca, host.Orca, true, true},
 		{"paseo default falls back to herdr-core", []string{proto.EnginePaseo, proto.EngineHerdrCore}, proto.EnginePaseo, host.HerdrCore, true, true},
-		{"orca alone without shared remote offers continue only", []string{proto.EngineOrca}, proto.EngineOrca, "", false, true},
+		{"paseo default falls back to orca", []string{proto.EnginePaseo, proto.EngineOrca}, proto.EnginePaseo, host.Orca, true, true},
+		{"orca alone takes it over in orca", []string{proto.EngineOrca}, proto.EngineOrca, host.Orca, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			n := remoteTestNode(t)
@@ -599,14 +603,14 @@ func TestCodexTakeoverInteractiveAndDesktopViewOnlyOrigins(t *testing.T) {
 		}
 	})
 
-	t.Run("desktopViewOnly offers continue when desktop app runs and activates when idle without conflict", func(t *testing.T) {
+	checkDesktopViewOnly := func(t *testing.T, originator string) {
 		n, _, cwd := codexHistoryNode(t)
 		home := n.codexHome()
 		if err := os.WriteFile(filepath.Join(home, ".codex-global-state.json"), []byte(`{"projectless-thread-ids":["`+remoteOther+`"]}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		at := time.Now().Add(-time.Minute)
-		path := writeCodexTestRollout(t, home, remoteOther, cwd, "Codex Desktop", "vscode", at, codexEventAt("task_started", at), codexEventAt("task_complete", at))
+		path := writeCodexTestRollout(t, home, remoteOther, cwd, originator, "vscode", at, codexEventAt("task_started", at), codexEventAt("task_complete", at))
 		id := n.registerCodex(home, remoteOther, path)
 		n.takeovers.writers = func(codexSource) ([]codexWriter, error) { return nil, nil }
 		n.takeovers.lockHeld = func(codexSource) bool { return false }
@@ -648,7 +652,9 @@ func TestCodexTakeoverInteractiveAndDesktopViewOnlyOrigins(t *testing.T) {
 		if _, err := n.commitCodexTakeover(context.Background(), id, plan.Token, false); refusalCode(err) != "codex_takeover_writer_busy" {
 			t.Fatalf("desktop started mid-takeover err = %v, want codex_takeover_writer_busy", err)
 		}
-	})
+	}
+	t.Run("desktop origin respects the running App", func(t *testing.T) { checkDesktopViewOnly(t, "Codex Desktop") })
+	t.Run("sidebar-confirmed shared origin respects the running App", func(t *testing.T) { checkDesktopViewOnly(t, "persona") })
 
 	t.Run("exec, sdk, subagent, and guardian remain rejected", func(t *testing.T) {
 		n, _, cwd := codexHistoryNode(t)

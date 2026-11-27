@@ -214,6 +214,9 @@ func (h *Manager) findBundleChoice(id string, requirements []bundleRequirement, 
 	for _, mid := range order {
 		rec, entry, err := h.marketEntry(mid, id)
 		if err == nil {
+			err = entry.EngineProblem(h.build.Number)
+		}
+		if err == nil {
 			err = h.cantRunHere(entry.Parsed)
 		}
 		if err != nil {
@@ -272,6 +275,14 @@ func (h *Manager) guardExtensionPlan(ctx context.Context, previews []*extension.
 		rec, entry, err := marketEntryLocked(ms, pv.Market, pv.Manifest.ID)
 		if err != nil {
 			return fail(err)
+		}
+		if err := entry.EngineProblem(h.build.Number); err != nil {
+			return fail(err)
+		}
+		if old := h.extensions.reg.SnapshotExact(pv.Manifest.ID); old != nil && (h.extensions.reg.CanHandoffBuiltin(pv.Manifest.ID) || old.Record.BuiltinPredecessor) {
+			if !h.builtinMarketUpgrade(rec, entry) || !extension.ManifestsEqual(entry.Parsed, pv.Manifest) {
+				return fail(i18n.Err("extension-identity.invalid"))
+			}
 		}
 		if pv.RenameFrom != "" {
 			old := h.extensions.reg.SnapshotExact(pv.RenameFrom)
