@@ -97,23 +97,18 @@ class OutboxStatusTest {
         rule.onAllNodesWithText("丢弃").assertCountEquals(0)
     }
 
-    /** Glass, Brief, and Board all confirm and dispatch DeliveryAction.Retry identically from NeedsConfirmation. */
-    @Test fun retryFromNeedsConfirmationConfirmsAndDispatchesInEveryStyle() {
-        var style by mutableStateOf(AppStyle.Glass)
+    @Test fun resendConfirmationDialogClosesWhenStateLeavesNeedsConfirmation() {
+        var state by mutableStateOf(DeliveryState.NeedsConfirmation)
         val actions = mutableListOf<DeliveryAction>()
         rule.setContent {
-            PersonaTheme(darkTheme = false, reduceMotion = true, style = style) {
-                // Glass also renders NeedsConfirmation through OutboxStatus (drawsAsPendingBubble == false).
-                assertEquals(false, drawsAsPendingBubble(DeliveryState.NeedsConfirmation))
-                OutboxStatus(message, busy = false, onAction = { actions += it }, onDetails = {})
+            PersonaTheme(darkTheme = false, reduceMotion = true, style = AppStyle.Glass) {
+                OutboxStatus(message.copy(state = state), busy = false, onAction = { actions += it }, onDetails = {})
             }
         }
-        for (appStyle in AppStyle.entries) {
-            actions.clear()
-            rule.runOnIdle { style = appStyle }
-            rule.onNodeWithText("重试").performClick()
-            rule.onNodeWithText("仍要重发").performClick()
-            assertEquals("style=$appStyle", listOf(DeliveryAction.Retry), actions)
-        }
+        rule.onNodeWithText("重试").performClick()
+        rule.onNodeWithText("重发这条消息？").assertExists()
+        rule.runOnIdle { state = DeliveryState.Sent }
+        rule.onAllNodesWithText("重发这条消息？").assertCountEquals(0)
+        assertEquals(emptyList<DeliveryAction>(), actions)
     }
 }

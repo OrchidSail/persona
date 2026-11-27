@@ -285,12 +285,14 @@ test('autonomous wake retires when idle with background work so a follow-up wake
 
   const live = await node.peer.call('session.items', { session_id: SESSION })
   assert.deepEqual(
-    live.items.filter((item) => item.kind !== 'turn_duration').map((item) => item.wake ? 'wake' : [item.role, item.kind, item.text]),
+    live.items.map((item) => item.wake ? 'wake' : [item.role, item.kind, item.text]),
     [
       ['user', 'text', 'Start background jobs.'],
       ['assistant', 'text', 'Both jobs launched.'],
+      ['system', 'turn_duration', undefined],
       'wake',
       ['assistant', 'text', 'First job completed with full report.'],
+      ['system', 'turn_duration', undefined],
       'wake',
       ['assistant', 'thinking', 'Inspecting job 2 output.'],
     ],
