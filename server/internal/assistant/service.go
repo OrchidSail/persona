@@ -406,10 +406,13 @@ type Service struct {
 	fleetEnded func(ix proto.Interaction, r *proto.Resolution)
 	// ixResolved, when set, sees every answered card the assistant is told of (tests).
 	ixResolved func(InteractionResolved)
-	models     modelsState   // models.go: the model configuration
-	health     healthBook    // launcher_health.go: each machine's launchers
-	trust      trustBook     // machine_trust.go: the computers waiting to be confirmed
-	ready      readinessBook // readiness.go: the main conversation's readiness
+	// postCardHook runs after a Feishu post's first terminal/occurrence check and
+	// before it claims the ledger (tests: an older in-flight post racing a replacement).
+	postCardHook func(proto.Interaction)
+	models       modelsState   // models.go: the model configuration
+	health       healthBook    // launcher_health.go: each machine's launchers
+	trust        trustBook     // machine_trust.go: the computers waiting to be confirmed
+	ready        readinessBook // readiness.go: the main conversation's readiness
 
 	// pieceWriteHook, when set, runs as a write of part_of/after (editTodo, insertTodo) has passed its caller's check
 	// and is about to take todoBook.writing (tests: two writes held there both passed against the same graph).
@@ -1242,10 +1245,10 @@ func (s *Service) userSpokeMessage(ctx context.Context, r SessionRef, text, clie
 
 // TurnStarted: one of a task's agents is working; what was going to be done about an agent's last turn is off.
 func (s *Service) TurnStarted(ctx context.Context, r SessionRef) {
-	s.approvalAnswerTurnStarted(r)
 	if s.meetingTurnStarted(r.MachineID, r.SessionID, true) {
 		return // a meeting's batch started it: a side exchange (meeting_turns.go)
 	}
+	s.approvalAnswerTurnStarted(r)
 	s.turnStartedObserved(ctx, r, true, startRow{})
 }
 
@@ -1262,7 +1265,9 @@ func (s *Service) turnStartedObserved(ctx context.Context, r SessionRef, newTurn
 // triaged; a new conversation is named after its first turn.
 func (s *Service) TurnEnded(ctx context.Context, r SessionRef) {
 	s.a2aRecipientIdle(ctx, a2aRef{r.MachineID, r.SessionID})
-	s.approvalAnswerTurnEnded(r)
+	if ctx.Value(approvalEndHandledKey{}) == nil {
+		s.approvalAnswerTurnEnded(r)
+	}
 	meeting := s.meetingTurnEnded(r.MachineID, r.SessionID)
 	if !meeting && ctx.Value(supervisionEndKey{}) == nil {
 		end := s.remedyTurnEnded(ctx, r.SessionID)
