@@ -38,7 +38,6 @@ import persona.core.designsystem.PersonaTheme
 import persona.core.designsystem.Tokens
 import persona.core.designsystem.Tone
 import persona.core.designsystem.icons.PersonaIcons
-import persona.core.designsystem.icons.PersonaIcons
 
 private const val WaitSeparator = " · "
 
