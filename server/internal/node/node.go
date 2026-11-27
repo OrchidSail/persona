@@ -44,6 +44,7 @@ import (
 
 type Node struct {
 	cacheWarm     *assistantCachePool
+	agyModelPool  *agyModelRunPool
 	segmentStarts segmentStarts
 	segmentInputs segmentInputs
 	runtimeUsage  runtimeUsageReports
@@ -600,7 +601,8 @@ func (n *Node) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 	n.streams = streams.New(n.peer.Notify)
 	defer n.streams.CloseAll()
 	defer n.mfUps.abortAll()
-	defer n.closeFulls() // none of the web's full herdr clients outlives this hub connection (fullclient.go)
+	defer n.closeFulls()           // none of the web's full herdr clients outlives this hub connection (fullclient.go)
+	defer n.closeAgyModelRunPool() // tear down any warm agy acp model.run worker before Serve exits (modelrun_agy_pool.go)
 	n.peer.OnEvent = func(event string, params json.RawMessage) {
 		if !n.onMCPWait(event, params) && !n.streams.Event(event, params) && !n.onFullEvent(event, params) {
 			n.onTerminalEvent(event, params)
