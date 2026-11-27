@@ -882,21 +882,6 @@ func heldBody(err error) (int, []byte) {
 	return laterBody(held.Undelivered)
 }
 
-// writeSendAssistantErr answers an assistant error during sendMessageOnce / todoHandoff (before ClaimSend and
-// deliverOnce touch a node): 503 assistant_offline explicitly states delivered:"none" and retryable:true so clients
-// know nothing was sent and can safely retry once the assistant is back.
-func writeSendAssistantErr(w http.ResponseWriter, err error) {
-	var re *rpc.Error
-	if errors.As(err, &re) && re.Code == assistantwire.CodeAssistantOffline {
-		body := apierr.CodeBody(w, http.StatusServiceUnavailable, assistantwire.CodeAssistantOffline, errAssistantOffline)
-		body["delivered"] = "none"
-		body["retryable"] = true
-		writeErrorBody(w, http.StatusServiceUnavailable, body)
-		return
-	}
-	writeAssistantErr(w, err)
-}
-
 func rpcCodeOf(err error) string {
 	var re *rpc.Error
 	if errors.As(err, &re) {
