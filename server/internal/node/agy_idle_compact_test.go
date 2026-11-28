@@ -973,7 +973,13 @@ func TestAgyIdleAutoCompactSweepCapsConcurrency(t *testing.T) {
 	waitFor(t, "first batch of 2 compactions started", func() bool {
 		return len(host.got("session.send")) == agyIdleCompactMaxConcurrent
 	})
-	time.Sleep(50 * time.Millisecond)
+	timer := time.NewTimer(50 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-t.Context().Done():
+		t.Fatal(t.Context().Err())
+	case <-timer.C:
+	}
 	if got := len(host.got("session.send")); got != agyIdleCompactMaxConcurrent {
 		t.Fatalf("sweep started %d concurrent compactions, want cap %d", got, agyIdleCompactMaxConcurrent)
 	}
