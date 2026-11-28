@@ -207,3 +207,36 @@ func TestDeliverKeptOriginDeviceIDExcludesPairingCode(t *testing.T) {
 		t.Fatalf("deliverKept revoked pairing code err = %v, want errKeptSignedOut", err)
 	}
 }
+
+func TestScheduledTurnClearsOriginDeviceOnReusedConversation(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newQuietServiceOn(t, &memStore{})
+	s.noteConversationSpaces(ctx, []db.ConversationSpace{{MachineID: "server", SessionID: "conv1", Space: ""}})
+
+	// 1. resumeOwn into a conversation previously used by a paired phone clears origin_device_id.
+	s.setConversationOriginDevice("conv1", "dev_phone_a")
+	if got := s.connectorCallContext(ctx, "conv1"); got.OriginDeviceID != "dev_phone_a" {
+		t.Fatalf("setup OriginDeviceID = %q, want dev_phone_a", got.OriginDeviceID)
+	}
+	if err := s.resumeOwn(ctx, "server", "conv1", map[string]any{
+		"session_id": "conv1",
+		"text":       "scheduled follow-up",
+	}, false); err != nil {
+		t.Fatalf("resumeOwn: %v", err)
+	}
+	if got := s.connectorCallContext(ctx, "conv1"); got.OriginDeviceID != "" {
+		t.Fatalf("after resumeOwn: OriginDeviceID = %q, want empty", got.OriginDeviceID)
+	}
+
+	// 2. Direct DeviceAssistantSend into an existing session_id (e.g. runTask) also clears origin_device_id.
+	s.setConversationOriginDevice("conv1", "dev_phone_b")
+	if err := s.call(ctx, "server", DeviceAssistantSend, map[string]any{
+		"session_id": "conv1",
+		"text":       "scheduled task run",
+	}, nil); err != nil {
+		t.Fatalf("DeviceAssistantSend: %v", err)
+	}
+	if got := s.connectorCallContext(ctx, "conv1"); got.OriginDeviceID != "" {
+		t.Fatalf("after DeviceAssistantSend to existing session: OriginDeviceID = %q, want empty", got.OriginDeviceID)
+	}
+}

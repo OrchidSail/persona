@@ -13,10 +13,10 @@ import (
 
 	"github.com/nwverse/persona/server/internal/apierr"
 	"github.com/nwverse/persona/server/internal/assistantwire"
-	"github.com/nwverse/persona/server/internal/wireids"
 	"github.com/nwverse/persona/server/internal/i18n"
 	"github.com/nwverse/persona/server/internal/proto"
 	"github.com/nwverse/persona/server/internal/rpc"
+	"github.com/nwverse/persona/server/internal/wireids"
 )
 
 // The owner's messages that could not go in (#10194, docs/assistant/assistant.md "Messages that could not go in").
@@ -72,15 +72,15 @@ const undeliveredMaxBytes = 16 << 20
 
 // keptMessage is one owner message kept for its conversation.
 type keptMessage struct {
-	ID           string         `json:"id"` // its client_msg_id
-	Machine      string         `json:"machine"`
-	Session      string         `json:"session"`
-	Params       map[string]any `json:"params"` // the app's message as it came (text, images, launcher, model)
+	ID             string           `json:"id"` // its client_msg_id
+	Machine        string           `json:"machine"`
+	Session        string           `json:"session"`
+	Params         map[string]any   `json:"params"` // the app's message as it came (text, images, launcher, model)
 	Human          bool             `json:"human,omitempty"`
 	CredentialID   string           `json:"credential_id,omitempty"`
 	OriginDeviceID wireids.DeviceID `json:"origin_device_id,omitempty"`
-	Lang         string         `json:"lang,omitempty"`
-	At           time.Time      `json:"at"`
+	Lang           string           `json:"lang,omitempty"`
+	At             time.Time        `json:"at"`
 	// State is proto.UndeliveredWaiting or proto.UndeliveredFailed.
 	State    string    `json:"state"`
 	Attempts int       `json:"attempts,omitempty"`
