@@ -16,6 +16,8 @@ type CallContext struct {
 	// Categories are the conversation's information categories (none is general); nil when they are not known, which
 	// a connector takes for sensitive.
 	Categories []string
+	// ConversationID is the calling assistant conversation's canonical logical id ("" when not known or not an assistant conversation).
+	ConversationID string
 }
 
 type callContextKey struct{}

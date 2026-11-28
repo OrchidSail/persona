@@ -4059,6 +4059,8 @@ type ConnectorCallParams struct {
 	// general. Absent means not known (an older hub, a turn not tagged yet): take it for sensitive. Whether the phone
 	// confirms a write stays the hub's decision.
 	Categories []string `json:"categories,omitempty"`
+	// The calling assistant conversation's canonical logical id; absent when not known or not an assistant conversation.
+	ConversationID string `json:"conversation_id,omitempty"`
 }
 
 // ConnectorCallResult: tools.call and actions.do.
@@ -4128,6 +4130,8 @@ type ConnectorDoParams struct {
 	// general. Absent means not known (an older hub, a turn not tagged yet): take it for sensitive. Whether the phone
 	// confirms a write stays the hub's decision.
 	Categories []string `json:"categories,omitempty"`
+	// The calling assistant conversation's canonical logical id; absent when not known or not an assistant conversation.
+	ConversationID string `json:"conversation_id,omitempty"`
 }
 
 // ConnectorRecallParams: recall: take back a message the connector's program sent in the user's name, which the
@@ -6373,6 +6377,8 @@ type AssistantEventParams struct {
 	State AssistantEventState `json:"state,omitempty"`
 	// false keeps an earlier event with the same key as its own message instead of replacing it. Absent is true.
 	Replace AssistantEventReplace `json:"replace,omitzero"`
+	// Optional target assistant conversation id. Absent delivers to the main conversation.
+	ConversationID string `json:"conversation_id,omitempty"`
 }
 
 // AssistantEventDelivery: what happened to the event. delivered: sent into the idle main conversation now. queued:

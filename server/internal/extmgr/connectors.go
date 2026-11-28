@@ -79,6 +79,12 @@ func (h *Manager) callConnector(ctx context.Context, by asker, name string, args
 	h.requestLarkCLIRecovery(ctx)
 	if by.machine == "" || by.session == "" {
 		ctx = connector.WithoutOwnerCaller(ctx)
+	} else if connector.OwnerCallerOf(ctx) {
+		cc, _ := connector.CallContextOf(ctx)
+		if cc.ConversationID == "" {
+			cc.ConversationID = by.session
+			ctx = connector.WithCallContext(ctx, cc)
+		}
 	}
 	if inSpace(h.askerCwd(by)) { // a space conversation's writes: on the phone each time (hubglue.go inSpace)
 		ctx = connector.ConfirmEach(ctx)

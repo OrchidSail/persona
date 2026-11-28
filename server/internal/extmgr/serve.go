@@ -794,6 +794,12 @@ func (h *Manager) CallTool(ctx context.Context, machine, session, name string, a
 	case h.connectors.Offers(name) && (assistant || h.connectors.ForAgents(name)):
 		if !assistant {
 			ctx = connector.WithoutOwnerCaller(ctx)
+		} else if session != "" {
+			cc, _ := connector.CallContextOf(ctx)
+			if cc.ConversationID == "" {
+				cc.ConversationID = session
+				ctx = connector.WithCallContext(ctx, cc)
+			}
 		}
 		return h.callConnector(ctx, asker{machine, session}, name, args), true
 	case assistant && name == larkImageTool:

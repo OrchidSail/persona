@@ -257,7 +257,11 @@ func (s *Service) mcpCallWithOrigin(ctx context.Context, machine, session, name 
 	}
 	if s.ext != nil { // the connectors', Cua's, ego's: ctx is the node's call (its caller going away withdraws a card)
 		if s.ext.ConnectorTool(name) { // a connector is told where the call comes from (connector_context.go)
-			ctx = connector.WithCallContext(ctx, s.connectorCallContext(ctx, session))
+			cc := s.connectorCallContext(ctx, session)
+			if assistant && session != "" {
+				cc.ConversationID = session
+			}
+			ctx = connector.WithCallContext(ctx, cc)
 			if assistant && machine != "" && session != "" && !s.isWorkMachine(machine) && !s.isRoom(session) {
 				if _, guest, err := s.guestOf(ctx, machine, session); err == nil && !guest {
 					ctx = connector.WithOwnerCaller(ctx)

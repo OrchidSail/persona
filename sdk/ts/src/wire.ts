@@ -4341,6 +4341,11 @@ export interface ConnectorCallParams {
    * confirms a write stays the hub's decision.
    */
   categories?: string[];
+  /**
+   * The calling assistant conversation's canonical logical id; absent when not known or not an assistant
+   * conversation.
+   */
+  conversation_id?: string;
 }
 
 /**
@@ -4438,6 +4443,11 @@ export interface ConnectorDoParams {
    * confirms a write stays the hub's decision.
    */
   categories?: string[];
+  /**
+   * The calling assistant conversation's canonical logical id; absent when not known or not an assistant
+   * conversation.
+   */
+  conversation_id?: string;
 }
 
 /**
@@ -6881,6 +6891,8 @@ export interface AssistantEventParams {
   state?: AssistantEventState;
   /** false keeps an earlier event with the same key as its own message instead of replacing it. Absent is true. */
   replace?: boolean;
+  /** Optional target assistant conversation id. Absent delivers to the main conversation. */
+  conversation_id?: string;
 }
 
 /**
