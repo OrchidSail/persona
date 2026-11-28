@@ -328,13 +328,14 @@ test('stepWeight and itemWeight bound large tool_input entries inside itemsCache
     tool_calls: [{ name: 'write_file', args: { TargetFile: `/tmp/${tag}-${i}.txt`, Content: largeArg } }],
   }))
 
-  // Each snapshot has ~250 * ~40KB (UTF-16) = ~10MB of tool_calls + ~10MB of tool_input => ~20MB each.
-  // Inserting 5 distinct large snapshots (~100MB total) must evict the oldest under the 64MB itemsCache cap.
+  // itemsCache tracks only retained item weights (not double-counted stepWeight): each snapshot has
+  // ~250 * ~40KB (UTF-16) = ~10MB of tool_input. Inserting 7 distinct large snapshots (~70MB total)
+  // must evict the oldest under the 64MB itemsCache cap.
   const firstSteps = makeSteps('s0')
   const first = stepsToItems(firstSteps, { cacheKey: 'weight-test-0', cacheSlot: 'weight-slot-0', full: false })
   assert.equal(stepsToItems(firstSteps, { cacheKey: 'weight-test-0', cacheSlot: 'weight-slot-0', full: false }), first)
 
-  for (let s = 1; s <= 4; s++) {
+  for (let s = 1; s <= 6; s++) {
     stepsToItems(makeSteps(`s${s}`), { cacheKey: `weight-test-${s}`, cacheSlot: `weight-slot-${s}`, full: false })
   }
 

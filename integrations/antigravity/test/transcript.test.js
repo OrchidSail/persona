@@ -621,7 +621,7 @@ test('itemsCache replaces older history keys in the same session slot and enforc
   const r1Reload = stepsToItems(s1, { full: false, includeMedia: true, cacheSlot: slot, cacheKey: `${slot}|h1` })
   assert.notEqual(r1Reload, r1, 'old history key in the same slot must be evicted immediately')
 
-  // 2. Byte-budget eviction (each entry ~36MB via step thinking UTF-16 weight; two exceed 64MB budget)
+  // 2. Byte-budget eviction (each full entry ~36MB via item thinking UTF-16 weight; two exceed 64MB budget)
   const bigStep = (ch, len) => ({
     step_index: 0,
     source: 'MODEL',
@@ -632,18 +632,18 @@ test('itemsCache replaces older history keys in the same session slot and enforc
   })
   const bigA = [bigStep('a', 18 * 1024 * 1024)]
   const bigB = [bigStep('b', 18 * 1024 * 1024)]
-  const resA = stepsToItems(bigA, { full: false, cacheSlot: 'big-slot-a|0|0', cacheKey: 'big-slot-a|0|0|h1' })
-  assert.equal(stepsToItems(bigA, { full: false, cacheSlot: 'big-slot-a|0|0', cacheKey: 'big-slot-a|0|0|h1' }), resA, '36MB entry fits under 64MB budget')
+  const resA = stepsToItems(bigA, { full: true, cacheSlot: 'big-slot-a|1|0', cacheKey: 'big-slot-a|1|0|h1' })
+  assert.equal(stepsToItems(bigA, { full: true, cacheSlot: 'big-slot-a|1|0', cacheKey: 'big-slot-a|1|0|h1' }), resA, '36MB entry fits under 64MB budget')
 
-  const resB = stepsToItems(bigB, { full: false, cacheSlot: 'big-slot-b|0|0', cacheKey: 'big-slot-b|0|0|h1' })
-  assert.equal(stepsToItems(bigB, { full: false, cacheSlot: 'big-slot-b|0|0', cacheKey: 'big-slot-b|0|0|h1' }), resB, 'newer 36MB entry is retained')
-  const resAReload = stepsToItems(bigA, { full: false, cacheSlot: 'big-slot-a|0|0', cacheKey: 'big-slot-a|0|0|h1' })
+  const resB = stepsToItems(bigB, { full: true, cacheSlot: 'big-slot-b|1|0', cacheKey: 'big-slot-b|1|0|h1' })
+  assert.equal(stepsToItems(bigB, { full: true, cacheSlot: 'big-slot-b|1|0', cacheKey: 'big-slot-b|1|0|h1' }), resB, 'newer 36MB entry is retained')
+  const resAReload = stepsToItems(bigA, { full: true, cacheSlot: 'big-slot-a|1|0', cacheKey: 'big-slot-a|1|0|h1' })
   assert.notEqual(resAReload, resA, 'older 36MB entry must be evicted when total exceeds 64MB budget')
 
   // 3. Single entry exceeding 64MB budget (~66MB) is never retained in itemsCache
   const oversize = [bigStep('c', 33 * 1024 * 1024)]
-  const resOver1 = stepsToItems(oversize, { full: false, cacheSlot: 'big-slot-c|0|0', cacheKey: 'big-slot-c|0|0|h1' })
-  const resOver2 = stepsToItems(oversize, { full: false, cacheSlot: 'big-slot-c|0|0', cacheKey: 'big-slot-c|0|0|h1' })
+  const resOver1 = stepsToItems(oversize, { full: true, cacheSlot: 'big-slot-c|1|0', cacheKey: 'big-slot-c|1|0|h1' })
+  const resOver2 = stepsToItems(oversize, { full: true, cacheSlot: 'big-slot-c|1|0', cacheKey: 'big-slot-c|1|0|h1' })
   assert.notEqual(resOver2, resOver1, 'oversize entry above 64MB budget must not be cached')
 })
 

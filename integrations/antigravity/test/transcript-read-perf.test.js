@@ -11,6 +11,7 @@ import fs, {
   writeFileSync,
   writeSync,
 } from 'node:fs'
+import fsPromises from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -55,6 +56,8 @@ function installReadMeter(t, targetPrefix) {
   const origRead = fs.readSync
   const origReadFile = fs.readFileSync
   const origClose = fs.closeSync
+  const origOpenAsync = fsPromises.open
+  const origReadFileAsync = fsPromises.readFile
   const trackedFds = new Set()
   let insideReadFile = 0
   const stats = { opens: 0, reads: 0, readFiles: 0, bytesRead: 0 }
@@ -94,6 +97,31 @@ function installReadMeter(t, targetPrefix) {
       if (hit) insideReadFile--
     }
   }
+  fsPromises.open = async function (path, ...rest) {
+    const fh = await origOpenAsync.call(this, path, ...rest)
+    if (matches(path)) {
+      stats.opens++
+      const origFhRead = fh.read.bind(fh)
+      fh.read = async function (...rArgs) {
+        const res = await origFhRead(...rArgs)
+        if (res?.bytesRead > 0) {
+          stats.reads++
+          stats.bytesRead += res.bytesRead
+        }
+        return res
+      }
+    }
+    return fh
+  }
+  fsPromises.readFile = async function (path, ...rest) {
+    const hit = matches(path)
+    const data = await origReadFileAsync.call(this, path, ...rest)
+    if (hit) {
+      stats.readFiles++
+      stats.bytesRead += Buffer.isBuffer(data) ? data.length : Buffer.byteLength(String(data))
+    }
+    return data
+  }
   syncBuiltinESMExports()
 
   t.after(() => {
@@ -101,6 +129,8 @@ function installReadMeter(t, targetPrefix) {
     fs.readSync = origRead
     fs.readFileSync = origReadFile
     fs.closeSync = origClose
+    fsPromises.open = origOpenAsync
+    fsPromises.readFile = origReadFileAsync
     syncBuiltinESMExports()
   })
 
@@ -435,11 +465,11 @@ describe('companion transcript read performance, integrity, backoff, and bounded
         activeTimers.delete(id)
       },
     }
-    const fireLatest = () => {
+    const fireLatest = async () => {
       assert.equal(activeTimers.size, 1, `expected exactly 1 active watch timer, got ${activeTimers.size}`)
       const [entry] = activeTimers.values()
       activeTimers.delete(entry.id)
-      entry.fn()
+      await entry.fn()
     }
 
     const meter = installReadMeter(t, logs)
@@ -469,10 +499,10 @@ describe('companion transcript read performance, integrity, backoff, and bounded
 
     // Quiet idle ticks must back off exponentially up to watchIdleMaxMs (2000ms) and read 0 transcript bytes.
     meter.reset()
-    fireLatest()
-    fireLatest()
-    fireLatest()
-    fireLatest()
+    await fireLatest()
+    await fireLatest()
+    await fireLatest()
+    await fireLatest()
     assert.deepEqual(scheduled, [400, 800, 1600, 2000, 2000], 'idle watched session must back off 400->800->1600->2000')
     assert.equal(meter.stats.bytesRead, 0, 'idle watched ticks must read 0 transcript bytes')
 
@@ -482,22 +512,22 @@ describe('companion transcript read performance, integrity, backoff, and bounded
     const st1 = fs.statSync(file, { bigint: true })
     clock.set(Math.max(Number(st1.mtimeMs), Number(st1.ctimeMs)) + 100)
     meter.reset()
-    fireLatest()
+    await fireLatest()
     assert.equal(scheduled.at(-1), 400, 'new transcript append must reset poll interval to 400ms')
     assert.ok(meter.stats.bytesRead > 0 && meter.stats.bytesRead <= 4096 + Buffer.byteLength(appendedLine) + 128)
 
     // External running status (nativeWorking) keeps poll responsive at 400ms even before new lines land.
     setSummary('CASCADE_RUN_STATUS_RUNNING', 201)
     meter.reset()
-    fireLatest()
-    fireLatest()
+    await fireLatest()
+    await fireLatest()
     assert.deepEqual(scheduled.slice(-2), [400, 400], 'nativeWorking session must stay at 400ms')
     assert.equal(meter.stats.bytesRead, 0, 'unchanged nativeWorking ticks must still read 0 bytes')
 
     // Returning to idle resumes backoff.
     setSummary('CASCADE_RUN_STATUS_IDLE', 201)
-    fireLatest()
-    fireLatest()
+    await fireLatest()
+    await fireLatest()
     assert.deepEqual(scheduled.slice(-2), [800, 1600])
 
     // Unwatch clears timer completely.
@@ -557,13 +587,13 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
     await until('live fixture listed', () => liveNode.last('runtime.sessions')?.sessions?.some((s) => s.session_id === sid))
     await liveNode.peer.call('session.watch', { session_id: sid })
     // Back off while idle before starting a turn.
-    const fireLive = () => {
+    const fireLive = async () => {
       const [entry] = liveTimers.values()
       liveTimers.delete(entry.id)
-      entry.fn()
+      await entry.fn()
     }
-    fireLive()
-    fireLive()
+    await fireLive()
+    await fireLive()
     assert.equal(liveScheduled.at(-1), 1600)
 
     await liveNode.peer.call('session.send', { session_id: sid, text: 'Run live check' })
@@ -571,7 +601,7 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
     try {
       // During active live turn, watched poll skips syncTranscriptAppend and session.items reads 0 transcript bytes on unchanged file.
       meter.reset()
-      fireLive()
+      await fireLive()
       assert.equal(meter.stats.bytesRead, 0, 'watched poll during live turn must read 0 transcript bytes')
       const livePage = await liveNode.peer.call('session.items', { session_id: sid, limit: 10 })
       assert.ok(livePage.items.some((it) => it.text === 'Run live check'))
@@ -583,24 +613,27 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
   })
 
   it('enforces accurate tool_calls/tool_input weights in itemsCache and bounds listSummaryBySession and volatileWakes', async (t) => {
-    // 1. itemsCache must account for large tool_calls / tool_input payloads under the 64MB byte budget.
-    const bigArg = (ch, len) => ({
-      step_index: 0,
-      source: 'MODEL',
-      type: 'PLANNER_RESPONSE',
-      status: 'DONE',
-      created_at: '2026-11-26T00:00:00Z',
-      tool_calls: [{ name: 'write_to_file', args: { TargetFile: '/tmp/a.txt', CodeContent: ch.repeat(len) } }],
-    })
-    // 18M chars UTF-16 = ~36MB in step.tool_calls; two entries = ~72MB > 64MB budget.
-    const stepsA = [bigArg('a', 18 * 1024 * 1024)]
-    const stepsB = [bigArg('b', 18 * 1024 * 1024)]
+    // 1. itemsCache must account for retained tool_input payloads under the 64MB byte budget (without double-counting stepWeight).
+    const bigToolSteps = (ch) => {
+      const payload = ch.repeat(20_000)
+      return Array.from({ length: 900 }, (_, i) => ({
+        step_index: i,
+        source: 'MODEL',
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-26T00:00:00Z',
+        tool_calls: [{ name: 'write_file', args: { TargetFile: `/tmp/${ch}-${i}.txt`, Content: payload } }],
+      }))
+    }
+    // 900 * ~40KB UTF-16 = ~36MB in item.tool_input; two entries = ~72MB > 64MB budget.
+    const stepsA = bigToolSteps('a')
+    const stepsB = bigToolSteps('b')
     const resA = stepsToItems(stepsA, { full: false, cacheSlot: 'tool-slot-a|0|0', cacheKey: 'tool-slot-a|0|0|h1' })
     assert.equal(stepsToItems(stepsA, { full: false, cacheSlot: 'tool-slot-a|0|0', cacheKey: 'tool-slot-a|0|0|h1' }), resA)
     const resB = stepsToItems(stepsB, { full: false, cacheSlot: 'tool-slot-b|0|0', cacheKey: 'tool-slot-b|0|0|h1' })
     assert.equal(stepsToItems(stepsB, { full: false, cacheSlot: 'tool-slot-b|0|0', cacheKey: 'tool-slot-b|0|0|h1' }), resB)
     const resAReload = stepsToItems(stepsA, { full: false, cacheSlot: 'tool-slot-a|0|0', cacheKey: 'tool-slot-a|0|0|h1' })
-    assert.notEqual(resAReload, resA, 'itemsCache must evict older tool_calls-heavy entry when >64MB budget')
+    assert.notEqual(resAReload, resA, 'itemsCache must evict older tool_input-heavy entry when >64MB budget')
 
     // 2. listSummaryBySession enforces byte budget and keeps newest sessions hot in listSessions.
     const home = mkdtempSync(join(tmpdir(), 'agy-summary-bound-'))
@@ -627,7 +660,7 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
       agyDir,
       agyBin: join(home, 'missing-agy'),
       socketPath: node.path,
-      maxListSummaryBytes: 40 * 1024, // fits only 1 session (~25KB), must evict older sessions
+      maxListSummaryBytes: 1200, // listSummaryBySession drops strong steps refs (~700B/entry), so 1200B fits only 1 session
       log: () => {},
     })
     t.after(async () => {
@@ -642,7 +675,7 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
     assert.equal(sessions[3].session_id, `agy-${ids[0]}`, 'oldest session stays last in listSessions output')
     // Verify the runtime reports bounded listSummaryBySession bytes via clean close/stop and re-list.
     assert.ok(runtime._debugStats, 'expected bounded cache debug stats for deterministic assertion')
-    assert.ok(runtime._debugStats().listSummaryBytes <= 40 * 1024, `listSummaryBytes exceeded cap: ${runtime._debugStats().listSummaryBytes}`)
+    assert.ok(runtime._debugStats().listSummaryBytes <= 1200, `listSummaryBytes exceeded cap: ${runtime._debugStats().listSummaryBytes}`)
     assert.equal(runtime._debugStats().listSummaryCount, 1, 'only 1 session fits under 40KB listSummaryBytes cap')
     assert.equal(runtime._debugStats().listSummaryIds[0], ids[3], 'newest session must remain cached, not evicted by older sessions')
 
