@@ -4394,9 +4394,45 @@ type ConnectorInboxThing struct {
 	Group *ConnectorThingGroup `json:"group,omitempty"`
 	ID    string               `json:"id,omitempty"`
 	// An event's own state, kept and handed back by the hub as it is.
-	Meta   json.RawMessage       `json:"meta,omitempty"`
-	Parent *ConnectorThingParent `json:"parent,omitempty"`
+	Meta         json.RawMessage        `json:"meta,omitempty"`
+	Parent       *ConnectorThingParent  `json:"parent,omitempty"`
+	OwnerPromise *ConnectorOwnerPromise `json:"owner_promise,omitempty"`
 }
+
+// ConnectorOwnerPromise: A follow-up the owner promised in a reply in a selected Lark group's topic, on a thing of
+// kind owner_promise (docs/assistant/inbox.md "Owner promise reminders in selected Lark groups"). Only the built-in
+// lark-cli source sends it: the hub ignores it from an extension, and reminds the owner privately when no to-do
+// covers the promise.
+type ConnectorOwnerPromise struct {
+	// The group chat the reply is in.
+	ChatID ConnectorLarkChatID `json:"chat_id"`
+	// The topic the reply is in.
+	TopicID ConnectorLarkTopicID `json:"topic_id"`
+	// The request the reply answers, when the connector could verify it: a to-do made from that request covers the
+	// promise.
+	RequestID ConnectorLarkMessageID `json:"request_id,omitempty"`
+	// The reply is not an explicit promise: the Inbox triage model decides, from the request (needs request_id and the
+	// thing's context), whether it is one.
+	Model bool `json:"model,omitempty"`
+}
+
+// ConnectorLarkChatID: A Lark group chat's ID.
+type ConnectorLarkChatID string
+
+// String returns the ID as it is on the wire.
+func (v ConnectorLarkChatID) String() string { return string(v) }
+
+// ConnectorLarkTopicID: A topic's ID within a Lark group chat.
+type ConnectorLarkTopicID string
+
+// String returns the ID as it is on the wire.
+func (v ConnectorLarkTopicID) String() string { return string(v) }
+
+// ConnectorLarkMessageID: A Lark message's ID.
+type ConnectorLarkMessageID string
+
+// String returns the ID as it is on the wire.
+func (v ConnectorLarkMessageID) String() string { return string(v) }
 
 type ConnectorTag struct {
 	// ConnectorTagKey, or the connector's own.
@@ -8682,6 +8718,7 @@ var newDef = map[string]func() any{
 	"ConnectorMedia":                func() any { return new(ConnectorMedia) },
 	"ConnectorCollectResult":        func() any { return new(ConnectorCollectResult) },
 	"ConnectorInboxThing":           func() any { return new(ConnectorInboxThing) },
+	"ConnectorOwnerPromise":         func() any { return new(ConnectorOwnerPromise) },
 	"ConnectorTag":                  func() any { return new(ConnectorTag) },
 	"ConnectorThingExtra":           func() any { return new(ConnectorThingExtra) },
 	"ConnectorThingGroup":           func() any { return new(ConnectorThingGroup) },

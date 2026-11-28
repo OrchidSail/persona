@@ -810,9 +810,36 @@
         "group": {"$ref": "#/$defs/ConnectorThingGroup"},
         "id": {"type": "string"},
         "meta": {"description": "An event's own state, kept and handed back by the hub as it is."},
-        "parent": {"$ref": "#/$defs/ConnectorThingParent"}
+        "parent": {"$ref": "#/$defs/ConnectorThingParent"},
+        "owner_promise": {"$ref": "#/$defs/ConnectorOwnerPromise"}
       },
       "required": ["thread", "kind"]
+    },
+    "ConnectorOwnerPromise": {
+      "description": "A follow-up the owner promised in a reply in a selected Lark group's topic, on a thing of kind owner_promise (docs/assistant/inbox.md \"Owner promise reminders in selected Lark groups\"). Only the built-in lark-cli source sends it: the hub ignores it from an extension, and reminds the owner privately when no to-do covers the promise.",
+      "type": "object",
+      "properties": {
+        "chat_id": {"type": "string", "x-id": "ConnectorLarkChatID", "description": "The group chat the reply is in."},
+        "topic_id": {"type": "string", "x-id": "ConnectorLarkTopicID", "description": "The topic the reply is in."},
+        "request_id": {"type": "string", "x-id": "ConnectorLarkMessageID", "description": "The request the reply answers, when the connector could verify it: a to-do made from that request covers the promise."},
+        "model": {"type": "boolean", "description": "The reply is not an explicit promise: the Inbox triage model decides, from the request (needs request_id and the thing's context), whether it is one."}
+      },
+      "required": ["chat_id", "topic_id"]
+    },
+    "ConnectorLarkChatID": {
+      "type": "string",
+      "x-id": "ConnectorLarkChatID",
+      "description": "A Lark group chat's ID."
+    },
+    "ConnectorLarkTopicID": {
+      "type": "string",
+      "x-id": "ConnectorLarkTopicID",
+      "description": "A topic's ID within a Lark group chat."
+    },
+    "ConnectorLarkMessageID": {
+      "type": "string",
+      "x-id": "ConnectorLarkMessageID",
+      "description": "A Lark message's ID."
     },
     "ConnectorTag": {
       "type": "object",

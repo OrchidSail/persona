@@ -4740,6 +4740,56 @@ export interface ConnectorInboxThing {
   /** An event's own state, kept and handed back by the hub as it is. */
   meta?: unknown;
   parent?: ConnectorThingParent;
+  owner_promise?: ConnectorOwnerPromise;
+}
+
+/**
+ * A follow-up the owner promised in a reply in a selected Lark group's topic, on a thing of kind owner_promise
+ * (docs/assistant/inbox.md "Owner promise reminders in selected Lark groups"). Only the built-in lark-cli source
+ * sends it: the hub ignores it from an extension, and reminds the owner privately when no to-do covers the promise.
+ */
+export interface ConnectorOwnerPromise {
+  /** The group chat the reply is in. */
+  chat_id: ConnectorLarkChatID;
+  /** The topic the reply is in. */
+  topic_id: ConnectorLarkTopicID;
+  /**
+   * The request the reply answers, when the connector could verify it: a to-do made from that request covers the
+   * promise.
+   */
+  request_id?: ConnectorLarkMessageID;
+  /**
+   * The reply is not an explicit promise: the Inbox triage model decides, from the request (needs request_id and the
+   * thing's context), whether it is one.
+   */
+  model?: boolean;
+}
+
+/**
+ * A Lark group chat's ID.
+ */
+export type ConnectorLarkChatID = string & { readonly __brand: "ConnectorLarkChatID" };
+/** A ConnectorLarkChatID from its raw string. */
+export function connectorLarkChatID(raw: string): ConnectorLarkChatID {
+  return raw as ConnectorLarkChatID;
+}
+
+/**
+ * A topic's ID within a Lark group chat.
+ */
+export type ConnectorLarkTopicID = string & { readonly __brand: "ConnectorLarkTopicID" };
+/** A ConnectorLarkTopicID from its raw string. */
+export function connectorLarkTopicID(raw: string): ConnectorLarkTopicID {
+  return raw as ConnectorLarkTopicID;
+}
+
+/**
+ * A Lark message's ID.
+ */
+export type ConnectorLarkMessageID = string & { readonly __brand: "ConnectorLarkMessageID" };
+/** A ConnectorLarkMessageID from its raw string. */
+export function connectorLarkMessageID(raw: string): ConnectorLarkMessageID {
+  return raw as ConnectorLarkMessageID;
 }
 
 export interface ConnectorTag {
