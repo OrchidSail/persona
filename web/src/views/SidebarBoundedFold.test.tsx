@@ -340,4 +340,85 @@ describe("BoundedAgentsBlock folding", () => {
     });
     expect(pagedCallsActive).toHaveLength(0);
   });
+
+  it("scopes folded StateTally and in-flight launches to active search query q when manually folded during search", async () => {
+    localStorage.setItem("persona.agentGrouping", "machine");
+    const fetchMock = vi.fn((input: string) => {
+      const url = new URL(input, "http://hub.example.com");
+      if (url.pathname.endsWith("/sessions") && !url.pathname.includes("/agents/")) {
+        const q = url.searchParams;
+        if (q.has("counts")) {
+          const query = q.get("q");
+          if (query === "alpha") {
+            return json({ total: 2, state: { needs_you: 1, working: 1 }, machine: { computer: 2 }, group: {}, project: {}, revision: "r1" });
+          }
+          if (query === "unrelated") {
+            return json({ total: 0, state: {}, machine: {}, group: {}, project: {}, revision: "r1" });
+          }
+          return json({ total: 5, state: { needs_you: 3, working: 2 }, machine: { computer: 5 }, group: {}, project: {}, revision: "r1" });
+        }
+        return json({ sessions: [agent("Alpha agent")], remove: [], has_more: false, revision: "r1", total: 1 });
+      }
+      if (url.pathname.endsWith("/pins")) return json({ sessions: [], spaces: [] });
+      if (url.pathname.endsWith("/machines")) {
+        return json({ machines: [{ id: "computer", name: "Demo computer", online: true, herdr_running: true }] });
+      }
+      if (url.pathname.endsWith("/todos")) return json({ todos: [] });
+      return json({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await connectPagedHub();
+    Object.assign(getState(), {
+      launches: {
+        lMatch: { id: "lMatch", machineId: "computer", cwd: "/code/alpha", launcher: "claude", text: "alpha launch", phase: "creating", attachments: [], createdAt: Date.now() },
+        lOther: { id: "lOther", machineId: "computer", cwd: "/code/beta", launcher: "codex", text: "beta launch", phase: "creating", attachments: [], createdAt: Date.now() },
+      },
+    });
+
+    act(() => root.render(<Sidebar route={{ name: "home" }} onSearch={() => {}} onNewAgent={() => {}} />));
+    await flush();
+
+    // Activate search query with surrounding whitespace, then manually fold BoundedAgentsBlock
+    act(() => filterAgentList("  alpha  "));
+    await flush();
+    fetchMock.mockClear();
+
+    act(() => agentsFoldButton()!.click());
+    await flush();
+
+    expect(agentsFoldButton()!.getAttribute("aria-expanded")).toBe("false");
+    expect(pagedList()).toBeNull();
+
+    const countQueries = fetchMock.mock.calls
+      .map(([u]) => new URL(u as string, "http://hub.example.com"))
+      .filter((url) => url.pathname.endsWith("/sessions") && url.searchParams.has("counts"))
+      .map((url) => url.searchParams.get("q"));
+    expect(countQueries).toContain("alpha");
+
+    const pagedCallsWhileFolded = fetchMock.mock.calls.filter(([u]) => {
+      const url = new URL(u as string, "http://hub.example.com");
+      return url.pathname.endsWith("/sessions") && !url.searchParams.has("counts");
+    });
+    expect(pagedCallsWhileFolded).toHaveLength(0);
+
+    const tally = agentsBlock().querySelector<HTMLElement>("[data-testid=state-tally]");
+    expect(tally).not.toBeNull();
+    expect(tally!.querySelector("[data-state=needs_you]")?.textContent).toBe("1");
+    // 1 working from counts(q=alpha) + 1 matching in-flight launch (lMatch); lOther is excluded
+    expect(tally!.querySelector("[data-state=working]")?.textContent).toBe("2");
+
+    // Updating query to non-matching term while folded must not leak non-matching agents or launches
+    fetchMock.mockClear();
+    act(() => filterAgentList("unrelated"));
+    await flush();
+
+    expect(agentsFoldButton()!.getAttribute("aria-expanded")).toBe("false");
+    expect(agentsBlock().querySelector("[data-testid=state-tally]")).toBeNull();
+    const pagedCallsUnrelated = fetchMock.mock.calls.filter(([u]) => {
+      const url = new URL(u as string, "http://hub.example.com");
+      return url.pathname.endsWith("/sessions") && !url.searchParams.has("counts");
+    });
+    expect(pagedCallsUnrelated).toHaveLength(0);
+  });
 });
