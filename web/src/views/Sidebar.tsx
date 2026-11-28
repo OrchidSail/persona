@@ -42,7 +42,8 @@ import { resolveSidebarDirections, sidebarConversations, SidebarDirectionsSectio
 import { conversationPage } from "../lib/conversation-page";
 import { href, navigate, onLinkClick, showsSession, type Route } from "../lib/router";
 import { useScrollMemory } from "../lib/scroll-memory";
-import { hasAgentViews, retryFullAgentSessions, useAgentSessions, useFullAgentSessions } from "../lib/sessions";
+import { boundedCounts, hasAgentViews, retryFullAgentSessions, useAgentSessions, useFullAgentSessions } from "../lib/sessions";
+import type { FoldedCounts } from "../lib/folded-counts";
 import { heldAsWorking, rowCards } from "../lib/supervisor-held";
 import { isInFlightLaunch } from "../lib/launch-handoff";
 import { getState, refresh, refreshTodos, useHubUnreachable, useStore } from "../lib/store";
@@ -918,7 +919,8 @@ function BoundedAgentsBlock({ reg, hover, activeKey, go, onNewAgent, onNavigate,
   const seenMode = useSeenRowsMode();
   const visit = useSeenVisit();
   const heldOrder = useMemo(() => heldOrderFor(seenMode, visit), [seenMode, visit]);
-  const rootRows = useSyncExternalStore(runtimeAgents.subscribe, runtimeAgents.getSnapshot, runtimeAgents.getSnapshot).rows;
+  const rootAgents = useSyncExternalStore(runtimeAgents.subscribe, runtimeAgents.getSnapshot, runtimeAgents.getSnapshot);
+  const rootRows = rootAgents.rows;
   useEffect(() => {
     if (!folded && seenMode === "stay" && rootRows.length) noteShownUnseen(needsSeenOf(rootRows, mutes), rootRows);
   }, [folded, seenMode, rootRows, mutes]);
@@ -1049,6 +1051,19 @@ function BoundedAgentsBlock({ reg, hover, activeKey, go, onNewAgent, onNavigate,
     chips: <>{showFilter && <PagedFilterChips filters={dimFilters} machines={machines} />}{todosUnread && <div className="-mx-1"><TodosUnread /></div>}</>,
     heldSeen: pagedHeld,
   }), [grouping, todoNames, groupings, chooseGrouping, quick, rowOrder, byUpdate, engaged, narrowed, listQuery, showFilter, dimFilters, machines, todosUnread, pagedHeld]);
+  const tallyCounts = useMemo((): FoldedCounts => {
+    const effective = rootAgents.counts && runtimeAgents.usesPageCounts()
+      ? holdCounts(rootAgents.counts, rootRows)
+      : rootAgents.counts;
+    const base = effective ? boundedCounts(effective, false) : { needs: 0, working: 0, waiting: 0, unread: 0 };
+    const pendingLaunches = launches.filter((l) => isInFlightLaunch(l) && !l.session).length;
+    return {
+      needs_you: base.needs,
+      working: base.working + pendingLaunches,
+      bg_waiting: base.waiting,
+      unread: base.unread,
+    };
+  }, [rootAgents.counts, rootRows, holdCounts, launches]);
   return <div data-sidebar-agents ref={groupsRef}>
     {/* the complete list's title row (#6662): fold all, the ⋯ with its sorts and the archived Agents, and "+" */}
     <div className={cx("group/sec relative", SESSION_LIST_STYLE.heading, TITLE_ROW_TOUCH)}>
@@ -1060,6 +1075,7 @@ function BoundedAgentsBlock({ reg, hover, activeKey, go, onNewAgent, onNavigate,
       ) : (
         <span className={AGENTS_TITLE}>Agents</span>
       )}
+      {folded && <StateTally counts={tallyCounts} />}
       <GroupFoldButton groups={groupsRef} onAction={() => hover(null)} block={foldable ? { folded, toggle: toggleBlock } : undefined} flat={chatList} />
       {showFilter && <PagedFilterButton filters={dimFilters} machines={machines} chatList={chatList} onToggleChatList={() => { setChatList(!chatList); hover(null); }} />}
       {listItems.length > 0 && <ListMenuButton open={Boolean(listMenu.anchor)} onClick={listMenu.open} />}

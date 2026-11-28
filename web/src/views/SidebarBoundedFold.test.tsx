@@ -9,7 +9,7 @@ vi.hoisted(() => {
 import { filterAgentList, resetAgentListFilters } from "../lib/agent-list-filters";
 import { seedAgentsDisplay } from "../lib/agents-display";
 import { SESSIONS_AGENTS_ONLY_FEATURE } from "../lib/runtime-list";
-import { connect, reset } from "../lib/store";
+import { connect, getState, reset } from "../lib/store";
 import type { Session } from "../lib/types";
 import { AgentsList, Sidebar } from "./Sidebar";
 
@@ -50,14 +50,14 @@ const flush = async () => {
   for (let i = 0; i < 10; i++) await act(async () => { await Promise.resolve(); });
 };
 
-const setupFetch = (herdrRunning = true) => {
+const setupFetch = (herdrRunning = true, countsOverride?: Record<string, unknown>) => {
   const rows = [agent("First page agent")];
   const fetchMock = vi.fn((input: string) => {
     const url = new URL(input, "http://hub.example.com");
     if (url.pathname.endsWith("/sessions") && !url.pathname.includes("/agents/")) {
       const q = url.searchParams;
       if (q.has("counts")) {
-        return json({ total: rows.length, state: { working: rows.length }, machine: { computer: rows.length }, group: {}, project: {}, revision: "r1" });
+        return json(countsOverride ?? { total: rows.length, state: { working: rows.length }, machine: { computer: rows.length }, group: {}, project: {}, revision: "r1" });
       }
       return json({ sessions: rows, remove: [], has_more: false, revision: "r1", total: rows.length });
     }
@@ -208,5 +208,65 @@ describe("BoundedAgentsBlock folding", () => {
     expect(agentsFoldButton()).toBeNull();
     expect(agentsBlock().textContent).toContain("Agents");
     expect(pagedList()).not.toBeNull();
+  });
+
+  it("renders folded StateTally with needs_you, working (including in-flight launches), and unread counts without fetching paged sessions", async () => {
+    localStorage.setItem("fold:agents", "1");
+    localStorage.setItem("persona.agentGrouping", "machine");
+    const fetchMock = setupFetch(true, {
+      total: 6,
+      state: { needs_you: 2, working: 3, unread: 1 },
+      background_waiting: 1,
+      machine: { computer: 6 },
+      group: {},
+      project: {},
+      revision: "r1",
+    });
+    await connectPagedHub();
+    Object.assign(getState(), {
+      launches: {
+        l1: { id: "l1", machineId: "computer", cwd: "/code/demo", launcher: "claude", text: "Starting", phase: "creating", attachments: [], createdAt: Date.now() },
+      },
+    });
+    fetchMock.mockClear();
+    act(() => root.render(<Sidebar route={{ name: "home" }} onSearch={() => {}} onNewAgent={() => {}} />));
+    await flush();
+
+    expect(agentsFoldButton()!.getAttribute("aria-expanded")).toBe("false");
+    expect(pagedList()).toBeNull();
+    const sessionCallsWhileFolded = fetchMock.mock.calls.filter(([u]) => new URL(u as string, "http://hub.example.com").pathname.endsWith("/sessions"));
+    expect(sessionCallsWhileFolded).toHaveLength(0);
+
+    const tally = agentsBlock().querySelector<HTMLElement>("[data-testid=state-tally]");
+    expect(tally).not.toBeNull();
+    expect(tally!.querySelector("[data-state=needs_you]")?.textContent).toBe("2");
+    expect(tally!.querySelector("[data-state=working]")?.textContent).toBe("3");
+    expect(tally!.querySelector("[data-state=bg_waiting]")?.textContent).toBe("1");
+    expect(tally!.querySelector("[data-state=unread]")?.textContent).toBe("1");
+
+    // Unfolding removes the title-row folded tally
+    act(() => agentsFoldButton()!.click());
+    await flush();
+    expect(agentsFoldButton()!.getAttribute("aria-expanded")).toBe("true");
+    expect(agentsBlock().querySelector(":scope > div > [data-testid=state-tally]")).toBeNull();
+  });
+
+  it("renders no folded tally when there are no hidden active sessions", async () => {
+    localStorage.setItem("fold:agents", "1");
+    localStorage.setItem("persona.agentGrouping", "machine");
+    setupFetch(true, {
+      total: 2,
+      state: { idle: 2 },
+      machine: { computer: 2 },
+      group: {},
+      project: {},
+      revision: "r1",
+    });
+    await connectPagedHub();
+    act(() => root.render(<Sidebar route={{ name: "home" }} onSearch={() => {}} onNewAgent={() => {}} />));
+    await flush();
+
+    expect(agentsFoldButton()!.getAttribute("aria-expanded")).toBe("false");
+    expect(agentsBlock().querySelector("[data-testid=state-tally]")).toBeNull();
   });
 });
