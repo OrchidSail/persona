@@ -1,6 +1,7 @@
 package extmgr
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -382,6 +383,88 @@ func TestExtensionUISlots(t *testing.T) {
 		_, nav = call(t, mux, "GET", "/api/v1/plugins/-/ui?placement=nav_page", master, "")
 		return !strings.Contains(fmt.Sprint(nav["ui"]), "badge")
 	})
+}
+
+func TestExtensionUISlotIconURL(t *testing.T) {
+	const bundledURL = "/api/v1/extensions/example-ui/-/icon?v=1.0.0"
+	for _, tc := range []struct {
+		name    string
+		wantURL string
+	}{
+		{name: "bundled icon", wantURL: bundledURL},
+		{name: "no icon"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := extensionTestHub(t)
+			h.opts.Pages = &fakePages{}
+			mux := h.routes()
+			dir := uiPackage(t)
+			var png []byte
+			if tc.wantURL != "" {
+				png = testLogoPNG(t)
+				iconFile := filepath.Join(dir, extension.IconPath)
+				if err := os.MkdirAll(filepath.Dir(iconFile), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(iconFile, png, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			installDir(t, mux, h.cfg.Token, dir)
+			waitLong(t, "the extension up", func() bool {
+				hp := h.extensions.get("example-ui")
+				return hp != nil && hp.proc != nil && hp.proc.Ready()
+			})
+			if places := h.extensions.uiPlaces("nav_page", ""); len(places) != 1 || places[0].IconURL != tc.wantURL {
+				t.Fatalf("nav UI place should have icon URL %q: %+v", tc.wantURL, places)
+			}
+
+			phone := deviceToken("phone", roleFull)
+			for _, route := range []struct {
+				prefix, extensionKey, pagePlacement string
+			}{
+				{"extensions", "extension", "extension_page"},
+				{"plugins", "plugin", "plugin_page"},
+			} {
+				t.Run(route.prefix, func(t *testing.T) {
+					code, out := call(t, mux, "GET", "/api/v1/"+route.prefix+"/-/ui", phone, "")
+					if code != http.StatusOK {
+						t.Fatalf("list UI places: %d %v", code, out)
+					}
+					placements := map[string]string{}
+					for _, raw := range out["ui"].([]any) {
+						place := raw.(map[string]any)
+						iconURL, present := place["icon_url"]
+						switch place[route.extensionKey] {
+						case "example-ui":
+							placements[place["id"].(string)] = place["placement"].(string)
+							if place[route.extensionKey+"_name"] != "Example UI" {
+								t.Errorf("missing extension name: %v", place)
+							}
+							if present != (tc.wantURL != "") || (present && iconURL != tc.wantURL) {
+								t.Errorf("UI place %v icon_url = %v (present: %v), want %q", place["id"], iconURL, present, tc.wantURL)
+							}
+						case PagesExtension:
+							placements[PagesExtension] = place["placement"].(string)
+							if present {
+								t.Errorf("synthetic place %v included icon_url: %v", place["id"], iconURL)
+							}
+						}
+					}
+					if placements["nav"] != "nav_page" || placements["card"] != "overview_card" ||
+						placements["home"] != route.pagePlacement || placements[PagesExtension] != "nav_page" {
+						t.Errorf("missing UI places or unexpected placements: %v", placements)
+					}
+				})
+			}
+			if png != nil {
+				response := logoRequest(mux, tc.wantURL, phone, "")
+				if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), png) {
+					t.Errorf("bundled icon response: status %d, body size %d", response.Code, response.Body.Len())
+				}
+			}
+		})
+	}
 }
 
 // UI version 3: the new components, search, filter and more reach an app that draws them; an older one gets them

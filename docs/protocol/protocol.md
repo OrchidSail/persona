@@ -2045,6 +2045,12 @@ The hub records each install, upgrade and uninstall as an **operation**: split i
 | GET | `/api/v1/extensions/{id}/-/offload/{cid}/jobs/{job}?machine={mid}` | `offload.job` within 10 s → `OffloadJob` (`items` always present) |
 | DELETE | `/api/v1/extensions/{id}/-/offload/{cid}/jobs/{job}?machine={mid}` | `offload.cancel` → `{canceled}`; `false` when the program has no `offload.cancel`. Errors of the offload routes `OffloadError` `{error, code, tool?, items?}`: 404 `not_found` (no such extension, enabled contribution or machine), 400 `bad_request`, 502 `plugin_failed` (with `detail`, the provider's words, when it failed), 504 `deadline` |
 
+In the UI list, the optional `UIPlace.icon_url` field is the versioned relative URL
+`/api/v1/extensions/{id}/-/icon?v=<installed version>` for an installed extension's bundled `assets/icon.png`.
+Places omit it when the asset is absent and for synthetic Dashboards (`-pages`). Icon requests use the installed-icon
+endpoint's existing access rules and the same manager selection as the list. The legacy `GET /api/v1/plugins/-/ui`
+uses the same optional `icon_url` and keeps the legacy keys `plugin` and `plugin_name`.
+
 Permissions follow the endpoint that started the operation: only a device that can preview / install can list, view, retry and cancel operations (a full-access device installs extensions from a market; every other source only accepts the main token over loopback).
 
 ### Events

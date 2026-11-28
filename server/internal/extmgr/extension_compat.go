@@ -164,6 +164,7 @@ type legacyUIPlace struct {
 	Group *extension.UIGroup `json:"group,omitempty"`
 	// IconColor as on the new path; such an app ignores it too
 	IconColor string `json:"icon_color,omitempty"`
+	IconURL   string `json:"icon_url,omitempty"`
 }
 
 func legacyUIPlaces(us []UIPlace) []legacyUIPlace {

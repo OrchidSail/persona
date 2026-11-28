@@ -57,6 +57,8 @@ type UIPlace struct {
 	Group *extension.UIGroup `json:"group,omitempty"`
 	// IconColor: a nav_page's icon color (#10822), drawn only with Colored sidebar icons.
 	IconColor string `json:"icon_color,omitempty"`
+	// IconURL is the versioned URL of the installed extension's bundled icon.
+	IconURL string `json:"icon_url,omitempty"`
 }
 
 // uiPlaces are the plugins' UI of placement (every slot's but launcher sections' when it is empty); for launcher
@@ -96,7 +98,12 @@ func (ps *extensions) uiPlaces(placement, base string) []UIPlace {
 		if hp == nil || hp.proc == nil {
 			continue
 		}
-		for _, u := range p.Manifest.UIs() {
+		items := p.Manifest.UIs()
+		var iconURL string
+		if len(items) > 0 && extension.HasIcon(p.Dir) {
+			iconURL = installedIconURL(p.Record.ID, p.Record.Version)
+		}
+		for _, u := range items {
 			slot, known := extension.Slot(u.Placement)
 			switch {
 			case !known:
@@ -111,7 +118,7 @@ func (ps *extensions) uiPlaces(placement, base string) []UIPlace {
 				continue
 			}
 			place := UIPlace{Extension: p.Record.ID, ExtensionName: p.Manifest.Name, ID: u.ID, Title: u.Title, Placement: u.Placement,
-				Size: slot.Size, Icon: u.Icon, Opens: u.Opens, Connector: u.Connector, Group: u.Group, IconColor: u.IconColor}
+				Size: slot.Size, Icon: u.Icon, Opens: u.Opens, Connector: u.Connector, Group: u.Group, IconColor: u.IconColor, IconURL: iconURL}
 			if extension.PageSlot(u.Placement) {
 				place.Placement = "extension_page" // the old paths answer plugin_page (legacyUIPlaces)
 			}
