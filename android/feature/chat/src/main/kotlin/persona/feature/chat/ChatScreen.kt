@@ -80,9 +80,6 @@ import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -90,9 +87,6 @@ import persona.core.designsystem.R as DesignR
 
 // Finish the fade in the existing gap below the tab strip, without changing the chat's content padding.
 private val TabbedChatScrollEdgeStyle = ScrollEdgeStyle.Gradient.copy(overlap = Tokens.Space.Standard.s)
-
-/** A successful assistant action shown while the row is unchanged; any newer authoritative value replaces it. */
-private data class UndeliveredEdit(val before: UndeliveredMessage, val shown: UndeliveredMessage?)
 
 /** Guidance supplied by the Assistant host for its main conversation's composer. */
 val LocalMainChatGuidance = androidx.compose.runtime.compositionLocalOf<(@Composable () -> Unit)?> { null }
@@ -225,23 +219,20 @@ private fun ChatPage(
     val controls = remember(key, chrome.actions, renamer, interactions) {
         ChatChromeState(res, chrome.actions, scope, sessions::refresh, onBack, renamer, interactions)
     }
-    val headerMenuOpen = remember(key) { mutableStateOf(false) }
-    var headerOverlay by remember { mutableStateOf(false) }
-    var modeOverlay by remember { mutableStateOf(false) }
-    var pillOverlay by remember { mutableStateOf(false) }
-    var composerOverlay by remember { mutableStateOf(false) }
+    val flags = remember(key) { ChatPageFlags() }
+    val headerMenuOpen = flags.headerMenuOpen
+    var headerOverlay by flags.headerOverlay
+    var modeOverlay by flags.modeOverlay
+    var pillOverlay by flags.pillOverlay
+    var composerOverlay by flags.composerOverlay
     val chromeOverlay = headerOverlay || modeOverlay || pillOverlay || composerOverlay
     // Each pending card folds on its own (iOS InteractionPanel's `collapsed`); the composer stays either way.
     val requestFolds = rememberRequestFolds()
-    // What the cards' room is read from (PendingStack.cap): the bars' heights, and those of the two places the cards sit in,
-    // Persona's task question above its entries and the stack below them.
-    var topBarHeight by remember { mutableIntStateOf(0) }
-    var footerHeight by remember { mutableIntStateOf(0) }
-    var taskHeight by remember { mutableIntStateOf(0) }
-    var stackHeight by remember { mutableIntStateOf(0) }
-    // The page's height above the keyboard, in pixels, read only where it is used (PendingStack.cap, the trays' room): it moves
-    // on every frame the keyboard slides, and a BoxWithConstraints here composed the whole page again on each of them.
-    var pageHeightPx by remember { mutableIntStateOf(-1) }
+    var topBarHeight by flags.topBarHeight
+    var footerHeight by flags.footerHeight
+    var stackHeight by flags.stackHeight
+    var pageHeightPx by flags.pageHeightPx
+
     val pageTrays = rememberChatPageTrays(key, chrome, renderStyle, connection)
     val assistantTrays = pageTrays.assistantTrays
     var trayApproving by pageTrays.trayApproving
@@ -272,45 +263,22 @@ private fun ChatPage(
         heldChatMessages(undelivered, snapshot.items, pageRequests.messages)
     }
     val messages = held.outbox
-    val keptSession = session.takeIf { renderStyle == ChatRenderStyle.Assistant || session?.assistant == true }
-    var undeliveredEdits by remember(key) { mutableStateOf<Map<String, UndeliveredEdit>>(emptyMap()) }
-    val keptMessages = remember(keptSession, snapshot.items, messages, undeliveredEdits) {
-        shownUndelivered(keptSession, snapshot.items, messages).mapNotNull { message ->
-            val edit = undeliveredEdits[message.id]
-            when {
-                edit == null -> message
-                edit.before == message -> edit.shown
-                else -> message
-            }
-        }
-    }
-    // A successful action is visible while the row is unchanged; any newer authoritative value replaces it.
-    LaunchedEffect(session?.undelivered) {
-        val current = session?.undelivered.orEmpty()
-        undeliveredEdits = undeliveredEdits.filter { (id, edit) ->
-            current.firstOrNull { it.id == id } == edit.before
-        }
-    }
+    var undeliveredEdits by flags.undeliveredEdits
+    val keptMessages = rememberChatPageKeptMessages(session, renderStyle, snapshot.items, messages, flags.undeliveredEdits)
     val composerDeliveries by pageRequests.composerDeliveries
-    var linkContexts by rememberSaveable(stateSaver = ChatLinkContextsSaver) { mutableStateOf(emptyList<ChatLinkContext>()) }
+    val linkContextsState = rememberSaveable(stateSaver = ChatLinkContextsSaver) { mutableStateOf(emptyList<ChatLinkContext>()) }
+    var linkContexts by linkContextsState
     var conversationLauncher by rememberSaveable(key.path, chrome.assistantManagement) { mutableStateOf<String?>(null) }
     var conversationModel by rememberSaveable(key.path, chrome.assistantManagement) { mutableStateOf<String?>(null) }
-    // Forward placements arrive over the composer; the message action and forward-sheet UI lives in ChatMessageActions.
-    val placedForwards = ForwardPlacements.waiting(key)
-    // /model in the "/" list asked for the "Mode" sheet: a one-off, cleared once the sheet opened (not replayed when the bar returns).
-    var openModes by remember { mutableStateOf(false) }
-    // The model-route card opens only Persona's model picker, never Brief/Board's separate Mode sheet as well.
-    var openModelRoutePicker by remember { mutableStateOf(false) }
-    // The model-route card asks the existing Persona pill to clear its kept pick with the pill's optimistic rollback.
-    var clearModelPick by remember { mutableStateOf(false) }
-    // `/permissions` in the "/" list asked for the permission mode menu (#6513): Glass's mode button, the others' "Mode" sheet
-    var openPermissions by remember { mutableStateOf(false) }
+    var openModes by flags.openModes
+    var openModelRoutePicker by flags.openModelRoutePicker
+    var clearModelPick by flags.clearModelPick
+    var openPermissions by flags.openPermissions
     // The host's failure notice whose "Retry" went out: hidden until the list catches up; back if that send failed.
     var hostRetried by rememberSaveable(key.path) { mutableStateOf<String?>(null) }
-    val statusSheetState = remember { mutableStateOf(false) }
+    val statusSheetState = flags.statusSheet
     var statusSheet by statusSheetState
-    // The loop and background work's sheet, from the header's pill (Glass, #4339 C8).
-    val activitySheetState = remember(key) { mutableStateOf<BackgroundPanelRequest?>(null) }
+    val activitySheetState = flags.activitySheet
     var activitySheet by activitySheetState
     val backgroundOwner = session?.takeIf {
         !it.assistant && !it.isSubagent && '@' !in it.sessionId &&
@@ -323,11 +291,11 @@ private fun ChatPage(
     // The shell presents transient notices once; persistent sync errors stay inline.
     val feedback = persona.core.designsystem.LocalAppFeedback.current
     val deliveryActions = remember(sender) { ChatDeliveryActions(sender) }
-    var undeliveredBusy by remember(key) { mutableStateOf(emptySet<String>()) }
+    var undeliveredBusy by flags.undeliveredBusy
     val clearingPaneState = rememberSaveable { mutableStateOf<String?>(null) }
     var clearingPane by clearingPaneState
-    val timelineFollow = remember { mutableStateOf<(() -> Unit)?>(null) }
-    val submittedContextState = remember { mutableStateOf(emptyList<ChatLinkContext>()) }
+    val timelineFollow = flags.timelineFollow
+    val submittedContextState = flags.submittedContexts
     val interactionController = rememberChatInteractionController(key, sender, interactions, sessions, composer,
         composerService, scope, res, feedback, haptics, pageRequests, pageTrays, rememberUpdatedState(canSend),
         rememberUpdatedState(readOnly), statusSheetState,
@@ -382,36 +350,15 @@ private fun ChatPage(
             }
         }
     }
-    val currentDraftCallback by rememberUpdatedState(onDraftChanged)
-    LaunchedEffect(composer) { snapshotFlow { composer.draft }.collect { currentDraftCallback?.invoke(it) } }
-    LaunchedEffect(sessionList, clearingPane) {
-        clearingPane?.let { pane ->
-            sessionList.firstOrNull { it.machineId == key.machineId && it.paneId == pane && it.key != key && it.isLive }?.let {
-                clearingPane = null
-                if (onContextCleared != null) onContextCleared(it.key)
-                else notice = res.getString(R.string.chat_screen_context_cleared)
-            }
-        }
-    }
-    // The new session gets 20 seconds to show up in the same pane; after that the list has to do, and /clear is offered again.
-    LaunchedEffect(clearingPane) {
-        if (clearingPane == null) return@LaunchedEffect
-        delay(CLEAR_WAIT_MILLIS)
-        clearingPane = null
-        // A /clear still waiting to go out, or refused, says so on its own bubble.
-        if (allMessages.none { it.session == key && it.text == SlashCommand.CLEAR && it.state != DeliveryState.Sent })
-            notice = res.getString(R.string.chat_screen_clear_sent)
-    }
-    // A card open on its full page, in either place of cards.
-    var taskOverlay by remember { mutableStateOf(false) }
-    var stackOverlay by remember { mutableStateOf(false) }
-    val overlay = taskOverlay || stackOverlay
-    val terminalHelpState = remember { mutableStateOf(false) }
+    var stackOverlay by flags.stackOverlay
+    val overlay = stackOverlay
+    val terminalHelpState = flags.terminalHelp
+
     var terminalHelp by terminalHelpState
-    var taskPageVisible by remember { mutableStateOf(false) }
-    val fullTextState = remember { mutableStateOf<String?>(null) }
+    var taskPageVisible by flags.taskPageVisible
+    val fullTextState = flags.fullText
     var fullText by fullTextState
-    var linkVisible by remember { mutableStateOf(false) }
+    var linkVisible by flags.linkVisible
     val pageHeaderFold = rememberChatPageHeaderFold(readingKey, anchorStore, renderStyle, showTopBar, scope)
     val chatList = pageHeaderFold.chatList
     val search = pageHeaderFold.search
@@ -432,72 +379,26 @@ private fun ChatPage(
     // live one (it folds and opens as while it runs), but nothing is at work, so its line reads "Waiting for you" with no
     // clock, as the header does (web goes by the same state).
     val waitingOnYou = turnWaitsOnYou(session, key, requests)
-    // Pair the async timeline projection atomically with the snapshot window it was built from so assistant
-    // folding and feed clipping never mix old line IDs with a newly committed snapshot during recomposition.
-    val projectionVersion = projectionVersionState.intValue
-    val projected by produceState(
-        ProjectedTimeline(),
-        snapshot.items, snapshot.hasOlder, snapshot.olderBoundaryKnown, snapshot.loading, live, openWork, projectionVersion,
-    ) {
-        val items = snapshot.items
-        val hasOlder = snapshot.hasOlder
-        val olderBoundaryKnown = snapshot.olderBoundaryKnown
-        val loading = snapshot.loading
-        val next = withContext(Dispatchers.Default) {
-            timeline.lines(items, live, openWork.toSet())
-        }
-        value = ProjectedTimeline(next, items, hasOlder, olderBoundaryKnown, loading)
-    }
-    val projection = projected.snapshot
-    val projectedFrom = projected.items
-    val projectedSnapshot = remember(snapshot, projected) {
-        projected.items?.let { items ->
-            snapshot.copy(
-                items = items,
-                hasOlder = projected.hasOlder,
-                olderBoundaryKnown = projected.olderBoundaryKnown,
-                loading = projected.loading,
-            )
-        } ?: snapshot.copy(items = emptyList(), hasOlder = false, olderBoundaryKnown = false, loading = true)
-    }
-    // Where the header counts "Working 22 min" from: the start of the turn that runs now (iOS `Turn.startedAt`).
-    val runningSince = remember(projection) { projection.liveTurnId?.let { id -> projection.turns.firstOrNull { it.id == id }?.start } }
-    val liveWorkLines = remember(projection) { liveWorkIds(projection.lines) }
-    var previousLiveWork by remember { mutableStateOf(emptySet<String>()) }
-    // Fold the completed run, but keep choices made on historical lines and transfer an opened placeholder.
-    LaunchedEffect(liveWorkLines) {
-        val settled = settleWorkOpen(openWork.toSet(), liveWorkLines, previousLiveWork)
-        previousLiveWork = liveWorkLines
-        if (settled != openWork.toSet()) chatList.setExpanded(settled)
-    }
-    val feeds by (tasks?.feeds ?: remember { kotlinx.coroutines.flow.MutableStateFlow(emptyMap<String, List<persona.core.contracts.FeedItem>>()) })
-        .collectAsStateWithLifecycle()
-    val feed = feeds[key.sessionId].orEmpty()
-    val taskPlans by (tasks?.plans ?: remember { kotlinx.coroutines.flow.MutableStateFlow(emptyMap<String, TaskPlan>()) })
-        .collectAsStateWithLifecycle()
-    val taskCardProjection by (tasks?.taskCards ?: remember {
-        kotlinx.coroutines.flow.MutableStateFlow(emptyMap<String, List<AssistantTaskCard>>())
-    }).collectAsStateWithLifecycle()
+    val pageProjection = rememberChatPageProjection(snapshot.items, live, openWork, timeline,
+        projectionVersionState.intValue, flags.projectedFrom)
+    val projectedFrom by flags.projectedFrom
+    val projection = pageProjection.projection
+    val runningSince = pageProjection.runningSince
+    val liveWorkLines = pageProjection.liveWorkLines
+    val taskFeeds = rememberChatPageTaskFeeds(tasks, key)
+
     // The chat jumps to a task's notice through the task host's navigation.
     // The message a hub link named (`?at=`, #2194) while it is being landed on: like a search hit, its drawer opens.
-    var overviewOpen by remember(key) { mutableStateOf(false) }
+    var overviewOpen by flags.overviewOpen
     var openSubagentsPending by rememberSaveable(key.path, chrome.openSubagents) { mutableStateOf(chrome.openSubagents) }
     val childCards = rememberChatChildren(key, session, sessionList, chrome, repository, forceRead = overviewOpen)
-    val modeChangeStore = remember(key, repository, scope) { ModeChangeStore(scope) { repository.modeChanges(it) } }
-    DisposableEffect(modeChangeStore) { onDispose(modeChangeStore::close) }
-    LaunchedEffect(key, repository, renderStyle, session != null, session?.permissionMode, session?.bypassPending) {
-        session?.let { modeChangeStore.watch(key, it, agentChat = renderStyle != ChatRenderStyle.Assistant) }
-    }
-    val modeChanges = modeChangeStore.changes
-    val modeChangesUntil = if (renderStyle == ChatRenderStyle.Assistant || modeChanges.isEmpty()) {
-        null
-    } else {
-        val frozenVersion = timelineVersionState.intValue
-        remember(frozenVersion, projection) { modeChangesCutoff(timeline.isFrozen(), projection.lines) }
-    }
-    val pageLines = rememberChatPageLines(key, renderStyle, projectedSnapshot, session, foldsBackground, supervisingConversation, tasks, taskTodos, search,
-        openWork, projection, feed, taskPlans, taskCardProjection, childCards.list, modeChanges = modeChanges,
-        modeChangesUntil = modeChangesUntil)
+    val pageModeChanges = rememberChatPageModeChanges(key, repository, scope, session, renderStyle, timeline,
+        timelineVersionState, projection)
+    val modeChanges = pageModeChanges.changes
+    val pageLines = rememberChatPageLines(key, renderStyle, snapshot, session, foldsBackground, supervisingConversation, tasks, taskTodos, search,
+        openWork, projection, taskFeeds.feed, taskFeeds.plans, taskFeeds.cards, childCards.list, modeChanges = modeChanges,
+        modeChangesUntil = pageModeChanges.until)
+
     var jumpItem by pageLines.jumpItem
     val assistantPresentation = pageLines.assistantPresentation
     val subagentCards = pageLines.subagentCards
@@ -539,28 +440,13 @@ private fun ChatPage(
     var sheetPlan by pageReader.sheetPlan
     val sheetPlanState = pageReader.sheetPlan
     val currentItems = pageReader.currentItems
-    val currentLinesByKey by pageReader.currentLinesByKey
     val list = pageReader.list
-    var reportedSeen by pageReader.reportedSeen
     val readThrough = pageReader.readThrough
     val context = pageReader.context
     val imageLimits = rememberSessionImageLimits(chrome.connection, session?.agent)
-    ChatForwardPlacementEffect(
-        key = key,
-        placedForwards = placedForwards,
-        readOnly = readOnly,
-        canSend = canSend,
-        imageLimits = imageLimits,
-        scope = scope,
-        context = context,
-        res = res,
-        composer = composer,
-        composerService = composerService,
-        feedback = feedback,
-        currentLinkContexts = { linkContexts },
-        onLinkContexts = { linkContexts = it },
-        onNotice = { notice = it },
-    )
+    ChatPageComposerEffects(key, composer, onDraftChanged, sessionList, clearingPaneState, onContextCleared, allMessages,
+        allRequests, interactionController.notice, res, readOnly, canSend, imageLimits, linkContextsState, scope, context,
+        composerService, feedback, interactionController.submittedDraft, submittedContextState, pageRequests.taps)
     BindPendingAssistDraft(
         key = key,
         context = context,
@@ -575,6 +461,7 @@ private fun ChatPage(
         },
         limits = imageLimits,
     )
+
     val pairingLoader = pageReader.pairingLoader
     val loader = pageReader.loader
     val markdownCache = pageReader.markdownCache
@@ -654,14 +541,11 @@ private fun ChatPage(
         if (opened) (projection.lines.firstOrNull { it.id == id } as? ChatLine.Work)?.steps
             ?.filterIsInstance<persona.core.domain.lines.WorkItem.Folded>()?.forEach { expand(it.item.item) }
     }
-    // Restored open lines and folds arriving while expanded load just as a manual tap does.
-    LaunchedEffect(projection) {
-        openFoldsToFetch(projection.lines, folding, foldErrors.keys).forEach(::expand)
-    }
-    // The chat's model operating a computer (#4339 C9 and C18, iOS ComputerActivityPill), shared across every style:
-    // a pill over an Agent chat's composer, under the entries in Persona's conversation; a tap opens the work line that holds the call.
+    // The chat's model operating a Mac (#4339 C9 and C18, iOS ComputerActivityPill), on Glass: a pill over an Agent chat's
+    // composer, under the entries in Persona's conversation; a tap opens the work line that holds the call.
     val computer = remember(readOnly, snapshot.items, machines, key.machineId) {
         if (!readOnly) persona.core.domain.ComputerActivity.latest(snapshot.items, key.machineId, machines) else null
+
     }
     val computerLine = remember(computer, lines) { computer?.let { a -> computerWorkLine(lines, a.toolUseId) } }
     val computerPill: (@Composable (Modifier) -> Unit)? = computer?.let { a -> { modifier -> ChatComputerPill(a, onOpen = computerLine?.let { line -> {
@@ -684,52 +568,25 @@ private fun ChatPage(
         linkContexts = withQuote(linkContexts, messageQuote(target.text, target.user, session?.agentLabel ?: "Claude", target.id))
         composer.focusRequest++
     }
-    val swipeQuote by rememberUpdatedState(quoteTarget)
     // Quote in the menu of a selected message's words quotes the words picked (iOS Select Text › Quote).
     val quoteWords: (MessageTarget, String) -> Unit = { target, words ->
         linkContexts = withQuote(linkContexts, messageQuote(words, target.user, session?.agentLabel ?: "Claude", target.id, ChatLinkContext.PART_SELECTION))
         composer.focusRequest++
     }
-    val pickedQuote by rememberUpdatedState(quoteWords)
     val messageMenuState = remember(key) { MessageMenuState() }
-    val menuWrites = messageMenuWrites(readOnly, session)
-    LaunchedEffect(menuWrites) {
-        messageMenuState.quote = if (menuWrites) ({ target: MessageTarget -> swipeQuote(target) }) else null
-        messageMenuState.quoteWords = if (menuWrites) ({ target: MessageTarget, words: String -> pickedQuote(target, words) }) else null
-    }
-    // "Branch to new chat" (#2137) from a reply, "Rewind to here" (#2436) on your message: the menu's session-wide extras (web ⋯).
+    val forkRewind = rememberChatPageForkRewind(key, chrome, renderStyle, session, readOnly, historyReadOnly,
+        pageSession.managerOffline, child == null && workflowAgent == null, canSend, sending, messages, snapshot.items,
+        composer, flags, interactionController.notice, res, scope, sessions)
+    val onFork = forkRewind.onFork
+    val rewindMenu = forkRewind.rewindMenu
+    val forking by flags.forking
     val actionsService = chrome.actions
-    val forkAndRewind = rememberChatForkAndRewind(
-        key = key,
-        chrome = chrome,
-        renderStyle = renderStyle,
-        session = session,
-        readOnly = readOnly,
-        historyReadOnly = historyReadOnly,
-        managerOffline = pageSession.managerOffline,
-        child = child,
-        workflowAgent = workflowAgent,
-        canSend = canSend,
-        sending = sending,
-        messages = messages,
-        snapshotItems = snapshot.items,
-        composer = composer,
-        sessions = sessions,
-        scope = scope,
-        res = res,
-        onNotice = { notice = it },
-    )
-    val forking = forkAndRewind.forking
-    val onFork = forkAndRewind.onFork
-    val rewindMenu = forkAndRewind.rewindMenu
+
     // The session's subagents by the call that started them, done ones too: what their task cards say (Glass), and the
     // conversations "View sub-agent" opens under Task / Agent steps in Brief and Board.
     val pageSubagents = rememberChatPageSubagents(key, chrome, readOnly, session, openBackground)
     val subagentLinks = pageSubagents.subagentLinks
     val subagentFolds = pageSubagents.subagentFolds
-    LaunchedEffect(chrome.childSessionId, subagentFolds) {
-        chrome.childSessionId?.let { subagentFolds.open(persona.core.domain.lines.ChildSessionCards.call(it)) }
-    }
     val workflowCards = pageSubagents.workflowCards
     val messageActions = rememberChatRowActionPreparation(key, repository, chrome, scope, renderStyle, session,
         projection, readOnly, canSend, session?.status == "working" || messages.isNotEmpty(), currentItems, messageMenuState) { send(it) }
@@ -742,13 +599,11 @@ private fun ChatPage(
     val exhausted = messageActions.exhausted
     val retryId = messageActions.retryId
     val turnFix = messageActions.turnFix
-    ChatMarkdownPrewarmEffect(
-        liveItems = liveItems,
-        markdownPaths = rowActions.paths?.takeIf { rowActions.openPath != null },
-        markdownSplit = markdownSplit,
-        markdownCache = markdownCache,
-        onMarkdownReadyFor = { markdownReadyFor = it },
-    )
+    ChatPageContentEffects(chatList, openWork, liveWorkLines, flags.previousLiveWork, folding, projection,
+        foldErrors.keys, ::expand, messageMenuWrites(readOnly, session), messageMenuState, quoteTarget, quoteWords,
+        chrome.childSessionId, subagentFolds, liveItems, markdownSplit, markdownCache,
+        rowActions.paths?.takeIf { rowActions.openPath != null }, pageFolds.markdownReadyFor)
+
     // the cards still to answer: one just answered here no longer says what it asked
     val taskState = rememberChatPageTaskHost(key, chrome, tasks, taskKeys, taskTodos, taskAgentSessions, sessionList,
         machines, allRequests, taps, assistantPresentation, session, scope, res, sender, { notice = it })
@@ -788,94 +643,37 @@ private fun ChatPage(
             } },
             onDismiss = { backgroundOpen = false })
     }
-    LaunchedEffect(allMessages, submittedDraft) {
-        submittedDraft?.let { (id, draft) ->
-            if (allMessages.any { it.clientMessageId == id }) {
-                composer.clearIfUnchanged(draft)
-                linkContexts = linkContexts.filterNot { ref -> submittedContexts.any { it.id == ref.id } }
-                submittedContexts = emptyList()
-                submittedDraft = null
-            }
-        }
-    }
-    LaunchedEffect(allRequests) {
-        taps = taps.pending(allRequests.map { it.id }.toSet())
-    }
-    val turnModelActionState = rememberChatTurnModelActions(
-        chrome = chrome,
-        session = session,
-        switchSession = switchSession,
-        glass = glass,
-        renderStyle = renderStyle,
-        readOnly = readOnly,
-        canSend = canSend,
-        turnFix = turnFix,
-        sessions = sessions,
-        scope = scope,
-        res = res,
-        onOpenModelRoutePicker = { openModelRoutePicker = true },
-        onClearModelPick = { clearModelPick = true },
-        onNotice = { notice = it },
-    )
-    val fixModel = turnModelActionState.fixModel
-    val turnModelActions = turnModelActionState.turnModelActions
+    val modelActions = rememberChatPageModelActions(chrome, session, switchSession != null, glass, readOnly, canSend, turnFix,
+        flags, interactionController.notice, res, scope, sessions)
+    val fixModel = modelActions.fixModel
+    val turnModelActions = modelActions.turnModelActions
+
     // Nothing is up over the page: the header may fold by itself (iOS waits while a sheet or menu is presented).
     val pageCovered = chrome.covered || overlay || linkVisible || statusSheet || activitySheet != null || terminalHelp ||
         taskPageVisible || fullText != null || search.visible || pushedDetail != null
-    val headerBusy by rememberUpdatedState(pageCovered || chromeOverlay)
-    LaunchedEffect(headerFold, foldsHeader, reduceMotion) {
-        if (!foldsHeader || reduceMotion) return@LaunchedEffect
-        while (true) {
-            delay(HeaderFoldRules.TICK_MILLIS)
-            headerFold.tick(HeaderFoldRules.TICK_MILLIS, headerBusy, reduceMotion)
-        }
-    }
     // A request arriving opens it, so its line says the agent needs you (chats.md "Risks"); and so does coming back
     // from the terminal or the files over the chat (iOS: a pane switch).
     val pageListKeys = rememberChatPageListKeys(chrome, snapshot, writtenAt, session, connection, chromeOverlay, requests,
         messages, statusSheet, overlay, terminalHelp, taskPageVisible, fullText, linkVisible, chatList, search, foldsHeader,
-        headerFold, lines, lifecycle, lastUserId)
+        headerFold, lines, lifecycle, lastUserId, glass && !agentChat, held.rows, tailRows, earlierEngines?.keys().orEmpty())
     val unreadEntry = pageListKeys.unreadEntry
     val placed = pageListKeys.placed
-    // Persona's first message, not in the transcript yet: its day stands over it across every style (iOS `DayLine`, #1911).
-    val pendingDay = if (!agentChat && lines.isEmpty() && placed.rest.isNotEmpty())
-        placed.rest.mapNotNull { it.createdAt }.minOrNull()?.let { java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).toLocalDate() }
-            ?: java.time.LocalDate.now()
-        else null
-    // The list's keys from the bottom (reverse layout): the tail rows, the outbox's bubbles still on their way, that day,
-    // then the lines, each with the failed sends written before it just above it (#2769).
-    val earlierKeys = earlierEngines?.keys().orEmpty()
-    val listKeys = remember(lines, placed, held.rows, tailRows, pendingDay != null, earlierKeys) {
-        buildChatListKeys(tailRows, held.rows, placed, pendingDay != null, lines, earlierKeys)
-    }
-    val rowAliases = remember(lines) { lines.associate { it.id to it.contentKey } }
-    ChatListEffects(chatList, listKeys,
+    val pendingDay = pageListKeys.pendingDay
+    val listKeys = pageListKeys.listKeys
+    ChatPageListEffects(key, repository, chatList, search, lines, listKeys,
         ready = !snapshot.loading && (snapshot.items.isEmpty() || lines.isNotEmpty() ||
             (renderStyle.compactToolSummary && projectedFrom === snapshot.items && assistantPresentation.foreground.isEmpty())) &&
             (unreadEntry == null || markdownReadyFor == snapshot.items), entry = unreadEntry,
-        rowAliases = rowAliases,
-        hasOlder = snapshot.hasOlder, loadingOlder = snapshot.loadingOlder,
-        onFreeze = ::freezeTimeline,
-        onFollow = ::followTimeline,
-        loadOlder = {
-            try { repository.loadOlder(key) } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { if (feedback?.failure(e) != true) notice = operationFeedback(e).text.resolve(res) }
-        })
-    ChatSearchNavigation(search, chatList, lines, foldErrors.keys)
-    ChatMessageJump(key, repository, chatList, lines, snapshot.hasOlder, snapshot.loading || snapshot.loadingOlder, search,
-        onItem = { jumpItem = it }, onNotice = { notice = it })
-    ChatSeenMarkEffect(
-        key = key,
-        repository = repository,
-        list = list,
-        active = !chrome.covered && !search.visible && !search.pending && !search.returning && chatList.restored &&
-            !chatList.programmaticScroll && !overlay && !chromeOverlay && fullText == null && !linkVisible &&
-            !statusSheet && !terminalHelp && !taskPageVisible && pushedDetail == null &&
-            lifecycle == Lifecycle.State.RESUMED && snapshot.verified,
-        currentLinesByKey = { currentLinesByKey },
-        currentReportedSeen = { reportedSeen },
-        onReportedSeen = { reportedSeen = it },
-    )
+        hasOlder = snapshot.hasOlder, loadingOlder = snapshot.loadingOlder, loading = snapshot.loading,
+        onFreeze = ::freezeTimeline, onFollow = ::followTimeline, feedback = feedback, notice = interactionController.notice,
+        res = res, foldErrors = foldErrors.keys, decisionSource = chrome.decisionSource,
+        offline = connection == ConnectionState.WaitingForNetwork, jumpItem = pageLines.jumpItem, headerFold = headerFold,
+        foldsHeader = foldsHeader, reduceMotion = reduceMotion, headerBusy = pageCovered || chromeOverlay, list = list,
+        seenBlocked = chrome.covered || search.visible || search.pending || search.returning || !chatList.restored ||
+            chatList.programmaticScroll || overlay || chromeOverlay || fullText != null || linkVisible || statusSheet ||
+            terminalHelp || taskPageVisible || pushedDetail != null || lifecycle != Lifecycle.State.RESUMED || !snapshot.verified,
+        currentLinesByKey = pageReader.currentLinesByKey, reportedSeen = pageReader.reportedSeen)
+
     val status = chatStatusState(res, snapshot, session, machine, messages, requests, taps.busy || controls.busy,
         operationUnknown = taps.uncertain.isNotEmpty() || controls.pending != null, awaiting = awaitingStatus,
         submittingId = sendingId.takeIf { sending } ?: submittedDraft?.first, receipts = sendReceipts)

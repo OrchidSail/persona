@@ -233,6 +233,9 @@ func (s *Service) logicalHistoryPage(ctx context.Context, st logicalConversation
 		if p.Through != nil && seg.Offset >= *p.Through {
 			continue
 		}
+		if p.Through != nil && seg.FrozenEnd != nil && seg.Offset+*seg.FrozenEnd < max(1, intValue(p.From)) {
+			continue
+		}
 		if p.After != nil && seg.FrozenEnd != nil && seg.Offset+*seg.FrozenEnd <= *p.After {
 			continue
 		}
@@ -356,21 +359,24 @@ func (s *Service) logicalHistoryPage(ctx context.Context, st logicalConversation
 			if !forward && source.ToSeq == nil && reqBefore > 1 && to < reqBefore-1 && (inner > 0 || seg.FrozenEnd != nil) {
 				to = reqBefore - 1
 			}
-			a, b, err := seg.Span(from, to)
+			var err error
+			coverage, end, err = mergeLogicalSpan(coverage, end, seg, from, to)
 			if err != nil {
 				return page, err
 			}
-			coverage = conversationlog.MergeRanges(coverage, conversationlog.Range{From: a, Through: b})
-			end = max(end, b)
 			if seg.FrozenEnd != nil {
-				end = max(end, seg.Offset+*seg.FrozenEnd)
+				segEnd := seg.Offset + *seg.FrozenEnd
+				if p.Through != nil {
+					segEnd = min(segEnd, *p.Through)
+				}
+				end = max(end, segEnd)
 			}
 			page.Partial = page.Partial || source.Partial
 			moreSource = moreSource || source.MoreAfter || source.More
 			if forward {
-				if p.After != nil && seg.FrozenEnd != nil && source.MoreAfter {
+				if (p.After != nil || p.Through != nil) && seg.FrozenEnd != nil && (source.MoreAfter || source.More) {
 					stopSegments = true
-					break
+					break // finish this segment before advancing to its successor
 				}
 				if len(page.Items) >= limit && p.Turns <= 0 {
 					moreSource = moreSource || index+1 < len(segs)
