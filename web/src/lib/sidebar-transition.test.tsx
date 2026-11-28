@@ -3,8 +3,7 @@ import { act, StrictMode, useCallback, useEffect, useRef, useState } from "react
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PANEL_GAP, SIDEBAR_DEFAULT, setSidebarCollapsed, takeFocusHandoff, toggleSidebarColumn, useLayout } from "./layout";
-import { SIDEBAR_COLLAPSE_MS, SIDEBAR_EXPAND_MS, SIDEBAR_RAIL_WIDTH, useSidebarTransition, type SidebarMode } from "./sidebar-transition";
-import type { MacContourDriver } from "../views/MacChrome";
+import { SIDEBAR_COLLAPSE_MS, SIDEBAR_EXPAND_MS, SIDEBAR_RAIL_WIDTH, useSidebarTransition, type MacContourDriver, type SidebarMode } from "./sidebar-transition";
 import { CollapseButton } from "../views/SidebarRail";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
