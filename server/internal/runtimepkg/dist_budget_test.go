@@ -118,7 +118,8 @@ import (
 // Reaping idle assistant ACP workers independently of coding agents and storing compact background summaries instead of full exported.steps in listedTranscriptCache add 8 B (319,212 B -> 319,220 B).
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 319_220
+	// Personal US hub Build 27 baseline (upstream 25707243bb + #17688 + #14755/#17028 + .persona-prepared + US-West 3 synergy patches, direct-patched on upstream minified runtime.js to avoid esbuild --minify-syntax regression) totals 320,320 B.
+	const budget = 320_320
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {
