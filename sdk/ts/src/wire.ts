@@ -4343,7 +4343,7 @@ export interface ConnectorCallParams {
    * the turn did not come from a paired user device (scheduled task, channel, extension, or older hub). Set
    * exclusively by the hub from verified credentials.
    */
-  origin_device_id?: string;
+  origin_device_id?: ConnectorOriginDeviceID;
 }
 
 /**
@@ -4446,7 +4446,7 @@ export interface ConnectorDoParams {
    * the turn did not come from a paired user device (scheduled task, channel, extension, or older hub). Set
    * exclusively by the hub from verified credentials.
    */
-  origin_device_id?: string;
+  origin_device_id?: ConnectorOriginDeviceID;
 }
 
 /**
@@ -4815,6 +4815,15 @@ export type ConnectorMentionUserID = string & { readonly __brand: "ConnectorMent
 /** A ConnectorMentionUserID from its raw string. */
 export function connectorMentionUserID(raw: string): ConnectorMentionUserID {
   return raw as ConnectorMentionUserID;
+}
+
+/**
+ * Hub-authenticated paired device ID (for example dev_...) that originated the current user turn.
+ */
+export type ConnectorOriginDeviceID = string & { readonly __brand: "ConnectorOriginDeviceID" };
+/** A ConnectorOriginDeviceID from its raw string. */
+export function connectorOriginDeviceID(raw: string): ConnectorOriginDeviceID {
+  return raw as ConnectorOriginDeviceID;
 }
 
 export interface ConnectorStatusChange {
