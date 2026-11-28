@@ -715,6 +715,20 @@ internal fun ConnectorSignInStep(
             view == StepView.Unknown || view == StepView.Incomplete ->
                 CannotDrawStep(prompt, bind.sending, { (pageScope ?: scope).launch { model.start() } }, model::cancel)
             else -> {
+                if (deviceLink) {
+                    prompt.url?.takeIf { StepView.isWebLink(it) }?.let { url ->
+                        JGroupItem(GroupPosition.Single) {
+                            JRow(stringResource(R.string.settings_ext_auth_link_label), subtitle = url, subtitleLines = 2, leadingIcon = PersonaIcons.link,
+                                trailing = { JIcon(PersonaIcons.openExternal, null, size = Tokens.Space.l, tint = PersonaTheme.palette.ink3) },
+                                onClick = { val _ = runCatching { uri.openUri(url) } })
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Tokens.Space.s)) {
+                            JButton(stringResource(R.string.settings_ext_auth_open_link), { val _ = runCatching { uri.openUri(url) } }, Modifier.weight(1f),
+                                icon = PersonaIcons.openExternal)
+                            JIconButton(PersonaIcons.copy, stringResource(R.string.settings_src_signin_copy_link), { copy(url, null) })
+                        }
+                    }
+                }
                 prompt.fields.forEach { field ->
                     JTextField(bind.values[field.name].orEmpty(), { model.setValue(field.name, it) }, Modifier.fillMaxWidth(),
                         label = field.label.ifBlank { field.name }, placeholder = field.placeholder?.takeIf { it.isNotBlank() } ?: field.label,

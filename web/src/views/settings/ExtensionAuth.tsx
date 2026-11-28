@@ -165,6 +165,7 @@ function SignInFlow({ id, title, onClose, onDone }: Parameters<typeof SignInDial
   }, [prompt, id, take]);
 
   const fields = prompt?.fields ?? [];
+  const stepUrl = view === "fields" ? safeLink(prompt?.url) : "";
   const canSend = view === "fields" && !busy && fields.every((f) => (values[f.name] ?? "").trim().length > 0);
   const submit = () => {
     if (canSend && prompt) void send(prompt.step ?? "", values);
@@ -220,13 +221,15 @@ function SignInFlow({ id, title, onClose, onDone }: Parameters<typeof SignInDial
         </div>
       )}
       {prompt && view === "fields" && (
-        <form
-          className="flex flex-col gap-2.5"
-          onSubmit={(e) => {
-            e.preventDefault();
-            submit();
-          }}
-        >
+        <div className="flex flex-col gap-3">
+          {stepUrl && <OpenLink url={stepUrl} />}
+          <form
+            className="flex flex-col gap-2.5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              submit();
+            }}
+          >
           {fields.map((f, i) => {
             const input = fieldInput(f);
             return (
@@ -248,9 +251,10 @@ function SignInFlow({ id, title, onClose, onDone }: Parameters<typeof SignInDial
               </label>
             );
           })}
-          {/* Enter sends the form; the dialog's footer has the button */}
-          <button type="submit" hidden aria-hidden tabIndex={-1} />
-        </form>
+            {/* Enter sends the form; the dialog's footer has the button */}
+            <button type="submit" hidden aria-hidden tabIndex={-1} />
+          </form>
+        </div>
       )}
       {(prompt?.error || failure) && (
         <p role="alert" className="mt-2.5 text-[12px] leading-relaxed break-words text-red">{prompt?.error || failure}</p>
@@ -268,7 +272,7 @@ function Waiting({ text }: { text: string }) {
   );
 }
 
-/** A link to open in a new tab (https only), copyable. */
+/** A link to open in a new tab (https or loopback http), copyable. */
 function Link({ url }: { url: string }) {
   return (
     <div className="flex min-w-0 items-center gap-2 rounded-control bg-inset px-3 py-1.5 shadow-hairline">
@@ -284,19 +288,24 @@ function Link({ url }: { url: string }) {
   );
 }
 
+/** Action button + copyable link box shared by device-code and fields steps that provide a URL. */
+function OpenLink({ url }: { url: string }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div>
+        <Button tone="accent" icon="external" href={url}>{t("settings-extensionauth.open_page")}</Button>
+      </div>
+      <Link url={url} />
+    </div>
+  );
+}
+
 /** A device code: the page to open, the code to enter there (when there is one), and the page's QR code for another phone. */
 function DeviceCode({ p }: { p: AuthPrompt }) {
   const url = safeLink(p.url);
   return (
     <div className="flex flex-col gap-3">
-      {url && (
-        <div className="flex flex-col gap-2">
-          <div>
-            <Button tone="accent" icon="external" href={url}>{t("settings-extensionauth.open_page")}</Button>
-          </div>
-          <Link url={url} />
-        </div>
-      )}
+      {url && <OpenLink url={url} />}
       {p.user_code && (
         <div className="flex flex-col gap-1">
           <span className="text-[12px] text-ink-3">{t("settings-extensionauth.code_label")}</span>

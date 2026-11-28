@@ -138,15 +138,22 @@ function hasCtrlOrSpace(url: string): boolean {
   return /\s/.test(url);
 }
 
-/** A link the page may open: credential-free https with an explicit authority and host only (normalized). */
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "[::1]";
+}
+
+/** A link the page may open: credential-free https or loopback http with an explicit authority and host only (normalized). */
 export function safeLink(url?: string): string {
   const trimmed = url?.trim();
-  if (!trimmed || hasCtrlOrSpace(trimmed) || !/^https:\/\//i.test(trimmed)) return "";
-  const auth = trimmed.slice(8).split(/[/?#]/, 1)[0];
+  if (!trimmed || hasCtrlOrSpace(trimmed) || !/^https?:\/\//i.test(trimmed)) return "";
+  const auth = trimmed.slice(trimmed.indexOf("://") + 3).split(/[/?#]/, 1)[0];
   if (!auth || auth.includes("@") || auth.includes("\\")) return "";
   try {
     const u = new URL(trimmed);
-    return u.protocol === "https:" && u.hostname !== "" && u.username === "" && u.password === "" ? u.href : "";
+    if (u.hostname === "" || u.username !== "" || u.password !== "") return "";
+    if (u.protocol === "https:") return u.href;
+    if (u.protocol === "http:" && isLoopbackHost(u.hostname)) return u.href;
+    return "";
   } catch {
     return "";
   }
