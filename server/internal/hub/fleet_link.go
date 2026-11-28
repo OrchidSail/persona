@@ -73,6 +73,7 @@ func (h *Hub) broadcastInteractionResolved(ix proto.Interaction, event map[strin
 		return
 	}
 	h.broadcastToApprovalMirror("interaction_resolved", b, false, ix.MirrorOf != "")
+	h.agentCardChanged(ix) // the extensions' agent.changed of its session (agent_changed.go)
 }
 
 func init() {
@@ -130,6 +131,7 @@ func init() {
 		p.Interaction.Manager = c.managerID() // its manager's (ownership.go)
 		f := &h.reported
 		f.mu.Lock()
+		raised := true // a card the hub did not have, or a later occurrence under its id: not one told again
 		if o, ok := f.interactions[p.Interaction.ID]; ok {
 			if o.Manager != p.Interaction.Manager {
 				f.mu.Unlock()
@@ -139,6 +141,7 @@ func init() {
 				f.mu.Unlock()
 				return // a delayed update for an earlier occurrence
 			}
+			raised = !o.CreatedAt.Equal(p.Interaction.CreatedAt)
 		}
 		if p.Interaction.MirrorOf != "" {
 			origin, ok := f.interactions[p.Interaction.MirrorOf]
@@ -174,6 +177,9 @@ func init() {
 		f.mu.Unlock()
 		for _, ix := range updated {
 			h.broadcast(map[string]any{"type": "interaction", "interaction": ix})
+		}
+		if raised {
+			h.agentCardChanged(p.Interaction) // the extensions' agent.changed of its session (agent_changed.go)
 		}
 		for _, ix := range resolved {
 			h.push.withdraw(ix.ID, ix.CreatedAt)
@@ -419,8 +425,12 @@ func (h *Hub) takeFleetInteractionsFrom(owner string, list []proto.Interaction) 
 		}
 	}
 	for _, ix := range list {
-		if o, ok := old[ix.ID]; !ok || !sameJSON(o, ix) {
+		o, ok := old[ix.ID]
+		if !ok || !sameJSON(o, ix) {
 			h.broadcast(map[string]any{"type": "interaction", "interaction": ix})
+		}
+		if !ok || !o.CreatedAt.Equal(ix.CreatedAt) {
+			h.agentCardChanged(ix) // a card the hub did not have: the extensions' agent.changed (agent_changed.go)
 		}
 	}
 }

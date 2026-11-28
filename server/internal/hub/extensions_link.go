@@ -404,13 +404,23 @@ func callExtensionManager(ctx context.Context, c buswire.Caller, method string, 
 }
 
 // emitToExtensions tells manager owner's extensions something the hub saw about one of its sessions (agent.finished,
-// agent.needs_you): only the session's manager's, never another's (ownership.go).
+// agent.needs_you, agent.changed): only the session's manager's, never another's (ownership.go).
 func (h *Hub) emitToExtensions(owner, event string, params any) {
 	raw, err := json.Marshal(params)
 	if err != nil {
 		return
 	}
 	_ = h.notifyBus(owner, extwire.EventEmit, extwire.Emit{Event: event, Params: raw})
+}
+
+// emitToExtensionsContext is emitToExtensions that gives up once ctx ends, while the event still waits for the
+// connection's writer: nothing of it is written then (notifyBusContext). An event whose write has begun is written.
+func (h *Hub) emitToExtensionsContext(ctx context.Context, owner, event string, params any) {
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return
+	}
+	_ = h.notifyBusContext(ctx, owner, extwire.EventEmit, extwire.Emit{Event: event, Params: raw})
 }
 
 // ---- the routes ----

@@ -110,6 +110,7 @@
   "event_inbox_changed": "Inbox items were added or updated (source, kind, title)",
   "event_agent_needs_you": "An agent is waiting for your answer or approval (computer, session, question)",
   "event_agent_finished": "An agent finished (computer, session, title)",
+  "event_agent_changed": "An agent's state changed or its turn ended (computer and session only, no titles or messages; requires agent read access)",
   "event_todo_changed": "A to-do was created, changed or deleted (title, chat thread; requires to-do read access)",
   "event_todo_decision": "A decision was recorded on a to-do (question, choice, source; requires to-do read access)",
   "event_leader_changed": "A leader conversation was made, renamed, filed under another project or ended (requires leader read access)",

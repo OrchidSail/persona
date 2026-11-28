@@ -369,6 +369,9 @@ func (h *Hub) broadcastSessions(m *Machine, list []proto.Session) {
 		h.sessionsSent[m.cfg.ID] = enc
 		h.live.changed() // what the Fleet activity is made of
 	}
+	// The extensions' agent.changed, of the sessions whose state changed (agent_changed.go): under sessionsMu, so the
+	// lists are compared in the order the apps get them. Nothing is sent here: the changes are queued.
+	h.agentRowsChanged(owner, m, shown)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var full []byte

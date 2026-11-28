@@ -18,12 +18,15 @@ import (
 // "Never shown to extensions"): a space's conversations (the health space's and any other) are not listed (the legacy list, the paged
 // list, its totals and counts) and their items, images, info and screen are not read. A conversation the hub does not
 // know is not read either: its space cannot be told. The extensions' agent.needs_you and agent.finished are not sent
-// of a card or a session they are not shown (notifyws.go).
+// of a card or a session they are not shown (notifyws.go), nor is agent.changed (agent_changed.go).
 
 // spaceSession: s runs in a space, by its own Space or its directory (identity.InSpace counts a folder inside one,
 // which only hides more). The hub cannot see the manager's registry of spaces, so any space hides.
-func spaceSession(s *proto.Session) bool {
-	return s.Space != "" || identity.InSpace(s.Cwd)
+func spaceSession(s *proto.Session) bool { return spaceRow(s.Space, s.Cwd) }
+
+// spaceRow is spaceSession of a row's own Space and its directory.
+func spaceRow(space, cwd string) bool {
+	return space != "" || identity.InSpace(cwd)
 }
 
 // extensionToken: r carries an extension's token.

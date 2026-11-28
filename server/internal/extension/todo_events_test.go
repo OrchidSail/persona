@@ -108,6 +108,7 @@ func TestEveryEventTopicHasItsScopeSettled(t *testing.T) {
 		"inbox.changed":             "",
 		"agent.needs_you":           "",
 		"agent.finished":            "",
+		"agent.changed":             ScopeAgentsRead,
 	}
 	for topic := range EventTopics {
 		scope, ok := want[topic]

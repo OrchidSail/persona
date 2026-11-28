@@ -122,6 +122,9 @@ type Hub struct {
 	sessionsMu   sync.Mutex
 	sessionsSent map[string][]sentSession
 	listCache    runtimeList // opt-in indexed transport rows; initialized by the first paginated reader
+	// agentChanges: what each listed session's state was in that list, and the agent.changed events still to send the
+	// extensions (agent_changed.go); has its own lock, taken inside sessionsMu.
+	agentChanges agentChanges
 	// origins: what repository each listed directory holds, as its computer said when a catalog asked
 	// (sessions_catalog.go); has its own lock.
 	origins placeOrigins

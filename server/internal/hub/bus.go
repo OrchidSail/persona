@@ -768,6 +768,16 @@ func (h *Hub) notifyBus(id, event string, params any) error {
 	return c.peer.Notify(event, params)
 }
 
+// notifyBusContext is notifyBus that stops waiting for the connection's writer once ctx ends: the event is then not
+// written at all (rpc.NotSent). The writer checks ctx once more when it is free; a line it has begun is written.
+func (h *Hub) notifyBusContext(ctx context.Context, id, event string, params any) error {
+	c := h.busConnOf(id)
+	if c == nil {
+		return fmt.Errorf("%s: %w", id, errBusOffline)
+	}
+	return c.peer.NotifyContext(ctx, event, params)
+}
+
 // busHangUp closes every open connection of identity id, with code and reason, and the relays it took
 // (devices_relay.go cutRelays: a revoked or replaced manager keeps no Persona Link or stream).
 func (h *Hub) busHangUp(id string, code websocket.StatusCode, reason string) {

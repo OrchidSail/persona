@@ -1206,7 +1206,7 @@ Whatever scopes it was granted, an extension's token never sees what follows, wi
 user marked as their own (`PUT /api/v1/assistant/extension-trust/{id}` with `trust: owner`, such as their memory extension) reads
 the tracks' conversations and cards on the read routes below, and the manager's reads by the user's grants
 (docs/assistant/health.md "Using information by scene"). It still never controls a track's session or sees a private card,
-and the extensions' `agent.needs_you` / `agent.finished` events still leave the tracks out.
+and the extensions' `agent.needs_you` / `agent.finished` / `agent.changed` events still leave the tracks out.
 
 - **The health space's conversations** (`docs/assistant/health.md`): not in `GET /api/v1/sessions` (the full list, the paged list, its
   totals and counts) or `/sessions/archived`, and their items, images, info and screen answer 404 as for a chat that does not exist.
@@ -1218,10 +1218,10 @@ and the extensions' `agent.needs_you` / `agent.finished` events still leave the 
   the memory of tracks the extension may read. The assistant's `agents_list`, `agent_read` and `agent_send` use the calling
   conversation's space to filter their targets. `GET /api/v1/assistant` lists none of them (`?space=health` lists
   nothing, and no `?space=` lists a space's conversations to an extension; with the `spaces` scope, only `GET /api/v1/assistant/tracks/{slug}/conversations` does, never the health space's, and row by row by its policy), and a chat's feed (`GET …/conversations/{id}/feed`) answers 404 for one of them, or for one whose space
-  cannot be told. `agent.finished` is not sent of such a chat either.
+  cannot be told. `agent.finished` and `agent.changed` are not sent of such a chat either.
 - **Private and health cards**: a card a Just me turn raised (`private`, `docs/assistant/meeting-minutes.md` "Just me"), a card of
   the health space (by its directory or its conversation's space), and a card without a directory whose conversation cannot be found
-  are left out of `GET /api/v1/interactions` and `/interactions/history`, and `agent.needs_you` is not sent of them. An extension
+  are left out of `GET /api/v1/interactions` and `/interactions/history`, and `agent.needs_you` and `agent.changed` are not sent of them. An extension
   page's own confirmation card (`confirm` on an action) names no computer or directory, so it is one of them: the page's action
   already waits for its answer. A token that nonetheless holds or guesses such a pending card's id cannot act on it either:
   `POST /api/v1/interactions/{id}/resolve` and `…/choose` answer 404 as for a card that does not exist, and nothing is forwarded
@@ -3997,6 +3997,7 @@ Extensions contribute `events` to subscribe to things happening on the hub. Thes
 | `inbox.changed` | `id`, `source`, `kind`, `title`: new or updated Inbox item (if more than 50 items are stored at once, only the first 50 are sent) |
 | `agent.needs_you` | `machine_id`, `machine`, `session_id`, `interaction_id`, `kind`, `summary`: an Agent is waiting for your answer or approval (never of a card it is not shown, "Never shown to extensions") |
 | `agent.finished` | `machine_id`, `machine`, `session_id`, `title`: an Agent finished (never of a chat it is not shown) |
+| `agent.changed` | `machine_id`, `session_id`, `ended?`: a chat's state changed, a card of it was raised or is over, or (`ended: true`) a turn of it just ended; it says nothing of what changed (needs `agents.read`; never of a chat or a card it is not shown; see "Agent changes") |
 | `todo.changed` | `id`, `title`, `thread?`, `responsible?`, `done?`, `supervisor?`, `kind?`, `what`: a to-do was created, deleted, or its title, whether it is done, its supervisor, its responsible party, or the thread it is bound to changed (needs `todos.read`, see below; never of a to-do it is not shown, "Never shown to extensions") |
 | `assistant.entries.changed` | `id`, `record_id`, `status:"wrong"`: an entry was marked wrong; needs `assistant.entries.read` (see "Unified entries ledger") |
 | `todo.decision` | `id`, `title`, `thread?`, `decision`: a decision was written on a to-do (needs `todos.read`, see below; never of a to-do it is not shown) |
@@ -4084,6 +4085,27 @@ no Persona conversation. Either kind has one stable direction id. Schema: `schem
 - **No message bodies**: message text, attachments, chat names and sender display names are never included. An extension reads message content on its own within whatever permissions it holds.
 - **Batching and pagination**: emitted per sync round rather than once per message, sorted chronologically by `at`. Rounds with more than 100 new messages are split into sequential pages of up to 100 messages each (`page: 1..pages`, all sharing `total`). Rounds with zero new messages, failed runs/commits, and sender-name backfill repairs emit nothing.
 - **Queue**: delivered through a dedicated queue (`larkEvents`, capacity 512) separate from `kb.changed` and to-do events, so a large sync batch cannot crowd out other extension events. Like other hub events, notifications are not persisted for redelivery across restarts.
+
+### Agent changes
+
+`agent.changed` is a wake-up for an extension that follows Agents' chats (#17851): it says which chat changed and nothing of what changed. The extension then reads the chat again through the routes `agents.read` opens (`GET /api/v1/sessions`, `GET /api/v1/interactions`, the chat's own read routes) instead of asking them on a timer.
+
+```json
+{"permissions":{"hub":["agents.read"]},"activation_events":["on_startup"],
+ "contributes":{"events":[{"id":"agents","subscribe":["agent.changed"]}]}}
+```
+
+- **Who is told**: an extension that is enabled, has that contribution on, has its program running, subscribed to `agent.changed`, **and** was granted `agents.read` (the legacy `hub_api` full grant covers it, as it covers the routes). Only the extensions of the manager the chat's computer belongs to are told, never another manager's.
+- **Payload**: `{machine_id, session_id, ended?}` and nothing else: no title, no state, no counts, no text. `ended` is present, and `true`, only when a turn of the chat just ended.
+- **When**:
+  - the chat's row changed in what tells whether it works, waits for its owner or stopped: `status`, `state`, `starting`, `pending_interactions`, `turn_error`, `work.phase`, how many background tasks it has, and which subagents it has and whether each runs. A chat new to the list counts. A new message, title or revision alone does not, and neither does a subagent's step;
+  - its `status` left `working`, or its Stop hook ran: `ended: true`. A turn that ends in a terminal usually does both, so one turn may be said twice; a chat without hooks says it through its status only;
+  - a card of the chat was raised or is over (answered, withdrawn, its manager gone). A chat that waits on a permission card while it is still listed `working`, as the main conversation does, is told this way.
+- **Never of what an extension is not shown** ("Never shown to extensions"): a track's conversation (the health space's or any other), a chat the hub does not list, a private card, a card of a space. This holds for an extension the user marked as their own too. A chat that leaves the list (deleted, archived) is not told of. A chat that comes out of a track is told of as a chat new to the list, never as a turn that ended there. A private card raised in a chat the extension is shown may change that chat's row (`pending_interactions`, `state`), which `agents.read` already reads: the row's change is told like any other, the card being raised or answered is not.
+- **What is taken back**: an event the hub has not begun to write is withdrawn when its chat becomes hidden (a track's conversation), leaves the list, or its computer goes to another manager. An event the hub has begun to write to the manager's connection is delivered: the change it reports happened while the chat was still shown. What the manager then does with a delivered event, on its way to the extension's program, is in transit and is not taken back.
+- **No side effect**: the hub sends it from what it is told anyway (the manager's list of chats and cards, a computer's hook). It starts no watch on the computer, wakes no idle Agent process and reads no transcript.
+- **A hint, not a log**: changes of one chat that are still waiting to be sent are folded into one event, with `ended` if any of them had it. Events are not kept across a restart of the hub, the manager or the extension, the hub tells nothing of the chats that were already there when it started, and a hub from before this event never sends it. Treat it as "read again now", and keep a slow poll as the fallback.
+- Implementation: `server/internal/hub/agent_changed.go` (what counts as a change, the checks when a change is noted, the backlog and what is taken back from it); tests `TestAgentChanged…` in `server/internal/hub/agent_changed_test.go`, `extension.TestAgentChangedSubscribersNeedAgentsRead` and `extmgr.TestAgentChangedReachesOnlyAuthorizedExtensions`.
 
 ## Error reports
 

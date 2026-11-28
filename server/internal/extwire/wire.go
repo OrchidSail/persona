@@ -92,7 +92,8 @@ const (
 	// MethodAuthorize: Authorize → Authorized. An extension's token on one of the hub's own routes: the manager made
 	// the token and says whose it is and whether its scopes open the route.
 	MethodAuthorize = "extensions.authorize"
-	// EventEmit: Emit, one-way: something the hub saw that the extensions subscribe to (agent.finished, agent.needs_you).
+	// EventEmit: Emit, one-way: something the hub saw that the extensions subscribe to (agent.finished, agent.needs_you,
+	// agent.changed).
 	EventEmit = "extensions.emit"
 	// EventErrorReports: ErrorReports, one-way: the hub's own errors (its log's error lines, panics it recovered),
 	// sent only while the report's features have error_reports; the manager scrubs them like the apps' and gives

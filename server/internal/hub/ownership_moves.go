@@ -234,6 +234,7 @@ func (h *Hub) readOwnersMoving(ctx context.Context) error {
 // withdraws the other managers' cards on it, cuts the relays another manager has for it (Persona Link comes back to
 // to), tells the managers their mutes, and hands every manager its machines again.
 func (h *Hub) machineHandedOver(mid, to string) {
+	h.agentChanges.handedOver(mid, to) // the extensions' agent.changed still waiting for another manager's (agent_changed.go)
 	h.withdrawCardsOn(mid, to)
 	h.cutRelays("", mid)
 	defer h.mutesChanged()

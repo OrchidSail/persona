@@ -912,6 +912,9 @@ func (m *Machine) onEvent(event string, params json.RawMessage) {
 			p["type"] = "hook_event"
 			p["machine_id"] = m.cfg.ID
 			m.hub.broadcast(p)
+			if sid, _ := p["session_id"].(string); p["event"] == "Stop" {
+				m.hub.agentTurnEnded(m.cfg.ID, sid) // the extensions' agent.changed (agent_changed.go)
+			}
 		}
 	}
 }
