@@ -8,7 +8,7 @@ import { setChatList, useChatList } from "../lib/agent-chat-list";
 import { SectionAdd } from "./SectionAdd";
 import { AgentsAdd } from "./agents/AgentsAdd";
 import { isSidebarAgent } from "../lib/sidebar-agent";
-import { launchDisplayEngine, type AgentLaunch } from "../lib/new-agent";
+import { launchDisplayEngine } from "../lib/new-agent";
 import { storedValue, storeValue } from "../lib/compatibility";
 // Beautiful UI's Sidebar Nav: workspace row, quick search, sections, one gliding highlight. Persona's main conversation
 // is the first entry (the app opens on the assistant); a new conversation and a new agent are the "+" of their sections (#1239).
@@ -884,27 +884,6 @@ const PAGED_DIMENSION: Record<Exclude<AgentGrouping, "repo">, GroupDimension> = 
 
 const NO_EXCLUDED_IDS: ReadonlySet<string> = new Set();
 
-function launchMatchesQuery(l: AgentLaunch, query: string, machines: readonly Machine[]): boolean {
-  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if (!terms.length) return true;
-  const haystack = [
-    l.text,
-    l.nameHint,
-    l.cwd,
-    baseName(l.cwd),
-    l.launcher,
-    l.displayLauncher,
-    l.displayEngine,
-    l.model,
-    l.displayModel,
-    l.machineId,
-    machineWithHub(l.machineId, [...machines]),
-  ]
-    .filter(Boolean)
-    .join("\n")
-    .toLowerCase();
-  return terms.every((term) => haystack.includes(term));
-}
 
 /** The Filter's options on the paged list: the loaded sessions' harnesses, projects and models (the hub counts none of them)
  *  and the hub's own counts of the computers. Only drawn while the Filter is on, so the list does not follow every push
@@ -1075,11 +1054,14 @@ function BoundedAgentsBlock({ reg, hover, activeKey, go, onNewAgent, onNavigate,
     heldSeen: pagedHeld,
   }), [grouping, todoNames, groupings, chooseGrouping, quick, rowOrder, byUpdate, engaged, narrowed, listQuery, showFilter, dimFilters, machines, todosUnread, pagedHeld]);
   const trimmedQuery = listQuery.trim();
+  const quickSelect = quick?.select ?? SHOW_ALL;
+  const quickExclude = quick?.exclude ?? SHOW_ALL;
   const tallyFilters = useMemo((): ListFilters => ({
-    ...narrowed,
-    ...(botmuxHidden ? HIDE_BOTMUX : SHOW_ALL),
     ...(trimmedQuery ? { q: trimmedQuery } : {}),
-  }), [narrowed, botmuxHidden, trimmedQuery]);
+    ...quickSelect,
+    ...narrowed,
+    ...quickExclude,
+  }), [trimmedQuery, quickSelect, narrowed, quickExclude]);
   const tallyScoped = Object.keys(tallyFilters).length > 0;
   const rootsMode = runtimeAgents.isRoots();
   const crossMode = runtimeAgents.isCrossMachineHierarchy();
@@ -1096,19 +1078,22 @@ function BoundedAgentsBlock({ reg, hover, activeKey, go, onNewAgent, onNavigate,
       ? (scopedTally?.path === tallyPath ? scopedTally.counts : null)
       : (rootAgents.counts && runtimeAgents.usesPageCounts() ? holdCounts(rootAgents.counts, rootRows) : rootAgents.counts);
     const base = effective ? boundedCounts(effective, false) : { needs: 0, working: 0, waiting: 0, unread: 0 };
-    const pendingLaunches = launches.filter((l) =>
-      isInFlightLaunch(l)
-      && !l.session
-      && (!dimFilters.machines.length || dimFilters.machines.includes(l.machineId))
-      && (!trimmedQuery || launchMatchesQuery(l, trimmedQuery, machines)),
-    ).length;
+    const terms = trimmedQuery ? trimmedQuery.toLowerCase().split(/\s+/) : null;
+    const pendingLaunches = (!quickSelect.state || quickSelect.state === "working") && quickSelect.waiting !== "1" && !quickSelect.pane_source
+      ? launches.filter((l) =>
+        isInFlightLaunch(l)
+        && !l.session
+        && (!dimFilters.machines.length || dimFilters.machines.includes(l.machineId))
+        && (!terms || terms.every((term) => [l.text, l.nameHint, l.cwd, l.launcher, l.displayLauncher, l.displayEngine, l.model, l.displayModel, l.machineId, machines.find((m) => m.id === l.machineId)?.name].join("\n").toLowerCase().includes(term))),
+      ).length
+      : 0;
     return {
       needs_you: base.needs,
       working: base.working + pendingLaunches,
       bg_waiting: base.waiting,
       unread: base.unread,
     };
-  }, [tallyScoped, scopedTally, tallyPath, rootAgents.counts, rootRows, holdCounts, launches, dimFilters.machines, trimmedQuery, machines]);
+  }, [tallyScoped, scopedTally, tallyPath, rootAgents.counts, rootRows, holdCounts, quickSelect, launches, dimFilters.machines, trimmedQuery, machines]);
   return <div data-sidebar-agents ref={groupsRef}>
     {/* the complete list's title row (#6662): fold all, the ⋯ with its sorts and the archived Agents, and "+" */}
     <div className={cx("group/sec relative", SESSION_LIST_STYLE.heading, TITLE_ROW_TOUCH)}>

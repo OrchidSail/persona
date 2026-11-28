@@ -421,4 +421,100 @@ describe("BoundedAgentsBlock folding", () => {
     });
     expect(pagedCallsUnrelated).toHaveLength(0);
   });
+
+  it("scopes folded StateTally and in-flight launches to active quick.select filter without paged session fetches", async () => {
+    const runQuickCase = async (
+      filterKey: "unread" | "working" | "feishu",
+      expectedParams: Record<string, string>,
+      countsBody: Record<string, unknown>,
+      expectedTally: { needs_you?: string; working?: string; unread?: string },
+    ) => {
+      act(() => root.unmount());
+      reset();
+      seedAgentsDisplay({ show_botmux: true, configured: true, show_filter: true });
+      localStorage.setItem("fold:agents", "1");
+      localStorage.setItem("persona.agentGrouping", "machine");
+      localStorage.setItem("persona.agentFilter", filterKey);
+
+      const fetchMock = vi.fn((input: string) => {
+        const url = new URL(input, "http://hub.example.com");
+        if (url.pathname.endsWith("/sessions") && !url.pathname.includes("/agents/")) {
+          if (url.searchParams.has("counts")) return json(countsBody);
+          return json({ sessions: [], remove: [], has_more: false, revision: "r1", total: 0 });
+        }
+        if (url.pathname.endsWith("/pins")) return json({ sessions: [], spaces: [] });
+        if (url.pathname.endsWith("/machines")) {
+          return json({ machines: [{ id: "computer", name: "Demo computer", online: true, herdr_running: true }] });
+        }
+        if (url.pathname.endsWith("/todos")) return json({ todos: [] });
+        return json({});
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      act(() => {
+        connect();
+        const socket = FakeSocket.all.at(-1)!;
+        socket.open();
+        socket.push({
+          type: "hello",
+          features: ["sessions_list", "sessions_lookup", "sessions_todo", SESSIONS_AGENTS_ONLY_FEATURE, "sessions_quick_filters"],
+        });
+      });
+      await flush();
+
+      Object.assign(getState(), {
+        launches: {
+          l1: { id: "l1", machineId: "computer", cwd: "/code/demo", launcher: "claude", text: "Starting", phase: "creating", attachments: [], createdAt: Date.now() },
+        },
+      });
+      fetchMock.mockClear();
+
+      root = createRoot(host);
+      act(() => root.render(<Sidebar route={{ name: "home" }} onSearch={() => {}} onNewAgent={() => {}} />));
+      await flush();
+
+      expect(agentsFoldButton()!.getAttribute("aria-expanded")).toBe("false");
+      expect(pagedList()).toBeNull();
+
+      const countUrls = fetchMock.mock.calls
+        .map(([u]) => new URL(u as string, "http://hub.example.com"))
+        .filter((url) => url.pathname.endsWith("/sessions") && url.searchParams.has("counts"));
+      expect(countUrls.length).toBeGreaterThan(0);
+      const lastCountUrl = countUrls.at(-1)!;
+      for (const [k, v] of Object.entries(expectedParams)) {
+        expect(lastCountUrl.searchParams.get(k)).toBe(v);
+      }
+
+      const pagedCalls = fetchMock.mock.calls.filter(([u]) => {
+        const url = new URL(u as string, "http://hub.example.com");
+        return url.pathname.endsWith("/sessions") && !url.searchParams.has("counts");
+      });
+      expect(pagedCalls).toHaveLength(0);
+
+      const tally = agentsBlock().querySelector<HTMLElement>("[data-testid=state-tally]")!;
+      expect(tally).not.toBeNull();
+      expect(tally.querySelector("[data-state=needs_you]")?.textContent).toBe(expectedTally.needs_you);
+      expect(tally.querySelector("[data-state=working]")?.textContent).toBe(expectedTally.working);
+      expect(tally.querySelector("[data-state=unread]")?.textContent).toBe(expectedTally.unread);
+    };
+
+    await runQuickCase(
+      "unread",
+      { state: "unread" },
+      { total: 2, state: { unread: 2 }, machine: { computer: 2 }, group: {}, project: {}, revision: "r1" },
+      { unread: "2" },
+    );
+    await runQuickCase(
+      "working",
+      { state: "working", waiting: "0" },
+      { total: 1, state: { working: 1 }, machine: { computer: 1 }, group: {}, project: {}, revision: "r1" },
+      { working: "2" },
+    );
+    await runQuickCase(
+      "feishu",
+      { pane_source: "feishu" },
+      { total: 1, state: { needs_you: 1 }, machine: { computer: 1 }, group: {}, project: {}, revision: "r1" },
+      { needs_you: "1" },
+    );
+  });
 });
