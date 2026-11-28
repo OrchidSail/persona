@@ -2,10 +2,14 @@ package assistant
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/nwverse/persona/server/internal/assistantwire"
+	"github.com/nwverse/persona/server/internal/db"
 )
 
 func TestConnectorCallContextOriginDeviceLifecycle(t *testing.T) {
@@ -140,4 +144,66 @@ func TestConversationOriginDeviceConcurrent(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+func TestDeliverKeptOriginDeviceIDExcludesPairingCode(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newQuietServiceOn(t, &memStore{})
+	s.noteConversationSpaces(ctx, []db.ConversationSpace{{MachineID: "server", SessionID: "conv1", Space: ""}})
+
+	// 1. Paired device kept message: redelivery sets OriginDeviceID.
+	if _, err := s.KeepUndelivered(ctx, assistantwire.KeepUndeliveredParams{
+		MachineID:      "server",
+		SessionID:      "conv1",
+		Params:         map[string]any{"client_msg_id": "kept-dev-1", "text": "from paired phone"},
+		Human:          true,
+		CredentialID:   "dev_android_kept",
+		OriginDeviceID: "dev_android_kept",
+		Code:           assistantwire.CodeConversationBusy,
+	}); err != nil {
+		t.Fatalf("KeepUndelivered paired device: %v", err)
+	}
+	s.undelivered.mu.Lock()
+	kDev := s.undelivered.st["conv1"][0]
+	s.undelivered.mu.Unlock()
+	if doubt, err := s.deliverKept(ctx, kDev); err != nil || doubt {
+		t.Fatalf("deliverKept paired device: doubt=%v err=%v", doubt, err)
+	}
+	if got := s.connectorCallContext(ctx, "conv1"); got.OriginDeviceID != "dev_android_kept" {
+		t.Fatalf("after paired device deliverKept: OriginDeviceID = %q, want dev_android_kept", got.OriginDeviceID)
+	}
+
+	// 2. Pairing-code kept message (CredentialID = pair_..., OriginDeviceID = ""):
+	//    redelivery preserves revocation checks on CredentialID and clears OriginDeviceID.
+	if _, err := s.KeepUndelivered(ctx, assistantwire.KeepUndeliveredParams{
+		MachineID:      "server",
+		SessionID:      "conv1",
+		Params:         map[string]any{"client_msg_id": "kept-pair-1", "text": "from pairing token"},
+		Human:          true,
+		CredentialID:   "pair_deadbeef",
+		OriginDeviceID: "",
+		Code:           assistantwire.CodeConversationBusy,
+	}); err != nil {
+		t.Fatalf("KeepUndelivered pairing code: %v", err)
+	}
+	s.undelivered.mu.Lock()
+	kPair := s.undelivered.st["conv1"][1]
+	s.undelivered.mu.Unlock()
+	if kPair.CredentialID != "pair_deadbeef" || kPair.OriginDeviceID != "" {
+		t.Fatalf("kept pairing message = (cred=%q, origin=%q), want (pair_deadbeef, empty)", kPair.CredentialID, kPair.OriginDeviceID)
+	}
+	if doubt, err := s.deliverKept(ctx, kPair); err != nil || doubt {
+		t.Fatalf("deliverKept pairing code: doubt=%v err=%v", doubt, err)
+	}
+	if got := s.connectorCallContext(ctx, "conv1"); got.OriginDeviceID != "" {
+		t.Fatalf("after pairing code deliverKept: OriginDeviceID = %q, want empty", got.OriginDeviceID)
+	}
+
+	// 3. Revoking the pairing-code CredentialID still blocks redelivery (errKeptSignedOut).
+	s.undelivered.mu.Lock()
+	s.undelivered.recordRevocationLocked("pair_deadbeef")
+	s.undelivered.mu.Unlock()
+	if _, err := s.deliverKept(ctx, kPair); !errors.Is(err, errKeptSignedOut) {
+		t.Fatalf("deliverKept revoked pairing code err = %v, want errKeptSignedOut", err)
+	}
 }

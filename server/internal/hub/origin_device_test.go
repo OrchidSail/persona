@@ -13,6 +13,7 @@ import (
 
 	"github.com/nwverse/persona/server/internal/assistantwire"
 	"github.com/nwverse/persona/server/internal/db"
+	"github.com/nwverse/persona/server/internal/proto"
 	"github.com/nwverse/persona/server/internal/rpc"
 )
 
@@ -163,5 +164,58 @@ func TestAssistantRemoteSendParamsOriginDeviceID(t *testing.T) {
 	}
 	if p := <-got; p.OriginDeviceID != "" {
 		t.Fatalf("extension OriginDeviceID = %q, want empty", p.OriginDeviceID)
+	}
+}
+
+func TestKeepUndeliveredOriginDeviceIDExcludesPairingCode(t *testing.T) {
+	h := newTestHub(t)
+	hubIn, assistantOut := io.Pipe()
+	assistantIn, hubOut := io.Pipe()
+	hp, ap := rpc.New("h", hubOut), rpc.New("a", assistantOut)
+	got := make(chan assistantwire.KeepUndeliveredParams, 4)
+	ap.OnRequest = func(_ context.Context, method string, raw json.RawMessage) (any, error) {
+		if method != assistantwire.MethodKeepUndelivered {
+			return nil, errors.New("unexpected " + method)
+		}
+		var p assistantwire.KeepUndeliveredParams
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, err
+		}
+		got <- p
+		return assistantwire.KeepUndeliveredResult{
+			Undelivered: &proto.UndeliveredMessage{ID: "msg-1", State: proto.UndeliveredWaiting},
+		}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go hp.Serve(ctx, hubIn)
+	go ap.Serve(ctx, assistantIn)
+	t.Cleanup(func() {
+		cancel()
+		hp.Close(io.EOF)
+		ap.Close(io.EOF)
+		_ = hubIn.Close()
+		_ = assistantIn.Close()
+		_ = hubOut.Close()
+		_ = assistantOut.Close()
+	})
+	h.bus.current = map[string]*busConn{busAssistant: {peer: hp}}
+	m := &Machine{cfg: MachineConfig{ID: "m1"}}
+
+	// Paired device: both CredentialID and OriginDeviceID carry the paired device ID.
+	devCtx := context.WithValue(context.Background(), principalKey{}, principal{ID: "dev_phone_a", Role: roleFull, registeredDevice: true})
+	if _, _, ok := h.keepUndelivered(devCtx, m, "s1", map[string]any{"client_msg_id": "msg-1", "text": "hello"}, assistantwire.CodeConversationBusy, "busy"); !ok {
+		t.Fatal("keepUndelivered paired device returned false")
+	}
+	if p := <-got; p.CredentialID != "dev_phone_a" || p.OriginDeviceID != "dev_phone_a" {
+		t.Fatalf("paired device keepUndelivered = (cred=%q, origin=%q), want (dev_phone_a, dev_phone_a)", p.CredentialID, p.OriginDeviceID)
+	}
+
+	// Unredeemed pairing code: CredentialID stays set for revocation checks, while OriginDeviceID is strictly empty.
+	pairCtx := context.WithValue(context.Background(), principalKey{}, principal{ID: "pair_deadbeef", Role: roleFull, PairHash: "pairhash"})
+	if _, _, ok := h.keepUndelivered(pairCtx, m, "s1", map[string]any{"client_msg_id": "msg-2", "text": "hello"}, assistantwire.CodeConversationBusy, "busy"); !ok {
+		t.Fatal("keepUndelivered pairing code returned false")
+	}
+	if p := <-got; p.CredentialID != "pair_deadbeef" || p.OriginDeviceID != "" {
+		t.Fatalf("pairing code keepUndelivered = (cred=%q, origin=%q), want (pair_deadbeef, empty)", p.CredentialID, p.OriginDeviceID)
 	}
 }

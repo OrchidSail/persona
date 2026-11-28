@@ -243,7 +243,8 @@ type KeepUndeliveredParams struct {
 	Lang         string         `json:"lang,omitempty"`
 	Code         string         `json:"code,omitempty"`
 	Error        string         `json:"error,omitempty"`
-	CredentialID string         `json:"credential_id,omitempty"`
+	CredentialID   string           `json:"credential_id,omitempty"`
+	OriginDeviceID wireids.DeviceID `json:"origin_device_id,omitempty"`
 	// TriedAt is when the first send began for CodeDeliveryUnknown: its line is looked for from then on. Zero means
 	// nothing was typed, so the message is simply sent again. The original start, not when the connection ended,
 	// covers a slow first attempt.
