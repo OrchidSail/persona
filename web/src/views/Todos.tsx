@@ -93,6 +93,7 @@ import { scrollBehavior } from "../ui/stream/motion";
 import { Icon } from "../ui/icons";
 import { FoldAllButton } from "../ui/FoldAllButton";
 import { SESSION_LIST_STYLE } from "../ui/list-metrics";
+import { scrollBehavior } from "../ui/stream/motion";
 import { formatDate, t } from "../i18n";
 import { treeStateLabel, type TreeState } from "../lib/todo-tree";
 import { groupTodosByProject, type TodoProjectGroup } from "../features/todos/project-groups";
