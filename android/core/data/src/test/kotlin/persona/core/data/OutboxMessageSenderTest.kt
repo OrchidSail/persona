@@ -23,6 +23,9 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -402,6 +405,64 @@ class OutboxMessageSenderTest {
         assertEquals(0, creates)
         assertEquals(other, transport.requests.last().session)
         assertEquals(other, store.mainConversation())
+        sender.close()
+    }
+
+    /**
+     * Switching hubs (PlatformRuntime.start's collectLatest) cancels the block whose resolver is installed on the
+     * reused sender, then switching back installs a fresh one: the unbind must run past that cancellation
+     * (NonCancellable), and the fresh resolver must deliver instead of hitting "Main resolver already connected".
+     */
+    @Test fun aCancelledHubSwitchUnbindsItsResolverSoAFreshOneReconnectsAndDelivers() = runTest {
+        val store = MemoryOutboxStore()
+        val transport = FakeTransport(online = true)
+        val stale = object : MainConversationResolver {
+            override suspend fun findMainConversation(): SessionKey? = null
+            override suspend fun createMainConversation(): SessionKey = error("The unbound resolver must not be asked")
+        }
+        var creates = 0
+        val fresh = object : MainConversationResolver {
+            override suspend fun findMainConversation(): SessionKey? = null
+            override suspend fun createMainConversation(): SessionKey { creates++; return session }
+        }
+        val sender = OutboxMessageSender(scope, store, transport, backgroundScope)
+        sender.connectMainConversation(stale)
+        // The collectLatest block's finally, with its cancellation already delivered.
+        val hubSwitch = launch(start = CoroutineStart.UNDISPATCHED) {
+            try { awaitCancellation() } finally { withContext(NonCancellable) { sender.disconnectMainConversation() } }
+        }
+        hubSwitch.cancelAndJoin()
+        transport.answers += MessageTransportResult.Accepted
+        sender.connectMainConversation(fresh)
+        sender.sendToMain("switched back", "main-back")
+        runCurrent()
+        assertEquals(1, creates)
+        assertEquals(session, transport.requests.single().session)
+        assertEquals(OutboxState.Sent, store.state("main-back"))
+        sender.close()
+    }
+
+    /** Defense in depth: even an unbind a caller forgot must not refuse the fresh resolver of a new connection. */
+    @Test fun connectingAFreshResolverReplacesOneStillInstalled() = runTest {
+        val store = MemoryOutboxStore()
+        val transport = FakeTransport(online = true)
+        val stale = object : MainConversationResolver {
+            override suspend fun findMainConversation(): SessionKey? = null
+            override suspend fun createMainConversation(): SessionKey = error("The replaced resolver must not be asked")
+        }
+        val fresh = object : MainConversationResolver {
+            override suspend fun findMainConversation(): SessionKey? = null
+            override suspend fun createMainConversation(): SessionKey = session
+        }
+        val sender = OutboxMessageSender(scope, store, transport, backgroundScope)
+        sender.connectMainConversation(stale)
+        transport.answers += MessageTransportResult.Accepted
+        sender.connectMainConversation(fresh)
+        sender.sendToMain("回来", "main-replaced")
+        runCurrent()
+        assertEquals(session, transport.requests.single().session)
+        assertEquals(OutboxState.Sent, store.state("main-replaced"))
+        sender.disconnectMainConversation()
         sender.close()
     }
 

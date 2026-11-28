@@ -61,17 +61,25 @@ class PlatformRuntime @Inject constructor(
                 if (hub == null) return@collectLatest
                 val data = runtime.dataStore.restore() ?: return@collectLatest
                 if (data.credentials.deviceToken != hub.api.token) return@collectLatest
-                data.messages.connectMainConversation(AssistantMainConversationResolver(
-                    HttpInboxAssistantTransport(data.scope.path, hub.connection) { app.hub.value === hub }))
-                val session = PlatformSession(hub, data)
-                sessions.current.value = session
                 try {
-                    coroutineScope {
-                        launch { tests.observe(session) }
-                        launch { shares.observe(session) }
+                    data.messages.connectMainConversation(AssistantMainConversationResolver(
+                        HttpInboxAssistantTransport(data.scope.path, hub.connection) { app.hub.value === hub }))
+                    val session = PlatformSession(hub, data)
+                    sessions.current.value = session
+                    try {
+                        coroutineScope {
+                            launch { tests.observe(session) }
+                            launch { shares.observe(session) }
+                        }
+                    } finally {
+                        sessions.current.compareAndSet(session, null)
                     }
                 } finally {
-                    sessions.current.compareAndSet(session, null)
+                    // Switching hubs cancels this block; the resolver it installed is dead weight on the reused sender
+                    // (its transport is stale for the next connection). The unbind must run past that cancellation —
+                    // without NonCancellable the lifecycle lock itself throws while the coroutine is cancelled — so
+                    // switching back installs its fresh resolver instead of crashing ("Main resolver already connected").
+                    withContext(NonCancellable) { data.messages.disconnectMainConversation() }
                 }
             }
         }

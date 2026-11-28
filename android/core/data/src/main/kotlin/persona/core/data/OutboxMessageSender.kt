@@ -452,12 +452,23 @@ class OutboxMessageSender(
         reconcilers += reconciler
     }
 
-    /** Install the resolver owned by this pairing before exposing the main sender to features. */
+    /**
+     * Install the resolver owned by this pairing before exposing the main sender to features. A connection generation
+     * builds its own resolver (its transport captures that generation's connection, and only it), so a later
+     * [disconnectMainConversation] followed by a fresh install — or, if the unbind was missed, the fresh install
+     * alone — replaces the previous one instead of refusing it.
+     */
     suspend fun connectMainConversation(resolver: MainConversationResolver) = lifecycle.withLock {
         check(job.isActive) { "Pairing scope is closed" }
-        check(mainResolver == null || mainResolver === resolver) { "Main resolver already connected" }
         mainResolver = resolver
         wake.trySend(Unit)
+        Unit
+    }
+
+    /** Releases the resolver installed by [connectMainConversation] when its hub is switched away from: the next switch
+     *  back to this pairing installs a fresh one. Harmless on a pairing already closed or with nothing installed. */
+    suspend fun disconnectMainConversation() = lifecycle.withLock {
+        mainResolver = null
         Unit
     }
 
