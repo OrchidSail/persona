@@ -204,16 +204,16 @@ extension PushHealth {
 extension PushHealth {
     /// The current hub's token list answered for group: the way it pushes to this device (nil: none it knows of),
     /// nothing left unchecked. Unlike a registration response, a missing route here is a confirmed outage.
-    mutating func read(_ route: APIClient.PushRoute?, group: String) {
+    nonisolated mutating func read(_ route: APIClient.PushRoute?, group: String) {
         apply(route, group: group, confirmedMissing: route == nil)
     }
 
     /// A registration response carries no route on an older hub; that says nothing about a confirmed outage (#9612).
-    mutating func readRegistration(_ route: APIClient.PushRoute?, group: String) {
+    nonisolated mutating func readRegistration(_ route: APIClient.PushRoute?, group: String) {
         apply(route, group: group, confirmedMissing: false)
     }
 
-    private mutating func apply(_ route: APIClient.PushRoute?, group: String, confirmedMissing: Bool) {
+    private nonisolated mutating func apply(_ route: APIClient.PushRoute?, group: String, confirmedMissing: Bool) {
         routes[group] = route
         if confirmedMissing {
             missingRoutes = (missingRoutes ?? []).union([group])
@@ -234,7 +234,7 @@ extension PushHealth {
     }
 
     /// The route at group could not be read: why, in the error's words.
-    mutating func readFailed(_ why: String, group: String) {
+    nonisolated mutating func readFailed(_ why: String, group: String) {
         var all = unchecked ?? [:]
         all[group] = why
         unchecked = all
