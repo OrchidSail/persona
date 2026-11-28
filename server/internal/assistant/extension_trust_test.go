@@ -3,6 +3,7 @@ package assistant
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -20,6 +21,7 @@ type trustMemStore struct {
 	*infoCategoryMemStore
 	tmu    sync.Mutex
 	trusts map[string]db.ExtensionTrust
+	next   int
 }
 
 func (st *trustMemStore) ExtensionTrustOf(_ context.Context, extension string) (string, error) {
@@ -39,14 +41,28 @@ func (st *trustMemStore) ExtensionTrusts(context.Context) (map[string]db.Extensi
 	return out, nil
 }
 
-func (st *trustMemStore) SetExtensionTrust(_ context.Context, ext, trust string, cats []string, _ string) error {
+func (st *trustMemStore) SetExtensionTrust(ctx context.Context, ext, trust string, cats []string, by string) error {
+	_, err := st.ReplaceExtensionTrust(ctx, ext, trust, cats, by, nil)
+	return err
+}
+
+func (st *trustMemStore) ReplaceExtensionTrust(_ context.Context, ext, trust string, cats []string, _ string, expected *string) (db.ExtensionTrust, error) {
 	st.tmu.Lock()
 	defer st.tmu.Unlock()
+	current, found := st.trusts[ext]
+	if !found {
+		current = db.ExtensionTrust{Extension: ext, Revision: db.DefaultExtensionTrustRevision}
+	}
+	if expected != nil && *expected != current.Revision {
+		return current, db.ErrExtensionTrustMoved
+	}
 	if st.trusts == nil {
 		st.trusts = map[string]db.ExtensionTrust{}
 	}
-	st.trusts[ext] = db.ExtensionTrust{Extension: ext, Trust: trust, Categories: slices.Clone(cats)}
-	return nil
+	st.next++
+	current = db.ExtensionTrust{Extension: ext, Trust: trust, Categories: slices.Clone(cats), Revision: fmt.Sprint(st.next)}
+	st.trusts[ext] = current
+	return current, nil
 }
 
 func (st *trustMemStore) ForgetExtensionTrust(_ context.Context, ext string) error {
@@ -175,7 +191,12 @@ func TestInfoAccessRoutesAreTheUsers(t *testing.T) {
 		t.Fatalf("the user grants health: %d %s", w.Code, w.Body)
 	}
 	w := serve(s, http.MethodGet, "/api/v1/assistant/extension-trust", "")
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `{"extension":"qa-memory","trust":"third_party","categories":["health"]}`) {
+	var trustList struct {
+		Items []assistantwire.ExtensionTrust `json:"items"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &trustList) != nil || len(trustList.Items) != 1 ||
+		trustList.Items[0].Extension != "qa-memory" || trustList.Items[0].Trust != "third_party" ||
+		!slices.Equal(trustList.Items[0].Categories, []string{"health"}) {
 		t.Fatalf("list: %d %s", w.Code, w.Body)
 	}
 
@@ -225,5 +246,73 @@ func TestExtensionOwnersAreKeptBetweenTrustChanges(t *testing.T) {
 	}
 	if got := s.extensionOwners(ctx); !slices.Equal(got, []string{"qa-other"}) {
 		t.Fatalf("after a forget, read again: %v", got)
+	}
+}
+
+func TestExtensionTrustHTTPRejectsStaleGrantEdits(t *testing.T) {
+	database := todoTestDB(t)
+	s := newTodoEnv(t, database).s
+	const listPath = "/api/v1/assistant/extension-trust"
+	const editPath = listPath + "/example-extension"
+	read := func() (string, []assistantwire.ExtensionTrust) {
+		t.Helper()
+		w := serve(s, http.MethodGet, listPath, "")
+		var out struct {
+			DefaultRevision string                         `json:"default_revision"`
+			Items           []assistantwire.ExtensionTrust `json:"items"`
+		}
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &out) != nil || out.DefaultRevision == "" {
+			t.Fatalf("read trust: %d %s", w.Code, w.Body)
+		}
+		return out.DefaultRevision, out.Items
+	}
+	save := func(body string) assistantwire.ExtensionTrust {
+		t.Helper()
+		w := serve(s, http.MethodPut, editPath, body)
+		var out assistantwire.ExtensionTrust
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &out) != nil || out.Revision == "" {
+			t.Fatalf("save trust: %d %s", w.Code, w.Body)
+		}
+		return out
+	}
+	edit := func(revision, categories string) string {
+		return fmt.Sprintf(`{"trust":"third_party","categories":%s,"expected_revision":%q}`, categories, revision)
+	}
+	defaultRevision, items := read()
+	if len(items) != 0 {
+		t.Fatalf("initial items: %+v", items)
+	}
+	initial := save(edit(defaultRevision, `["finance","health"]`))
+	_, first := read()
+	_, second := read()
+	if len(first) != 1 || len(second) != 1 || first[0].Revision != initial.Revision || second[0].Revision != initial.Revision {
+		t.Fatalf("two devices read different baselines: %+v, %+v", first, second)
+	}
+	winner := save(edit(first[0].Revision, `["finance"]`))
+	w := serve(s, http.MethodPut, editPath, edit(second[0].Revision, `["health"]`))
+	var conflict struct {
+		Code    string                       `json:"code"`
+		Current assistantwire.ExtensionTrust `json:"current"`
+	}
+	if w.Code != http.StatusConflict || json.Unmarshal(w.Body.Bytes(), &conflict) != nil ||
+		conflict.Code != "extension_trust_moved" || conflict.Current.Revision != winner.Revision ||
+		conflict.Current.Trust != "third_party" || !slices.Equal(conflict.Current.Categories, []string{"finance"}) {
+		t.Fatalf("stale edit: %d %s", w.Code, w.Body)
+	}
+	_, kept := read()
+	if len(kept) != 1 || kept[0].Revision != winner.Revision || !slices.Equal(kept[0].Categories, []string{"finance"}) {
+		t.Fatalf("stale form changed the stored grant: %+v", kept)
+	}
+	legacy := save(`{"trust":"third_party","categories":[]}`)
+	if legacy.Revision == winner.Revision || len(legacy.Categories) != 0 {
+		t.Fatalf("unversioned replacement: %+v", legacy)
+	}
+	if err := database.ForgetExtensionTrust(t.Context(), "example-extension"); err != nil {
+		t.Fatal(err)
+	}
+	w = serve(s, http.MethodPut, editPath, edit(initial.Revision, `["health"]`))
+	if w.Code != http.StatusConflict || json.Unmarshal(w.Body.Bytes(), &conflict) != nil ||
+		conflict.Current.Revision != defaultRevision || len(conflict.Current.Categories) != 0 {
+		t.Fatalf("edit after forget: %d %s", w.Code, w.Body)
 	}
 }

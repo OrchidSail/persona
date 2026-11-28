@@ -23,7 +23,7 @@ type externalSourceStore interface {
 	UpdateExternalBinding(context.Context, assistantwire.ExternalBindingID, assistantwire.ExternalBindingInput) (assistantwire.ExternalBinding, error)
 	DeleteExternalBinding(context.Context, assistantwire.ExternalBindingID) error
 	LookupExternalBindings(context.Context, []assistantwire.ExternalRef) (assistantwire.ExternalBindingLookup, error)
-	ExternalSourceSummary(context.Context, assistantwire.ExternalProvider, *assistantwire.ExternalChannelID, bool) (assistantwire.ExternalSourceSummary, error)
+	ExternalSourceSummary(context.Context, assistantwire.ExternalProvider, *assistantwire.ExternalChannelID, assistantwire.ExternalSummaryFilter) (assistantwire.ExternalSourceSummary, error)
 	ExternalSourcePolicies(context.Context, []assistantwire.ExternalRef, assistantwire.ExternalBindingID) ([]assistantwire.ExternalScopedPolicy, *assistantwire.ExternalBinding, error)
 	PutExternalSourcePolicy(context.Context, assistantwire.ExternalScopedPolicy) error
 }
@@ -192,20 +192,22 @@ func (x externalSourceRoutes) summary(w http.ResponseWriter, r *http.Request, st
 		writeExternalSourceError(w, http.StatusBadRequest, "invalid_external_query")
 		return
 	}
-	var includeDone bool
-	if values, present := q["include_done"]; present {
-		if len(values) != 1 {
-			writeExternalSourceError(w, http.StatusBadRequest, "invalid_include_done")
-			return
-		}
-		switch values[0] {
-		case "true", "1":
-			includeDone = true
-		case "false", "0":
-		default:
-			writeExternalSourceError(w, http.StatusBadRequest, "invalid_include_done")
-			return
-		}
+	includeDone, valid := externalSummaryBool(q, "include_done")
+	if !valid {
+		writeExternalSourceError(w, http.StatusBadRequest, "invalid_include_done")
+		return
+	}
+	doneOnly, valid := externalSummaryBool(q, "done_only")
+	if !valid {
+		writeExternalSourceError(w, http.StatusBadRequest, "invalid_done_only")
+		return
+	}
+	filter := assistantwire.ExternalSummaryOpen
+	switch {
+	case doneOnly:
+		filter = assistantwire.ExternalSummaryDoneOnly
+	case includeDone:
+		filter = assistantwire.ExternalSummaryAll
 	}
 	var provider assistantwire.ExternalProvider
 	if q.Has("provider") {
@@ -227,12 +229,28 @@ func (x externalSourceRoutes) summary(w http.ResponseWriter, r *http.Request, st
 		}
 		channel = &path[0].Channel
 	}
-	summary, err := store.ExternalSourceSummary(r.Context(), provider, channel, includeDone)
+	summary, err := store.ExternalSourceSummary(r.Context(), provider, channel, filter)
 	if err != nil {
 		x.storeError(w, err)
 		return
 	}
 	apierr.WriteJSON(w, summary)
+}
+
+func externalSummaryBool(q url.Values, key string) (value, valid bool) {
+	values, present := q[key]
+	if !present {
+		return false, true
+	}
+	if len(values) == 1 {
+		switch values[0] {
+		case "true", "1":
+			return true, true
+		case "false", "0":
+			return false, true
+		}
+	}
+	return false, false
 }
 
 func (x externalSourceRoutes) readPolicy(w http.ResponseWriter, r *http.Request, store externalSourceStore) {

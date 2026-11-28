@@ -607,7 +607,7 @@ func (r *Registry) put(ctx context.Context, row Record) (time.Time, error) {
 // it in the record with the change, since storage binds an installation by it (#16920).
 func (r *Registry) write(ctx context.Context, row Record) (time.Time, error) {
 	if r.store == nil {
-		return row.UpdatedAt, nil // no database: the choice lasts until the hub restarts
+		return r.revisionAfter(row.UpdatedAt), nil // the revision and settings live until restart
 	}
 	if row.InstalledAt.IsZero() {
 		row.InstalledAt = r.now()

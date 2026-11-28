@@ -157,6 +157,15 @@ const (
 	ExternalBindingLarkTopic      ExternalBindingSource = "lark_topic"
 )
 
+// ExternalTargetStatus is the live to-do status in an external source summary. An empty value has no status.
+type ExternalTargetStatus string
+
+const (
+	ExternalTargetOpen      ExternalTargetStatus = "open"
+	ExternalTargetCompleted ExternalTargetStatus = "completed"
+	ExternalTargetCancelled ExternalTargetStatus = "cancelled"
+)
+
 type ExternalBindingMatch struct {
 	ExternalRef    ExternalRef            `json:"external_ref"`
 	TargetKind     ExternalTargetKind     `json:"target_kind"`
@@ -166,6 +175,7 @@ type ExternalBindingMatch struct {
 	RepositoryRole ExternalRepositoryRole `json:"repository_role,omitempty"`
 	TargetTitle    string                 `json:"target_title,omitempty"`
 	TargetDone     bool                   `json:"target_done,omitempty"`
+	TargetStatus   ExternalTargetStatus   `json:"target_status,omitempty"`
 }
 
 type ExternalBindingLookup struct {
@@ -174,10 +184,20 @@ type ExternalBindingLookup struct {
 }
 
 type ExternalSourceSummary struct {
-	Bindings         []ExternalBindingMatch `json:"bindings"`
-	OmittedDoneCount int                    `json:"omitted_done_count,omitempty"`
-	TotalCount       int                    `json:"total_count,omitempty"`
+	Bindings          []ExternalBindingMatch `json:"bindings"`
+	OmittedDoneCount  int                    `json:"omitted_done_count,omitempty"`
+	TotalCount        int                    `json:"total_count,omitempty"`
+	DoneOnlySupported bool                   `json:"done_only_supported,omitempty"`
 }
+
+// ExternalSummaryFilter selects the rows returned by a summary request.
+type ExternalSummaryFilter uint8
+
+const (
+	ExternalSummaryOpen ExternalSummaryFilter = iota
+	ExternalSummaryAll
+	ExternalSummaryDoneOnly
+)
 
 type ExternalEventID string
 type ExternalInboxItemID string

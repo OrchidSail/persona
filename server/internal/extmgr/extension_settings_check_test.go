@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -167,6 +168,86 @@ func TestSettingsCheckRoutes(t *testing.T) {
 	put("ag-good-key-0123456789-0002")
 	if code, out := put("ag-good-key-0123456789-0003"); code != 429 || out["code"] != "check_rate_limited" {
 		t.Fatalf("too many checks: %d %v", code, out)
+	}
+}
+
+func TestExtensionConfigHTTPChecksRevisionAtCommit(t *testing.T) {
+	h, _ := extensionTestHub(t)
+	const id = "example-config"
+	const path = "/api/v1/extensions/" + id + "/-/"
+	m := &extension.Manifest{ID: id, Name: "Example Config", Version: "1.0.0", SettingsCheck: true,
+		Configuration: json.RawMessage(`{"type":"object","properties":{"first":{"type":"string"},"second":{"type":"string"}}}`)}
+	reg := h.extensions.reg
+	if err := reg.AddBuiltin(m, "", false); err != nil {
+		t.Fatal(err)
+	}
+	started, resume := make(chan struct{}), make(chan struct{})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	reg.SettingsCheck = func(_ context.Context, _ *extension.Extension, cfg json.RawMessage, _ map[string]string) error {
+		if strings.Contains(string(cfg), "paused") {
+			close(started)
+			select {
+			case <-resume:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	}
+	mux := h.routes()
+	first := deviceToken("first-device", roleFull)
+	second := deviceToken("second-device", roleFull)
+	code, out := call(t, mux, http.MethodGet, path, first, "")
+	revision, _ := out["revision"].(string)
+	if code != http.StatusOK || revision == "" {
+		t.Fatalf("initial config: %d %v", code, out)
+	}
+	if code, out := call(t, mux, http.MethodGet, path, second, ""); code != http.StatusOK || out["revision"] != revision {
+		t.Fatalf("second device baseline: %d %v", code, out)
+	}
+	change := func(config string) string {
+		return fmt.Sprintf(`{"config":%s,"expected_revision":%q}`, config, revision)
+	}
+	type response struct {
+		code int
+		body map[string]any
+	}
+	pending := make(chan response, 1)
+	go func() {
+		code, body := call(t, mux, http.MethodPut, path+"config", first, change(`{"second":"paused"}`))
+		pending <- response{code, body}
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("the first edit did not reach its settings check")
+	}
+	code, winner := call(t, mux, http.MethodPut, path+"config?entry_lists=1", second, change(`{"first":"kept"}`))
+	close(resume)
+	loser := <-pending
+	if code != http.StatusOK || winner["revision"] == nil || winner["revision"] == revision {
+		t.Fatalf("second device save: %d %v", code, winner)
+	}
+	checkConflict := func(code int, body map[string]any) {
+		t.Helper()
+		current, _ := body["current"].(map[string]any)
+		if code != http.StatusConflict || body["code"] != "settings_moved" ||
+			current["revision"] != winner["revision"] || !reflect.DeepEqual(current["config"], winner["config"]) {
+			t.Fatalf("stale save: %d %v", code, body)
+		}
+	}
+	checkConflict(loser.code, loser.body)
+	code, out = call(t, mux, http.MethodPut, path+"config", first, change(`{"second":"late"}`))
+	checkConflict(code, out)
+	code, out = call(t, mux, http.MethodGet, path, first, "")
+	if code != http.StatusOK || out["revision"] != winner["revision"] || !reflect.DeepEqual(out["config"], winner["config"]) {
+		t.Fatalf("current config: %d %v", code, out)
+	}
+	code, out = call(t, mux, http.MethodPut, path+"config", first, `{"config":{"second":"legacy"}}`)
+	config, _ := out["config"].(map[string]any)
+	if code != http.StatusOK || out["revision"] == winner["revision"] || config["second"] != "legacy" {
+		t.Fatalf("unversioned save: %d %v", code, out)
 	}
 }
 

@@ -24,7 +24,7 @@ import (
 type extensionTrustStore interface {
 	ExtensionTrustOf(ctx context.Context, extension string) (string, error)
 	ExtensionTrusts(ctx context.Context) (map[string]db.ExtensionTrust, error)
-	SetExtensionTrust(ctx context.Context, extension, trust string, cats []string, by string) error
+	ReplaceExtensionTrust(ctx context.Context, extension, trust string, cats []string, by string, expected *string) (db.ExtensionTrust, error)
 	ForgetExtensionTrust(ctx context.Context, extension string) error
 }
 
@@ -231,18 +231,22 @@ func (s *Service) extensionTrustList(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []assistantwire.ExtensionTrust{}
 	for _, t := range all {
-		trust := t.Trust
-		if trust != assistantwire.ExtensionTrustOwner {
-			trust = assistantwire.ExtensionTrustThirdParty
-		}
-		cats, _ := normalCategories(t.Categories)
-		if cats == nil {
-			cats = []string{}
-		}
-		out = append(out, assistantwire.ExtensionTrust{Extension: t.Extension, Trust: trust, Categories: cats})
+		out = append(out, extensionTrustView(t))
 	}
 	slices.SortFunc(out, func(a, b assistantwire.ExtensionTrust) int { return cmp.Compare(a.Extension, b.Extension) })
-	apierr.WriteJSON(w, map[string]any{"items": out})
+	apierr.WriteJSON(w, map[string]any{"items": out, "default_revision": db.DefaultExtensionTrustRevision})
+}
+
+func extensionTrustView(t db.ExtensionTrust) assistantwire.ExtensionTrust {
+	trust := t.Trust
+	if trust != assistantwire.ExtensionTrustOwner {
+		trust = assistantwire.ExtensionTrustThirdParty
+	}
+	cats, _ := normalCategories(t.Categories)
+	if cats == nil {
+		cats = []string{}
+	}
+	return assistantwire.ExtensionTrust{Extension: t.Extension, Trust: trust, Categories: cats, Revision: t.Revision}
 }
 
 func (s *Service) extensionTrustSet(w http.ResponseWriter, r *http.Request) {
@@ -254,7 +258,7 @@ func (s *Service) extensionTrustSet(w http.ResponseWriter, r *http.Request) {
 		apierr.Write(w, http.StatusBadRequest, errors.New("invalid extension id"))
 		return
 	}
-	var in assistantwire.ExtensionTrust
+	var in assistantwire.ExtensionTrustChange
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&in); err != nil {
 		apierr.Write(w, http.StatusBadRequest, err)
 		return
@@ -273,17 +277,20 @@ func (s *Service) extensionTrustSet(w http.ResponseWriter, r *http.Request) {
 		apierr.Write(w, http.StatusServiceUnavailable, errors.New("extension trust store unavailable"))
 		return
 	}
-	err := st.SetExtensionTrust(r.Context(), id, in.Trust, cats, infoTaggedByUser)
+	current, err := st.ReplaceExtensionTrust(r.Context(), id, in.Trust, cats, infoTaggedByUser, in.ExpectedRevision)
+	if errors.Is(err, db.ErrExtensionTrustMoved) {
+		body := apierr.CodeBody(w, http.StatusConflict, "extension_trust_moved", errors.New(http.StatusText(http.StatusConflict)))
+		body["current"] = extensionTrustView(current)
+		apierr.WriteBody(w, http.StatusConflict, body)
+		return
+	}
 	s.extensionOwnersChanged() // a failed write may still have changed rows: read again
 	if err != nil {
 		apierr.Write(w, http.StatusInternalServerError, err)
 		return
 	}
 	s.publish(context.WithoutCancel(r.Context())) // publish Profile.ExtensionOwners for older hubs
-	if cats == nil {
-		cats = []string{}
-	}
-	apierr.WriteJSON(w, assistantwire.ExtensionTrust{Extension: id, Trust: in.Trust, Categories: cats})
+	apierr.WriteJSON(w, extensionTrustView(current))
 }
 
 func (s *Service) conversationCategoriesGet(w http.ResponseWriter, r *http.Request) {

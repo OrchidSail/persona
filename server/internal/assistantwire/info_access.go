@@ -53,12 +53,19 @@ const (
 	ExtensionTrustThirdParty = "third_party"
 )
 
-// ExtensionTrust is GET /api/v1/assistant/extension-trust's item and PUT …/extension-trust/{id}'s body: whether an
-// extension is the user's own, and the sensitive categories a third-party one may read (replaced as a whole).
+// ExtensionTrust is one extension's saved trust, grants and opaque revision.
 type ExtensionTrust struct {
 	Extension  string   `json:"extension,omitempty"`
 	Trust      string   `json:"trust"`
 	Categories []string `json:"categories"`
+	Revision   string   `json:"revision,omitempty"`
+}
+
+// ExtensionTrustChange replaces the saved trust and grants, optionally conditioned on the client's revision.
+type ExtensionTrustChange struct {
+	Trust            string   `json:"trust"`
+	Categories       []string `json:"categories"`
+	ExpectedRevision *string  `json:"expected_revision,omitempty"`
 }
 
 // ConversationCategories is GET …/conversations/{id}/categories' answer: the categories the conversation carries,

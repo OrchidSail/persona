@@ -87,10 +87,10 @@ func legacyLarkTopic(ctx context.Context, tx pgx.Tx, ref assistantwire.ExternalR
 }
 
 // ExternalSourceSummary describes saved data flows, including read-only repository projections.
-func (s *Store) ExternalSourceSummary(ctx context.Context, provider assistantwire.ExternalProvider, channel *assistantwire.ExternalChannelID, includeDone bool) (assistantwire.ExternalSourceSummary, error) {
-	out := assistantwire.ExternalSourceSummary{Bindings: []assistantwire.ExternalBindingMatch{}}
+func (s *Store) ExternalSourceSummary(ctx context.Context, provider assistantwire.ExternalProvider, channel *assistantwire.ExternalChannelID, filter assistantwire.ExternalSummaryFilter) (assistantwire.ExternalSourceSummary, error) {
+	out := assistantwire.ExternalSourceSummary{Bindings: []assistantwire.ExternalBindingMatch{}, DoneOnlySupported: true}
 	err := db.ReadSnapshot(ctx, s.database, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, externalSourceSummaryQuery, provider, channel)
+		rows, err := tx.Query(ctx, externalSourceSummaryQuery, provider, channel, filter == assistantwire.ExternalSummaryDoneOnly)
 		if err != nil {
 			return err
 		}
@@ -100,11 +100,11 @@ func (s *Store) ExternalSourceSummary(ctx context.Context, provider assistantwir
 			var explicitRef *assistantwire.ExternalRef
 			repo := repositorywire.Identity{Provider: "github"}
 			var link repositorywire.TaskLink
-			if err := rows.Scan(&explicitRef, &match.TargetKind, &match.TargetID, &match.BindingID, &match.TargetTitle, &match.TargetDone,
+			if err := rows.Scan(&explicitRef, &match.TargetKind, &match.TargetID, &match.BindingID, &match.TargetTitle, &match.TargetStatus, &match.TargetDone,
 				&repo.InstanceURL, &repo.Path, &link.Kind, &link.Number, &link.Role); err != nil {
 				return err
 			}
-			if match.TargetDone && !includeDone {
+			if match.TargetDone && filter == assistantwire.ExternalSummaryOpen {
 				out.OmittedDoneCount++
 				continue
 			}
@@ -137,12 +137,14 @@ func (s *Store) ExternalSourceSummary(ctx context.Context, provider assistantwir
 const externalSourceSummaryQuery = `
 	WITH todo_targets AS NOT MATERIALIZED (
 		SELECT td.id, td.title, td.updated_at,
-			td.done_at IS NOT NULL AND (
-				td.start_error = '' OR td.done_by = 'cancelled' OR
-				(td.done_by = 'review' AND EXISTS (
+			CASE
+				WHEN td.done_at IS NULL THEN 'open'
+				WHEN td.done_by = 'cancelled' OR (td.done_by = 'review' AND EXISTS (
 					SELECT 1 FROM todo_supervision ts WHERE ts.todo_id = td.id AND ts.state = 'cancelled'
-				))
-			) AS target_done
+				)) THEN 'cancelled'
+				WHEN td.start_error <> '' THEN 'open'
+				ELSE 'completed'
+			END AS target_status
 		FROM todos td
 	), github_filter AS (
 		SELECT jsonb_strip_nulls(jsonb_build_object('provider', 'github',
@@ -152,7 +154,7 @@ const externalSourceSummaryQuery = `
 		SELECT DISTINCT ON (t.todo_id, instance, path, kind, number)
 			t.todo_id, repo #>> '{source_snapshot,identity,instance_url}' AS instance,
 			repo #>> '{source_snapshot,identity,path}' AS path, link->>'kind' AS kind, link->>'number' AS number,
-			COALESCE(link->>'role', '') AS role, td.title, td.target_done, td.updated_at
+			COALESCE(link->>'role', '') AS role, td.title, td.target_status, td.updated_at
 		FROM github_filter f
 		JOIN todo_repository_sets t ON t.repositories @> jsonb_build_array(
 			jsonb_build_object('source_snapshot', jsonb_build_object('identity', f.identity)))
@@ -164,7 +166,7 @@ const externalSourceSummaryQuery = `
 		ORDER BY t.todo_id, instance, path, kind, number, (COALESCE(link->>'role', '') IN ('', 'delivery')) DESC, role
 	), matches AS (
 		SELECT b.external_ref, b.target_kind, b.target_id, b.id AS binding_id,
-			COALESCE(td.title, '') AS target_title, COALESCE(td.target_done, false) AS target_done,
+			COALESCE(td.title, '') AS target_title, COALESCE(td.target_status, '') AS target_status,
 			COALESCE(td.updated_at, to_timestamp(0)) AS updated_at,
 			''::text AS instance, ''::text AS path, ''::text AS kind, ''::text AS number, ''::text AS role
 		FROM assistant_external_bindings b
@@ -172,12 +174,15 @@ const externalSourceSummaryQuery = `
 		WHERE ($1 = '' OR b.external_ref->>'provider' = $1)
 		  AND ($2::text IS NULL OR COALESCE(b.external_ref->>'channel', '') = $2)
 		UNION ALL
-		SELECT NULL, 'todo', todo_id, '', title, target_done, updated_at,
+		SELECT NULL, 'todo', todo_id, '', title, target_status, updated_at,
 			COALESCE(instance, ''), COALESCE(path, ''), kind, COALESCE(number, ''), role
 		FROM repository_matches
+	), summary_rows AS (
+		SELECT *, target_status IN ('completed', 'cancelled') AS target_done FROM matches
 	)
-	SELECT external_ref, target_kind, target_id, binding_id, target_title, target_done, instance, path, kind, number, role
-	FROM matches
+	SELECT external_ref, target_kind, target_id, binding_id, target_title, target_status, target_done, instance, path, kind, number, role
+	FROM summary_rows
+	WHERE NOT $3 OR target_done
 	ORDER BY (target_kind = 'direction') DESC, target_done, updated_at DESC, external_ref NULLS LAST, target_kind,
 		CASE WHEN external_ref IS NOT NULL THEN target_id END, target_id DESC, instance, path, kind, number
 `

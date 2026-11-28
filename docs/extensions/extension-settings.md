@@ -131,6 +131,51 @@ Clients talking to older managers must fail closed for lifecycle actions whose c
 
 Offline managers retain their last-known information. Show the offline explanation and disable lifecycle writes and connection-dependent checks, not the entire page. Do not wipe or present an empty settings form as authoritative if settings could not be read. Retry uses the same manager-bound read operation.
 
+### Configuration revision
+
+`GET /api/v1/extensions/{id}/-/` pairs an editable extension's saved `config` with an opaque `revision`.
+Send that value as `expected_revision` alongside `config` in `PUT /api/v1/extensions/{id}/-/config` to save from
+that read. The registry verifies the revision at commit. A mismatch returns HTTP 409 with `code: "settings_moved"`
+and the latest `current: {config, revision}`. That response includes the configuration visible in the detail
+and excludes secret values. Older managers omit `revision`. Omitting `expected_revision` keeps the legacy save
+behavior, including entry-list preservation for clients that do not opt in to editing lists.
+
+The revision covers the registry's saved settings. For a versioned Volcengine update, the Assistant's separate
+meeting transcription choice is applied after the registry accepts the configuration. A choice-only save leaves
+the registry revision in place. If the Assistant becomes unavailable at that step, re-read the detail before
+retrying the choice.
+
+### Information access revision
+
+`GET /api/v1/assistant/extension-trust` gives each stored item an opaque `revision` alongside its `extension`,
+`trust`, and `categories`. The response's `default_revision` advertises revision support and is the baseline
+for any unlisted extension. Such an extension is treated as `third_party` with no grants.
+
+Send the item or default revision from the same Assistant as `expected_revision` alongside `trust` and
+`categories` in `PUT /api/v1/assistant/extension-trust/{id}`. The database transaction checks the revision
+before replacing the trust and grants. It returns the saved item on success. HTTP 409 with
+`code: "extension_trust_moved"` includes the latest item in `current`, with its revision. Omitting the
+expectation keeps the legacy unconditional replacement.
+
+### Connected work summary
+
+`GET /api/v1/assistant/external-source-bindings/summary` reports `target_status` as `open`, `completed`, or
+`cancelled` for a live to-do. A failed start awaiting retry is open. Current and legacy review cancellations
+are cancelled. Both closed statuses still carry `target_done: true`. Directions, bindings without a live to-do,
+and routing lookup responses omit `target_status`.
+
+The standard list follows the existing [external source binding contract](../protocol/protocol.md#external-source-bindings).
+Closed rows are hidden by default, and `include_done=true` or `1` includes them after the open rows. To load the
+closed list independently, send `done_only=true` or `1`. It takes precedence over `include_done` and keeps
+provider and channel filtering, deduplication, and the closed rows' order. Omitting `done_only` or sending
+`false` or `0` preserves the standard list. A repeated or invalid value returns HTTP 400 with
+`code: "invalid_done_only"`.
+
+`total_count` counts the returned rows, and `omitted_done_count` counts the closed rows excluded from the default
+view. Zero counts are omitted and an empty result still has a `bindings` array. Every summary advertises the
+independent list with `done_only_supported: true`. Older managers omit this capability and `target_status`.
+Their clients can keep using the `include_done` view and the legacy `target_done` indication.
+
 ## Inventory before the web unification
 
 All settings pages listed by the live hub were opened before implementation: built-in computer control, browser control, messages, voice and messaging bot; market-installed connectors, community/monitoring integrations and runtime integrations; a locally installed example and quota integrations. Private extension names, configuration values and provenance are intentionally excluded from this public inventory.

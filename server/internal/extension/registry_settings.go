@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/nwverse/persona/server/internal/i18n"
 )
@@ -170,19 +171,24 @@ var ErrSecretNotCleared = i18n.Err("extension-status.secret_not_cleared")
 // SetConfigClearing is SetConfig saying which secrets the change deleted. Entry-list removals and address changes
 // commit their secret deletions with the configuration. BoundSecrets retains its legacy fail-closed cleanup.
 func (r *Registry) SetConfigClearing(ctx context.Context, id string, raw json.RawMessage, actor string) (cleared []string, err error) {
-	return r.setConfigClearing(ctx, id, raw, actor, false)
+	return r.SaveConfig(ctx, id, raw, actor, false, nil)
 }
 
 // SetConfigPreservingEntries saves an older client's full-config draft without letting it add, remove, reorder or
 // rebind entry lists it cannot draw. Other fields still save normally.
 func (r *Registry) SetConfigPreservingEntries(ctx context.Context, id string, raw json.RawMessage, actor string) (cleared []string, err error) {
-	return r.setConfigClearing(ctx, id, raw, actor, true)
+	return r.SaveConfig(ctx, id, raw, actor, true, nil)
 }
 
-func (r *Registry) setConfigClearing(ctx context.Context, id string, raw json.RawMessage, actor string, preserveLists bool) (cleared []string, err error) {
+// SaveConfig checks the client's revision again under the operation lock that serializes settings commits.
+// A nil expectation keeps the unconditional API, with the existing guards against changes during preparation.
+func (r *Registry) SaveConfig(ctx context.Context, id string, raw json.RawMessage, actor string, preserveLists bool, expected *string) (cleared []string, err error) {
 	p, err := r.editableSnapshot(id)
 	if err != nil {
 		return nil, err
+	}
+	if expected != nil && *expected != configRevision(p) {
+		return nil, ErrSettingsMoved
 	}
 	prepared, err := prepareEntryConfig(p, raw, preserveLists)
 	if err != nil {
@@ -202,11 +208,15 @@ func (r *Registry) setConfigClearing(ctx context.Context, id string, raw json.Ra
 		return nil, err
 	}
 	id = p.Record.ID
-	if !sameJSON(compactConfig(r.SavedConfig(p)), prepared.base) {
+	current, currentRevision := r.ConfigSnapshot(p)
+	if (expected != nil && *expected != currentRevision) || !sameJSON(compactConfig(current), prepared.base) {
 		return nil, ErrSettingsMoved
 	}
 	if err := r.stillChecked(p, checked); err != nil {
 		return nil, err
+	}
+	if expected != nil && sameJSON(prepared.raw, prepared.base) {
+		return nil, nil
 	}
 	var had map[string]string
 	var readErr error
@@ -306,6 +316,21 @@ func (r *Registry) SavedConfig(p *Extension) json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return raw
+}
+
+// ConfigSnapshot returns the saved configuration and its opaque settings revision from the same registry record.
+func (r *Registry) ConfigSnapshot(p *Extension) (json.RawMessage, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	raw := slices.Clone(p.Record.Config)
+	if len(raw) == 0 {
+		raw = json.RawMessage(`{}`)
+	}
+	return raw, configRevision(p)
+}
+
+func configRevision(p *Extension) string {
+	return p.Record.UpdatedAt.UTC().Format(time.RFC3339Nano)
 }
 
 func (r *Registry) secretSpec(p *Extension, name string) error {

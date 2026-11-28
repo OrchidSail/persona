@@ -2,6 +2,7 @@ package assistant
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -242,5 +243,75 @@ func TestExternalSourceHTTPSummaryIncludeDone(t *testing.T) {
 				t.Fatalf("invalid include_done: %d %s, want 400 with %q", w.Code, w.Body, tc.code)
 			}
 		})
+	}
+}
+
+func TestExternalSourceHTTPSummaryDoneOnly(t *testing.T) {
+	s, store := externalSourceHTTPFixture(t)
+	ctx := t.Context()
+	at := time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
+	seed := func(i int, id, doneBy string) {
+		t.Helper()
+		row := db.TodoRow{ID: id, Title: id, CreatedAt: at, UpdatedAt: at.Add(time.Duration(i) * time.Minute), DoneBy: doneBy}
+		if doneBy != "" {
+			row.DoneAt = &row.UpdatedAt
+		}
+		if err := store.CreateTodo(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+		link := fmt.Sprintf("https://github.com/example/web/issues/%d", i)
+		if _, _, err := store.ImportTodoRepositoryLinks(ctx, id, []string{link}, "explicit"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed(1, "completed", "user")
+	seed(2, "cancelled", db.DoneByCancelled)
+	for i := 3; i <= 18; i++ {
+		seed(i, fmt.Sprintf("open_%02d", i), "")
+	}
+
+	const endpoint = assistantwire.ExternalBindingsPath + "/summary"
+	type match struct {
+		ID     string `json:"target_id"`
+		Done   *bool  `json:"target_done"`
+		Status string `json:"target_status"`
+	}
+	read := func(query string) ([]match, int, int) {
+		t.Helper()
+		w := placeDo(s, "", http.MethodGet, endpoint+query, "")
+		var summary struct {
+			Bindings          []match `json:"bindings"`
+			Total             int     `json:"total_count"`
+			Omitted           int     `json:"omitted_done_count"`
+			DoneOnlySupported bool    `json:"done_only_supported"`
+		}
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &summary) != nil ||
+			!summary.DoneOnlySupported || summary.Bindings == nil {
+			t.Fatalf("summary %s: %d %s", query, w.Code, w.Body)
+		}
+		return summary.Bindings, summary.Total, summary.Omitted
+	}
+	open, total, omitted := read("?done_only=0")
+	if len(open) != 16 || total != len(open) || omitted != 2 || open[0].Status != "open" || open[0].Done != nil {
+		t.Fatalf("open summary: %+v, total %d, omitted %d", open, total, omitted)
+	}
+	want := []match{{ID: "cancelled", Done: new(true), Status: "cancelled"}, {ID: "completed", Done: new(true), Status: "completed"}}
+	for _, query := range []string{"?done_only=true", "?provider=github&channel=&done_only=1&include_done=false"} {
+		got, total, omitted := read(query)
+		if !reflect.DeepEqual(got, want) || total != len(want) || omitted != 0 {
+			t.Fatalf("closed summary %s: %+v, total %d, omitted %d", query, got, total, omitted)
+		}
+	}
+	if got, total, omitted := read("?provider=lark&done_only=true"); len(got) != 0 || total != 0 || omitted != 0 {
+		t.Fatalf("empty provider: %+v, total %d, omitted %d", got, total, omitted)
+	}
+	for _, value := range []string{"", "yes", "1&done_only=0"} {
+		w := placeDo(s, "", http.MethodGet, endpoint+"?done_only="+value, "")
+		var got struct {
+			Code string `json:"code"`
+		}
+		if w.Code != http.StatusBadRequest || json.Unmarshal(w.Body.Bytes(), &got) != nil || got.Code != "invalid_done_only" {
+			t.Fatalf("invalid done_only %q: %d %s", value, w.Code, w.Body)
+		}
 	}
 }

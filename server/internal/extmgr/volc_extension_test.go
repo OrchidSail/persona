@@ -3,6 +3,8 @@ package extmgr
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
@@ -265,6 +267,21 @@ func TestVolcMeetingsSwitch(t *testing.T) {
 	code, out = call(t, mux, "PUT", base+"config", tok, `{"config": {"meetings": false, "voice": "zh_male_m191_uranus_bigtts"}}`)
 	if code != 200 || config(out)["meetings"] != false || choice.Extension != "" || choice.Default != "device" {
 		t.Fatalf("off: %d %v, choice %+v", code, out, choice)
+	}
+	revision, _ := out["revision"].(string)
+	if revision == "" {
+		t.Fatal("editable config has no revision")
+	}
+	code, out = call(t, mux, "PUT", base+"config", tok,
+		`{"config":{"meetings":true},"expected_revision":"stale"}`)
+	if code != http.StatusConflict || out["code"] != "settings_moved" || choice.Extension != "" {
+		t.Fatalf("a stale config changed the meeting choice: %d %v, choice %+v", code, out, choice)
+	}
+	code, out = call(t, mux, "PUT", base+"config", tok, fmt.Sprintf(
+		`{"config":{"meetings":true,"voice":"zh_male_m191_uranus_bigtts"},"expected_revision":%q}`, revision))
+	if code != http.StatusOK || out["revision"] != revision || choice.Extension != "volc/volc" ||
+		h.extensions.get(volc.ExtensionID).proc != proc {
+		t.Fatalf("versioned choice only: %d %v, choice %+v", code, out, choice)
 	}
 
 	// The assistant's settings tool: the switch is neither listed nor set.

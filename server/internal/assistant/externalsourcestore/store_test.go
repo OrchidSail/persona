@@ -285,11 +285,11 @@ func TestExternalLookupProjectsExistingRepositoryLinksAndLiveEdits(t *testing.T)
 	if matches := lookup(t, d.Store, pr).Matches; len(matches) != 2 || matches[0].Source != "explicit" || matches[1].TargetID != "direction_repo" {
 		t.Fatalf("removed links stayed in projection: %+v", matches)
 	}
-	summary, err := d.ExternalSourceSummary(ctx, "github", new(assistantwire.ExternalChannelID("")), false)
+	summary, err := d.ExternalSourceSummary(ctx, "github", new(assistantwire.ExternalChannelID("")), assistantwire.ExternalSummaryOpen)
 	if err != nil || len(summary.Bindings) != 3 {
 		t.Fatalf("summary for the public GitHub channel: %+v, %v", summary, err)
 	}
-	summary, err = d.ExternalSourceSummary(ctx, "github", new(assistantwire.ExternalChannelID("https://git.example.com")), false)
+	summary, err = d.ExternalSourceSummary(ctx, "github", new(assistantwire.ExternalChannelID("https://git.example.com")), assistantwire.ExternalSummaryOpen)
 	if err != nil || len(summary.Bindings) != 1 || summary.Bindings[0].TargetID != enterprise {
 		t.Fatalf("summary for the enterprise GitHub channel: %+v, %v", summary, err)
 	}
@@ -389,29 +389,30 @@ func TestExternalSourceSummaryFiltersAndOrdersToDos(t *testing.T) {
 
 	open := []assistantwire.ExternalBindingMatch{
 		{ExternalRef: repo, TargetKind: "direction", TargetID: "done_recent", Source: "explicit", BindingID: direction},
-		{ExternalRef: shared, TargetKind: "todo", TargetID: "open_recent", Source: "repository_link", RepositoryRole: "delivery", TargetTitle: "Prepare release"},
-		{ExternalRef: issue("1"), TargetKind: "todo", TargetID: "open_explicit", Source: "explicit", BindingID: explicitOpen, TargetTitle: "Review the proposal"},
-		{ExternalRef: issue("5"), TargetKind: "todo", TargetID: "open_tied", Source: "repository_link", RepositoryRole: "delivery", TargetTitle: "Check examples"},
-		{ExternalRef: shared, TargetKind: "todo", TargetID: "open_linked", Source: "repository_link", RepositoryRole: "reference", TargetTitle: "Write notes"},
+		{ExternalRef: shared, TargetKind: "todo", TargetID: "open_recent", Source: "repository_link", RepositoryRole: "delivery", TargetTitle: "Prepare release", TargetStatus: assistantwire.ExternalTargetOpen},
+		{ExternalRef: issue("1"), TargetKind: "todo", TargetID: "open_explicit", Source: "explicit", BindingID: explicitOpen, TargetTitle: "Review the proposal", TargetStatus: assistantwire.ExternalTargetOpen},
+		{ExternalRef: issue("5"), TargetKind: "todo", TargetID: "open_tied", Source: "repository_link", RepositoryRole: "delivery", TargetTitle: "Check examples", TargetStatus: assistantwire.ExternalTargetOpen},
+		{ExternalRef: shared, TargetKind: "todo", TargetID: "open_linked", Source: "repository_link", RepositoryRole: "reference", TargetTitle: "Write notes", TargetStatus: assistantwire.ExternalTargetOpen},
 	}
-	all := append(slices.Clone(open),
-		assistantwire.ExternalBindingMatch{ExternalRef: shared, TargetKind: "todo", TargetID: "done_recent", Source: "explicit", BindingID: explicitDone, TargetTitle: "Check the draft", TargetDone: true},
-		assistantwire.ExternalBindingMatch{ExternalRef: shared, TargetKind: "todo", TargetID: "done_recent", Source: "repository_link", RepositoryRole: "delivery", TargetTitle: "Check the draft", TargetDone: true},
-		assistantwire.ExternalBindingMatch{ExternalRef: issue("3"), TargetKind: "todo", TargetID: "done_older", Source: "repository_link", RepositoryRole: "reference", TargetTitle: "Write the draft", TargetDone: true},
-	)
+	done := []assistantwire.ExternalBindingMatch{
+		{ExternalRef: shared, TargetKind: "todo", TargetID: "done_recent", Source: "explicit", BindingID: explicitDone, TargetTitle: "Check the draft", TargetDone: true, TargetStatus: assistantwire.ExternalTargetCompleted},
+		{ExternalRef: shared, TargetKind: "todo", TargetID: "done_recent", Source: "repository_link", RepositoryRole: "delivery", TargetTitle: "Check the draft", TargetDone: true, TargetStatus: assistantwire.ExternalTargetCompleted},
+		{ExternalRef: issue("3"), TargetKind: "todo", TargetID: "done_older", Source: "repository_link", RepositoryRole: "reference", TargetTitle: "Write the draft", TargetDone: true, TargetStatus: assistantwire.ExternalTargetCompleted},
+	}
 	for _, tc := range []struct {
-		name        string
-		provider    assistantwire.ExternalProvider
-		includeDone bool
-		want        []assistantwire.ExternalBindingMatch
-		omitted     int
+		name     string
+		provider assistantwire.ExternalProvider
+		filter   assistantwire.ExternalSummaryFilter
+		want     []assistantwire.ExternalBindingMatch
+		omitted  int
 	}{
-		{"default", "", false, open, 3},
-		{"include done", "github", true, all, 0},
-		{"another provider", "lark", false, []assistantwire.ExternalBindingMatch{}, 0},
+		{"default", "", assistantwire.ExternalSummaryOpen, open, 3},
+		{"include done", "github", assistantwire.ExternalSummaryAll, append(slices.Clone(open), done...), 0},
+		{"done only", "github", assistantwire.ExternalSummaryDoneOnly, done, 0},
+		{"another provider", "lark", assistantwire.ExternalSummaryOpen, []assistantwire.ExternalBindingMatch{}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := d.ExternalSourceSummary(t.Context(), tc.provider, nil, tc.includeDone)
+			got, err := d.ExternalSourceSummary(t.Context(), tc.provider, nil, tc.filter)
 			if err != nil || !reflect.DeepEqual(got.Bindings, tc.want) || got.TotalCount != len(tc.want) || got.OmittedDoneCount != tc.omitted {
 				t.Fatalf("summary: %+v, %v\nwant bindings %+v, total %d, omitted %d", got, err, tc.want, len(tc.want), tc.omitted)
 			}
@@ -481,9 +482,13 @@ func TestExternalSourceSummaryUsesClosedForGood(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		status := assistantwire.ExternalTargetOpen
+		if fixture.cancelled {
+			status = assistantwire.ExternalTargetCancelled
+		}
 		explicit := assistantwire.ExternalBindingMatch{
 			ExternalRef: item, Source: "explicit", BindingID: binding.ID, TargetKind: "todo",
-			TargetID: fixture.id, TargetTitle: title, TargetDone: fixture.cancelled,
+			TargetID: fixture.id, TargetTitle: title, TargetDone: fixture.cancelled, TargetStatus: status,
 		}
 		projected := explicit
 		projected.Source, projected.BindingID, projected.RepositoryRole = "repository_link", "", "delivery"
@@ -495,16 +500,17 @@ func TestExternalSourceSummaryUsesClosedForGood(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name        string
-		includeDone bool
-		bindings    []assistantwire.ExternalBindingMatch
-		omitted     int
+		name     string
+		filter   assistantwire.ExternalSummaryFilter
+		bindings []assistantwire.ExternalBindingMatch
+		omitted  int
 	}{
-		{"open only", false, openMatches, 4},
-		{"include done", true, append(slices.Clone(openMatches), closedMatches...), 0},
+		{"open only", assistantwire.ExternalSummaryOpen, openMatches, 4},
+		{"include done", assistantwire.ExternalSummaryAll, append(slices.Clone(openMatches), closedMatches...), 0},
+		{"done only", assistantwire.ExternalSummaryDoneOnly, closedMatches, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := d.ExternalSourceSummary(t.Context(), "github", new(assistantwire.ExternalChannelID(instance)), tc.includeDone)
+			got, err := d.ExternalSourceSummary(t.Context(), "github", new(assistantwire.ExternalChannelID(instance)), tc.filter)
 			if err != nil || !reflect.DeepEqual(got.Bindings, tc.bindings) ||
 				got.TotalCount != len(tc.bindings) || got.OmittedDoneCount != tc.omitted {
 				t.Fatalf("summary: %+v, %v\nwant bindings %+v, total %d, omitted %d", got, err, tc.bindings, len(tc.bindings), tc.omitted)

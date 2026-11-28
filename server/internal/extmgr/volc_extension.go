@@ -202,6 +202,14 @@ func (h *Manager) volcMeetings(ctx context.Context) (on, known bool) {
 // goes back to the built-in one and new meetings to the phone. The settings come back without it, and whether
 // anything else in them changed.
 func (h *Manager) volcConfigWrite(ctx context.Context, p *extension.Extension, raw json.RawMessage) (json.RawMessage, bool, error) {
+	rest, changed, meetings := h.volcConfigDraft(p, raw)
+	if err := h.setVolcMeetings(ctx, p, meetings); err != nil {
+		return nil, false, err
+	}
+	return rest, changed, nil
+}
+
+func (h *Manager) volcConfigDraft(p *extension.Extension, raw json.RawMessage) (json.RawMessage, bool, *bool) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
 		return raw, true, nil // the schema check says what is wrong with it
@@ -220,16 +228,24 @@ func (h *Manager) volcConfigWrite(ctx context.Context, p *extension.Extension, r
 	if err := json.Unmarshal(sw, &want); err != nil {
 		return raw, true, nil // not a boolean: the schema check refuses it
 	}
-	if on, known := h.volcMeetings(ctx); known && on == want {
-		return rest, changed, nil
+	return rest, changed, &want
+}
+
+// setVolcMeetings saves the Assistant-owned choice separately from the extension settings.
+func (h *Manager) setVolcMeetings(ctx context.Context, p *extension.Extension, want *bool) error {
+	if want == nil {
+		return nil
+	}
+	if on, known := h.volcMeetings(ctx); known && on == *want {
+		return nil
 	}
 	res, err := buswire.Call(ctx, assistantCaller(h.callAssistant), assistantwire.MeetingTranscriptionChoiceMethod,
-		assistantwire.MeetingTranscriptionChoose{Set: true, Use: want, Extension: volcRef(h.modules())})
+		assistantwire.MeetingTranscriptionChoose{Set: true, Use: *want, Extension: volcRef(h.modules())})
 	if err != nil {
-		return nil, false, err
+		return err
 	}
-	h.logf("plugin %s: meetings transcribe with it: %v (meeting transcription %q, new meetings %s)", p.Record.ID, want, res.Extension, res.Default)
-	return rest, changed, nil
+	h.logf("plugin %s: meetings transcribe with it: %v (meeting transcription %q, new meetings %s)", p.Record.ID, *want, res.Extension, res.Default)
+	return nil
 }
 
 // sameSettings says whether two settings objects hold the same values.

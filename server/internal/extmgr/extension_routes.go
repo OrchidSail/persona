@@ -27,6 +27,7 @@ type ExtensionDetail struct {
 	ReadOnly        bool                       `json:"read_only,omitempty"` // hub.json's: changed there only
 	Form            *extension.Schema          `json:"form,omitempty"`
 	Config          json.RawMessage            `json:"config,omitempty"`
+	Revision        string                     `json:"revision,omitempty"`
 	Secrets         []ExtensionSecretView      `json:"secrets,omitempty"`
 	Permissions     []extension.PermissionLine `json:"permissions"`
 	// UI are the pages it draws, opened from its settings (plugin_page, and nav_page also on the main navigation;
@@ -147,9 +148,9 @@ func (ps *extensions) detail(ctx context.Context, p *extension.Extension) Extens
 		}
 	}
 	if !p.ReadOnly() { // hub.json's settings may hold keys: never sent
-		d.Config = p.Record.Config
-		if len(d.Config) == 0 {
-			d.Config = json.RawMessage(`{}`)
+		d.Config, d.Revision = ps.reg.ConfigSnapshot(p)
+		if p.Record.Source == extension.SourceDev {
+			d.Revision = ""
 		}
 		set := ps.reg.SecretsSet(ctx, p)
 		var plain map[string]string // read when a secret is set: shown by its end, or a reference
@@ -251,6 +252,25 @@ func readExtensionJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
+func (ps *extensions) writeConfigConflict(w http.ResponseWriter, r *http.Request, id string) {
+	type configState struct {
+		Config   json.RawMessage `json:"config"`
+		Revision string          `json:"revision"`
+	}
+	var current *configState
+	if p := ps.reg.Snapshot(id); p != nil && !p.ReadOnly() && p.Record.Source != extension.SourceDev {
+		var d ExtensionDetail
+		d.Config, d.Revision = ps.reg.ConfigSnapshot(p)
+		ps.h.volcDetail(r.Context(), p, &d)
+		current = &configState{Config: d.Config, Revision: d.Revision}
+	}
+	message := extension.ErrSettingsMoved.Error()
+	if i18n.FromRequest(r) != "" {
+		message = i18n.Localize(extension.ErrSettingsMoved, ps.h.requestLang(r))
+	}
+	writeCode(w, http.StatusConflict, "settings_moved", message, map[string]any{"current": current})
+}
+
 func (h *Manager) extensionRoutes(api *http.ServeMux) {
 	h.extensionUIRoutes(api)
 	h.extensionImageRoutes(api)
@@ -325,6 +345,11 @@ func (h *Manager) extensionRoutes(api *http.ServeMux) {
 		return false
 	}
 	api.HandleFunc("GET /api/v1/extensions/{id}/-/{$}", full(func(w http.ResponseWriter, r *http.Request, p *extension.Extension) {
+		p = ps().reg.Snapshot(p.Record.ID)
+		if p == nil {
+			writeExtensionResponseError(w, r, http.StatusNotFound, "not_found", errNoExtension)
+			return
+		}
 		writeExtensionJSON(w, r, detailOut(r, ps().detail(r.Context(), p)))
 	}))
 	api.HandleFunc("PUT /api/v1/extensions/{id}/-/enabled", full(func(w http.ResponseWriter, r *http.Request, p *extension.Extension) {
@@ -344,7 +369,8 @@ func (h *Manager) extensionRoutes(api *http.ServeMux) {
 	}))
 	api.HandleFunc("PUT /api/v1/extensions/{id}/-/config", full(func(w http.ResponseWriter, r *http.Request, p *extension.Extension) {
 		var in struct {
-			Config json.RawMessage `json:"config"`
+			Config           json.RawMessage `json:"config"`
+			ExpectedRevision *string         `json:"expected_revision"`
 		}
 		if !readExtensionJSON(w, r, &in) {
 			return
@@ -366,32 +392,38 @@ func (h *Manager) extensionRoutes(api *http.ServeMux) {
 			return
 		}
 		in.Config = kept
+		var meetings *bool
 		if isVolc(h.modules(), p) { // its meetings switch sets the assistant's choice and is not saved with it (volc_extension.go)
-			rest, changed, err := h.volcConfigWrite(r.Context(), p, in.Config)
-			if err != nil {
-				writeExtensionResponseError(w, r, http.StatusServiceUnavailable, "assistant_offline", err)
-				return
+			if in.ExpectedRevision != nil {
+				// Defer the separate choice until the versioned config is accepted.
+				in.Config, _, meetings = h.volcConfigDraft(p, in.Config)
+			} else {
+				rest, changed, err := h.volcConfigWrite(r.Context(), p, in.Config)
+				if err != nil {
+					writeExtensionResponseError(w, r, http.StatusServiceUnavailable, "assistant_offline", err)
+					return
+				}
+				if !changed {
+					writeExtensionJSON(w, r, detailOut(r, ps().detail(r.Context(), ps().reg.Get(p.Record.ID))))
+					return
+				}
+				in.Config = rest
 			}
-			if !changed {
-				writeExtensionJSON(w, r, detailOut(r, ps().detail(r.Context(), ps().reg.Get(p.Record.ID))))
-				return
-			}
-			in.Config = rest
 		}
 		// Only an opted-in full editor may change entry lists. An immediate save can explicitly preserve them while
 		// still receiving the opted-in detail; older full-config drafts always preserve the hub's current arrays.
-		var cleared []string
-		if r.URL.Query().Get("entry_lists") == "1" && r.URL.Query().Get("preserve_entries") != "1" {
-			cleared, err = ps().reg.SetConfigClearing(r.Context(), p.Record.ID, in.Config, actor(r))
-		} else {
-			cleared, err = ps().reg.SetConfigPreservingEntries(r.Context(), p.Record.ID, in.Config, actor(r))
-		}
+		preserveLists := r.URL.Query().Get("entry_lists") != "1" || r.URL.Query().Get("preserve_entries") == "1"
+		cleared, err := ps().reg.SaveConfig(r.Context(), p.Record.ID, in.Config, actor(r), preserveLists, in.ExpectedRevision)
 		if err != nil {
 			var fe *extension.FieldError
 			if errors.As(err, &fe) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadRequest)
 				_ = json.NewEncoder(w).Encode(map[string]any{"error": fe.Text(h.requestLang(r)), "code": "invalid_config", "field": fe.Path, "message": fe.MessageText(h.requestLang(r))})
+				return
+			}
+			if errors.Is(err, extension.ErrSettingsMoved) {
+				ps().writeConfigConflict(w, r, p.Record.ID)
 				return
 			}
 			if writeSettingsCheckError(w, r, err) {
@@ -417,7 +449,16 @@ func (h *Manager) extensionRoutes(api *http.ServeMux) {
 			writeCode(w, status, code, summary, extra)
 			return
 		}
-		d := ps().detail(r.Context(), ps().reg.Get(p.Record.ID))
+		if err := h.setVolcMeetings(r.Context(), p, meetings); err != nil {
+			writeExtensionResponseError(w, r, http.StatusServiceUnavailable, "assistant_offline", err)
+			return
+		}
+		p = ps().reg.Snapshot(p.Record.ID)
+		if p == nil {
+			writeExtensionResponseError(w, r, http.StatusNotFound, "not_found", errNoExtension)
+			return
+		}
+		d := ps().detail(r.Context(), p)
 		if len(cleared) > 0 {
 			d.SecretsCleared = cleared
 			if ps().isVoiceProvider(p) {
