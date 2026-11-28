@@ -38,6 +38,11 @@ class PhoneToolSettings(context: Context, scope: HubScope, coroutineScope: Corou
         values[KEY_BLOCK_REAL_PAYMENT] ?: true
     }.stateIn(coroutineScope, SharingStarted.Eagerly, true)
 
+    /** Persisted preference for whether the remote phone control floating overlay is expanded (false = collapsed pill on first install). */
+    val overlayExpanded: StateFlow<Boolean> = store.data.map { values ->
+        values[KEY_OVERLAY_EXPANDED] == true
+    }.stateIn(coroutineScope, SharingStarted.Eagerly, false)
+
     suspend fun setEnabled(source: PhoneSource, enabled: Boolean) {
         val _ = store.edit { it[booleanPreferencesKey(source.name)] = enabled }
     }
@@ -54,10 +59,15 @@ class PhoneToolSettings(context: Context, scope: HubScope, coroutineScope: Corou
         val _ = store.edit { it[KEY_BLOCK_REAL_PAYMENT] = blocked }
     }
 
+    suspend fun setOverlayExpanded(expanded: Boolean) {
+        val _ = store.edit { it[KEY_OVERLAY_EXPANDED] = expanded }
+    }
+
     private companion object {
         val KEY_REMOTE_CONTROL_ENABLED = booleanPreferencesKey("remote_control_enabled")
         val KEY_ALLOW_NOTIFICATION_OTP_AUTO_LOGIN = booleanPreferencesKey("remote_control_allow_otp_auto_login")
         val KEY_BLOCK_REAL_PAYMENT = booleanPreferencesKey("remote_control_block_real_payment")
+        val KEY_OVERLAY_EXPANDED = booleanPreferencesKey("remote_control_overlay_expanded")
     }
 }
 

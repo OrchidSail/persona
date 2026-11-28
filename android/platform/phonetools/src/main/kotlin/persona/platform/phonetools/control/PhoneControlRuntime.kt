@@ -212,6 +212,12 @@ class PhoneControlRuntime(
             }
         }
 
+        scope.launch {
+            settings.overlayExpanded.collect { expanded ->
+                overlay?.syncExpandedPreference(expanded)
+            }
+        }
+
         if (transport != null && !automation) {
             scope.launch {
                 connection.state.collectLatest { state ->
@@ -530,6 +536,12 @@ class PhoneControlRuntime(
             },
             virtualDisplaySizeProvider = {
                 virtualDisplay.currentWidth to virtualDisplay.currentHeight
+            },
+            initialMinimized = !settings.overlayExpanded.value,
+            onExpandedPreferenceChanged = { expanded ->
+                scope.launch {
+                    val _ = runCatching { settings.setOverlayExpanded(expanded) }
+                }
             },
         ).also {
             overlay = it

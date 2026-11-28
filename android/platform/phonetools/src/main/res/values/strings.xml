@@ -130,6 +130,7 @@
     <string name="phonetools_overlay_action_pause">Pause</string>
     <string name="phonetools_overlay_action_resume">Resume</string>
     <string name="phonetools_overlay_action_takeover">Take</string>
+    <string name="phonetools_overlay_action_handle">Handle</string>
     <string name="phonetools_overlay_action_return_control">Return</string>
     <string name="phonetools_overlay_action_stop">Stop</string>
     <string name="phonetools_overlay_reading">Reading screen…</string>

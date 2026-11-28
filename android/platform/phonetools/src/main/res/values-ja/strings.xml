@@ -129,6 +129,7 @@
     <string name="phonetools_overlay_action_pause">一時停止</string>
     <string name="phonetools_overlay_action_resume">再開</string>
     <string name="phonetools_overlay_action_takeover">手動</string>
+    <string name="phonetools_overlay_action_handle">操作</string>
     <string name="phonetools_overlay_action_return_control">戻す</string>
     <string name="phonetools_overlay_action_stop">停止</string>
     <string name="phonetools_overlay_reading">画面を読み取り中…</string>

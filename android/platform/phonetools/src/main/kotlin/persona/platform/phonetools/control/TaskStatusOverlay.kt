@@ -76,6 +76,8 @@ class TaskStatusOverlay(
     private val accessibilityHostProvider: () -> Context? = { PhoneControlAccessibilityService.instance.value },
     private val canDrawOverlaysProvider: () -> Boolean = { runCatching { Settings.canDrawOverlays(context) }.getOrDefault(false) },
     private val windowManagerProvider: (Context) -> WindowManager? = { it.getSystemService(WindowManager::class.java) },
+    initialMinimized: Boolean = true,
+    private val onExpandedPreferenceChanged: (Boolean) -> Unit = {},
 ) {
     internal data class OverlayWindowHost(
         val hostContext: Context,
@@ -93,8 +95,10 @@ class TaskStatusOverlay(
     private var pulseAnimator: ObjectAnimator? = null
     private var activeInteractiveSurface: Surface? = null
 
-    private var minimized: Boolean = true
-    private var currentMode: OverlayDisplayMode = OverlayDisplayMode.MINI_PILL
+    private var minimized: Boolean = initialMinimized
+    private var userToggledPreference: Boolean = false
+    private var currentMode: OverlayDisplayMode =
+        if (initialMinimized) OverlayDisplayMode.MINI_PILL else OverlayDisplayMode.LIGHT_CARD
     private var mountedHostContext: Context? = null
     private var mountedWindowType: Int = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
     private var failedAccessibilityHost: Context? = null
@@ -153,6 +157,32 @@ class TaskStatusOverlay(
 
     internal val activeHostContext: Context?
         get() = if (isShowing) mountedHostContext else null
+
+    internal val isMinimizedPreference: Boolean
+        get() = minimized
+
+    internal val isPulsing: Boolean
+        get() = pulseAnimator != null
+
+    fun syncExpandedPreference(expanded: Boolean) {
+        val _ = mainHandler.post {
+            if (userToggledPreference) return@post
+            val nextMinimized = !expanded
+            if (minimized == nextMinimized) return@post
+            minimized = nextMinimized
+            if (isShowing && lastSummary.isActive) {
+                val desiredMode = resolveDisplayMode(lastSummary)
+                if (desiredMode != currentMode) {
+                    switchModeOnMain(desiredMode)
+                    if (isShowing) {
+                        bindCurrentModeOnMain(lastSummary)
+                    }
+                }
+            } else if (!isShowing) {
+                currentMode = if (minimized) OverlayDisplayMode.MINI_PILL else OverlayDisplayMode.LIGHT_CARD
+            }
+        }
+    }
 
     fun onAccessibilityServiceChanged(service: Context?) {
         val _ = mainHandler.post {
@@ -239,13 +269,21 @@ class TaskStatusOverlay(
     }
 
     internal fun resolveDisplayMode(summary: OverlayTaskSummary): OverlayDisplayMode {
-        if (!summary.isActive) return OverlayDisplayMode.MINI_PILL
+        val preferredCompactMode =
+            if (minimized) OverlayDisplayMode.MINI_PILL else OverlayDisplayMode.LIGHT_CARD
+        if (!summary.isActive) {
+            return when (currentMode) {
+                OverlayDisplayMode.LIGHT_CARD, OverlayDisplayMode.MINI_PILL -> currentMode
+                OverlayDisplayMode.INLINE_INTERACTIVE, OverlayDisplayMode.FULLSCREEN_BAR -> preferredCompactMode
+            }
+        }
         return when (summary.handoverPhase) {
             HandoverPhase.INLINE -> OverlayDisplayMode.INLINE_INTERACTIVE
             HandoverPhase.FULLSCREEN -> OverlayDisplayMode.FULLSCREEN_BAR
-            HandoverPhase.RETURNING -> OverlayDisplayMode.MINI_PILL
-            HandoverPhase.PENDING_ATTENTION -> OverlayDisplayMode.MINI_PILL
-            HandoverPhase.NONE -> if (minimized) OverlayDisplayMode.MINI_PILL else OverlayDisplayMode.LIGHT_CARD
+            HandoverPhase.RETURNING,
+            HandoverPhase.PENDING_ATTENTION,
+            HandoverPhase.NONE,
+            -> preferredCompactMode
         }
     }
 
@@ -427,7 +465,6 @@ class TaskStatusOverlay(
         ) {
             if (prevView is LinearLayout && previewContainer != null) {
                 currentMode = nextMode
-                minimized = (nextMode == OverlayDisplayMode.MINI_PILL)
                 applyCompactCardOrPillLayoutOnMain(relayout = true)
                 return
             }
@@ -443,9 +480,6 @@ class TaskStatusOverlay(
         layoutParams = null
         isShowing = false
         currentMode = nextMode
-        if (nextMode == OverlayDisplayMode.MINI_PILL || nextMode == OverlayDisplayMode.LIGHT_CARD) {
-            minimized = (nextMode == OverlayDisplayMode.MINI_PILL)
-        }
         showOnMain(nextMode)
     }
 
@@ -550,8 +584,7 @@ class TaskStatusOverlay(
         failedAccessibilityHost = null
         rootView = null
         layoutParams = null
-        minimized = true
-        currentMode = OverlayDisplayMode.MINI_PILL
+        currentMode = if (minimized) OverlayDisplayMode.MINI_PILL else OverlayDisplayMode.LIGHT_CARD
         usingVirtualDisplayMode = false
         latestPreviewBitmap = null
         latestPreviewProtected = false
@@ -627,9 +660,12 @@ class TaskStatusOverlay(
         currentMode = OverlayDisplayMode.LIGHT_CARD
         minimized = false
         val view = buildOverlayView(ctx)
+        rootView = view
         applyCompactCardOrPillLayoutOnMain(relayout = false, forcePill = false)
         bindPreviewOnMain(frame, summary.usingVirtualDisplay, protectedFrame)
         bindSummaryOnMain(summary)
+        stopPulseOnMain()
+        rootView = null
         return view
     }
 
@@ -790,9 +826,8 @@ class TaskStatusOverlay(
                 if (lastSummary.isWaitingOnPhone && currentMode == OverlayDisplayMode.MINI_PILL) {
                     onOpenHandover()
                 } else {
-                    minimized = !minimized
-                    currentMode = if (minimized) OverlayDisplayMode.MINI_PILL else OverlayDisplayMode.LIGHT_CARD
-                    applyCompactCardOrPillLayoutOnMain(relayout = true)
+                    val nextExpanded = currentMode == OverlayDisplayMode.MINI_PILL
+                    setUserExpandedPreferenceOnMain(nextExpanded)
                 }
             }
         }
@@ -921,7 +956,16 @@ class TaskStatusOverlay(
             context.getString(R.string.phonetools_overlay_action_takeover),
             colorRes(R.color.phonetools_overlay_btn_primary),
             trailingGap = true,
-        ) { onTakeoverOrResumePhone() }
+        ) {
+            if (lastSummary.handoverPhase == HandoverPhase.PENDING_ATTENTION &&
+                lastSummary.isWaitingOnPhone &&
+                lastSummary.isActive
+            ) {
+                onOpenHandover()
+            } else {
+                onTakeoverOrResumePhone()
+            }
+        }
         val stop = makeChipButton(
             ctx,
             context.getString(R.string.phonetools_overlay_action_stop),
@@ -1433,7 +1477,9 @@ class TaskStatusOverlay(
         (statusDotView?.background as? GradientDrawable)?.setColor(colorRes(dotColorRes))
 
         val isPill = currentMode == OverlayDisplayMode.MINI_PILL
-        val isAttentionPill = isPill && s.isWaitingOnPhone && s.isActive
+        val isAttentionActive = s.isWaitingOnPhone && s.isActive
+        val isAttentionPill = isPill && isAttentionActive
+        val isAttentionCard = currentMode == OverlayDisplayMode.LIGHT_CARD && isAttentionActive
         (rootView?.background as? GradientDrawable)?.let { bg ->
             bg.setColor(
                 colorRes(
@@ -1444,13 +1490,17 @@ class TaskStatusOverlay(
             bg.setStroke(
                 dimenPx(R.dimen.phonetools_overlay_stroke_width),
                 colorRes(
-                    if (isAttentionPill) R.color.phonetools_overlay_stroke_attention
+                    if (isAttentionPill || isAttentionCard) R.color.phonetools_overlay_stroke_attention
                     else R.color.phonetools_overlay_stroke,
                 ),
             )
         }
-        if (isAttentionPill) {
+        if (isAttentionPill || isAttentionCard) {
             startPulseOnMain()
+        } else {
+            stopPulseOnMain()
+        }
+        if (isPill) {
             val params = layoutParams
             val wm = windowManager
             val view = rootView
@@ -1458,18 +1508,6 @@ class TaskStatusOverlay(
             if (params != null && wm != null && view != null && params.width != targetW) {
                 params.width = targetW
                 val _ = runCatching { wm.updateViewLayout(view, params) }
-            }
-        } else {
-            stopPulseOnMain()
-            if (isPill) {
-                val params = layoutParams
-                val wm = windowManager
-                val view = rootView
-                val targetW = currentPillWidthPx(s)
-                if (params != null && wm != null && view != null && params.width != targetW) {
-                    params.width = targetW
-                    val _ = runCatching { wm.updateViewLayout(view, params) }
-                }
             }
         }
 
@@ -1488,7 +1526,14 @@ class TaskStatusOverlay(
             if (s.isPaused) R.string.phonetools_overlay_action_resume else R.string.phonetools_overlay_action_pause,
         )
         takeoverBtn?.text = context.getString(
-            if (s.isWaitingOnPhone) R.string.phonetools_overlay_action_return_control else R.string.phonetools_overlay_action_takeover,
+            when {
+                s.handoverPhase == HandoverPhase.PENDING_ATTENTION && s.isWaitingOnPhone && s.isActive ->
+                    R.string.phonetools_overlay_action_handle
+                s.isWaitingOnPhone ->
+                    R.string.phonetools_overlay_action_return_control
+                else ->
+                    R.string.phonetools_overlay_action_takeover
+            },
         )
         val controlsEnabled = s.isActive
         pauseBtn?.isEnabled = controlsEnabled
@@ -1496,7 +1541,7 @@ class TaskStatusOverlay(
         stopBtn?.isEnabled = controlsEnabled
         controlsRow?.alpha = if (controlsEnabled) 1f else 0.5f
 
-        if (!s.isActive) {
+        if (!s.isActive && pendingDismiss == null) {
             val dismiss = Runnable {
                 if (!lastSummary.isActive) {
                     val v = rootView
@@ -1569,11 +1614,7 @@ class TaskStatusOverlay(
                         if (lastSummary.isWaitingOnPhone) {
                             onOpenHandover()
                         } else {
-                            minimized = false
-                            currentMode = OverlayDisplayMode.LIGHT_CARD
-                            applyCompactCardOrPillLayoutOnMain(relayout = true)
-                            bindPreviewOnMain(latestPreviewBitmap, usingVirtualDisplayMode, latestPreviewProtected)
-                            bindSummaryOnMain(lastSummary)
+                            setUserExpandedPreferenceOnMain(expanded = true)
                         }
                     }
                     true
@@ -1581,6 +1622,18 @@ class TaskStatusOverlay(
                 else -> false
             }
         }
+    }
+
+    private fun setUserExpandedPreferenceOnMain(expanded: Boolean) {
+        userToggledPreference = true
+        minimized = !expanded
+        currentMode = if (expanded) OverlayDisplayMode.LIGHT_CARD else OverlayDisplayMode.MINI_PILL
+        onExpandedPreferenceChanged(expanded)
+        applyCompactCardOrPillLayoutOnMain(relayout = true)
+        if (expanded) {
+            bindPreviewOnMain(latestPreviewBitmap, usingVirtualDisplayMode, latestPreviewProtected)
+        }
+        bindSummaryOnMain(lastSummary)
     }
 
     @SuppressLint("ClickableViewAccessibility")
