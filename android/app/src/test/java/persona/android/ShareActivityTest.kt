@@ -21,7 +21,7 @@ class ShareActivityTest {
         assertEquals(persona.core.contracts.api.MessageVia.Share, contextual.via)
         assertTrue(contextual.text.contains("title=\"标题 &quot;引用&quot;\" url=\"https://example.com/page\""))
         assertEquals(1, Regex("</persona-context>").findAll(contextual.text).count())
-        assertFalse(persona.core.domain.parseContexts(contextual.text).first.single().body.contains("</persona-context>"))
+        assertTrue(persona.core.domain.parseContexts(contextual.text).first.single().body.contains("选中文字</persona-context></persona-context>"))
         assertTrue(contextual.text.endsWith("</persona-context>\n\n请总结"))
 
         sendSharedContent(sender, target, "", "https://example.com/page", emptyList<String>(),
