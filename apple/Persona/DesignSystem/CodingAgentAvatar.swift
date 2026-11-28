@@ -439,7 +439,7 @@ private struct OrcaFinGlyph: View {
     }
 }
 
-private struct HerdrGlyph: Shape {
+private nonisolated struct HerdrGlyph: Shape {
     func path(in rect: CGRect) -> Path {
         let s = min(rect.width, rect.height) / 16
         return Path { p in
@@ -453,7 +453,7 @@ private struct HerdrGlyph: Shape {
     }
 }
 
-private struct HerdrAppGlyph: Shape {
+private nonisolated struct HerdrAppGlyph: Shape {
     func path(in rect: CGRect) -> Path {
         let s = min(rect.width, rect.height) / 16
         return Path { p in
@@ -465,7 +465,7 @@ private struct HerdrAppGlyph: Shape {
     }
 }
 
-private struct PaseoGlyph: Shape {
+private nonisolated struct PaseoGlyph: Shape {
     func path(in rect: CGRect) -> Path {
         let s = min(rect.width, rect.height) / 16
         return Path { p in
@@ -479,7 +479,7 @@ private struct PaseoGlyph: Shape {
     }
 }
 
-private struct T3CodeGlyph: Shape {
+private nonisolated struct T3CodeGlyph: Shape {
     func path(in rect: CGRect) -> Path {
         let s = min(rect.width, rect.height) / 16
         return Path { p in
@@ -507,7 +507,7 @@ private struct CindyGlyph: View {
     }
 }
 
-private struct CindyArcShape: Shape {
+private nonisolated struct CindyArcShape: Shape {
     func path(in rect: CGRect) -> Path {
         let s = min(rect.width, rect.height) / 16
         return Path { p in
@@ -517,7 +517,7 @@ private struct CindyArcShape: Shape {
     }
 }
 
-private struct CindyDotShape: Shape {
+private nonisolated struct CindyDotShape: Shape {
     func path(in rect: CGRect) -> Path {
         let s = min(rect.width, rect.height) / 16
         let r = 1.4 * s
@@ -527,7 +527,7 @@ private struct CindyDotShape: Shape {
     }
 }
 
-private struct TernGlyph: Shape {
+private nonisolated struct TernGlyph: Shape {
     func path(in rect: CGRect) -> Path {
         let s = min(rect.width, rect.height) / 16
         return Path { p in
@@ -538,7 +538,7 @@ private struct TernGlyph: Shape {
     }
 }
 
-private struct RexGlyph: Shape {
+private nonisolated struct RexGlyph: Shape {
     func path(in rect: CGRect) -> Path {
         let s = min(rect.width, rect.height) / 16
         return Path { p in
@@ -561,7 +561,7 @@ private struct BotmuxGlyph: View {
     }
 }
 
-private struct BotmuxLinksShape: Shape {
+private nonisolated struct BotmuxLinksShape: Shape {
     func path(in rect: CGRect) -> Path {
         let s = min(rect.width, rect.height) / 16
         return Path { p in
@@ -572,7 +572,7 @@ private struct BotmuxLinksShape: Shape {
     }
 }
 
-private struct BotmuxNodesShape: Shape {
+private nonisolated struct BotmuxNodesShape: Shape {
     func path(in rect: CGRect) -> Path {
         let s = min(rect.width, rect.height) / 16
         let rSmall = 1.5 * s
