@@ -115,9 +115,10 @@ import (
 // Hardening Antigravity Desktop hub discovery/RPC/context wrapping, workspacePathOf UNC/NUL/host checks, and custom-channel fork/rewind isolation with rollback adds 1,012 B (317,963 B -> 318,975 B).
 // Anchoring Antigravity one-shot timer heartbeat detection and returning turn_over_background when interrupting background-only sessions (#17619) add 222 B (318,975 B -> 319,197 B).
 // Preserving active native Antigravity interrupts alongside running background tasks (#17652) adds 15 B (319,197 B -> 319,212 B).
+// Reaping idle assistant ACP workers independently of coding agents and storing compact background summaries instead of full exported.steps in listedTranscriptCache add 8 B (319,212 B -> 319,220 B).
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 319_212
+	const budget = 319_220
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {
