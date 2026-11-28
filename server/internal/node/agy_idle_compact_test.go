@@ -1153,7 +1153,7 @@ func TestAgyIdleAutoCompactFailedStartsBackOff(t *testing.T) {
 	host.mu.Lock()
 	host.answer = func(method string, params json.RawMessage) (any, error) {
 		if method == "session.send" {
-			return nil, &rpc.Error{Code: "failed", Message: "Failed to read session " + taskID + "; retry, or load it with session/load"}
+			return nil, &rpc.Error{Code: "failed", Message: "Antigravity conversation operation timed out"}
 		}
 		return map[string]any{"ok": true}, nil
 	}
@@ -1263,4 +1263,211 @@ func TestAgyIdleAutoCompactSweepCapsConcurrency(t *testing.T) {
 	waitFor(t, "second batch of 2 compactions started", func() bool {
 		return len(host.got("session.send")) == agyIdleCompactMaxConcurrent*2
 	})
+}
+
+func TestAgyIdleAutoCompactPermanentUnreadableSkipsUntilActivityOrReset(t *testing.T) {
+	base := time.Date(2026, 11, 29, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		err  *rpc.Error
+	}{
+		{
+			name: "failed_to_read_session",
+			err:  &rpc.Error{Code: "failed", Message: "Failed to read session conv-1; retry, or load it with session/load"},
+		},
+		{
+			name: "structured_not_found_session_unreadable",
+			err: &rpc.Error{
+				Code:    "not_found",
+				Message: "conversation cannot be read",
+				Data:    json.RawMessage(`{"delivered":"none","reason":"session_unreadable"}`),
+			},
+		},
+		{
+			name: "invalid_session_text",
+			err:  &rpc.Error{Code: "failed", Message: "invalidSession: missing conversation state"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			n, host, _ := runtimeCompactFixture(t)
+			clock := setAgyIdleClock(n, base)
+			n.setAgyIdleCompaction(assistantwire.AgyIdleCompaction{Enabled: true, IdleMinutes: 1, ContextTokens: 200_000})
+
+			persisted := map[string]sessionState{}
+			n.state.persist = func(id string, v sessionState) { persisted[id] = v }
+
+			taskID := "agy-12345678-aaaa-bbbb-cccc-dddddddddddd"
+			cwd := filepath.Join(n.home, "proj")
+			n.state.put(taskID, sessionState{Launcher: "agy", Cwd: cwd})
+			row := proto.Session{SessionID: taskID, Cwd: cwd, Status: proto.StatusDone, Rev: 1, ContextTokens: 250_000, UpdatedAt: base}
+			pushAgyRow(t, n, host, row)
+
+			host.mu.Lock()
+			host.answer = func(method string, params json.RawMessage) (any, error) {
+				if method == "session.send" {
+					return nil, tc.err
+				}
+				return map[string]any{"ok": true}, nil
+			}
+			host.mu.Unlock()
+
+			h := n.runtimes.ownerOf(taskID)
+			runAt := func(at time.Time, want int) {
+				t.Helper()
+				clock.set(at)
+				if !n.tryAcquireAgyIdleSlot() {
+					t.Fatal("failed to reserve sweep slot")
+				}
+				n.runAgyIdleCompaction(t.Context(), h, taskID, int(row.ContextTokens), at.Sub(row.UpdatedAt))
+				if got := len(host.got("session.send")); got != want {
+					t.Fatalf("compaction attempts at +%s = %d, want %d", at.Sub(base), got, want)
+				}
+			}
+
+			// First attempt hits permanent unreadable error and latches skip.
+			runAt(base.Add(time.Minute), 1)
+			if st := persisted[taskID]; st.AgyIdleUncompactable == nil || !st.AgyIdleUncompactable.RowUpdatedAt.Equal(base) {
+				t.Fatalf("persisted AgyIdleUncompactable = %+v, want RowUpdatedAt=%s", st.AgyIdleUncompactable, base)
+			}
+
+			// Even after 5m, 1h, and 24h with unchanged UpdatedAt, no retry is attempted.
+			for _, delta := range []time.Duration{6 * time.Minute, time.Hour, 24 * time.Hour} {
+				runAt(base.Add(delta), 1)
+			}
+
+			// Advancing row.UpdatedAt clears the skip latch and allows retrying once idle again.
+			movedAt := base.Add(25 * time.Hour)
+			row.Rev, row.UpdatedAt = 2, movedAt
+			pushAgyRow(t, n, host, row)
+			if st := persisted[taskID]; st.AgyIdleUncompactable != nil {
+				t.Fatalf("persisted AgyIdleUncompactable not cleared after UpdatedAt advanced: %+v", st.AgyIdleUncompactable)
+			}
+			runAt(movedAt.Add(time.Minute), 2)
+			// Latched again at movedAt.
+			runAt(movedAt.Add(10*time.Minute), 2)
+
+			// ContextTokens dropping to 0 also clears the skip latch.
+			row.Rev, row.ContextTokens = 3, 0
+			pushAgyRow(t, n, host, row)
+			if st := persisted[taskID]; st.AgyIdleUncompactable != nil {
+				t.Fatalf("persisted AgyIdleUncompactable not cleared after ContextTokens reset to 0: %+v", st.AgyIdleUncompactable)
+			}
+			row.Rev, row.ContextTokens = 4, 250_000
+			pushAgyRow(t, n, host, row)
+			runAt(movedAt.Add(12*time.Minute), 3)
+		})
+	}
+}
+
+func TestAgyIdleAutoCompactPermanentUnreadableSurvivesNodeRestart(t *testing.T) {
+	base := time.Date(2026, 11, 29, 1, 0, 0, 0, time.UTC)
+	taskID := "agy-deadbeef-1111-2222-3333-444444444444"
+
+	// First node run: hits permanent unreadable error and persists state.
+	n1, host1, _ := runtimeCompactFixture(t)
+	clock1 := setAgyIdleClock(n1, base)
+	n1.setAgyIdleCompaction(assistantwire.AgyIdleCompaction{Enabled: true, IdleMinutes: 1, ContextTokens: 200_000})
+	persistedJSON := map[string][]byte{}
+	n1.state.persist = func(id string, v sessionState) {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal sessionState: %v", err)
+		}
+		persistedJSON[id] = raw
+	}
+	cwd := filepath.Join(n1.home, "proj")
+	n1.state.put(taskID, sessionState{Launcher: "agy", Cwd: cwd})
+	row := proto.Session{SessionID: taskID, Cwd: cwd, Status: proto.StatusDone, Rev: 1, ContextTokens: 250_000, UpdatedAt: base}
+	pushAgyRow(t, n1, host1, row)
+	host1.mu.Lock()
+	host1.answer = func(method string, params json.RawMessage) (any, error) {
+		if method == "session.send" {
+			return nil, &rpc.Error{Code: "failed", Message: "Failed to read session " + taskID + "; retry, or load it with session/load"}
+		}
+		return map[string]any{"ok": true}, nil
+	}
+	host1.mu.Unlock()
+	clock1.set(base.Add(time.Minute))
+	if !n1.tryAcquireAgyIdleSlot() {
+		t.Fatal("failed to reserve sweep slot on node1")
+	}
+	n1.runAgyIdleCompaction(t.Context(), n1.runtimes.ownerOf(taskID), taskID, int(row.ContextTokens), time.Minute)
+	if got := len(host1.got("session.send")); got != 1 {
+		t.Fatalf("node1 attempts = %d, want 1", got)
+	}
+
+	// Simulated node restart: fresh Node loading persisted sessionState from hub.
+	n2, host2, _ := runtimeCompactFixture(t)
+	clock2 := setAgyIdleClock(n2, base.Add(2*time.Hour))
+	n2.setAgyIdleCompaction(assistantwire.AgyIdleCompaction{Enabled: true, IdleMinutes: 1, ContextTokens: 200_000})
+	loaded := map[string]sessionState{}
+	for id, raw := range persistedJSON {
+		var st sessionState
+		if err := json.Unmarshal(raw, &st); err != nil {
+			t.Fatalf("unmarshal sessionState: %v", err)
+		}
+		loaded[id] = st
+	}
+	n2.state.merge(loaded)
+	pushAgyRow(t, n2, host2, row)
+
+	// Sweep after restart must NOT spawn any compaction while UpdatedAt is unchanged.
+	n2.sweepAgyIdleCompactions(t.Context(), clock2.get())
+	if _, ready := agyIdleReadyNow(n2, n2.runtimes.ownerOf(taskID), row, clock2.get()); ready {
+		t.Fatal("restarted node reported unreadable session ready without UpdatedAt advancing")
+	}
+	if got := len(host2.got("session.send")); got != 0 {
+		t.Fatalf("restarted node attempts = %d, want 0", got)
+	}
+
+	// Once row.UpdatedAt advances, restarted node clears the latch and compacts again.
+	movedAt := base.Add(3 * time.Hour)
+	row.Rev, row.UpdatedAt = 2, movedAt
+	pushAgyRow(t, n2, host2, row)
+	clock2.set(movedAt.Add(2 * time.Minute))
+	if _, ready := agyIdleReadyNow(n2, n2.runtimes.ownerOf(taskID), row, clock2.get()); !ready {
+		t.Fatal("restarted node did not clear uncompactable latch after UpdatedAt advanced")
+	}
+}
+
+func TestAgyIdleAutoCompactAsyncUnreadableSettlementSkipsRetries(t *testing.T) {
+	base := time.Date(2026, 11, 29, 2, 0, 0, 0, time.UTC)
+	n, host, _ := runtimeCompactFixture(t)
+	clock := setAgyIdleClock(n, base)
+	n.setAgyIdleCompaction(assistantwire.AgyIdleCompaction{Enabled: true, IdleMinutes: 1, ContextTokens: 200_000})
+	persisted := map[string]sessionState{}
+	n.state.persist = func(id string, v sessionState) { persisted[id] = v }
+
+	taskID := "agy-async000-1111-2222-3333-444444444444"
+	cwd := filepath.Join(n.home, "proj")
+	n.state.put(taskID, sessionState{Launcher: "agy", Cwd: cwd})
+	row := proto.Session{SessionID: taskID, Cwd: cwd, Status: proto.StatusDone, Rev: 1, ContextTokens: 250_000, UpdatedAt: base}
+	pushAgyRow(t, n, host, row)
+
+	clock.set(base.Add(2 * time.Minute))
+	n.sweepAgyIdleCompactions(t.Context(), clock.get())
+	waitFor(t, "async compaction started", func() bool {
+		return len(host.got("session.send")) == 1
+	})
+
+	if err := host.peer.Notify("session.compaction.settled", map[string]any{
+		"session_id": taskID,
+		"error":      "Failed to read session " + taskID + "; retry, or load it with session/load",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "async compaction failure recorded", func() bool {
+		n.agyIdleMu.Lock()
+		defer n.agyIdleMu.Unlock()
+		st := n.agyIdleSessions[taskID]
+		return n.agyIdleInFlight == 0 && st != nil && st.uncompactable
+	})
+	if st := persisted[taskID]; st.AgyIdleUncompactable == nil || !st.AgyIdleUncompactable.RowUpdatedAt.Equal(base) {
+		t.Fatalf("persisted AgyIdleUncompactable = %+v, want RowUpdatedAt=%s", st.AgyIdleUncompactable, base)
+	}
+	if _, ready := agyIdleReadyNow(n, n.runtimes.ownerOf(taskID), row, base.Add(24*time.Hour)); ready {
+		t.Fatal("session remained ready after async unreadable compaction failure")
+	}
 }

@@ -2,17 +2,21 @@ package node
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
 	"github.com/nwverse/persona/server/internal/assistantwire"
 	"github.com/nwverse/persona/server/internal/proto"
+	"github.com/nwverse/persona/server/internal/rpc"
 )
 
-// After a failed automatic compaction a session waits agyIdleRetryCooldown before the next try, doubling with each
-// failure in a row up to agyIdleRetryCooldownMax (#17260): a session the runtime no longer has loaded ("Failed to read
-// session …; load it with session/load") fails the same way every time, and was retried every five minutes for as
-// long as the node ran. New activity on the session, or its context falling below the threshold, starts over.
+// After a transient failed automatic compaction a session waits agyIdleRetryCooldown before the next try, doubling
+// with each failure in a row up to agyIdleRetryCooldownMax (#17260). Permanent unreadable/missing session errors
+// (such as "Failed to read session …" or not_found/session_unreadable) are latched as uncompactable and persisted in
+// session state so restarts do not keep spawning Antigravity ACP workers until row.UpdatedAt advances or context
+// tokens drop below the threshold.
 const (
 	agyIdleRetryCooldown    = 5 * time.Minute
 	agyIdleRetryCooldownMax = 4 * time.Hour
@@ -63,16 +67,104 @@ func (n *Node) agyNow() time.Time {
 	return time.Now()
 }
 
+type agyIdleUncompactableState struct {
+	RowUpdatedAt time.Time `json:"row_updated_at,omitzero"`
+}
+
 type agyIdleState struct {
-	host          *runtimeConn
-	gen           uint64
-	attemptToken  uint64
-	safeIdleSince time.Time
-	lastRowTime   time.Time
-	lastTokens    int
-	attempted     bool
-	lastAttempt   time.Time
-	failures      int // failed attempts in a row, for agyIdleRetryDelay
+	host               *runtimeConn
+	gen                uint64
+	attemptToken       uint64
+	safeIdleSince      time.Time
+	lastRowTime        time.Time
+	lastTokens         int
+	attempted          bool
+	lastAttempt        time.Time
+	failures           int // failed attempts in a row, for agyIdleRetryDelay
+	uncompactable      bool
+	uncompactableRowAt time.Time
+}
+
+// isAgyIdleUnreadableError reports whether err indicates a permanently unreadable or missing Antigravity session
+// that will not succeed on blind retries (compatible with both plain error text and structured not_found errors).
+func isAgyIdleUnreadableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var re *rpc.Error
+	if errors.As(err, &re) {
+		switch re.Code {
+		case "not_found", "conversation_deleted":
+			return true
+		}
+		if len(re.Data) > 0 {
+			var data struct {
+				Reason string `json:"reason"`
+			}
+			if json.Unmarshal(re.Data, &data) == nil {
+				switch data.Reason {
+				case "session_unreadable", proto.NotFoundNoTranscript, proto.NotFoundUnknownSession:
+					return true
+				}
+			}
+		}
+		if isAgyIdleUnreadableMessage(re.Message) {
+			return true
+		}
+	}
+	return isAgyIdleUnreadableMessage(err.Error())
+}
+
+func isAgyIdleUnreadableMessage(msg string) bool {
+	lower := strings.ToLower(strings.TrimSpace(msg))
+	if lower == "" {
+		return false
+	}
+	return strings.Contains(lower, "failed to read session") ||
+		strings.Contains(lower, "session_unreadable") ||
+		strings.Contains(lower, "invalidsession") ||
+		strings.Contains(lower, "invalid session") ||
+		strings.Contains(lower, "antigravity conversation not found") ||
+		strings.Contains(lower, "antigravity session is closed") ||
+		strings.Contains(lower, "conversation not found") ||
+		strings.Contains(lower, "session not found")
+}
+
+func (n *Node) persistedAgyIdleUncompactable(id string) (time.Time, bool) {
+	if n.state == nil || id == "" {
+		return time.Time{}, false
+	}
+	st, ok := n.state.get(id)
+	if !ok || st.AgyIdleUncompactable == nil {
+		return time.Time{}, false
+	}
+	return st.AgyIdleUncompactable.RowUpdatedAt, true
+}
+
+func (n *Node) persistAgyIdleUncompactable(id string, rowUpdatedAt time.Time) {
+	if n.state == nil || id == "" {
+		return
+	}
+	n.state.update(id, func(v *sessionState) bool {
+		if v.AgyIdleUncompactable != nil && v.AgyIdleUncompactable.RowUpdatedAt.Equal(rowUpdatedAt) {
+			return false
+		}
+		v.AgyIdleUncompactable = &agyIdleUncompactableState{RowUpdatedAt: rowUpdatedAt}
+		return true
+	})
+}
+
+func (n *Node) clearPersistedAgyIdleUncompactable(id string) {
+	if n.state == nil || id == "" {
+		return
+	}
+	n.state.update(id, func(v *sessionState) bool {
+		if v.AgyIdleUncompactable == nil {
+			return false
+		}
+		v.AgyIdleUncompactable = nil
+		return true
+	})
 }
 
 type agyIdlePruneCandidate struct {
@@ -344,56 +436,81 @@ func (n *Node) observeAgySessions(h *runtimeConn, list []proto.Session) {
 }
 
 func (n *Node) updateAgyIdleState(h *runtimeConn, row proto.Session, safe bool, tokenThreshold int, now time.Time) time.Time {
-	n.agyIdleMu.Lock()
-	defer n.agyIdleMu.Unlock()
-	if n.agyIdleSessions == nil {
-		n.agyIdleSessions = map[string]*agyIdleState{}
-	}
-	st := n.agyIdleSessions[row.SessionID]
-	if st == nil {
-		st = &agyIdleState{}
-		n.agyIdleSessions[row.SessionID] = st
-	}
-	if h != nil {
-		st.host = h
-	}
-	if int(row.ContextTokens) < tokenThreshold {
-		st.attempted = false
-		st.lastAttempt = time.Time{}
-		st.attemptToken = 0
-		st.failures = 0
-	} else if !st.attempted && st.failures > 0 && row.UpdatedAt.After(st.lastRowTime) && row.UpdatedAt.After(st.lastAttempt) {
-		st.lastAttempt = time.Time{}
-		st.failures = 0
-	}
-	if !safe {
-		st.safeIdleSince = time.Time{}
+	persistedRowAt, hasPersisted := n.persistedAgyIdleUncompactable(row.SessionID)
+	clearPersisted := false
+	var idleSince time.Time
+	func() {
+		n.agyIdleMu.Lock()
+		defer n.agyIdleMu.Unlock()
+		if n.agyIdleSessions == nil {
+			n.agyIdleSessions = map[string]*agyIdleState{}
+		}
+		st := n.agyIdleSessions[row.SessionID]
+		if st == nil {
+			st = &agyIdleState{}
+			n.agyIdleSessions[row.SessionID] = st
+		}
+		if hasPersisted && !st.uncompactable {
+			st.uncompactable = true
+			st.uncompactableRowAt = persistedRowAt
+		}
+		if h != nil {
+			st.host = h
+		}
+		if int(row.ContextTokens) < tokenThreshold {
+			st.attempted = false
+			st.lastAttempt = time.Time{}
+			st.attemptToken = 0
+			st.failures = 0
+			if st.uncompactable || hasPersisted {
+				st.uncompactable = false
+				st.uncompactableRowAt = time.Time{}
+				clearPersisted = true
+			}
+		} else if st.uncompactable && !row.UpdatedAt.IsZero() && row.UpdatedAt.After(st.uncompactableRowAt) {
+			st.uncompactable = false
+			st.uncompactableRowAt = time.Time{}
+			st.attempted = false
+			st.lastAttempt = time.Time{}
+			st.failures = 0
+			clearPersisted = true
+		} else if !st.attempted && st.failures > 0 && row.UpdatedAt.After(st.lastRowTime) && row.UpdatedAt.After(st.lastAttempt) {
+			st.lastAttempt = time.Time{}
+			st.failures = 0
+		}
+		if !safe {
+			st.safeIdleSince = time.Time{}
+			st.lastRowTime = row.UpdatedAt
+			st.lastTokens = int(row.ContextTokens)
+			st.gen++
+			return
+		}
+		if st.safeIdleSince.IsZero() {
+			if !row.UpdatedAt.IsZero() && !row.UpdatedAt.After(now) {
+				st.safeIdleSince = row.UpdatedAt
+			} else {
+				st.safeIdleSince = now
+			}
+		} else if st.safeIdleSince.After(now) {
+			// On a wall-clock rollback, reset safeIdleSince to now rather than an older row.UpdatedAt so
+			// rollback cannot immediately trip IdleMinutes and trigger a false compaction.
+			st.safeIdleSince = now
+		} else if !row.UpdatedAt.IsZero() && row.UpdatedAt.After(st.lastRowTime) && row.UpdatedAt.After(st.safeIdleSince) {
+			if row.UpdatedAt.After(now) {
+				st.safeIdleSince = now
+			} else {
+				st.safeIdleSince = row.UpdatedAt
+			}
+		}
 		st.lastRowTime = row.UpdatedAt
 		st.lastTokens = int(row.ContextTokens)
 		st.gen++
-		return time.Time{}
+		idleSince = st.safeIdleSince
+	}()
+	if clearPersisted {
+		n.clearPersistedAgyIdleUncompactable(row.SessionID)
 	}
-	if st.safeIdleSince.IsZero() {
-		if !row.UpdatedAt.IsZero() && !row.UpdatedAt.After(now) {
-			st.safeIdleSince = row.UpdatedAt
-		} else {
-			st.safeIdleSince = now
-		}
-	} else if st.safeIdleSince.After(now) {
-		// On a wall-clock rollback, reset safeIdleSince to now rather than an older row.UpdatedAt so
-		// rollback cannot immediately trip IdleMinutes and trigger a false compaction.
-		st.safeIdleSince = now
-	} else if !row.UpdatedAt.IsZero() && row.UpdatedAt.After(st.lastRowTime) && row.UpdatedAt.After(st.safeIdleSince) {
-		if row.UpdatedAt.After(now) {
-			st.safeIdleSince = now
-		} else {
-			st.safeIdleSince = row.UpdatedAt
-		}
-	}
-	st.lastRowTime = row.UpdatedAt
-	st.lastTokens = int(row.ContextTokens)
-	st.gen++
-	return st.safeIdleSince
+	return idleSince
 }
 
 // agyIdleReady says whether row has met its safe idle time and context thresholds.
@@ -426,9 +543,10 @@ func (n *Node) agyIdleReady(h *runtimeConn, row proto.Session, policy assistantw
 	n.agyIdleMu.Lock()
 	st := n.agyIdleSessions[row.SessionID]
 	latched := st != nil && st.attempted
+	uncompactable := st != nil && st.uncompactable
 	cooling := st != nil && !st.lastAttempt.IsZero() && now.Sub(st.lastAttempt) < agyIdleRetryDelay(st.failures)
 	n.agyIdleMu.Unlock()
-	if latched || cooling {
+	if latched || uncompactable || cooling {
 		return idleFor, false
 	}
 	return idleFor, true
@@ -460,23 +578,39 @@ func (n *Node) markAgyIdleAttempt(h *runtimeConn, id string, now time.Time) (tok
 }
 
 func (n *Node) recordAgyIdleFailure(h *runtimeConn, id string, now time.Time, token uint64, prevAttempted bool, prevLastAttempt time.Time) {
+	n.recordAgyIdleFailureWithCause(h, id, now, token, prevAttempted, prevLastAttempt, false, time.Time{})
+}
+
+func (n *Node) recordAgyIdleFailureWithCause(h *runtimeConn, id string, now time.Time, token uint64, prevAttempted bool, prevLastAttempt time.Time, permanent bool, rowUpdatedAt time.Time) {
 	staleOwner := runtimeConnClosed(h) || (n.runtimes != nil && n.runtimes.ownerOf(id) != h)
+	persist := false
 	n.agyIdleMu.Lock()
-	defer n.agyIdleMu.Unlock()
 	st := n.agyIdleSessions[id]
 	if st == nil || token == 0 || st.attemptToken != token {
+		n.agyIdleMu.Unlock()
 		return
 	}
 	st.attemptToken = 0
 	if staleOwner {
 		st.attempted = prevAttempted
 		st.lastAttempt = prevLastAttempt
+	} else if permanent && (st.lastRowTime.IsZero() || !st.lastRowTime.After(rowUpdatedAt)) {
+		st.attempted = false
+		st.lastAttempt = now
+		st.failures = 0
+		st.uncompactable = true
+		st.uncompactableRowAt = rowUpdatedAt
+		persist = true
 	} else {
 		st.attempted = false
 		st.lastAttempt = now
 		st.failures++
 	}
 	st.gen++
+	n.agyIdleMu.Unlock()
+	if persist {
+		n.persistAgyIdleUncompactable(id, rowUpdatedAt)
+	}
 }
 
 func (n *Node) pruneStaleAgyIdleStates(snaps []agyRuntimeSnapshot) {
@@ -611,10 +745,16 @@ func (n *Node) runAgyIdleCompaction(ctx context.Context, h *runtimeConn, id stri
 		return
 	}
 	token, prevAttempted, prevLastAttempt := n.markAgyIdleAttempt(h, id, now)
+	rowUpdatedAt := row.UpdatedAt
 	compaction, err := n.startRuntimeCompactionLocked(ctx, h, id, isAssistant, true, false)
 	if err != nil {
-		n.recordAgyIdleFailure(h, id, n.agyNow(), token, prevAttempted, prevLastAttempt)
-		n.logger.Printf("agy %s: idle auto-compact start failed: %v", id, err)
+		permanent := isAgyIdleUnreadableError(err)
+		n.recordAgyIdleFailureWithCause(h, id, n.agyNow(), token, prevAttempted, prevLastAttempt, permanent, rowUpdatedAt)
+		if permanent {
+			n.logger.Printf("agy %s: idle auto-compact skipped until activity (unreadable session): %v", id, err)
+		} else {
+			n.logger.Printf("agy %s: idle auto-compact start failed: %v", id, err)
+		}
 		return
 	}
 	n.logger.Printf("agy %s: idle %s with %d tokens (>= %d), auto-compacting", id, idleFor.Round(time.Second), tokens, policy.ContextTokens)
@@ -623,8 +763,13 @@ func (n *Node) runAgyIdleCompaction(ctx context.Context, h *runtimeConn, id stri
 		defer n.releaseAgyIdleSlot()
 		<-compaction.done
 		if failure := compaction.failureMessage(); failure != "" {
-			n.recordAgyIdleFailure(h, id, n.agyNow(), token, prevAttempted, prevLastAttempt)
-			n.logger.Printf("agy %s: idle auto-compact failed: %s", id, failure)
+			permanent := isAgyIdleUnreadableMessage(failure)
+			n.recordAgyIdleFailureWithCause(h, id, n.agyNow(), token, prevAttempted, prevLastAttempt, permanent, rowUpdatedAt)
+			if permanent {
+				n.logger.Printf("agy %s: idle auto-compact skipped until activity (unreadable session): %s", id, failure)
+			} else {
+				n.logger.Printf("agy %s: idle auto-compact failed: %s", id, failure)
+			}
 		}
 	}()
 }
@@ -699,17 +844,28 @@ func (n *Node) agyIdleCompactBeforeInput(ctx context.Context, h *runtimeConn, id
 		return nil
 	}
 	token, prevAttempted, prevLastAttempt := n.markAgyIdleAttempt(h, id, now)
+	rowUpdatedAt := row.UpdatedAt
 	compaction, err := n.startRuntimeCompactionLocked(ctx, h, id, isAssistant, true, false)
 	if err != nil {
-		n.recordAgyIdleFailure(h, id, n.agyNow(), token, prevAttempted, prevLastAttempt)
-		n.logger.Printf("agy %s: pre-input auto-compact start failed (continuing send): %v", id, err)
+		permanent := isAgyIdleUnreadableError(err)
+		n.recordAgyIdleFailureWithCause(h, id, n.agyNow(), token, prevAttempted, prevLastAttempt, permanent, rowUpdatedAt)
+		if permanent {
+			n.logger.Printf("agy %s: pre-input auto-compact skipped until activity (unreadable session): %v", id, err)
+		} else {
+			n.logger.Printf("agy %s: pre-input auto-compact start failed (continuing send): %v", id, err)
+		}
 		return nil
 	}
 	n.logger.Printf("agy %s: pre-input auto-compact after %s idle with %d tokens (>= %d)", id, idleFor.Round(time.Second), row.ContextTokens, policy.ContextTokens)
 	recordFailure := func() {
 		if failure := compaction.failureMessage(); failure != "" {
-			n.recordAgyIdleFailure(h, id, n.agyNow(), token, prevAttempted, prevLastAttempt)
-			n.logger.Printf("agy %s: pre-input auto-compact failed: %s", id, failure)
+			permanent := isAgyIdleUnreadableMessage(failure)
+			n.recordAgyIdleFailureWithCause(h, id, n.agyNow(), token, prevAttempted, prevLastAttempt, permanent, rowUpdatedAt)
+			if permanent {
+				n.logger.Printf("agy %s: pre-input auto-compact skipped until activity (unreadable session): %s", id, failure)
+			} else {
+				n.logger.Printf("agy %s: pre-input auto-compact failed: %s", id, failure)
+			}
 		}
 	}
 	select {

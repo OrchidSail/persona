@@ -102,6 +102,10 @@ type sessionState struct {
 	CompactInstructions string `json:"compact_instructions,omitempty"`
 	// IdleCompaction is the main chat's user-idle clock and unattended compaction latch.
 	IdleCompaction *idleCompactionState `json:"idle_compaction,omitempty"`
+	// AgyIdleUncompactable marks an Antigravity session whose idle auto-compaction hit a permanent unreadable/missing
+	// session error, so node restarts do not re-trigger fruitless compactions until the session advances or drops below
+	// its token threshold.
+	AgyIdleUncompactable *agyIdleUncompactableState `json:"agy_idle_uncompactable,omitempty"`
 	// Guest: a guest conversation's tools (assistant_guest.go): every process it runs in has no built-in tools and
 	// only these of Persona's. Nil is an ordinary conversation.
 	Guest []string `json:"guest,omitempty"`
@@ -521,8 +525,9 @@ func (s *stateFile) put(id string, v sessionState) bool {
 			v.SegmentInputs = mergeSegmentInputs(nil, v.SegmentInputs)
 		}
 		// Owned by state.update: older process snapshots cannot replace the
-		// idle clock or the latest compaction result.
+		// idle clock, the latest compaction result, or the unreadable-session latch.
 		v.IdleCompaction, v.Compaction = old.IdleCompaction, old.Compaction
+		v.AgyIdleUncompactable = old.AgyIdleUncompactable
 		if v.OrcaTerminal == nil && v.Pane == old.Pane {
 			v.OrcaTerminal = old.OrcaTerminal
 		}
