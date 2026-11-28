@@ -58,6 +58,8 @@ type AssistantEventParams struct {
 	State      AssistantEventState `json:"state,omitempty"`
 	// Replace false keeps an earlier event with the same key as a message of its own; absent is true.
 	Replace EventReplace `json:"replace,omitzero"`
+	// ConversationID optionally targets a specific assistant conversation; empty delivers to the main conversation.
+	ConversationID string `json:"conversation_id,omitempty"`
 }
 
 // AssistantEventState is where the thing an event's key names is now, in the extension's own words ("firing",

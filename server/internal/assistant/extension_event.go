@@ -37,12 +37,16 @@ const (
 	extEventTitleMost  = 200
 	extEventBodyMost   = 4000
 	extEventActionMost = 500
-	extEventStateMost  = 64
-	extEventNameMost   = 100
+	extEventStateMost        = 64
+	extEventNameMost         = 100
+	extEventConversationMost = 128
 )
 
 // extEventIDRe is an extension id (extension.idPattern).
 var extEventIDRe = lazyre.New(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+// extEventConversationRe validates an optional target conversation_id (no whitespace or control characters).
+var extEventConversationRe = lazyre.New(`^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$`)
 
 // extEventBook serializes the queueing of events, so the replace-or-add decision and the cap of extEventQueueMost
 // hold for calls that arrive together.
@@ -79,6 +83,7 @@ func checkEvent(raw json.RawMessage) (checkedEvent, error) {
 	p.Key, p.Title = strings.TrimSpace(p.Key), strings.TrimSpace(p.Title)
 	p.Body, p.ActionHint = strings.TrimSpace(p.Body), strings.TrimSpace(p.ActionHint)
 	p.State = assistantwire.AssistantEventState(strings.TrimSpace(string(p.State)))
+	p.ConversationID = strings.TrimSpace(p.ConversationID)
 	for _, f := range []struct {
 		name  string
 		value string
@@ -87,6 +92,7 @@ func checkEvent(raw json.RawMessage) (checkedEvent, error) {
 	}{
 		{"key", p.Key, extEventKeyMost, true}, {"title", p.Title, extEventTitleMost, true}, {"body", p.Body, extEventBodyMost, false},
 		{"action_hint", p.ActionHint, extEventActionMost, false}, {"state", string(p.State), extEventStateMost, false},
+		{"conversation_id", p.ConversationID, extEventConversationMost, false},
 	} {
 		if f.need && f.value == "" {
 			return checkedEvent{}, bad(f.name + " is required")
@@ -94,6 +100,9 @@ func checkEvent(raw json.RawMessage) (checkedEvent, error) {
 		if n := utf8.RuneCountInString(f.value); n > f.most {
 			return checkedEvent{}, bad(f.name + " is longer than " + strconv.Itoa(f.most) + " characters")
 		}
+	}
+	if p.ConversationID != "" && !extEventConversationRe.MatchString(p.ConversationID) {
+		return checkedEvent{}, bad("conversation_id has invalid characters")
 	}
 	switch p.Severity {
 	case "":
@@ -115,9 +124,33 @@ func (s *Service) extensionEvent(ctx context.Context, req assistantwire.Extensio
 		return assistantwire.AssistantEventResult{}, err
 	}
 	here := s.settings(ctx)
-	machine, to := here.mainRouteMachine(), here.Main // the main conversation lives where settings bind it, not always on the default machine
-	if machine == "" || to == "" {
-		return assistantwire.AssistantEventResult{}, &rpc.Error{Code: assistantwire.CodeNoMainConversation, Message: assistantwire.MethodAssistantEvent + ": there is no main conversation to tell"}
+	var (
+		machine string
+		to      string
+		c       proto.Session
+		ok      bool
+	)
+	if ev.ConversationID == "" {
+		machine, to = here.mainRouteMachine(), here.Main // the main conversation lives where settings bind it, not always on the default machine
+		if machine == "" || to == "" {
+			return assistantwire.AssistantEventResult{}, &rpc.Error{Code: assistantwire.CodeNoMainConversation, Message: assistantwire.MethodAssistantEvent + ": there is no main conversation to tell"}
+		}
+		c, ok = s.session(ctx, machine, to)
+	} else {
+		machine, c, ok = s.findSession(ctx, ev.ConversationID, here.mainRouteMachine())
+		if !ok || !c.Assistant || c.IsDeleted() {
+			return assistantwire.AssistantEventResult{}, &rpc.Error{
+				Code:    assistantwire.CodeConversationNotFound,
+				Message: assistantwire.MethodAssistantEvent + ": conversation not found: " + ev.ConversationID,
+			}
+		}
+		if c.Archived || s.isArchived(ev.ConversationID) {
+			return assistantwire.AssistantEventResult{}, &rpc.Error{
+				Code:    assistantwire.CodeConversationNotFound,
+				Message: assistantwire.MethodAssistantEvent + ": conversation is archived: " + ev.ConversationID,
+			}
+		}
+		to = ev.ConversationID
 	}
 	name := strings.Join(strings.Fields(req.Name), " ")
 	if name == "" {
@@ -129,7 +162,6 @@ func (s *Service) extensionEvent(ctx context.Context, req assistantwire.Extensio
 		Text: prompts.RenderExtensionEvent(prompts.ExtensionEvent{ID: req.Extension, Severity: ev.Severity, Name: name, Key: ev.Key,
 			Title: ev.Title, Body: ev.Body, ActionHint: ev.ActionHint, State: string(ev.State)}),
 	}
-	c, ok := s.session(ctx, machine, to)
 	idle := ok && c.Status != proto.StatusWorking && !c.Starting
 	directFailed, directErr := false, error(nil)
 	if idle && s.queuedFor(to) == 0 {
@@ -144,8 +176,12 @@ func (s *Service) extensionEvent(ctx context.Context, req assistantwire.Extensio
 		}
 		if relayFailureOf(err) == relayFailedGone {
 			s.logf("extension %s: event %q: %v; dropped", req.Extension, ev.Key, err)
+			goneCode := assistantwire.CodeNoMainConversation
+			if ev.ConversationID != "" {
+				goneCode = assistantwire.CodeConversationNotFound
+			}
 			return assistantwire.AssistantEventResult{}, &rpc.Error{
-				Code:    assistantwire.CodeNoMainConversation,
+				Code:    goneCode,
 				Message: assistantwire.MethodAssistantEvent + ": " + err.Error(),
 			}
 		}

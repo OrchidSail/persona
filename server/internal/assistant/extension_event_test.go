@@ -848,3 +848,85 @@ func TestExtensionEventRefusedForGoodDoesNotClogTheQueue(t *testing.T) {
 		t.Fatalf("permanent refusal armed timer or failedAt (timer=%v, failedAt=%v)", hasTimer, hasFailedAt)
 	}
 }
+
+
+func TestExtensionEventTargetsSpecificConversationID(t *testing.T) {
+	s, f := eventService(t)
+	f.known["conv-side"] = true
+	f.setSessions("server",
+		proto.Session{SessionID: "conv1", MachineID: "server", Assistant: true, Status: proto.StatusIdle},
+		proto.Session{SessionID: "conv-side", MachineID: "server", Assistant: true, Status: proto.StatusIdle},
+	)
+
+	// 1. Idle non-main assistant conversation receives direct delivery; main is untouched.
+	res, err := event(s, "persona-phone", `{"key":"phone_handback:t1:s3","title":"Handback","body":"resumed","conversation_id":"conv-side"}`)
+	if err != nil || res.Delivery != assistantwire.EventDelivered {
+		t.Fatalf("targeted idle delivery: res=%+v err=%v", res, err)
+	}
+	if f.sent() != 1 {
+		t.Fatalf("expected 1 send, got %d", f.sent())
+	}
+	p := f.lastSend(t)
+	if p["session_id"] != "conv-side" {
+		t.Fatalf("sent to %v, want conv-side", p["session_id"])
+	}
+
+	// 2. Busy non-main conversation queues and replaces on same key without touching main.
+	f.setSessions("server",
+		proto.Session{SessionID: "conv1", MachineID: "server", Assistant: true, Status: proto.StatusIdle},
+		proto.Session{SessionID: "conv-side", MachineID: "server", Assistant: true, Status: proto.StatusWorking},
+	)
+	res, err = event(s, "persona-phone", `{"key":"phone_handback:t1:s4","title":"First","conversation_id":"conv-side"}`)
+	if err != nil || res.Delivery != assistantwire.EventQueued {
+		t.Fatalf("targeted busy queue: res=%+v err=%v", res, err)
+	}
+	res, err = event(s, "persona-phone", `{"key":"phone_handback:t1:s4","title":"Updated","conversation_id":"conv-side"}`)
+	if err != nil || res.Delivery != assistantwire.EventReplaced {
+		t.Fatalf("targeted busy replace: res=%+v err=%v", res, err)
+	}
+	if q := queueOf(s, "conv-side"); len(q) != 1 || q[0].Title != "Updated" {
+		t.Fatalf("conv-side queue = %+v, want 1 item with title Updated", q)
+	}
+	if q := queueOf(s, "conv1"); len(q) != 0 {
+		t.Fatalf("main conversation queue polluted: %+v", q)
+	}
+}
+
+func TestExtensionEventRejectsMissingArchivedAndNonAssistantConversationID(t *testing.T) {
+	s, f := eventService(t)
+	f.known["conv-archived"] = true
+	f.known["agent-1"] = true
+	f.setSessions("server",
+		proto.Session{SessionID: "conv1", MachineID: "server", Assistant: true, Status: proto.StatusIdle},
+		proto.Session{SessionID: "conv-archived", MachineID: "server", Assistant: true, Status: proto.StatusIdle, Archived: true},
+		proto.Session{SessionID: "agent-1", MachineID: "server", Assistant: false, Status: proto.StatusIdle},
+	)
+
+	// Missing conversation -> not_found, never falls back to main.
+	if _, err := event(s, "persona-phone", `{"key":"k1","title":"t","conversation_id":"conv-does-not-exist"}`); convCode(err) != assistantwire.CodeConversationNotFound {
+		t.Fatalf("missing conversation err = %v, want %s", err, assistantwire.CodeConversationNotFound)
+	}
+	// Archived conversation -> not_found, never falls back to main.
+	if _, err := event(s, "persona-phone", `{"key":"k2","title":"t","conversation_id":"conv-archived"}`); convCode(err) != assistantwire.CodeConversationNotFound {
+		t.Fatalf("archived conversation err = %v, want %s", err, assistantwire.CodeConversationNotFound)
+	}
+	// Non-assistant (agent) session -> not_found, never falls back to main.
+	if _, err := event(s, "persona-phone", `{"key":"k3","title":"t","conversation_id":"agent-1"}`); convCode(err) != assistantwire.CodeConversationNotFound {
+		t.Fatalf("non-assistant session err = %v, want %s", err, assistantwire.CodeConversationNotFound)
+	}
+	// Invalid conversation_id characters -> invalid_params.
+	if _, err := event(s, "persona-phone", `{"key":"k4","title":"t","conversation_id":"bad id with spaces"}`); convCode(err) != "invalid_params" {
+		t.Fatalf("invalid conversation_id err = %v, want invalid_params", err)
+	}
+	if f.sent() != 0 {
+		t.Fatalf("main conversation received %d stray sends", f.sent())
+	}
+	// Omitting conversation_id still delivers to main as before.
+	res, err := event(s, "persona-phone", `{"key":"k5","title":"main-ok"}`)
+	if err != nil || res.Delivery != assistantwire.EventDelivered {
+		t.Fatalf("default main delivery: res=%+v err=%v", res, err)
+	}
+	if p := f.lastSend(t); p["session_id"] != "conv1" {
+		t.Fatalf("default delivery went to %v, want conv1", p["session_id"])
+	}
+}

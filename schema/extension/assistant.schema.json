@@ -725,6 +725,11 @@
           "type": "boolean",
           "x-tristate": "AssistantEventReplace",
           "description": "false keeps an earlier event with the same key as its own message instead of replacing it. Absent is true."
+        },
+        "conversation_id": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Optional target assistant conversation id. Absent delivers to the main conversation."
         }
       },
       "required": [
