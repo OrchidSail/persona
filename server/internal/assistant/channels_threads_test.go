@@ -60,7 +60,10 @@ func (s *Service) setChannelTestClock(now func() time.Time) {
 
 func (s *Service) threadBindingForTest(ctx context.Context, id string, m channel.Message) (threadBindingRef, channel.View, error) {
 	v, _ := s.pluginChannel(ctx, id)
-	v2 := s.integrationsV2On(ctx)
+	v2, err := s.integrationsV2On(ctx)
+	if err != nil {
+		return threadBindingRef{}, v, err
+	}
 	s.chans.mu.Lock()
 	defer s.chans.mu.Unlock()
 	binding, err := s.resolveThreadBindingLocked(ctx, id, m, v, v2)
@@ -88,17 +91,29 @@ func (s *Service) channelCommand(ctx context.Context, id string, m channel.Messa
 	if err != nil {
 		panic(err)
 	}
-	return s.handleChannelCommand(ctx, binding, m.ID, text, func() channel.View { return v })
+	return s.handleChannelCommand(ctx, &binding, m.ID, text, func() channel.View { return v })
 }
 
 func (s *Service) storedThreadBindingForTest(id, key string, v2 bool) threadBindingRef {
 	s.chans.mu.Lock()
 	defer s.chans.mu.Unlock()
-	return threadBindingRef{channel: id, generation: s.chans.bindings.generation(id), primary: key, v2: v2}
+	s.loadChannelsLocked(context.Background())
+	p := s.chans.prefsForUpdate(id)
+	ref := threadBindingRef{channel: id, channelGeneration: s.chans.bindings.generation(id), idleTTL: channelThreadIdleTTL(v2, &p)}
+	if p.ThreadTopics != nil {
+		ref.topic = p.ThreadTopics.Aliases[key]
+		ref.generation = p.ThreadTopics.Entities[ref.topic].Generation
+	}
+	return ref
 }
 
 func (s *Service) seedThreadBinding(id, key, machine, session string) bool {
-	return s.refreshThreadBinding(s.storedThreadBindingForTest(id, key, false), machine, session)
+	s.chans.mu.Lock()
+	s.loadChannelsLocked(context.Background())
+	p := s.chans.prefsForUpdate(id)
+	ref, err := s.resolveThreadTopicLocked(threadBindingRef{channel: id, channelGeneration: s.chans.bindings.generation(id), idleTTL: channelThreadsKeepFor}, p, threadRouteKeys{primary: key})
+	s.chans.mu.Unlock()
+	return err == nil && s.refreshThreadBinding(ref, machine, session)
 }
 
 // A thread's first message starts a conversation of its own and later ones continue it; another thread gets another,
@@ -263,13 +278,17 @@ func TestChannelThreadCommands(t *testing.T) {
 // not followed even before it is pruned.
 func TestChannelThreadsPruned(t *testing.T) {
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	threads := map[string]*channelThread{"stale": {SessionID: "s0", At: now.Add(-channelThreadsKeepFor - time.Hour)}}
+	threads := map[string]*channelThread{"stale": {SessionID: "stale", At: now.Add(-channelThreadsKeepFor - time.Hour)}}
+	threads["stale-alias"] = threads["stale"]
 	for i := range channelThreadsKeep + 2 {
 		threads[fmt.Sprintf("t%d", i)] = &channelThread{SessionID: fmt.Sprintf("s%d", i), At: now.Add(time.Duration(i) * time.Minute)}
 	}
-	pruneThreadBindings(threads, now, channelThreadsKeepFor)
-	if len(threads) != channelThreadsKeep || threads["stale"] != nil || threads["t0"] != nil || threads["t1"] != nil || threads["t2"] == nil {
-		t.Fatalf("%d kept; stale %v, t0 %v, t1 %v, t2 %v", len(threads), threads["stale"], threads["t0"], threads["t1"], threads["t2"])
+	topics := restoreThreadTopics(threads)
+	staleID := topics.Aliases["stale"]
+	topics.prune(now, channelThreadsKeepFor, func(channelTopicID) bool { return false })
+	if len(topics.Entities) != channelThreadsKeep || topics.Aliases["stale"].present() || topics.Aliases["stale-alias"].present() ||
+		topics.Entities[staleID].Generation != 0 || topics.Aliases["t0"].present() || topics.Aliases["t1"].present() || !topics.Aliases["t2"].present() {
+		t.Fatalf("pruning kept %d entities and %d aliases with an unexpected route", len(topics.Entities), len(topics.Aliases))
 	}
 
 	s, _, _ := threadsChannelService(t, true)

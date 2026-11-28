@@ -122,7 +122,7 @@ func (s *Service) receiveChannelMessage(binding threadBindingRef, m channel.Mess
 	})
 	text := strings.TrimSpace(m.Text)
 	if strings.HasPrefix(text, "/") && len(m.Images) == 0 && len(m.Files) == 0 {
-		handled, rest := s.handleChannelCommand(ctx, binding, m.ID, text, plugin)
+		handled, rest := s.handleChannelCommand(ctx, &binding, m.ID, text, plugin)
 		if handled {
 			return
 		}
@@ -146,13 +146,13 @@ func (s *Service) receiveChannelMessage(binding threadBindingRef, m channel.Mess
 
 // handleChannelCommand runs one of the commands every channel has; false (and the text to send on) for one it does not
 // know: it may be the conversation's own (/compact).
-func (s *Service) handleChannelCommand(ctx context.Context, binding threadBindingRef, messageID, text string, plugin func() channel.View) (bool, string) {
+func (s *Service) handleChannelCommand(ctx context.Context, binding *threadBindingRef, messageID, text string, plugin func() channel.View) (bool, string) {
 	id := binding.channel
 	name, rest, _ := strings.Cut(text, " ")
 	rest = strings.TrimSpace(rest)
 	l := s.botLang(ctx)
 	reply := func(t string) {
-		if s.threadBindingCurrent(binding) {
+		if s.threadBindingCurrent(*binding) {
 			_ = s.channelTell(ctx, id, messageID, t, channel.OutNote)
 		}
 	}
@@ -160,19 +160,19 @@ func (s *Service) handleChannelCommand(ctx context.Context, binding threadBindin
 	case "/help", "/帮助":
 		reply(i18n.T(l, "assistant-channels_plugin.help"))
 	case "/main", "/主对话":
-		if err := s.setChannelTarget(ctx, binding, channel.Target{Kind: channel.TargetMain}); err != nil {
+		if err := s.setChannelTarget(ctx, *binding, channel.Target{Kind: channel.TargetMain}); err != nil {
 			reply(i18n.T(l, "http-status.unavailable"))
 			return true, ""
 		}
 		reply(i18n.T(l, "assistant-channels_plugin.now_to_main"))
 	case "/new", "/新对话":
 		// In a thread it starts the thread over; the channel's target stays where it is.
-		threaded := binding.isThread(plugin())
+		threaded := binding.isThread()
 		var err error
 		if threaded {
 			err = s.resetThreadBinding(binding)
 		} else {
-			err = s.setChannelTarget(ctx, binding, channel.Target{Kind: channel.TargetNew})
+			err = s.setChannelTarget(ctx, *binding, channel.Target{Kind: channel.TargetNew})
 		}
 		if err != nil {
 			reply(i18n.T(l, "http-status.unavailable"))
@@ -188,8 +188,8 @@ func (s *Service) handleChannelCommand(ctx context.Context, binding threadBindin
 		}
 		return false, rest // "/new help me…": the rest starts it
 	case "/stop", "/停":
-		rt, err := s.channelRoute(ctx, binding, plugin())
-		if !s.threadBindingCurrent(binding) {
+		rt, err := s.channelRoute(ctx, *binding, plugin())
+		if !s.threadBindingCurrent(*binding) {
 			return true, ""
 		}
 		switch {
@@ -204,7 +204,7 @@ func (s *Service) handleChannelCommand(ctx context.Context, binding threadBindin
 			}
 			c := &s.chans
 			c.mu.Lock()
-			if !c.bindings.isCurrent(binding) {
+			if !c.bindingCurrent(*binding) {
 				c.mu.Unlock()
 				return true, ""
 			}
@@ -216,7 +216,7 @@ func (s *Service) handleChannelCommand(ctx context.Context, binding threadBindin
 			reply(i18n.T(l, "assistant-channels_plugin.stopped"))
 		}
 	case "/status", "/状态":
-		reply(s.channelStatusText(ctx, binding, plugin()))
+		reply(s.channelStatusText(ctx, *binding, plugin()))
 	default:
 		return false, text
 	}
@@ -285,10 +285,10 @@ func (s *Service) channelTargetFor(ctx context.Context, id string, v channel.Vie
 // channelRoute is where the accepted message goes: its thread's conversation when the channel keeps one per thread
 // (a new one for the thread's first message, or when the thread's is gone), else the channel's target.
 func (s *Service) channelRoute(ctx context.Context, binding threadBindingRef, v channel.View) (resolvedTarget, error) {
-	if !binding.isThread(v) {
+	if !binding.isThread() {
 		return s.channelTargetFor(ctx, binding.channel, v)
 	}
-	if t := s.lookupThreadBinding(ctx, binding); t != nil {
+	if t := s.lookupThreadBinding(binding); t != nil {
 		if d, ok := s.device(ctx, t.MachineID); ok {
 			// Only a conversation its computer says is gone starts the thread over: one that can't be asked now is an
 			// error the owner is told, not a reason to lose the thread's history.
@@ -380,7 +380,7 @@ func (s *Service) forwardChannelMessage(ctx context.Context, binding threadBindi
 	}
 	run := &channel.Run{ID: id + "_" + m.ID, Channel: id, ReplyTo: m.ID, TargetKind: channel.TargetConversation, Label: rt.label, Ext: ext,
 		Started: time.Now().UTC(), Probe: channel.Probe(in.Text, append(slices.Clone(in.Files), in.Forward, in.Quote)...)}
-	threaded := binding.isThread(v)
+	threaded := binding.isThread()
 	if rt.isNew {
 		sess, err := s.Start(ctx, StartParams{Text: text, Images: images, Main: rt.main, Origin: OriginChannel, OriginRef: id, Public: v.Kind == channel.KindMention})
 		if err != nil {
@@ -491,7 +491,10 @@ func (s *Service) textChannels(ctx context.Context) []channel.View {
 		return nil
 	}
 	var out []channel.View
-	v2 := s.integrationsV2On(ctx)
+	v2, err := s.integrationsV2On(ctx)
+	if err != nil {
+		return nil
+	}
 	for _, v := range list {
 		if v.Source == channel.SourcePlugin && v.Kind == channel.KindIM && v.State == channel.StateConnected {
 			out = append(out, s.filledChannel(ctx, v, v2))

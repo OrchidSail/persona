@@ -123,7 +123,7 @@ func (s *Service) filledChannel(ctx context.Context, v channel.View, v2 bool) ch
 		if pref.Target != nil {
 			t = *pref.Target
 		}
-		threadMode := channelRoutingMode(v, pref.ThreadMode, v2)
+		threadMode := pref.ThreadMode.ForDisplay(v2 && v.Capabilities.Threads)
 		threadIdleHours := pref.ThreadIdleHours
 		features := channel.PluginFeatures(s.botLang(ctx), v.Capabilities, pref.Features)
 		c.mu.Unlock()
@@ -163,7 +163,10 @@ func (s *Service) channelView(ctx context.Context, id string, v2 bool) (channel.
 }
 
 func (s *Service) channelDetail(ctx context.Context, id string) (channel.Detail, bool, error) {
-	v2 := s.integrationsV2On(ctx)
+	v2, err := s.integrationsV2On(ctx)
+	if err != nil {
+		return channel.Detail{}, false, err
+	}
 	v, ok, err := s.channelView(ctx, id, v2)
 	if err != nil || !ok {
 		return channel.Detail{}, ok, err
@@ -184,15 +187,18 @@ func (s *Service) channelDetail(ctx context.Context, id string) (channel.Detail,
 	c := &s.chans
 	c.mu.Lock()
 	s.loadChannelsLocked(ctx)
+	var configured channel.ThreadMode
 	if p := c.prefs[id]; p != nil {
 		d.Conversations = slices.Clone(p.Recent)
+		configured = p.ThreadMode
 	}
 	ov, hasOverrides := c.overrides[id], c.hasOverrides
 	c.mu.Unlock()
 	// A reported map without an override for this channel explicitly suppresses the hint.
 	if !d.ReadOnly && d.Source != channel.SourceMarket && d.Target != nil && (!hasOverrides || ov != nil) {
-		if v.Source == channel.SourcePlugin && v.Installed && v2 {
-			switch d.ThreadMode {
+		routing := threadRouting(v, configured, v2)
+		if v.Source == channel.SourcePlugin && v.Installed && routing.mode != "" {
+			switch routing.mode {
 			case channel.ThreadModePerGroupAndTopic:
 				d.TargetOverride = &channel.TargetOverride{Mode: channel.TargetOverrideGroupsAndTopics}
 			case channel.ThreadModePerTopic:

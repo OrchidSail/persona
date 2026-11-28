@@ -2432,7 +2432,8 @@ access, offers a lazy-loaded Data Flow view (`SourcesGraph` + `InboxForwardSetti
 split-pane or mobile drill-down layouts. Legacy deep links (`/settings/connectors/...`, `/settings/channels/...`,
 `/settings/sources/...`, `/settings/extensions/...`, `/settings?tab=sources`, including `@manager` and `state` targets) and
 Settings search entries for Inbox Sources redirect cleanly into the unified view (`-sources` / `-sources@<manager>/<state>`)
-when enabled. Turning the switch off restores the four separate Settings pages and legacy channel routing immediately. Links
+when enabled. Turning the switch off restores the four separate Settings pages and legacy channel routing immediately.
+Channels without a saved routing mode keep their existing opaque group and thread routes when the unified page is enabled. Links
 under `/settings/integrations/...` (including `-sources...`) return to the corresponding page, preserving the `manager` and
 `state` targets. The assistant keeps all saved data and channel preferences. An explicit opt-out survives partial assistant
 updates. Older hubs that omit `integrations_v2` show the separate pages and a read-only Labs row with an update hint.

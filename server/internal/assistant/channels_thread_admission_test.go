@@ -174,11 +174,11 @@ func TestChannelOrdinaryReceiptsReserveTheSameOrderedRoute(t *testing.T) {
 		t.Fatalf("first ordinary receipt: %v %v", first, err)
 	}
 	second, err := s.admitChannelMessage(ctx, "examplechat", channel.Message{ID: "second", Thread: " "})
-	if err != nil || second == nil || first.reservation.done == nil || second.reservation.slots[0].prev != first.reservation.done {
+	if err != nil || second == nil || first.reservation.done == nil || second.reservation.prev != first.reservation.done {
 		t.Fatalf("the second ordinary receipt did not follow the first: %v %v", second, err)
 	}
 	topic, err := s.admitChannelMessage(ctx, "examplechat", channel.Message{ID: "topic", Thread: "independent"})
-	if err != nil || topic == nil || topic.reservation.slots[0].prev != nil {
+	if err != nil || topic == nil || topic.reservation.prev != nil {
 		t.Fatalf("an independent topic waited on the ordinary route: %v %v", topic, err)
 	}
 }
@@ -205,6 +205,62 @@ func TestChannelReceiveThreadNewFollowsInFlightStart(t *testing.T) {
 	}
 	if bound != "s2" {
 		t.Fatalf("binding after /new: %q, want second conversation", bound)
+	}
+}
+
+func TestChannelReceiveLegacyResetOrdersStructuredTopic(t *testing.T) {
+	s, f, hub := admissionChannelService(t, true, nil)
+	var release sync.Once
+	defer release.Do(func() { close(hub.release) })
+	receive := func(m channel.Message) {
+		t.Helper()
+		raw, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.ChannelReceive(t.Context(), ChannelReceive{Channel: "examplechat", Message: raw}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dual := testDualThreadMessage()
+	dual.ID, dual.Text = "dual", "/new"
+	receive(dual)
+	waitAdmissionDrained(t, s)
+	before := s.storedThreadBindingForTest("examplechat", testTopicThreadKey, true)
+
+	structured := dual
+	structured.ID, structured.Text, structured.Thread = "structured", "first delivery", ""
+	receive(structured)
+	select {
+	case <-hub.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("structured delivery did not reach the node")
+	}
+	queue := threadBindingQueueKey{channel: before.channel, topic: before.topic, channelGeneration: before.channelGeneration}
+	tail := func() chan struct{} {
+		s.chans.mu.Lock()
+		defer s.chans.mu.Unlock()
+		return s.chans.bindings.pending[queue]
+	}
+	start := tail()
+	receive(channel.Message{ID: "legacy-reset", Text: "/new", Thread: testLegacyThreadKey})
+	if reset := tail(); start == nil || reset == nil || reset == start {
+		t.Fatal("legacy /new did not join the structured delivery's queue")
+	}
+	structured.ID, structured.Text = "after-reset", "fresh delivery"
+	receive(structured)
+	release.Do(func() { close(hub.release) })
+	waitAdmissionDrained(t, s)
+
+	after := s.storedThreadBindingForTest("examplechat", testLegacyThreadKey, true)
+	if after.topic != before.topic || after.generation != before.generation+1 {
+		t.Fatalf("reset changed the topic identity or missed a generation: before=%+v after=%+v", before, after)
+	}
+	if hub.starts.Load() != 2 || f.sent() != 2 || boundThread(s, testTopicThreadKey) != "s2" || boundThread(s, testLegacyThreadKey) != "s2" {
+		t.Fatalf("expected both formats to resolve to the fresh conversation after two starts, got %d", hub.starts.Load())
+	}
+	if s.refreshThreadBinding(before, "server", "s1") || boundThread(s, testLegacyThreadKey) != "s2" {
+		t.Fatal("the previous generation replaced the fresh conversation")
 	}
 }
 
@@ -411,6 +467,9 @@ func TestChannelReceiveClaimReservesBeforePersistence(t *testing.T) {
 func TestChannelReceiveFailedClaimCanBeRedelivered(t *testing.T) {
 	s, f, _ := threadsChannelService(t, true)
 	st := s.store().(*memStore)
+	if _, _, err := s.threadBindingForTest(t.Context(), "examplechat", channel.Message{Thread: "topic"}); err != nil {
+		t.Fatal(err)
+	}
 	st.setFailPut(errors.New("synthetic claim write failure"))
 	raw := []byte(`{"id":"retryable","text":"request","thread":"topic"}`)
 	if err := s.ChannelReceive(context.Background(), ChannelReceive{Channel: "examplechat", Message: raw}); err == nil {

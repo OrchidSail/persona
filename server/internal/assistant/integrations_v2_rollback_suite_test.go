@@ -69,7 +69,11 @@ func getChannelListByID(t *testing.T, s *Service) map[string]channel.View {
 
 func boundThreadFor(s *Service, channelID, key string) string {
 	ctx := context.Background()
-	if t := s.lookupThreadBinding(ctx, s.storedThreadBindingForTest(channelID, key, s.integrationsV2On(ctx))); t != nil {
+	v2, err := s.integrationsV2On(ctx)
+	if err != nil {
+		return ""
+	}
+	if t := s.lookupThreadBinding(s.storedThreadBindingForTest(channelID, key, v2)); t != nil {
 		return t.SessionID
 	}
 	return ""
@@ -782,8 +786,10 @@ func TestIntegrationsV2LegacyClientPartialChannelUpdatePreservesRoutingConfig(t 
 		`{}`,
 	}
 
+	previous := true
 	for _, v2On := range []bool{true, false, true} {
-		setIntegrationsV2ViaHTTP(t, s, v2On, s.integrationsV2On(context.Background()))
+		setIntegrationsV2ViaHTTP(t, s, v2On, previous)
+		previous = v2On
 		for _, body := range partialBodies {
 			rec := channelAPIRequest(t, s, http.MethodPut, "/api/v1/channels/examplechat", "full", body)
 			if rec.Code != http.StatusOK {

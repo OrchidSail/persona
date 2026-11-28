@@ -130,7 +130,7 @@ func (k ChatKind) Known() ChatKind {
 	}
 }
 
-// ThreadMode controls how a channel maps IM chats and topics to Persona conversations when integrations_v2 is enabled.
+// ThreadMode is an explicit choice for mapping IM chats and topics to Persona conversations.
 type ThreadMode string
 
 const (
@@ -152,9 +152,10 @@ func (m ThreadMode) Check() error {
 	}
 }
 
-// Effective preserves an explicit choice. Thread-capable plugins inherit topic routing in the experiment.
-func (m ThreadMode) Effective(inheritTopics bool) ThreadMode {
-	if m == "" && inheritTopics {
+// ForDisplay supplies a supported choice for Settings when the channel has no saved mode.
+// Thread-capable channels suggest per_topic when the unified Settings view is available.
+func (m ThreadMode) ForDisplay(suggestTopics bool) ThreadMode {
+	if m == "" && suggestTopics {
 		return ThreadModePerTopic
 	}
 	if m == "" {

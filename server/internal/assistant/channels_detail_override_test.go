@@ -143,8 +143,8 @@ func TestChannelDetailV2RespectsPluginOverride(t *testing.T) {
 	}{
 		{name: "suppressed", overrides: map[string]*channel.TargetOverride{}},
 		{name: "active", overrides: map[string]*channel.TargetOverride{"topicchat": {Mode: channel.TargetOverrideThreads}},
-			want: &channel.TargetOverride{Mode: channel.TargetOverrideTopics}},
-		{name: "older hub", want: &channel.TargetOverride{Mode: channel.TargetOverrideTopics}},
+			want: &channel.TargetOverride{Mode: channel.TargetOverrideThreads}},
+		{name: "older hub", want: &channel.TargetOverride{Mode: channel.TargetOverrideThreads}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeHub().withMachine()
@@ -163,7 +163,7 @@ func TestChannelDetailV2RespectsPluginOverride(t *testing.T) {
 			setIntegrationsV2(t, s, true)
 			detail := getChannelDetail(t, s, "topicchat")
 			if detail.ThreadMode != channel.ThreadModePerTopic {
-				t.Fatalf("effective thread mode = %q, want per_topic", detail.ThreadMode)
+				t.Fatalf("suggested thread mode = %q, want per_topic", detail.ThreadMode)
 			}
 			if got := detail.TargetOverride; (got == nil) != (tc.want == nil) || got != nil && got.Mode != tc.want.Mode {
 				t.Fatalf("v2 target_override = %+v, want %+v", got, tc.want)

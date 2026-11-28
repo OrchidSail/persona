@@ -251,7 +251,7 @@ func (s *Service) startChannelRunForBinding(r *channel.Run, binding *threadBindi
 	c := &s.chans
 	c.mu.Lock()
 	s.loadChannelStateLocked(context.Background())
-	if binding != nil && !c.bindings.isCurrent(*binding) {
+	if binding != nil && !c.bindingCurrent(*binding) {
 		c.mu.Unlock()
 		return
 	}

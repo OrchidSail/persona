@@ -34,8 +34,10 @@ type channelPrefs struct {
 	Features        map[string]bool    `json:"features,omitempty"`
 	// Recent are the conversations its messages went to lately (newest first, a few).
 	Recent []channel.Conversation `json:"recent,omitempty"`
-	// Threads are the conversations of its threads (capabilities.threads or integrations_v2 routing), by routing key.
+	// Threads is the legacy storage format and the projection for older managers.
 	Threads map[string]*channelThread `json:"threads,omitempty"`
+	// ThreadTopics owns topic identities, alias indexes and their current conversation bindings.
+	ThreadTopics *channelThreadTopics `json:"thread_topics,omitempty"`
 }
 
 const channelRecentKeep = 5
@@ -113,6 +115,11 @@ func (s *Service) loadChannelsLocked(ctx context.Context) {
 	}
 	if c.prefs == nil {
 		c.prefs = map[string]*channelPrefs{}
+	}
+	for _, p := range c.prefs {
+		if p != nil && p.ThreadTopics == nil && len(p.Threads) > 0 {
+			p.ThreadTopics = restoreThreadTopics(p.Threads)
+		}
 	}
 	c.loaded = true
 }
@@ -248,7 +255,7 @@ func (s *Service) setChannelTarget(ctx context.Context, binding threadBindingRef
 	c := &s.chans
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !c.bindings.isCurrent(binding) {
+	if !c.bindingCurrent(binding) {
 		return nil
 	}
 	s.loadChannelsLocked(ctx)

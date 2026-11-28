@@ -123,11 +123,11 @@ func TestThreadModeAndIdleHoursValidation(t *testing.T) {
 			t.Errorf("ThreadMode(%q).Check() = %v, want ok=%v", tc.mode, err, tc.ok)
 		}
 	}
-	if got := ThreadMode("").Effective(false); got != ThreadModeChannelDefault {
-		t.Fatalf("Effective empty = %q, want %q", got, ThreadModeChannelDefault)
+	if got := ThreadMode("").ForDisplay(false); got != ThreadModeChannelDefault {
+		t.Fatalf("ForDisplay empty = %q, want %q", got, ThreadModeChannelDefault)
 	}
-	if got := ThreadModePerTopic.Effective(false); got != ThreadModePerTopic {
-		t.Fatalf("Effective per_topic = %q, want %q", got, ThreadModePerTopic)
+	if got := ThreadModePerTopic.ForDisplay(false); got != ThreadModePerTopic {
+		t.Fatalf("ForDisplay per_topic = %q, want %q", got, ThreadModePerTopic)
 	}
 	for _, tc := range []struct {
 		hours int

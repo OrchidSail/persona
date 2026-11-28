@@ -32,6 +32,8 @@ import (
 // settingsKey is the setting the assistant keeps them in (the hub wrote the same JSON until 2026-11-04).
 const settingsKey = "assistant"
 
+var errAssistantSettingsUnread = errors.New("the assistant's settings could not be read")
+
 // assistantRel is this manager's assistant directory on a machine, relative to its home (node assistant.prepare):
 // assistant for the built-in manager, assistant-<id> for another (identity.AssistantDirName), in the state directory. It
 // is spelled with the former state directory's name (compat.StateDir), which older nodes join to HOME as it is; a
@@ -391,7 +393,7 @@ func (s *Service) updateSettingsSaveChecked(ctx context.Context, fn func(*Settin
 	b.mu.Unlock()
 	v, ok := s.savedSettings(ctx)
 	if !ok {
-		return Settings{}, errors.New("the assistant's settings could not be read")
+		return Settings{}, errAssistantSettingsUnread
 	}
 	if check != nil {
 		if err := check(v); err != nil {
@@ -509,11 +511,14 @@ func (v Settings) todosV2DigestWindowMinutes() int {
 	return todosV2DefaultDigestWindowMinutes
 }
 
-// integrationsV2On reports whether assistant.integrations_v2 is enabled (on by default).
-// Uses settingsLastGood so hot receive/routing paths never trigger a hub hello RPC.
-func (s *Service) integrationsV2On(ctx context.Context) bool {
-	v, _ := s.settingsLastGood(ctx)
-	return v.integrationsV2On()
+// integrationsV2On applies the default only to a successfully read profile or its last good copy.
+// Receive and routing callers can retry a cold read failure without admitting the message.
+func (s *Service) integrationsV2On(ctx context.Context) (bool, error) {
+	v, ok := s.settingsLastGood(ctx)
+	if !ok {
+		return false, errAssistantSettingsUnread
+	}
+	return v.integrationsV2On(), nil
 }
 
 // prEventsRouteToAgentOn reports whether assistant.pr_events_route_to_agent is enabled (off by default).
@@ -738,7 +743,8 @@ func meetingAttendanceOf(v Settings) string {
 }
 
 // settingsLastGood is savedSettings, except that a transient read failure serves the settings read last when there
-// are any. Callers whose default would be destructive use it: the recording retention falling back to 14 days for one
+// are any. A false result means neither a read nor a last good copy is available. Callers whose default would be
+// destructive use it: the recording retention falling back to 14 days for one
 // locked-database round would make the next KB prune delete recordings the user kept for longer (#4008). Callers for
 // which a stale value is risky (kbZone: moving the archive into a possibly old time zone) keep using savedSettings.
 func (s *Service) settingsLastGood(ctx context.Context) (Settings, bool) {
@@ -1072,11 +1078,14 @@ type assistantView struct {
 // assistant's own conversations; a space (space "health") lists that space's instead (docs/assistant/health.md), with
 // that space's directory as Cwd.
 func (s *Service) view(ctx context.Context, withArchived bool, space ...string) assistantView {
+	return s.viewWithSettings(ctx, s.settings(ctx), withArchived, space...)
+}
+
+func (s *Service) viewWithSettings(ctx context.Context, v Settings, withArchived bool, space ...string) assistantView {
 	sp := ""
 	if len(space) > 0 {
 		sp = space[0]
 	}
-	v := s.settings(ctx)
 	v.MeetingTranscriptionInstall = nil // the hub's own, never shown
 	if sp == "" {
 		v.MainMachineID = s.confirmedMainMachine(ctx, v)
@@ -1182,7 +1191,12 @@ func (s *Service) profileRoutes() {
 			apierr.Write(w, http.StatusBadRequest, fmt.Errorf("space %q: not a registered space", space))
 			return
 		}
-		out := s.view(r.Context(), archived == "1" || archived == "true", space)
+		cfg, ok := s.settingsLastGood(r.Context())
+		if !ok {
+			apierr.Write(w, http.StatusServiceUnavailable, i18n.Err("http-status.unavailable"))
+			return
+		}
+		out := s.viewWithSettings(r.Context(), s.effective(r.Context(), cfg), archived == "1" || archived == "true", space)
 		if tag := strings.TrimSpace(r.URL.Query().Get("tag")); tag != "" {
 			out.Conversations = slices.DeleteFunc(out.Conversations, func(c proto.Session) bool { return !hasTag(c, tag) })
 		}

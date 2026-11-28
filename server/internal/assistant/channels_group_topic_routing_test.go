@@ -61,7 +61,7 @@ func TestChannelThreadModeAndIdleHoursAPIRoundTripAndValidation(t *testing.T) {
 	})
 	s := newServiceOn(t, f, st)
 
-	// A thread-capable plugin defaults to per-topic routing with the standard idle timeout.
+	// Settings suggests per-topic routing for a thread-capable plugin with no saved choice.
 	rec := channelAPIRequest(t, s, http.MethodGet, "/api/v1/channels/examplechat", "full", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET detail: %d %s", rec.Code, rec.Body.String())

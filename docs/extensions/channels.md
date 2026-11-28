@@ -73,7 +73,7 @@ whose comments say the rules follow the Lark bot), and Siri (in the App). `/agen
 | `account` | Bound account `{id?, name}`: display only (WeChat uses the last few characters of the id from iLink; Lark uses the owner's name), no phone number or email |
 | `capabilities` | See the table below |
 | `target` | Which chat messages go to: `{kind: "main"}` (main chat, default for `im`), `{kind: "conversation", machine_id, session_id, title}` (a particular chat), `{kind: "new"}` (the next message starts a new chat, then becomes `conversation`). A `mention` channel defaults to `new`; only its explicit `target: {kind: "main"}` opts it into the owner's main chat. The Lark bot also has `{kind: "agent", …}` (the Agent selected with `/agents`) |
-| `thread_mode` | Optional (plugin channels; active only when `integrations_v2` is enabled): `channel_default`, `per_group_and_topic`, or `per_topic`. With no saved choice, plugins declaring `capabilities.threads` use `per_topic` and other plugins use `channel_default`. An explicit choice takes precedence |
+| `thread_mode` | Optional (plugin channels; saved choices apply while `integrations_v2` is enabled): `channel_default`, `per_group_and_topic`, or `per_topic`. With no saved choice, Settings suggests `per_topic` for plugins declaring `capabilities.threads` and `channel_default` for other plugins. The suggestion leaves the channel's existing thread routes in effect |
 | `thread_idle_hours` | Optional non-negative integer (plugin channels; active only when `integrations_v2` is enabled): `0` (default) uses the 30-day inactivity timeout; a positive value rotates a routed group/topic conversation to a new conversation after N idle hours |
 | `features` | Features this channel can toggle individually, a list of `{id, title, description, on}`: the App draws switches from this list, even for unknown features. For the Lark bot: `main`, `cards`, `all_cards`, `pushes`, `sync`, `agents`, `reports`, `board`, `only_conclusions`, `report_steps`, `answer_new_card`, `topic_cot`, `dm_cot`, `cot_answer`, `workbench`, `read_group`, `read_group_direct` (`docs/extensions/bots.md` ("What it can do")); extension channels uniformly use `asks` (Questions and approvals), `all_asks` (All agents' questions), `pushes` (Send notifications here too), `sync` (Sync main chat turns started elsewhere), shown according to capabilities |
 | `bind` | How to bind: `qr` (scan a QR code), `code` (the App gives a pairing code to send to the bot in IM), `fields` (enter credentials, possibly followed by a `code` step), `none` (no binding needed: `app`, `voice`), `config` (only configurable in the manager's manager.json; no channel uses it since #1571) |
@@ -144,18 +144,27 @@ While the assistant process is restarting or disconnected from hub, **receivers 
 2. **Deduplicate**: handle `<channel>-<message id>` only once (IM redelivers); this same id is `client_msg_id`, sharing the App's `sent_messages` deduplication, so retries aren't typed twice.
 3. **Commands**: treat a leading `/` as a command first; the pipeline implements `/help`, `/new [first message]`, `/main`, `/stop`, `/status` uniformly. Channels can add their own (the Lark bot's `/list`, `/agents`, `/start`).
    Send unknown commands into the chat unchanged (they might belong to the chat, such as `/compact`).
-   In a thread of an extension channel with `threads`, `/new` starts the thread over (its next message opens a new chat) and `/stop` and `/status` act on the thread's chat; none of them moves the channel's `target`.
+   On a routed thread or topic, `/new` starts it over (its next message opens a new chat) and `/stop` and `/status` act on its chat. The channel keeps its `target`.
 4. **Answer a question**: if this channel has a pending text question (`asks: text`) still in hub's pending list (`interactions.list`), this message is its answer. Drop questions already answered elsewhere and treat this as an ordinary message.
 5. **Target**: if replying to a target-bound message (`threads`), send to that target; otherwise send to the channel's `target`. If main chat doesn't exist yet, create a chat and set it as main chat; a chat created by `new` becomes the target afterward.
    With legacy thread routing, a message carrying `thread` goes to that thread's chat, and the thread's first message
-   starts a new one. A message without `thread`, or from a channel without `threads`, goes to the `target`. With
-   `integrations_v2` on, `thread_mode` selects the routing key and `thread_idle_hours` can override the 30-day inactivity
-   timeout. When a topic message carries both a structured topic and a legacy thread, a missing or expired primary
-   binding falls back to an active binding under the other key. Successful delivery refreshes both known bindings,
-   and `/new` clears the conversation's known bindings even if the command carries a single key. A routed
-   conversation that is gone or has timed out starts fresh. Up to 500 routing keys are kept per channel in the
-   `channels` setting. A message keeps its routing keys from admission through delivery, including if Labs changes
-   while it waits.
+   starts a new one. Turning on the unified Settings page preserves this behavior on channels with no saved mode,
+   including group messages and `/new` with only a legacy thread key. While `integrations_v2` is on, a thread-capable
+   channel with no saved mode also accepts a complete structured topic. A saved `thread_mode` selects the routing
+   policy, and `thread_idle_hours` can override the 30-day inactivity timeout. Turning Labs off restores opaque
+   thread routing for thread-capable channels and the 30-day timeout. When a message carries both keys for the same
+   topic, the assistant links them to one durable topic before taking the receipt. Either key then uses the same
+   conversation and queue. Older split bindings are joined when the relationship is observed, preserving the primary
+   binding if it is current and falling back to an active alias if it is missing or expired. An independent queue still
+   delivering under one of the old bindings makes the hub retry the bridge after it drains. A legacy key already linked
+   to another structured topic stays with that topic.
+
+   A routed conversation that is gone or has timed out starts fresh. Topic delivery refreshes one idle clock. A queued
+   `/new` clears the conversation and advances the topic's persisted generation. Later messages take the new generation,
+   and a completion from an older one cannot restore the old conversation. The aliases survive the reset. Up to 500
+   routing keys are kept per channel in the `channels` setting. Pruning retires a topic and its aliases together.
+   A message keeps its selected route while it waits, including across a Labs change. A cold settings read failure
+   returns `try_again` to the hub before the receipt is claimed.
 6. **Assemble content**: prepend a `<persona-context>` explaining which channel this came from, that the answer goes back there, and the format to use (prompt `prompts/channel/message.md`; the Lark bot keeps its own `bot/message.md`);
    put quoted messages and merged-forward chat records in separate `<persona-context>` blocks; images become attachments; files follow `files_in`. A mention uses `prompts/channel/mention_message.md` instead: its chat, topic and gathered context are data blocks, and the turn is explicitly public. The prompt does not disclose private context from other chats, sessions, mail or health unless the owner's request explicitly asks for the specific information. The internal per-message `public` marker also suppresses the owner's live snapshot for that input only; it never changes the main conversation's origin or later private turns.
 7. **Send**: Persona chats use `session.send` (main chat follows the model selected in Settings), `client_msg_id = <channel>-<message id>`.
@@ -261,7 +270,7 @@ Requires a process that speaks the protocol (`NeedsRPC`). Version 1.
 
 | Method | Parameters | Returns |
 | --- | --- | --- |
-| `channel.receive` | `{contribution, message: {id, text?, chat?, topic?, chat_id?, chat_kind?, topic_id?, context?, owner?, images?: [{mime, data}], files?: [{name, mime, data}], quote?, forward?, reply_to?, thread?, unsupported?: [string]}}` | `{}`: hub accepted it (deduplicated and queued for handling, not waiting for the turn). A mention request must carry `owner: true`; false or omitted is refused on the main-chat path. Non-owner requests use a guest conversation instead. `chat` / `topic` and gathered `context` are inserted as escaped context, never as the owner's instructions. `thread` is the legacy opaque routing key (used when `integrations_v2` is off, or as fallback in either split mode for unclassified messages and incomplete topics). Direct messages always use the default target in these modes. Topic keys require both a chat ID and a topic ID. Unknown chat kinds are ignored (as if omitted). `chat_id`, `chat_kind` (`direct` / `group` / `topic`), and `topic_id` are additive routing fields used when `integrations_v2` is on (step 5) |
+| `channel.receive` | `{contribution, message: {id, text?, chat?, topic?, chat_id?, chat_kind?, topic_id?, context?, owner?, images?: [{mime, data}], files?: [{name, mime, data}], quote?, forward?, reply_to?, thread?, unsupported?: [string]}}` | `{}`: hub accepted the request for handling and can deduplicate it before delivery. A mention request must carry `owner: true`; false or omitted is refused on the main-chat path. Non-owner requests use a guest conversation instead. `chat` / `topic` and gathered `context` are inserted as escaped context. `thread` is the stable opaque routing key used in legacy routing and as a fallback in split modes for unclassified messages and incomplete topics. Direct messages use the default target in the explicit split modes. The structured fields `chat_id`, `chat_kind` (`direct` / `group` / `topic`), and `topic_id` are additive. A complete topic needs both IDs. Plugins can supply both forms to connect the aliases. The legacy key must describe the same topic. Unknown chat kinds are ignored (step 5) |
 | `channel.status` | `{contribution, state, error?, account?}` | `{}`: channels without a connector report their own state; channels with `connector` don't need this call |
 
 `data` is base64. Up to 4 images, 3 MB each: a larger picture (a photo sent as the original) is scaled down to fit, not dropped (decoded once, turned upright by its EXIF orientation and drawn at the largest of the remote-image sizes, at most 2048 px, that fits; `Fetcher.Fit` in `server/internal/remoteimage`, within the same decode slots as the remote-image fetches, JPEG, or PNG when it has transparency), and only one that can't be decoded or still doesn't fit is dropped with a note in the message (#11985). Files up to 50 MB each; larger ones are dropped with an explanation in the message. When hub hands a message to the assistant over the bus, images and files total at most 40 MB (a bus message is 64 MB, with base64 data); ones that don't fit become "Image / file ‘…’ (too large)".
@@ -298,6 +307,11 @@ Other languages follow the protocol above, one JSON line per message (`docs/exte
 - **Old Apps**: all new APIs are additions; old Apps don't recognize the extra session `channels` or new Settings entry, so don't display them. Existing entries (Settings › Connectors › Lark bot / WeChat) remain,
   and in new versions the two link to each other (see "UI").
 - **Old plugins**: third-party channels assembled from `connectors` + `hub_api` + `events` keep running (hub doesn't know they're channels and doesn't list them).
+- **Thread storage**: the assistant imports existing bindings from `channels.*.threads`. Rows naming the same machine and
+  conversation become aliases of one topic. It writes each topic's binding and generation in `thread_topics` and projects
+  active bindings into `threads` for older managers. No schema migration is required. If an older manager writes the
+  settings after a binary downgrade, the newer manager imports the resulting legacy rows when it returns. An older
+  writer can discard the generation and the aliases of an unbound topic. A later dual-format message can link those keys again.
 
 ## 6. API
 

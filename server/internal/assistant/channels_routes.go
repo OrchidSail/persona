@@ -23,9 +23,14 @@ func (s *Service) channelRoutes() {
 		s.handle(pattern, func(w http.ResponseWriter, r *http.Request) { fn(w, withRequestLang(r)) })
 	}
 	handle("GET /api/v1/channels", func(w http.ResponseWriter, r *http.Request) {
-		list, err := s.channelList(r.Context(), s.integrationsV2On(r.Context()))
+		v2, err := s.integrationsV2On(r.Context())
 		if err != nil {
-			apierr.Write(w, http.StatusBadGateway, err)
+			writeChannelReadError(w, err)
+			return
+		}
+		list, err := s.channelList(r.Context(), v2)
+		if err != nil {
+			writeChannelReadError(w, err)
 			return
 		}
 		apierr.WriteJSON(w, map[string]any{"channels": list})
@@ -34,7 +39,7 @@ func (s *Service) channelRoutes() {
 		d, ok, err := s.channelDetail(r.Context(), r.PathValue("id"))
 		switch {
 		case err != nil:
-			apierr.Write(w, http.StatusBadGateway, err)
+			writeChannelReadError(w, err)
 		case !ok:
 			apierr.WriteCode(w, http.StatusNotFound, "not_found", errors.New("no such channel"))
 		default:
@@ -47,10 +52,15 @@ func (s *Service) channelRoutes() {
 				apierr.Write(w, http.StatusForbidden, errors.New("this device can only read and answer"))
 				return
 			}
-			v, ok, err := s.channelView(r.Context(), r.PathValue("id"), s.integrationsV2On(r.Context()))
+			v2, err := s.integrationsV2On(r.Context())
+			if err != nil {
+				writeChannelReadError(w, err)
+				return
+			}
+			v, ok, err := s.channelView(r.Context(), r.PathValue("id"), v2)
 			switch {
 			case err != nil:
-				apierr.Write(w, http.StatusBadGateway, err)
+				writeChannelReadError(w, err)
 				return
 			case !ok:
 				apierr.WriteCode(w, http.StatusNotFound, "not_found", errors.New("no such channel"))
@@ -66,7 +76,7 @@ func (s *Service) channelRoutes() {
 		s.forgetChannelList()
 		d, _, err := s.channelDetail(r.Context(), id)
 		if err != nil {
-			apierr.Write(w, http.StatusBadGateway, err)
+			writeChannelReadError(w, err)
 			return
 		}
 		apierr.WriteJSON(w, d)
@@ -141,6 +151,14 @@ func (s *Service) channelRoutes() {
 		}
 		apierr.WriteJSON(w, res)
 	}))
+}
+
+func writeChannelReadError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errAssistantSettingsUnread) {
+		apierr.Write(w, http.StatusServiceUnavailable, i18n.Err("http-status.unavailable"))
+		return
+	}
+	apierr.Write(w, http.StatusBadGateway, err)
 }
 
 type channelUpdate struct {
