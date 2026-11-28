@@ -13,6 +13,7 @@ import (
 
 	"github.com/nwverse/persona/server/internal/apierr"
 	"github.com/nwverse/persona/server/internal/assistantwire"
+	"github.com/nwverse/persona/server/internal/wireids"
 	"github.com/nwverse/persona/server/internal/i18n"
 	"github.com/nwverse/persona/server/internal/proto"
 	"github.com/nwverse/persona/server/internal/rpc"
@@ -792,7 +793,7 @@ func (s *Service) deliverKept(ctx context.Context, k keptMessage) (doubt bool, e
 		return false, errors.Join(errKeptCredentialCheck, err)
 	}
 	params, err := s.messageParams(withLauncherNoteDiscarded(sctx), SendParams{MachineID: k.Machine, SessionID: k.Session,
-		Params: maps.Clone(k.Params), Lang: k.Lang, Human: k.Human}, true)
+		Params: maps.Clone(k.Params), Lang: k.Lang, Human: k.Human, OriginDeviceID: wireids.DeviceID(k.CredentialID)}, true)
 	if err != nil {
 		return false, err // nothing was sent
 	}
