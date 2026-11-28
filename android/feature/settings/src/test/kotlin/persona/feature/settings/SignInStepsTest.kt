@@ -116,9 +116,9 @@ class SignInStepsTest {
         rule.onAllNodesWithText(next).assertCountEquals(0)
     }
 
-    /** A device code with only its page (any case, http or https): a button to open it, no empty code box, still asked. */
+    /** A device code with only its page (loopback http or https): a button to open it, no empty code box, still asked. */
     @Test fun aDeviceCodeWithOnlyItsPageOpensIt() {
-        val hub = Connector(BindPrompt(step = "device", kind = "device_code", url = "http://example.com/device", interval = 1))
+        val hub = Connector(BindPrompt(step = "device", kind = "device_code", url = "http://127.0.0.1:8080/device", interval = 1))
         signIn(hub)
         rule.onNode(hasText("Open webpage") and hasClickAction()).assertExists()
         rule.onAllNodesWithText("Copy code").assertCountEquals(0)
@@ -140,6 +140,81 @@ class SignInStepsTest {
             }
         }
         rule.onNode(hasText("Open the sign-in page") and hasClickAction()).assertExists()
+    }
+
+    @Test fun isWebLinkAllowsHttpsAndLoopbackHttpOnly() {
+        val allowed = listOf(
+            "https://example.com/auth",
+            "HTTPS://example.com/auth?login_hint=me@example.com",
+            "http://127.0.0.1:8080/cb",
+            "http://localhost:3000/cb",
+            "http://[::1]:8080/cb",
+        )
+        for (url in allowed) assertEquals("expected allowed: $url", true, StepView.isWebLink(url))
+
+        val rejected = listOf(
+            null,
+            "",
+            "http://example.com/auth",
+            "http://" + listOf(192, 168, 1, 1).joinToString(".") + "/cb",
+            "http://localhost.evil.example/cb",
+            "http://user@127.0.0.1:8080/cb",
+            "https://good.example@evil.example/auth",
+            "https://me:pw@example.com/auth",
+            "https:/admin",
+            "https:///path",
+            "https://a\\b",
+            "https://example.com/a b",
+            " https://example.com/auth",
+            "https://example.com/\u0000x",
+            "javascript:alert(1)",
+        )
+        for (url in rejected) assertEquals("expected rejected: $url", false, StepView.isWebLink(url))
+    }
+
+    @Test fun anExtensionsFieldsStepWithSafeUrlShowsLinkAndActions() {
+        val prompt = BindPrompt(
+            step = "oauth",
+            url = "https://accounts.example.com/oauth?state=123",
+            fields = listOf(BindField(name = "code", label = "Authorization code")),
+        )
+        rule.setContent {
+            PersonaTheme(darkTheme = false, reduceMotion = true) {
+                ConnectorSignInStep("Example", prompt, BindState(prompt), ConnectorSignInModel({ _, _ -> prompt }, {}), deviceLink = true)
+            }
+        }
+        rule.onNodeWithText("https://accounts.example.com/oauth?state=123").assertExists()
+        rule.onNode(hasText("Open the sign-in page") and hasClickAction()).assertExists()
+        rule.onNode(hasContentDescription("Copy link") and hasClickAction()).assertExists()
+    }
+
+    @Test fun anExtensionsFieldsStepWithUnsafeUrlHidesLinkAndActions() {
+        val prompt = BindPrompt(
+            step = "oauth",
+            url = "http://example.com/oauth",
+            fields = listOf(BindField(name = "code", label = "Authorization code")),
+        )
+        rule.setContent {
+            PersonaTheme(darkTheme = false, reduceMotion = true) {
+                ConnectorSignInStep("Example", prompt, BindState(prompt), ConnectorSignInModel({ _, _ -> prompt }, {}), deviceLink = true)
+            }
+        }
+        rule.onAllNodesWithText("Open the sign-in page").assertCountEquals(0)
+        rule.onAllNodesWithContentDescription("Copy link").assertCountEquals(0)
+    }
+
+    @Test fun aConnectorFieldsStepWithoutDeviceLinkDoesNotShowExtensionLinkActions() {
+        val prompt = BindPrompt(
+            step = "oauth",
+            url = "https://accounts.example.com/oauth",
+            fields = listOf(BindField(name = "code", label = "Authorization code")),
+        )
+        rule.setContent {
+            PersonaTheme(darkTheme = false, reduceMotion = true) {
+                ConnectorSignInStep("Example", prompt, BindState(prompt), ConnectorSignInModel({ _, _ -> prompt }, {}), deviceLink = false)
+            }
+        }
+        rule.onAllNodesWithText("Open the sign-in page").assertCountEquals(0)
     }
 
     @Test fun aQrCodeWithNothingToShowSaysSo() {

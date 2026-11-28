@@ -85,17 +85,25 @@ describe("extension sign-in steps", () => {
     expect(authStepView({ step: "a", kind: "voice" })).toBe("unsupported");
   });
 
-  it("opens https links only", () => {
+  it("opens https and loopback http links only", () => {
     expect(safeLink("https://example.com/x")).toBe("https://example.com/x");
     expect(safeLink("https://example.com/x?hint=me@example.com")).toBe("https://example.com/x?hint=me@example.com");
+    expect(safeLink("http://127.0.0.1:8080/cb")).toBe("http://127.0.0.1:8080/cb");
+    expect(safeLink("http://localhost:3000/cb")).toBe("http://localhost:3000/cb");
+    expect(safeLink("http://[::1]:8080/cb")).toBe("http://[::1]:8080/cb");
     expect(safeLink("https://good.example@evil.example/x")).toBe("");
     expect(safeLink("https://me:pw@example.com/x")).toBe("");
+    expect(safeLink("http://user@127.0.0.1:8080/cb")).toBe("");
+    expect(safeLink("http://user:pw@localhost:3000/cb")).toBe("");
     expect(safeLink("https:/admin")).toBe("");
     expect(safeLink("https://@evil.example/x")).toBe("");
     expect(safeLink("https://good.example\\@evil.example/x")).toBe("");
+    expect(safeLink("https://a\\b")).toBe("");
     expect(safeLink("https://example.com/\x00x")).toBe("");
     expect(safeLink("  https://example.com/x  ")).toBe("https://example.com/x");
     expect(safeLink("http://example.com/x")).toBe("");
+    expect(safeLink(`http://${[192, 168, 1, 1].join(".")}/cb`)).toBe("");
+    expect(safeLink("http://localhost.evil.example/cb")).toBe("");
     expect(safeLink("not a url")).toBe("");
     expect(safeLink(undefined)).toBe("");
   });

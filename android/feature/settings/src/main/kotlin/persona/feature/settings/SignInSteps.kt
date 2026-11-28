@@ -40,8 +40,28 @@ internal enum class StepView {
             else -> Unknown
         }
 
-        /** An http(s) address, in any case (the web's `/^https?:\/\//i`). */
-        fun isWebLink(url: String?): Boolean = url != null && (url.startsWith("https://", ignoreCase = true) || url.startsWith("http://", ignoreCase = true))
+        /** Credential-free https or loopback http address with an explicit authority and host (no control chars, spaces, or backslashes). */
+        fun isWebLink(url: String?): Boolean {
+            if (url.isNullOrEmpty()) return false
+            if (url.any { it.code <= 0x20 || it.code == 0x7f || it.isWhitespace() || it == '\\' }) return false
+            val schemeEnd = when {
+                url.startsWith("https://", ignoreCase = true) -> 8
+                url.startsWith("http://", ignoreCase = true) -> 7
+                else -> return false
+            }
+            val authEnd = url.indexOfAny(charArrayOf('/', '?', '#'), startIndex = schemeEnd).let { if (it == -1) url.length else it }
+            val authority = url.substring(schemeEnd, authEnd)
+            if (authority.isEmpty() || '@' in authority) return false
+            // URI keeps raw segments intact; do not authorize a URL after normalization.
+            val parsed = runCatching { java.net.URI(url) }.getOrNull() ?: return false
+            if (parsed.rawUserInfo != null || parsed.rawAuthority.isNullOrEmpty()) return false
+            val host = parsed.host?.lowercase()?.takeIf { it.isNotEmpty() } ?: return false
+            return when (parsed.scheme?.lowercase()) {
+                "https" -> true
+                "http" -> host == "127.0.0.1" || host == "localhost" || host == "[::1]" || host == "::1"
+                else -> false
+            }
+        }
     }
 }
 
