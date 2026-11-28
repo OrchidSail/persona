@@ -9,8 +9,23 @@ import (
 	"github.com/nwverse/persona/server/internal/proto"
 )
 
-// agyIdleRetryCooldown avoids hammering a session when an automatic compaction attempt fails.
-const agyIdleRetryCooldown = 5 * time.Minute
+// After a failed automatic compaction a session waits agyIdleRetryCooldown before the next try, doubling with each
+// failure in a row up to agyIdleRetryCooldownMax (#17260): a session the runtime no longer has loaded ("Failed to read
+// session …; load it with session/load") fails the same way every time, and was retried every five minutes for as
+// long as the node ran. New activity on the session, or its context falling below the threshold, starts over.
+const (
+	agyIdleRetryCooldown    = 5 * time.Minute
+	agyIdleRetryCooldownMax = 4 * time.Hour
+)
+
+// agyIdleRetryDelay is the wait after failures failed attempts in a row.
+func agyIdleRetryDelay(failures int) time.Duration {
+	d := agyIdleRetryCooldown
+	for i := 1; i < failures && d < agyIdleRetryCooldownMax; i++ {
+		d *= 2
+	}
+	return min(d, agyIdleRetryCooldownMax)
+}
 
 // agyIdleCompactMaxConcurrent bounds how many automatic idle compactions can run concurrently across a node
 // so a cold start or periodic sweep does not spawn an unbounded storm of Antigravity ACP workers at once.
@@ -57,6 +72,7 @@ type agyIdleState struct {
 	lastTokens    int
 	attempted     bool
 	lastAttempt   time.Time
+	failures      int // failed attempts in a row, for agyIdleRetryDelay
 }
 
 type agyIdlePruneCandidate struct {
@@ -121,6 +137,17 @@ func (n *Node) agyIdleCompactionPolicy() assistantwire.AgyIdleCompaction {
 		return assistantwire.DefaultAgyIdleCompaction()
 	}
 	return n.agyIdlePolicy.Normalize()
+}
+
+// agyIdleAssistant recognizes assistant conversations that run in project directories, including scheduled ones
+// started before the node saved the runtime's assistant role.
+func (n *Node) agyIdleAssistant(id string) bool {
+	if n.state != nil {
+		if st, ok := n.state.get(id); ok && (st.RuntimeAssistant || st.TaskExecution || st.IsMain) {
+			return true
+		}
+	}
+	return n.isAssistantSession(id)
 }
 
 func (n *Node) setPendingInteractionSessions(ids []string) {
@@ -271,6 +298,7 @@ func (n *Node) observeAgySessions(h *runtimeConn, list []proto.Session) {
 			continue
 		}
 		seen[row.SessionID] = true
+		thresholds := policy.For(n.agyIdleAssistant(row.SessionID))
 		safe := n.agySessionSafeIdle(h, row)
 		// Re-check ownership after agySessionSafeIdle (which performs agyOpenIn disk I/O) so an older
 		// companion returning late cannot overwrite a newer owner's st.host or reset its latch/cooldown.
@@ -281,7 +309,7 @@ func (n *Node) observeAgySessions(h *runtimeConn, list []proto.Session) {
 			delete(seen, row.SessionID)
 			continue
 		}
-		n.updateAgyIdleState(h, row, safe, policy.ContextTokens, now)
+		n.updateAgyIdleState(h, row, safe, thresholds.ContextTokens, now)
 	}
 	// Only prune entries that belonged to h (leaving other AGY companions' state intact), and verify
 	// outside agyIdleMu that no other companion owns the session and no reconnecting companion for the
@@ -333,6 +361,10 @@ func (n *Node) updateAgyIdleState(h *runtimeConn, row proto.Session, safe bool, 
 		st.attempted = false
 		st.lastAttempt = time.Time{}
 		st.attemptToken = 0
+		st.failures = 0
+	} else if !st.attempted && st.failures > 0 && row.UpdatedAt.After(st.lastRowTime) && row.UpdatedAt.After(st.lastAttempt) {
+		st.lastAttempt = time.Time{}
+		st.failures = 0
 	}
 	if !safe {
 		st.safeIdleSince = time.Time{}
@@ -364,7 +396,8 @@ func (n *Node) updateAgyIdleState(h *runtimeConn, row proto.Session, safe bool, 
 	return st.safeIdleSince
 }
 
-func (n *Node) agyIdleReady(h *runtimeConn, row proto.Session, policy assistantwire.AgyIdleCompaction, now time.Time) (time.Duration, bool) {
+// agyIdleReady says whether row has met its safe idle time and context thresholds.
+func (n *Node) agyIdleReady(h *runtimeConn, row proto.Session, policy assistantwire.AgyIdleThresholds, now time.Time) (time.Duration, bool) {
 	if !policy.Enabled || int(row.ContextTokens) < policy.ContextTokens {
 		return 0, false
 	}
@@ -393,7 +426,7 @@ func (n *Node) agyIdleReady(h *runtimeConn, row proto.Session, policy assistantw
 	n.agyIdleMu.Lock()
 	st := n.agyIdleSessions[row.SessionID]
 	latched := st != nil && st.attempted
-	cooling := st != nil && !st.lastAttempt.IsZero() && now.Sub(st.lastAttempt) < agyIdleRetryCooldown
+	cooling := st != nil && !st.lastAttempt.IsZero() && now.Sub(st.lastAttempt) < agyIdleRetryDelay(st.failures)
 	n.agyIdleMu.Unlock()
 	if latched || cooling {
 		return idleFor, false
@@ -441,6 +474,7 @@ func (n *Node) recordAgyIdleFailure(h *runtimeConn, id string, now time.Time, to
 	} else {
 		st.attempted = false
 		st.lastAttempt = now
+		st.failures++
 	}
 	st.gen++
 }
@@ -522,7 +556,7 @@ func (n *Node) pruneStaleAgyIdleStates(snaps []agyRuntimeSnapshot) {
 }
 
 // sweepAgyIdleCompactions proactively compacts Persona-managed Antigravity sessions whose context and safe-idle
-// duration have both crossed the configured thresholds.
+// duration have both crossed their thresholds.
 func (n *Node) sweepAgyIdleCompactions(ctx context.Context, now time.Time) {
 	if n.runtimes == nil || n.reload.Preparing() {
 		return
@@ -534,7 +568,7 @@ func (n *Node) sweepAgyIdleCompactions(ctx context.Context, now time.Time) {
 		return
 	}
 	for _, snap := range snaps {
-		idleFor, ready := n.agyIdleReady(snap.host, snap.row, policy, now)
+		idleFor, ready := n.agyIdleReady(snap.host, snap.row, policy.For(n.agyIdleAssistant(snap.row.SessionID)), now)
 		if !ready {
 			continue
 		}
@@ -568,7 +602,8 @@ func (n *Node) runAgyIdleCompaction(ctx context.Context, h *runtimeConn, id stri
 		return
 	}
 	now := n.agyNow()
-	policy := n.agyIdleCompactionPolicy()
+	isAssistant := n.agyIdleAssistant(id)
+	policy := n.agyIdleCompactionPolicy().For(isAssistant)
 	if _, ready := n.agyIdleReady(h, row, policy, now); !ready {
 		return
 	}
@@ -576,7 +611,6 @@ func (n *Node) runAgyIdleCompaction(ctx context.Context, h *runtimeConn, id stri
 		return
 	}
 	token, prevAttempted, prevLastAttempt := n.markAgyIdleAttempt(h, id, now)
-	isAssistant := n.isAssistantSession(id)
 	compaction, err := n.startRuntimeCompactionLocked(ctx, h, id, isAssistant, true, false)
 	if err != nil {
 		n.recordAgyIdleFailure(h, id, n.agyNow(), token, prevAttempted, prevLastAttempt)
@@ -655,7 +689,8 @@ func (n *Node) agyIdleCompactBeforeInput(ctx context.Context, h *runtimeConn, id
 		return nil
 	}
 	now := n.agyNow()
-	policy := n.agyIdleCompactionPolicy()
+	isAssistant = isAssistant || n.agyIdleAssistant(id)
+	policy := n.agyIdleCompactionPolicy().For(isAssistant)
 	idleFor, ready := n.agyIdleReady(h, row, policy, now)
 	if !ready {
 		return nil
@@ -671,14 +706,21 @@ func (n *Node) agyIdleCompactBeforeInput(ctx context.Context, h *runtimeConn, id
 		return nil
 	}
 	n.logger.Printf("agy %s: pre-input auto-compact after %s idle with %d tokens (>= %d)", id, idleFor.Round(time.Second), row.ContextTokens, policy.ContextTokens)
+	recordFailure := func() {
+		if failure := compaction.failureMessage(); failure != "" {
+			n.recordAgyIdleFailure(h, id, n.agyNow(), token, prevAttempted, prevLastAttempt)
+			n.logger.Printf("agy %s: pre-input auto-compact failed: %s", id, failure)
+		}
+	}
 	select {
 	case <-compaction.done:
+		recordFailure()
 	case <-ctx.Done():
+		go func() {
+			<-compaction.done
+			recordFailure()
+		}()
 		return ctx.Err()
-	}
-	if failure := compaction.failureMessage(); failure != "" {
-		n.recordAgyIdleFailure(h, id, n.agyNow(), token, prevAttempted, prevLastAttempt)
-		n.logger.Printf("agy %s: pre-input auto-compact failed (continuing send): %s", id, failure)
 	}
 	return nil
 }

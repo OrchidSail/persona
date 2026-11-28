@@ -6,11 +6,12 @@ import (
 	"github.com/nwverse/persona/server/internal/repositorywire"
 )
 
-// BackendWorkspaceRPCTimeout is the Manager's budget for a task.workspace RPC.
-const BackendWorkspaceRPCTimeout = 5 * time.Minute
+// BackendWorkspaceRPCTimeout is the Manager's budget for an ordinary task.workspace RPC.
+const BackendWorkspaceRPCTimeout = repositorywire.TaskWorkspaceRPCTimeout
 
-// BackendWorkspacePrepareTimeout covers serial mirror ensures, the direct prepare RPC if any
-// mirror fails, and extra time for planning, status writes and the HTTP reply.
+// BackendWorkspacePrepareTimeout covers serial mirror ensures followed by a full direct
+// prepare RPC if all mirrors fail, with time for planning, status writes and the reply.
 func BackendWorkspacePrepareTimeout(repositories int) time.Duration {
-	return time.Duration(repositories)*repositorywire.MirrorEnsureTimeout + BackendWorkspaceRPCTimeout + time.Minute
+	mirrorTimeout := time.Duration(repositories) * repositorywire.MirrorEnsureTimeout
+	return mirrorTimeout + repositorywire.TaskWorkspacePrepareTimeout(repositories) + time.Minute
 }

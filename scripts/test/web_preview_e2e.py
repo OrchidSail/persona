@@ -91,7 +91,7 @@ def run(browser, base, hub, token, size, theme, shots, full):
             page.screenshot(path=os.path.join(shots, f"preview-{size}-{theme}-{name}.png"))
 
     def open_panel(mode):
-        mock(hub, token, "?mode=" + mode)
+        mock(hub, token, "?mode=" + mode + "&origin=0")
         page.evaluate(f"sessionStorage.clear()")
         page.goto(f"{base}/s/{MID}/{SID}")
         # ⋯ › Preview: the item is there once the hub's hello said preview, a moment after the page loads
@@ -291,7 +291,7 @@ def phone_touch(browser, base, hub, token, shots, w=390, h=844, theme="light"):
     keyboard stays down and the page keeps its size; a tap clicks the page and focuses the field once the finger lifts.
     Only taps and CDP touches here: one mouse event would make the page treat this as a computer with a mouse."""
     tag = f"phone {w}/{theme}"
-    mock(hub, token, "?mode=1")
+    mock(hub, token, "?mode=1&origin=0")
     ctx = browser.new_context(viewport={"width": w, "height": h}, device_scale_factor=3, is_mobile=True, has_touch=True,
                               user_agent=UA, locale="zh-CN")
     ctx.add_init_script(IOS_KEYBOARD)
@@ -410,6 +410,157 @@ def phone_touch(browser, base, hub, token, shots, w=390, h=844, theme="light"):
     ctx.close()
 
 
+def run_direct(browser, base, hub, token, size, theme, shots, full):
+    """Isolated preview origin mode (docs/web/preview.md): direct iframe by default, native <select> inside iframe,
+    same-port navigation & reload without replaying the one-time code, manual switch in the secondary menu, automatic
+    fallback on verified unreachable postMessage / grant failure, auth_failed retry once, and Pick switching to stream."""
+    tag = f"direct {size}/{theme}"
+    narrow = size == "narrow"
+    ctx = browser.new_context(viewport=SIZES[size], device_scale_factor=2, has_touch=narrow, locale="zh-CN")
+    ctx.grant_permissions(["clipboard-read", "clipboard-write"])
+    page = ctx.new_page()
+    page.set_default_timeout(20000)
+    page.goto(base + "/overview?token=" + token)
+    page.wait_for_function("localStorage.getItem('persona.token')")
+    page.evaluate(f"localStorage.setItem('persona.theme', '{theme}')")
+    panel = page.locator("[data-preview-panel]")
+    iframe = page.locator("iframe[data-preview-iframe]")
+    canvas = page.locator("[data-preview-canvas]")
+
+    def shot(name):
+        if shots:
+            page.wait_for_timeout(400)
+            page.screenshot(path=os.path.join(shots, f"preview-{size}-{theme}-{name}.png"))
+
+    def open_direct(origin_mode):
+        mock(hub, token, f"?mode=1&origin=1&origin_mode={origin_mode}&clear=1")
+        page.evaluate("sessionStorage.clear()")
+        page.goto(f"{base}/s/{MID}/{SID}")
+        for _ in range(20):
+            page.get_by_role("button", name="更多").first.click()
+            item = page.get_by_role("menuitem", name="预览")
+            try:
+                item.wait_for(timeout=1000)
+            except PlaywrightTimeout:
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(150)
+                continue
+            item.click()
+            try:
+                panel.wait_for(timeout=3000)
+                break
+            except PlaywrightTimeout:
+                continue
+        else:
+            fail(f"{tag}: the ⋯ menu has no Preview")
+        expect(panel).to_be_visible()
+
+    def drawn():
+        page.wait_for_function("(() => { const c = document.querySelector('[data-preview-canvas]'); return c && c.width > 1 && getComputedStyle(c).opacity !== '0'; })()", timeout=40000)
+
+    # 1. Direct view by default when hub advertises preview_origin
+    open_direct("ok")
+    expect(iframe).to_be_visible()
+    expect(canvas).to_have_count(0)
+    frame = page.frame_locator("iframe[data-preview-iframe]")
+    expect(frame.locator("h1")).to_have_text("Good morning")
+
+    # Verify cross-origin isolation & safe iframe attributes
+    attrs = page.evaluate("""(() => {
+      const f = document.querySelector('iframe[data-preview-iframe]');
+      return { src: f.getAttribute('src') || '', sandbox: f.getAttribute('sandbox') || '', ref: f.getAttribute('referrerpolicy') || '', hubOrigin: location.origin };
+    })()""")
+    if not attrs["src"] or attrs["src"].startswith(attrs["hubOrigin"]):
+        fail(f"{tag}: direct iframe was not hosted on a separate origin: {attrs}")
+    sb = attrs["sandbox"].split()
+    if "allow-scripts" not in sb or "allow-same-origin" not in sb or any(t.startswith("allow-top-navigation") for t in sb):
+        fail(f"{tag}: unexpected iframe sandbox: {attrs['sandbox']}")
+    if attrs["ref"] != "no-referrer":
+        fail(f"{tag}: expected referrerpolicy=no-referrer, got {attrs['ref']}")
+    if panel.get_by_role("button", name="后退").count() != 0 or panel.get_by_role("button", name="前进").count() != 0:
+        fail(f"{tag}: Back/Forward buttons should be hidden in direct mode")
+    ok(f"{tag}: direct iframe renders on isolated origin with safe sandbox and no-referrer")
+    shot("direct")
+
+    # 2. Address bar navigation, native <select> inside direct iframe, and reload without code replay
+    addr = page.locator("[data-preview-address]")
+    addr.click()
+    addr.fill("/settings")
+    addr.press("Enter")
+    expect(frame.locator("h1")).to_have_text("Settings")
+    frame.locator("#role").select_option("1")
+    expect(frame.locator(".role-note b")).to_have_text("Viewer")
+    snap = mock(hub, token)
+    grants = [m for m in snap["log"] if "grant" in m]
+    if len(grants) != 1 or any("open" in m for m in snap["log"]):
+        fail(f"{tag}: expected 1 grant and 0 stream opens after same-port navigation, got {snap['log']}")
+    panel.get_by_role("button", name="刷新").click()
+    expect(frame.locator("h1")).to_have_text("Settings")
+    expect(canvas).to_have_count(0)
+    ok(f"{tag}: direct address navigation, native <select>, and reload work without replaying grant code")
+
+    # 3. Manual mode switching in the preview bar secondary menu
+    more = panel.get_by_role("button", name="更多预览选项")
+    more.click()
+    to_stream = page.get_by_role("menuitem", name="通过电脑查看")
+    expect(to_stream).to_be_visible()
+    if full and theme == "light":
+        shot("direct-menu")
+    to_stream.click()
+    expect(iframe).to_have_count(0)
+    drawn()
+    expect(page.locator("[data-preview-bar='notice']")).to_have_count(0)
+    expect(panel.get_by_role("button", name="后退")).to_be_visible()
+    ok(f"{tag}: manual switch to computer stream works without fallback notice")
+
+    more.click()
+    to_direct = page.get_by_role("menuitem", name="直接查看")
+    expect(to_direct).to_be_visible()
+    to_direct.click()
+    expect(iframe).to_be_visible()
+    expect(frame.locator("h1")).to_have_text("Settings")
+    expect(canvas).to_have_count(0)
+    ok(f"{tag}: manual switch back to direct iframe works")
+
+    if full and theme == "light":
+        # Pick element in direct mode switches to stream with explanation and enters picking mode
+        panel.get_by_role("button", name="选择页面元素进行评论").click()
+        expect(page.locator("[data-preview-bar='notice']")).to_contain_text("已切换到通过电脑查看，以便选择页面元素。")
+        expect(page.locator("[data-preview-picking]")).to_be_visible()
+        drawn()
+        ok(f"{tag}: Pick element in direct mode switches to stream with notice and activates picking")
+
+        # auth_failed retries grant once and stays direct
+        open_direct("auth_retry")
+        expect(iframe).to_be_visible()
+        expect(frame.locator("h1")).to_have_text("Good morning")
+        expect(canvas).to_have_count(0)
+        retry_grants = [m for m in mock(hub, token)["log"] if "grant" in m]
+        if len(retry_grants) != 2:
+            fail(f"{tag}: expected 2 grants on auth_failed retry, got {retry_grants}")
+        ok(f"{tag}: auth_failed retries grant once and stays in direct mode")
+
+        # Grant failure falls back automatically with notice
+        open_direct("grant_fail")
+        expect(iframe).to_have_count(0)
+        drawn()
+        expect(page.locator("[data-preview-bar='notice']")).to_contain_text("无法直接显示这个页面，已改为通过电脑显示。")
+        ok(f"{tag}: grant failure automatically falls back to stream with notice")
+
+    # 4. Verified unreachable postMessage automatically falls back to stream with notice
+    open_direct("unreachable")
+    expect(iframe).to_have_count(0)
+    drawn()
+    notice = page.locator("[data-preview-bar='notice']")
+    expect(notice).to_be_visible()
+    expect(notice).to_contain_text("无法直接显示这个页面，已改为通过电脑显示。")
+    ok(f"{tag}: unreachable postMessage automatically falls back to stream with notice")
+    shot("direct-fallback")
+
+    mock(hub, token, "?mode=1&origin=0&origin_mode=ok")
+    ctx.close()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("base")
@@ -425,6 +576,8 @@ def main():
         browser = p.chromium.launch(executable_path=a.executable) if a.executable else p.chromium.launch(channel=a.channel)
         for size, theme in (("wide", "light"), ("wide", "dark"), ("narrow", "light"), ("narrow", "dark")):
             run(browser, a.base, a.hub, a.token, size, theme, a.shots, full=size == "wide")
+        for size, theme in (("wide", "light"), ("wide", "dark"), ("narrow", "light"), ("narrow", "dark")):
+            run_direct(browser, a.base, a.hub, a.token, size, theme, a.shots, full=size == "wide")
         phone_touch(browser, a.base, a.hub, a.token, a.shots)
         browser.close()
     print("PASS web preview", flush=True)

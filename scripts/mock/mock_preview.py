@@ -24,6 +24,7 @@ places); without one each picture is a plain grey PNG.
 import base64
 import glob
 import hashlib
+import html
 import json
 import os
 import shutil
@@ -32,10 +33,13 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.parse
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODE = {"mode": os.environ.get("MOCK_PREVIEW") or "1"}
+ORIGIN = {"enabled": os.environ.get("MOCK_PREVIEW_ORIGIN") == "1", "mode": "ok", "auth_fail_left": 0, "seq": 0, "ancestors": []}
+CODES = {}  # code -> {"port": int, "path": str, "ancestors": list[str], "used": bool}
 LOG = []
 STARTED = {}  # port -> when it was started from the panel
 SHOTS = {}  # (path, w, h, dpr, mobile, hl, sel) -> PNG bytes
@@ -105,15 +109,102 @@ def _select_html(selected):
     return "".join(parts)
 
 
-def page_html(path, hl="", width=0, selected=0):
+def page_html(path, hl="", width=0, selected=0, interactive=False):
     title, body = PAGES.get(path, PAGES["/"])
     # Chrome's --screenshot lays out no narrower than 500 px whatever the window: a phone-wide page is pinned to its width
     pin = f"html{{width:{width}px;overflow:hidden}}" if width else ""
     links = "".join(f"<a href='{p}' class='{'on' if p == path else ''}'>{n}</a>" for p, n in (("/", "Home"), ("/notes", "Notes"), ("/settings", "Settings")))
     opt = next((o for o in SELECT_OPTIONS if o["index"] == selected), SELECT_OPTIONS[0])
     rendered = body.replace("{hl}", hl).replace("{select_options}", _select_html(selected)).replace("{role_label}", opt["label"])
+    script = ("<script>(function(){var s=document.getElementById('role');if(!s)return;"
+              "s.addEventListener('change',function(){var b=document.querySelector('.role-note b');"
+              "if(b&&s.options[s.selectedIndex])b.textContent=s.options[s.selectedIndex].text;});})();</script>") if interactive else ""
     return (f"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
-            f"<title>{title}</title><style>{STYLE}{pin}</style></head><body><nav><b>Acme Notes</b>{links}</nav><main>{rendered}</main></body></html>")
+            f"<title>{title}</title><style>{STYLE}{pin}</style></head><body><nav><b>Acme Notes</b>{links}</nav><main>{rendered}</main>{script}</body></html>")
+
+
+def _unreachable_html(code, ancestors):
+    targets = json.dumps(list(dict.fromkeys(a for a in (ancestors or ORIGIN["ancestors"]) if a)))
+    code_json = json.dumps(code)
+    esc = html.escape(code)
+    return (f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='referrer' content='no-referrer'>"
+            f"<title>Preview unavailable</title></head><body><main><h1>Preview unavailable</h1><p>Error: <code>{esc}</code></p></main>"
+            f"<script>(function(){{if(window.parent&&window.parent!==window){{var msg={{persona_preview:'unreachable',code:{code_json}}};"
+            f"var targets={targets};for(var i=0;i<targets.length;i++){{try{{window.parent.postMessage(msg,targets[i]);}}catch(e){{}}}}}}}})();</script>"
+            f"</body></html>").encode()
+
+
+def _origin_of(raw):
+    if not raw:
+        return ""
+    u = urllib.parse.urlsplit(raw)
+    return f"{u.scheme}://{u.netloc}" if u.scheme in ("http", "https") and u.netloc else ""
+
+
+class _OriginHandler(BaseHTTPRequestHandler):
+    def _send_unreachable(self, status, code, ancestors=None):
+        b = _unreachable_html(code, ancestors)
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+
+    def do_GET(self):
+        parsed = urllib.parse.urlsplit(self.path)
+        path = parsed.path or "/"
+        qs = urllib.parse.parse_qs(parsed.query)
+        if path == "/__persona_preview_auth":
+            code = (qs.get("code") or [""])[0]
+            entry = CODES.get(code)
+            if not entry or entry["used"]:
+                self._send_unreachable(401, "auth_failed", entry["ancestors"] if entry else None)
+                return
+            entry["used"] = True
+            if ORIGIN["auth_fail_left"] > 0:
+                ORIGIN["auth_fail_left"] -= 1
+                self._send_unreachable(401, "auth_failed", entry["ancestors"])
+                return
+            self.send_response(302)
+            self.send_header("Set-Cookie", "mock_preview_sid=ok; Path=/; HttpOnly")
+            self.send_header("Location", entry["path"] or "/")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+        if ORIGIN["mode"] == "unreachable":
+            self._send_unreachable(502, "port_gone")
+            return
+        cookie = self.headers.get("Cookie", "")
+        if "mock_preview_sid=ok" not in cookie:
+            self._send_unreachable(401, "auth_failed")
+            return
+        b = page_html(path, selected=SELECT_STATE["value"], interactive=True).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+
+    def log_message(self, *a): pass
+
+
+_origin_server = None
+
+
+def origin_server():
+    global _origin_server
+    if _origin_server is None:
+        _origin_server = ThreadingHTTPServer(("127.0.0.1", 0), _OriginHandler)
+        threading.Thread(target=_origin_server.serve_forever, daemon=True).start()
+    return f"http://127.0.0.1:{_origin_server.server_address[1]}"
+
+
+def features():
+    return ["preview", "preview_origin"] if ORIGIN["enabled"] else ["preview"]
 
 
 class _Page(BaseHTTPRequestHandler):
@@ -220,6 +311,13 @@ def forward(port):
     return page_server() if MODE["mode"] != "old" and listening(port) else None
 
 
+def forward_error(port):
+    """Optional simulated direct-forwarding failure `(status, message)` while the dev server itself and stream mode stay live."""
+    if MODE["mode"] == "directfail" and listening(port):
+        return (502, "dev server did not answer direct loopback forwarding")
+    return None
+
+
 def install(hub):
     """Adds the preview to the mock: its feature, an agent's Storybook port, and the routes."""
     HUB["hub"] = hub
@@ -232,7 +330,21 @@ def route(h, method, p, q):
         if q.get("mode"):
             MODE["mode"] = q["mode"][0]; STARTED.clear(); agent_ports()
             SELECT_STATE.update(value=0, label=SELECT_OPTIONS[0]["label"])
-        return h.send_json({"mode": MODE["mode"], "log": LOG, "select": dict(SELECT_STATE), "acks": ACKS["count"]}) or True
+        if q.get("origin"):
+            ORIGIN["enabled"] = q["origin"][0] in ("1", "true", "on")
+            if not ORIGIN["enabled"]:
+                ORIGIN["mode"] = "ok"
+                ORIGIN["auth_fail_left"] = 0
+        if q.get("origin_mode"):
+            ORIGIN["mode"] = q["origin_mode"][0]
+            ORIGIN["auth_fail_left"] = 1 if ORIGIN["mode"] == "auth_retry" else 0
+        if q.get("clear") == ["1"]:
+            LOG.clear()
+        return h.send_json({
+            "mode": MODE["mode"], "log": LOG, "select": dict(SELECT_STATE), "acks": ACKS["count"],
+            "origin_enabled": ORIGIN["enabled"], "origin_mode": ORIGIN["mode"],
+            "origin_url": origin_server() if ORIGIN["enabled"] else "",
+        }) or True
     if not p.startswith("/api/v1/machines/"): return False
     parts = p.split("/")  # ['', 'api', 'v1', 'machines', mid, 'preview' | 'ports', …]
     if len(parts) < 6: return False
@@ -246,6 +358,27 @@ def route(h, method, p, q):
     what = parts[6] if len(parts) > 6 else ""
     if what == "servers" and method == "GET":
         return h.send_json(servers()) or True
+    if what == "grant" and method == "POST":
+        if not ORIGIN["enabled"]:
+            return h.send_json({"error": "preview origin is not configured", "code": "preview_origin_disabled"}, 404) or True
+        body = json.loads(h.last_body or b"{}")
+        port = int(body.get("port") or 0)
+        target_path = body.get("path") or "/"
+        LOG.append({"grant": {"port": port, "path": target_path}})
+        if ORIGIN["mode"] == "grant_fail":
+            return h.send_json({"error": "bad gateway", "code": "bad_gateway"}, 502) or True
+        ancestors = [a for a in (_origin_of(h.headers.get("Origin")), _origin_of(h.headers.get("Referer"))) if a]
+        if ancestors:
+            ORIGIN["ancestors"] = list(dict.fromkeys(ancestors))
+        ORIGIN["seq"] += 1
+        code = f"mockcode-{ORIGIN['seq']}"
+        orig = origin_server()
+        CODES[code] = {"port": port, "path": target_path, "ancestors": list(ORIGIN["ancestors"]), "used": False}
+        return h.send_json({
+            "url": f"{orig}/__persona_preview_auth?code={code}",
+            "origin": orig,
+            "expires_at": "2099-01-01T00:00:00Z",
+        }) or True
     if what == "start" and method == "POST":
         body = json.loads(h.last_body or b"{}")
         s = next((x for x in servers()["servers"] if x["name"] == body.get("name")), None)

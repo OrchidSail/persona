@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { commentBlock, parseCommentBlock } from "./comments";
 import {
-  addressOf, canvasFit, commandLine, editCommand, elementQuote, frameImageMime, keyMessage, localhostLink, modsOf, normalizeSelectOpen, parseBinary,
-  placeSelectPopup, prettyHTML, previewOptions, previewProblems, previewSocketURL, safeExternal, stepSelectOption, toPage, type PickedElement,
-  type PreviewServers,
+  addressOf, canvasFit, commandLine, DIRECT_IFRAME_SANDBOX, DIRECT_LOAD_TIMEOUT_MS, directOriginURL, editCommand, elementQuote,
+  frameImageMime, initialPreviewMode, keyMessage, localhostLink, modsOf, normalizeSelectOpen, parseBinary, parseDirectNav,
+  parsePreviewGrant, parseUnreachableMessage, placeSelectPopup, prettyHTML, PREVIEW_ORIGIN_FEATURE, previewOptions, previewPortKey,
+  previewProblems, previewSocketURL, safeExternal, stepSelectOption, toPage, type PickedElement, type PreviewServers,
 } from "./preview";
 
 const res: PreviewServers = {
@@ -245,5 +246,70 @@ describe("a picked element as a comment", () => {
   it("puts a long one-line HTML a tag a line", () => {
     expect(prettyHTML("<a>x</a>")).toBe("<a>x</a>");
     expect(prettyHTML(`<div>${"<p>x</p>".repeat(20)}</div>`).split("\n")).toHaveLength(22);
+  });
+});
+
+describe("isolated preview origin helpers", () => {
+  it("defines feature flag, safe iframe sandbox without top navigation, and bounded load timeout", () => {
+    expect(PREVIEW_ORIGIN_FEATURE).toBe("preview_origin");
+    const tokens = DIRECT_IFRAME_SANDBOX.split(/\s+/);
+    expect(tokens).toContain("allow-scripts");
+    expect(tokens).toContain("allow-same-origin");
+    expect(tokens.some((tok) => tok.startsWith("allow-top-navigation"))).toBe(false);
+    expect(DIRECT_LOAD_TIMEOUT_MS).toBeGreaterThanOrEqual(5_000);
+    expect(DIRECT_LOAD_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
+  });
+
+  it("picks direct mode only when preview_origin is advertised and not fallen back or overridden", () => {
+    expect(initialPreviewMode({ hasPreviewOrigin: false, rememberedFallback: false })).toBe("stream");
+    expect(initialPreviewMode({ hasPreviewOrigin: false, rememberedFallback: false, manualChoice: "direct" })).toBe("stream");
+    expect(initialPreviewMode({ hasPreviewOrigin: true, rememberedFallback: false })).toBe("direct");
+    expect(initialPreviewMode({ hasPreviewOrigin: true, rememberedFallback: true })).toBe("stream");
+    expect(initialPreviewMode({ hasPreviewOrigin: true, rememberedFallback: true, manualChoice: "direct" })).toBe("direct");
+    expect(initialPreviewMode({ hasPreviewOrigin: true, rememberedFallback: false, manualChoice: "stream" })).toBe("stream");
+    expect(previewPortKey("mac1", 5173)).toBe("mac1:5173");
+  });
+
+  it("validates preview grant responses and resolves same-origin navigation URLs safely", () => {
+    expect(parsePreviewGrant({
+      url: "https://p-abc.preview.example.test/__persona_preview_auth?code=123",
+      origin: "https://p-abc.preview.example.test",
+      expires_at: "2026-11-28T12:00:00Z",
+    })).toEqual({
+      url: "https://p-abc.preview.example.test/__persona_preview_auth?code=123",
+      origin: "https://p-abc.preview.example.test",
+      expires_at: "2026-11-28T12:00:00Z",
+    });
+    expect(parsePreviewGrant({ url: "https://other.example.test/", origin: "https://p-abc.preview.example.test" })).toBeNull();
+    expect(parsePreviewGrant({ url: "javascript:alert(1)", origin: "https://p-abc.preview.example.test" })).toBeNull();
+    expect(parsePreviewGrant(null)).toBeNull();
+
+    expect(directOriginURL("https://p-abc.preview.example.test", "/settings?tab=1#top")).toBe("https://p-abc.preview.example.test/settings?tab=1#top");
+    expect(directOriginURL("https://p-abc.preview.example.test", "//evil.example.test/a")).toBeNull();
+    expect(directOriginURL("https://p-abc.preview.example.test", "https://evil.example.test/a")).toBeNull();
+  });
+
+  it("accepts unreachable postMessages only when both origin and source window match", () => {
+    const iframeWin = { id: "iframe-win" };
+    const otherWin = { id: "other-win" };
+    const origin = "https://p-abc.preview.example.test";
+    expect(parseUnreachableMessage({ origin, source: iframeWin, data: { persona_preview: "unreachable", code: "port_gone" } }, origin, iframeWin)).toEqual({ code: "port_gone" });
+    expect(parseUnreachableMessage({ origin: "https://evil.example.test", source: iframeWin, data: { persona_preview: "unreachable", code: "port_gone" } }, origin, iframeWin)).toBeNull();
+    expect(parseUnreachableMessage({ origin, source: otherWin, data: { persona_preview: "unreachable", code: "port_gone" } }, origin, iframeWin)).toBeNull();
+    expect(parseUnreachableMessage({ origin, source: null, data: { persona_preview: "unreachable", code: "port_gone" } }, origin, iframeWin)).toBeNull();
+    expect(parseUnreachableMessage({ origin, source: iframeWin, data: { persona_preview: "other", code: "port_gone" } }, origin, iframeWin)).toBeNull();
+    expect(parseUnreachableMessage({ origin, source: iframeWin, data: { persona_preview: "unreachable", code: "" } }, origin, iframeWin)).toBeNull();
+    expect(parseUnreachableMessage({ origin, source: iframeWin, data: "unreachable" }, origin, iframeWin)).toBeNull();
+  });
+
+  it("parses direct address bar targets into same-port path, other-port re-grant, or external URL", () => {
+    expect(parseDirectNav("/settings?tab=1#a", 5173)).toEqual({ kind: "same_port", path: "/settings?tab=1#a" });
+    expect(parseDirectNav("http://localhost:5173/notes", 5173)).toEqual({ kind: "same_port", path: "/notes" });
+    expect(parseDirectNav("localhost:6006/story?x=1", 5173)).toEqual({ kind: "other_port", port: 6006, path: "/story?x=1" });
+    expect(parseDirectNav("http://studio.local:3000/app", 5173, ["studio"])).toEqual({ kind: "other_port", port: 3000, path: "/app" });
+    expect(parseDirectNav("https://docs.example.com/notes/api", 5173)).toEqual({ kind: "external", url: "https://docs.example.com/notes/api" });
+    expect(parseDirectNav("//evil.example.com/x", 5173)).toEqual({ kind: "invalid" });
+    expect(parseDirectNav("javascript:alert(1)", 5173)).toEqual({ kind: "invalid" });
+    expect(parseDirectNav("   ", 5173)).toEqual({ kind: "invalid" });
   });
 });

@@ -120,9 +120,10 @@ import (
 // Reaping idle assistant ACP workers independently of coding agents and storing compact background summaries instead of full exported.steps in listedTranscriptCache add 8 B (321,869 B -> 321,877 B).
 // Replacing resident Antigravity ACP processes after a new agy sign-in (metadata-only sign-in stamp, lib/sign-in.js) or a
 // quota or sign-in error (#17860) adds 1,809 B (321,877 B -> 323,686 B).
+// Reconciling Antigravity silent background task terminations (TimerCondition cancellation, JSON-array manage_task(list), manage_task(status), one-shot timer expiry with cache invalidation/refresh, schedule MaxIterations, and manage_subagents; #17891) adds 2,393 B (323,686 B -> 326,079 B).
 // Raise the budget only for code a runtime needs, never to embed the packages raw again.
 func TestDistBudget(t *testing.T) {
-	const budget = 323_686
+	const budget = 326_079
 	_, out := generateIntegrations(t)
 	entries, err := os.ReadDir(out)
 	if err != nil {

@@ -114,7 +114,7 @@ func (s *Service) finishTaskTerminal(ctx context.Context, t Todo, accepted bool)
 	}
 	if !task.CloseTabOnAccept {
 		if accepted && s.closeEndedTerminals(ctx) {
-			return s.finishRuntimeTaskSession(ctx, t, i)
+			return s.closeRuntimeTaskOnAccept(ctx, t, i)
 		}
 		return terminalCleanupStatus(task)
 	}
@@ -255,27 +255,28 @@ func (s *Service) taskTerminalOwned(id string, acceptedAt time.Time, target task
 	return linked == 1
 }
 
-func runtimeCloseable(row proto.Session) bool {
-	return row.SourceKind == proto.SourceRuntime && row.PaneID == "" &&
-		row.Capabilities != nil && row.Capabilities.Close != nil && *row.Capabilities.Close
-}
-
-// finishRuntimeTaskSession releases an exclusive, idle runtime-backed task session (such as Antigravity)
-// via session.close when assistant.close_ended_terminals is enabled and the task has been accepted.
-// Non-runtime sessions or busy/watched/shared sessions are left untouched without mutating plan state.
-func (s *Service) finishRuntimeTaskSession(ctx context.Context, t Todo, planIndex int) string {
+// closeRuntimeTaskOnAccept releases one idle, exclusive runtime-backed task session through the owner's close-on-end
+// path. It uses closeEndedTerminal (session.retire with close_terminal), never the runtime's raw session.close.
+func (s *Service) closeRuntimeTaskOnAccept(ctx context.Context, t Todo, planIndex int) string {
 	cur, ok := s.todoNow(t.ID)
 	if !ok || cur.DoneAt == nil || cur.DoneBy != db.DoneByReview {
 		return devicewire.TaskTerminalSkipped
 	}
-	machine, sessionID, ok := s.soleRuntimeTaskAgent(t.ID, *cur.DoneAt)
-	if !ok {
+	var machine, session string
+	var linked int
+	for _, a := range cur.Agents {
+		if a.ReleasedAt != nil || a.DismissedAt != nil {
+			continue
+		}
+		machine, session = a.MachineID, a.SessionID
+		linked++
+	}
+	if linked != 1 || machine == "" || session == "" {
 		return devicewire.TaskTerminalSkipped
 	}
-	if !s.taskRuntimeSessionIdle(ctx, machine, sessionID) {
-		return devicewire.TaskTerminalSkipped
-	}
-	if s.sessionActivitySnapshotReason(machine, sessionID, time.Now()) != "" {
+	target := taskTerminalTarget{Machine: machine, SessionID: session}
+	if !s.taskTerminalOwned(t.ID, *cur.DoneAt, target) || !s.runtimeTaskQuiet(ctx, machine, session) ||
+		s.sessionActivitySnapshotReason(machine, session, time.Now()) != "" {
 		return devicewire.TaskTerminalSkipped
 	}
 	if planIndex >= 0 && t.PlanID != "" {
@@ -289,7 +290,7 @@ func (s *Service) finishRuntimeTaskSession(ctx context.Context, t Todo, planInde
 				status = terminalCleanupStatus(*pt)
 				return
 			}
-			if m, sid, ok := s.soleRuntimeTaskAgent(t.ID, *cur.DoneAt); ok && m == machine && sid == sessionID {
+			if s.taskTerminalOwned(t.ID, *cur.DoneAt, target) {
 				claimed = true
 				status = devicewire.TaskTerminalPending
 				pt.TerminalCleanup = status
@@ -303,16 +304,17 @@ func (s *Service) finishRuntimeTaskSession(ctx context.Context, t Todo, planInde
 			return status
 		}
 	}
-	err := s.call(ctx, machine, "session.close", map[string]any{"session_id": sessionID}, nil)
-	var status string
+	closed, err := s.closeEndedTerminal(ctx, machine, session, proto.StopTaskCompleted)
+	status := devicewire.TaskTerminalSkipped
 	switch {
-	case err == nil:
+	case err == nil && closed:
 		status = devicewire.TaskTerminalClosed
+	case err == nil:
+		status = devicewire.TaskTerminalSkipped
 	case sendUnknown(err):
 		status = devicewire.TaskTerminalPending
 	default:
-		s.logf("task %s: runtime session.close %s/%s: %v", t.ID, machine, sessionID, err)
-		status = devicewire.TaskTerminalSkipped
+		s.logf("task %s: runtime session.retire %s/%s: %v", t.ID, machine, session, err)
 	}
 	if planIndex >= 0 && t.PlanID != "" && status != devicewire.TaskTerminalPending {
 		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), taskFailTimeout)
@@ -328,40 +330,16 @@ func (s *Service) finishRuntimeTaskSession(ctx context.Context, t Todo, planInde
 	return status
 }
 
-func (s *Service) soleRuntimeTaskAgent(id string, acceptedAt time.Time) (string, string, bool) {
-	s.todos.mu.RLock()
-	defer s.todos.mu.RUnlock()
-	t := s.todos.todos[id]
-	if t == nil || t.DoneAt == nil || !t.DoneAt.Equal(acceptedAt) || t.DoneBy != db.DoneByReview {
-		return "", "", false
-	}
-	var machine, sessionID string
-	var linked int
-	for _, a := range t.Agents {
-		if a.ReleasedAt != nil || a.DismissedAt != nil {
-			continue
-		}
-		machine, sessionID = a.MachineID, a.SessionID
-		linked++
-	}
-	if linked != 1 || machine == "" || sessionID == "" {
-		return "", "", false
-	}
-	if s.todos.activeBySession[[2]string{machine, sessionID}] != "" {
-		return "", "", false
-	}
-	return machine, sessionID, true
-}
-
-func (s *Service) taskRuntimeSessionIdle(ctx context.Context, machine, sessionID string) bool {
+// runtimeTaskQuiet is the same close-on-end quiet check taskTerminalIdle makes, for a runtime row with no pane.
+func (s *Service) runtimeTaskQuiet(ctx context.Context, machine, session string) bool {
 	var row proto.Session
 	var ok bool
 	if s.fleetOn() {
-		row, ok = s.listedSession(machine, sessionID)
+		row, ok = s.listedSession(machine, session)
 	} else {
-		row, ok = s.session(ctx, machine, sessionID)
+		row, ok = s.session(ctx, machine, session)
 	}
-	if !ok || !runtimeCloseable(row) || !row.StartedByPersona || row.Assistant || row.Archived ||
+	if !ok || !runtimeCanClose(row) || !row.StartedByPersona || row.Assistant || row.Archived ||
 		row.Starting || row.Attached || row.PendingSwitch != nil ||
 		(row.Undelivered != nil && len(*row.Undelivered) > 0) ||
 		time.Since(row.SeenAt) < time.Minute || agentCloseBusy(row) || taskAgentHasUnfinishedWork(row) {

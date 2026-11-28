@@ -213,6 +213,11 @@ resolve the configured state prefix before appending control directories. Checki
 remaining components as written preserves the distinction between host aliases and
 links inside the workspace.
 
+The Manager's call deadline does not travel with the Node RPC (#17773). Bound
+workspace preparation on the Node as well, so waiting for a network Git slot
+and running the command share a finite budget. Start the command timeout
+after admission to keep queue time out of that smaller budget.
+
 ## Task branch reuse is not forced worktree creation (#8357)
 
 An explicitly named task branch may already have a checkout outside the engine's usual directory. Discover it from Git,

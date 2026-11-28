@@ -63,7 +63,7 @@ def features():
                 (["sessions_list", "sessions_lookup"] + (["sessions_hierarchy"] if NET["hierarchy"] else []) + ["sessions_todo", "sessions_quick_filters", "sessions_just_finished", "sessions_agents_only"]) if os.environ.get("MOCK_SESSIONS_LIST") == "1" else []) + (
                 ["sessions_catalog"] if CATALOG else []) + (
                 ["sessions_side_fold"] if SIDE_FOLD else []) + (
-                ["preview"] if os.environ.get("MOCK_PREVIEW") else []) + (
+                mock_preview.features() if globals().get("preview_route") else (["preview"] if os.environ.get("MOCK_PREVIEW") else [])) + (
                 ["task_cron"] if os.environ.get("MOCK_CRON") == "1" else []) + (
                 [] if os.environ.get("MOCK_TODO_SEEN") == "off" else ["todo_seen"]) + (
                 ([] if os.environ.get("MOCK_LOOK_UPLOADS") == "off" else
@@ -30355,6 +30355,9 @@ class H(BaseHTTPRequestHandler):
         machine = next((m for m in MACHINES if m["id"] == mid), {})
         listed = listed or (port == 5900 and (machine.get("computer", {}).get("enabled") or machine.get("browser", {}).get("enabled")))  # cua or ego (#1507)
         # MOCK_PREVIEW: a preview's running port is the made-up app's page server (scripts/mock/mock_preview.py).
+        preview_err = mock_preview.forward_error(port) if preview_route and hasattr(mock_preview, "forward_error") else None
+        if preview_err is not None:
+            return self.send_json({"error": preview_err[1]}, preview_err[0])
         preview_to = mock_preview.forward(port) if preview_route else None
         listed = listed or preview_to is not None
         if not listed: return self.send_json({"error": "port %d is not an agent's and was not opened" % port}, 403)

@@ -11,6 +11,129 @@ import type { Port } from "./types";
 // The parts the first screen uses (chat links, port chips, comment cards) live in preview-link.ts, so this file loads
 // with the panel.
 export { PREVIEW_FEATURE, addressOf, localhostLink } from "./preview-link";
+import { localhostLink } from "./preview-link";
+
+/** The hub feature advertised in `hello.features` when isolated wildcard-subdomain preview origins are configured. */
+export const PREVIEW_ORIGIN_FEATURE = "preview_origin";
+
+/** Sandbox permissions for the isolated-origin preview iframe: allows scripts, isolated-origin storage/cookies,
+ *  forms, modals and popups while forbidding top-level navigation of the hub page. */
+export const DIRECT_IFRAME_SANDBOX = "allow-scripts allow-same-origin allow-forms allow-modals allow-popups";
+
+/** Maximum wait for the direct preview iframe to finish loading before falling back to the browser stream. */
+export const DIRECT_LOAD_TIMEOUT_MS = 15_000;
+
+export type PreviewMode = "direct" | "stream";
+
+export interface PreviewGrant {
+  url: string;
+  origin: string;
+  expires_at?: string;
+}
+
+export type PreviewUnreachableCode =
+  | "port_gone"
+  | "offline"
+  | "timeout"
+  | "too_many_connections"
+  | "port_not_allowed"
+  | "bad_gateway"
+  | "auth_failed"
+  | string;
+
+export type DirectNavTarget =
+  | { kind: "same_port"; path: string }
+  | { kind: "other_port"; port: number; path: string }
+  | { kind: "external"; url: string }
+  | { kind: "invalid" };
+
+/** Stable per-machine, per-port key for remembering fallback and mode choices within a preview panel. */
+export function previewPortKey(mid: string, port: number): string {
+  return `${mid}:${port}`;
+}
+
+/** Chooses the active preview mode: direct iframe when the hub advertises `preview_origin` unless remembered as
+ *  fallen back or manually switched; always stream when `preview_origin` is absent. */
+export function initialPreviewMode(opts: {
+  hasPreviewOrigin: boolean;
+  rememberedFallback: boolean;
+  manualChoice?: PreviewMode;
+}): PreviewMode {
+  if (!opts.hasPreviewOrigin) return "stream";
+  if (opts.manualChoice) return opts.manualChoice;
+  if (opts.rememberedFallback) return "stream";
+  return "direct";
+}
+
+/** Validates a `POST /api/v1/machines/{mid}/preview/grant` response before loading it into an iframe. */
+export function parsePreviewGrant(raw: unknown): PreviewGrant | null {
+  if (!raw || typeof raw !== "object") return null;
+  const rec = raw as Record<string, unknown>;
+  if (typeof rec.url !== "string" || typeof rec.origin !== "string" || !rec.url || !rec.origin) return null;
+  try {
+    const u = new URL(rec.url);
+    const o = new URL(rec.origin);
+    if ((u.protocol !== "http:" && u.protocol !== "https:") || (o.protocol !== "http:" && o.protocol !== "https:")) return null;
+    if (u.origin !== rec.origin || o.origin !== rec.origin) return null;
+    const out: PreviewGrant = { url: u.href, origin: o.origin };
+    if (typeof rec.expires_at === "string" && rec.expires_at) out.expires_at = rec.expires_at;
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/** Resolves a relative path against a granted preview origin, refusing any input that would escape that origin. */
+export function directOriginURL(origin: string, path: string): string | null {
+  if (!path || !path.startsWith("/") || path.startsWith("//") || hasCtrlOrSpace(path)) return null;
+  try {
+    const o = new URL(origin);
+    const u = new URL(path, o.origin);
+    return u.origin === o.origin ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Validates an unreachable `postMessage` from the preview iframe; ignores anything whose origin or source does not match. */
+export function parseUnreachableMessage(
+  ev: { origin: string; source: unknown; data: unknown },
+  expectedOrigin: string,
+  expectedWindow: unknown,
+): { code: PreviewUnreachableCode } | null {
+  if (!expectedOrigin || expectedWindow == null) return null;
+  if (ev.origin !== expectedOrigin || ev.source !== expectedWindow) return null;
+  if (!ev.data || typeof ev.data !== "object") return null;
+  const rec = ev.data as Record<string, unknown>;
+  if (rec.persona_preview !== "unreachable") return null;
+  if (typeof rec.code !== "string" || !rec.code) return null;
+  return { code: rec.code };
+}
+
+/** Parses address bar input while in direct preview mode: same-port path, another localhost port to re-grant, or external URL. */
+export function parseDirectNav(input: string, currentPort: number, hostnames: readonly string[] = []): DirectNavTarget {
+  const v = input.trim();
+  if (!v || hasCtrlOrSpace(v)) return { kind: "invalid" };
+  if (v.startsWith("/")) {
+    if (v.startsWith("//")) return { kind: "invalid" };
+    try {
+      const u = new URL(v, "http://localhost");
+      if (u.origin !== "http://localhost") return { kind: "invalid" };
+      return { kind: "same_port", path: u.pathname + u.search + u.hash };
+    } catch {
+      return { kind: "invalid" };
+    }
+  }
+  const local = localhostLink(v, hostnames);
+  if (local) {
+    return local.port === currentPort
+      ? { kind: "same_port", path: local.path }
+      : { kind: "other_port", port: local.port, path: local.path };
+  }
+  const ext = safeExternal(v);
+  if (ext) return { kind: "external", url: ext };
+  return { kind: "invalid" };
+}
 
 
 /** A launch.json entry as `…/preview/servers` returns it. */

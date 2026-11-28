@@ -11,6 +11,7 @@ import (
 	"github.com/nwverse/persona/server/internal/db"
 	"github.com/nwverse/persona/server/internal/proto"
 	"github.com/nwverse/persona/server/internal/repositorywire"
+	"github.com/nwverse/persona/server/internal/taskworkspace"
 )
 
 func TestPlanStartTimeout(t *testing.T) {
@@ -18,7 +19,9 @@ func TestPlanStartTimeout(t *testing.T) {
 	if got := ordinary.planStartTimeout(); got != taskStartTimeout {
 		t.Errorf("ordinary task timeout = %v, want %v", got, taskStartTimeout)
 	}
-	minimum := 2*repoMirrorCallTimeout + 3*5*time.Minute + taskStartTimeout
+	perRepo := repositorywire.MirrorEnsureTimeout + taskworkspace.GitTimeout + taskworkspace.ColdFetchTimeout
+	// Prepare, cancel and acquire each reserve the ordinary RPC budget, and prepare also has planning time.
+	base := taskStartTimeout + 3*taskworkspace.RPCTimeout + time.Minute
 	workspaces := map[string]PlanTask{
 		"resolved": {WorkspaceResolved: &TaskWorkspaceResolved{Repositories: make([]BackendLaunchRepository, 2)}},
 		"selected": {Workspace: &TaskWorkspace{
@@ -27,17 +30,16 @@ func TestPlanStartTimeout(t *testing.T) {
 		}},
 	}
 	for name, task := range workspaces {
-		if got := task.planStartTimeout(); got <= minimum {
-			t.Errorf("%s workspace timeout = %v, want more than %v for two mirrors, workspace RPCs and the agent start", name, got, minimum)
+		if got, want := task.planStartTimeout(), base+2*perRepo; got != want {
+			t.Errorf("%s workspace timeout = %v, want %v for two mirrors, direct fetches, workspace RPCs and the agent start", name, got, want)
 		}
 	}
 	saved := PlanTask{Workspace: &TaskWorkspace{
 		Mode:    workspaceBackend,
 		Backend: &BackendWorkspaceSelection{OperationID: "op_saved"},
 	}}
-	minimum = repositorywire.MaxTaskRepositories*repoMirrorCallTimeout + 3*5*time.Minute + taskStartTimeout
-	if got := saved.planStartTimeout(); got <= minimum {
-		t.Errorf("unresolved saved workspace timeout = %v, want more than %v for the full repository limit", got, minimum)
+	if got, want := saved.planStartTimeout(), base+repositorywire.MaxTaskRepositories*perRepo; got != want {
+		t.Errorf("unresolved saved workspace timeout = %v, want %v for the full repository limit", got, want)
 	}
 	saved.WorkspaceResolved = &TaskWorkspaceResolved{OperationID: "op_saved"}
 	if got := saved.planStartTimeout(); got != taskStartTimeout {

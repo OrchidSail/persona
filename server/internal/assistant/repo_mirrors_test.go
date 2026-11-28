@@ -694,7 +694,7 @@ func TestSavedBackendTaskColdMirrorTimeoutFallsBackAndLaunches(t *testing.T) {
 	})
 }
 
-func testTaskColdMirrorTimeoutFallsBackAndLaunches(t *testing.T, mirrors int, start func(*testing.T, *containerTestHarness) string) {
+func testTaskColdMirrorTimeoutFallsBackAndLaunches(t *testing.T, repositories int, start func(*testing.T, *containerTestHarness) string) {
 	t.Helper()
 	// Keep the harness's local model listener outside the virtual clock.
 	h := newWorkspaceTestHarness(t, newMemRepoMirrorStore())
@@ -703,24 +703,30 @@ func testTaskColdMirrorTimeoutFallsBackAndLaunches(t *testing.T, mirrors int, st
 	h.f.hello.Models.AI = ai.Config{}
 	h.f.mu.Unlock()
 	synctest.Test(t, func(t *testing.T) {
+		prepareTimeout := taskworkspace.RPCTimeout + time.Duration(repositories)*(taskworkspace.GitTimeout+taskworkspace.ColdFetchTimeout)
+		timeouts := map[string]time.Duration{
+			taskworkspace.MethodPrefix + "prepare": prepareTimeout,
+			taskworkspace.MethodPrefix + "acquire": taskworkspace.RPCTimeout,
+			devicewire.MethodStartBackendSession:   taskStartTimeout,
+		}
 		var mirrorWaits []time.Duration
 		launched := make(chan struct{}, 1)
 		setHub(h.s, &firstToolsTimingHub{Hub: h.f, beforeCall: func(ctx context.Context, call DeviceCall) (json.RawMessage, error) {
-			switch call.Method {
-			case repository.MethodRepoMirrorEnsure:
+			if call.Method == repository.MethodRepoMirrorEnsure {
 				started := time.Now()
 				<-ctx.Done()
 				mirrorWaits = append(mirrorWaits, time.Since(started))
 				return nil, ctx.Err()
-			case "task.workspace.prepare", "task.workspace.acquire", devicewire.MethodStartBackendSession:
-				if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) != 5*time.Minute {
-					t.Errorf("%s deadline leaves %v, want five minutes", call.Method, time.Until(deadline))
+			}
+			if timeout, ok := timeouts[call.Method]; ok {
+				if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) != timeout {
+					t.Errorf("%s deadline leaves %v, want %v", call.Method, time.Until(deadline), timeout)
 				}
-				// Use almost all of each existing RPC budget after the mirrors have timed out.
+				// Use almost all of each RPC budget after the mirrors have timed out.
 				select {
 				case <-ctx.Done():
 					return nil, ctx.Err()
-				case <-time.After(5*time.Minute - time.Second):
+				case <-time.After(timeout - time.Second):
 				}
 			}
 			out, err := h.f.DeviceCall(ctx, call)
@@ -731,13 +737,14 @@ func testTaskColdMirrorTimeoutFallsBackAndLaunches(t *testing.T, mirrors int, st
 		}})
 
 		todoID := start(t, h)
+		launchWait := time.Duration(repositories)*repositorywire.MirrorEnsureTimeout + prepareTimeout + taskworkspace.RPCTimeout + taskStartTimeout + time.Minute
 		select {
 		case <-launched:
-		case <-time.After(45 * time.Minute):
+		case <-time.After(launchWait):
 			t.Errorf("agent did not launch after a direct workspace prepare")
 		}
 		synctest.Wait()
-		if want := slices.Repeat([]time.Duration{11 * time.Minute}, mirrors); !slices.Equal(mirrorWaits, want) {
+		if want := slices.Repeat([]time.Duration{repositorywire.MirrorEnsureTimeout}, repositories); !slices.Equal(mirrorWaits, want) {
 			t.Errorf("mirror attempts waited %v, want %v", mirrorWaits, want)
 		}
 		h.mu.Lock()

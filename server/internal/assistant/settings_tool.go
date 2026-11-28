@@ -156,7 +156,8 @@ func (s *Service) allOwnSettings() []ownSetting {
 			get: func(ctx context.Context) (string, error) { return fmt.Sprint(s.startRequestedTasks(ctx)), nil },
 			set: s.setStartRequestedTasks},
 		{Setting: Setting{Key: "assistant.idle_auto_compact", Title: "Compact idle conversations", Actions: getSet,
-			About: "on (the default): compact an idle conversation when the idle time and context size thresholds are both reached",
+			About: "on (the default): compact an idle conversation when the idle time and context size thresholds are both reached. " +
+				"Antigravity assistant chats (the main chat and leader chats among them) follow it and the two settings below too",
 			Value: "true or false"},
 			get: func(ctx context.Context) (string, error) { return fmt.Sprint(s.idleAutoCompact(ctx)), nil },
 			set: s.setIdleAutoCompact},
@@ -173,17 +174,21 @@ func (s *Service) allOwnSettings() []ownSetting {
 			get: func(ctx context.Context) (string, error) { return fmt.Sprint(s.idleAutoCompactTokens(ctx)), nil },
 			set: s.setIdleAutoCompactTokens},
 		{Setting: Setting{Key: "assistant.agy_idle_auto_compact", Title: "Compact idle Antigravity sessions", Actions: getSet,
-			About: "on (the default): proactively compact Persona-managed Antigravity sessions (task Agents and AGY assistant/direction chats) once both idle time and context size thresholds are reached",
+			About: "on (the default): proactively compact Persona-managed Antigravity sessions once both their idle time and context size thresholds are reached. " +
+				"Task agents use assistant.agy_idle_auto_compact_minutes and _tokens. Antigravity assistant chats (including the main chat and leader chats) " +
+				"use assistant.idle_auto_compact, assistant.idle_auto_compact_minutes and _tokens, like other main chats. Off stops both",
 			Value: "true or false"},
 			get: func(ctx context.Context) (string, error) { return fmt.Sprint(s.agyIdleAutoCompact(ctx)), nil },
 			set: s.setAgyIdleAutoCompact},
-		{Setting: Setting{Key: "assistant.agy_idle_auto_compact_minutes", Title: "Antigravity idle time before compaction", Actions: getSet,
-			About: "minimum idle time before automatic Antigravity session compaction; 10 minutes by default",
+		{Setting: Setting{Key: "assistant.agy_idle_auto_compact_minutes", Title: "Antigravity task agent idle time before compaction", Actions: getSet,
+			About: "An Antigravity task agent must be idle for at least this long before automatic compaction. The default is 10 minutes. " +
+				"Antigravity assistant chats use assistant.idle_auto_compact_minutes instead",
 			Value: "a whole number from 1 to 1440"},
 			get: func(ctx context.Context) (string, error) { return fmt.Sprint(s.agyIdleAutoCompactMinutes(ctx)), nil },
 			set: s.setAgyIdleAutoCompactMinutes},
-		{Setting: Setting{Key: "assistant.agy_idle_auto_compact_tokens", Title: "Antigravity context size before compaction", Actions: getSet,
-			About: "minimum context size before automatic Antigravity session compaction; 200000 tokens by default",
+		{Setting: Setting{Key: "assistant.agy_idle_auto_compact_tokens", Title: "Antigravity task agent context size before compaction", Actions: getSet,
+			About: "An Antigravity task agent needs at least this much context before automatic compaction. The default is 200,000 tokens. " +
+				"Antigravity assistant chats use assistant.idle_auto_compact_tokens instead",
 			Value: "a whole number from 10000 to 10000000"},
 			get: func(ctx context.Context) (string, error) { return fmt.Sprint(s.agyIdleAutoCompactTokens(ctx)), nil },
 			set: s.setAgyIdleAutoCompactTokens},
@@ -601,6 +606,17 @@ func (s *Service) allOwnSettings() []ownSetting {
 				return fmt.Sprint(s.settings(ctx).todosV2DigestWindowMinutes()), nil
 			},
 			set: s.setTodosV2DigestWindowMinutes},
+		{Setting: Setting{Key: memoryExtensionStandingSettingKey, Title: i18n.T(i18n.Default, "assistant-settings_tool.title_memory_extension_standing_bytes"), Actions: getSet,
+			About: "how many bytes of the memory extension's standing (always-in-context) entries each conversation's standing context carries: " +
+				"4096 (4 KB, the default), 8192 (8 KB) or 16384 (16 KB), in bytes of entry text; no other value is accepted. " +
+				"It is the budget when the extension states none, and the most it may state when above 8192 (an extension's own " +
+				"stated budget up to 8192 holds as before). Past it the most important entries are kept and the rest left out whole. " +
+				"Applies from the next message, no restart; a larger choice adds up to that many bytes to every main-conversation snapshot",
+			Value: "4096, 8192 or 16384 (bytes)"},
+			get: func(ctx context.Context) (string, error) {
+				return fmt.Sprint(s.settings(ctx).memoryExtensionStandingBytes()), nil
+			},
+			set: s.setMemoryExtensionStandingBytes},
 		s.trustSetting(),
 		s.urgentRulesSetting(), // urgent_call_rules.go
 	}
@@ -912,6 +928,7 @@ var settingTitles = map[string]string{modulesKey: "title_modules", standingAutho
 	"assistant.kb_topics": "title_kb_topics", "assistant.main_background_folded": "title_main_background_folded",
 	"assistant.fold_routine_relay_replies": "title_fold_routine_relay_replies",
 	"assistant.main_compact_window":        "title_main_compact_window",
+	memoryExtensionStandingSettingKey:      "title_memory_extension_standing_bytes",
 	"assistant.recent_task_chats":          "title_recent_task_chats", admissionSettingsKey: "title_admission", trustSetting: "title_task_trust",
 	dashboardsSettingKey: "title_dashboards"}
 
@@ -926,7 +943,12 @@ const (
 	todosV2FoldChildrenSettingKey        = "assistant.todos_v2_fold_children"
 	todosV2QuietHoursSettingKey          = "assistant.todos_v2_quiet_hours"
 	todosV2DigestWindowMinutesSettingKey = "assistant.todos_v2_digest_window_minutes"
+	memoryExtensionStandingSettingKey    = "assistant.memory_extension_standing_bytes"
 )
+
+// memoryExtensionStandingBytesInvalid is the refusal of a standing budget that is not one of
+// memoryExtensionStandingOptions, from PUT /api/v1/assistant and persona_settings alike.
+const memoryExtensionStandingBytesInvalid = "memory_extension_standing_bytes must be 4096, 8192 or 16384 (bytes: 4 KB, 8 KB or 16 KB)"
 
 // clipped is a value as the card shows it, in l.
 func clipped(l i18n.Lang, s string) string {
@@ -944,7 +966,7 @@ func (s *Service) setIdleAutoCompact(ctx context.Context, raw json.RawMessage) (
 	return s.setBoolSetting(ctx, raw, s.idleAutoCompact, i18n.T(s.lang(ctx), "assistant-settings_tool.idle_auto_compact_unchanged"), func(l i18n.Lang, before, after string) string {
 		return i18n.T(l, "assistant-settings_tool.change_idle_auto_compact", i18n.Args{"before": before, "after": after})
 	}, func(v *Settings) **bool { return &v.IdleAutoCompact },
-		"Idle compaction setting saved (%v); applies from the next unattended message.")
+		"Idle compaction setting saved (%v).")
 }
 
 func (s *Service) setIdleAutoCompactMinutes(ctx context.Context, raw json.RawMessage) (*ownChange, error) {
@@ -1707,6 +1729,35 @@ func (s *Service) setTodosV2CanWaitSLAHours(ctx context.Context, v json.RawMessa
 			s.settingsChanged(ctx)
 			s.todosChanged(ctx)
 			return fmt.Sprintf("%s is %d (applies when todos_v2 is enabled).", todosV2CanWaitSLASettingKey, next), nil
+		},
+	}, nil
+}
+
+// setMemoryExtensionStandingBytes is persona_settings' set of assistant.memory_extension_standing_bytes: one of
+// memoryExtensionStandingOptions, a JSON number; anything else is refused, never rounded or capped.
+func (s *Service) setMemoryExtensionStandingBytes(ctx context.Context, v json.RawMessage) (*ownChange, error) {
+	var bytes *int
+	if err := json.Unmarshal(v, &bytes); err != nil || bytes == nil || !slices.Contains(memoryExtensionStandingOptions, *bytes) {
+		return nil, errors.New(memoryExtensionStandingBytesInvalid)
+	}
+	next := *bytes
+	before := s.settings(ctx).memoryExtensionStandingBytes()
+	if next == before {
+		return &ownChange{summary: memoryExtensionStandingSettingKey + " is unchanged"}, nil
+	}
+	if s.store() == nil {
+		return nil, errors.New("no database on this hub")
+	}
+	return &ownChange{
+		cardText: func(l i18n.Lang) string {
+			return i18n.T(l, "assistant-settings_tool.change_memory_extension_standing_bytes", i18n.Args{"before": before / 1024, "after": next / 1024})
+		},
+		apply: func(ctx context.Context) (string, error) {
+			if _, err := s.updateSettings(ctx, func(v *Settings) error { v.MemoryExtensionStandingBytes = &next; return nil }); err != nil {
+				return "", err
+			}
+			s.settingsChanged(ctx)
+			return fmt.Sprintf("%s is %d (bytes; applies from the next message).", memoryExtensionStandingSettingKey, next), nil
 		},
 	}, nil
 }

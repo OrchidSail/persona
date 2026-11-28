@@ -23,7 +23,7 @@ import { isPinned } from "../../lib/pins";
 import { acknowledgeLaunch } from "../../lib/new-agent";
 import { useRuntimeSession } from "../../lib/runtime-session";
 import { SessionDetailNotice } from "../../ui/SessionDetailNotice";
-import { isBackgroundSupervisor } from "../../lib/background-supervisor";
+import { asBackgroundSupervisorCard, isBackgroundSupervisor, isBackgroundSupervisorInteraction } from "../../lib/background-supervisor";
 import { getSession, getState, hubHas, listenSession, refresh, refreshTodos, saveMutes, taskSessionLookup, upsertSession, useStore, viewSession } from "../../lib/store";
 import { useStoreRows } from "../../lib/store-rows";
 import { useCodexThread, waitsForFirstMessage } from "../../lib/codex-waiting";
@@ -413,7 +413,8 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
   });
   const decisionDeferred = useFeed((s) => decisionTodo ? Boolean(s.later[decisionLaterKey(decisionTodo)]) : false);
   // The main conversation is always Persona (#1313): not its first message, the node's title for it.
-  const mainConversation = useStore((s) => s.assistant?.main);
+  const assistantInfo = useStore((s) => s.assistant);
+  const mainConversation = assistantInfo?.main;
   const isMain = Boolean(assistant && (mainCache || sid === mainConversation));
   // Full Agent pages and non-main Persona conversations may offer a way back; side panels, Team panels and the main chat do not.
   const backPage = Boolean(!embedded && !chrome && (inPage || (assistant && !isMain)));
@@ -477,12 +478,16 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
   const sideParent = session && isSide(session) ? session.folded_under : undefined;
   // the space's other agents, its child sessions folded into their parents (#5120: a child is never one of them)
   const siblings = useStore((s) => (session?.space_id ? foldRows(s.sessions[mid] ?? []).filter((x) => x.space_id === session.space_id && activityOf(x) !== "offline") : []));
+  const shownManager = useShownManager();
+  const skillManager = useStore((s) => session?.manager ?? s.machines.find((m) => m.id === mid)?.manager) ?? shownManager;
   // its own requests and those of the child sessions folded under it (#5120, including cross-machine children via
   // folded_under_machine_id): a child's are answered here, in the order they came, each saying which child asks; a
-  // side session's chat (#7944) takes the cards of the rows that belong to it
+  // side session's chat (#7944) takes the cards of the rows that belong to it; main chat also surfaces user-facing cards
+  // raised by the hidden background supervisor conversation
   const ownCard = (ix: Interaction) =>
     (ix.machine_id === mid && (ix.session_id === sid || ix.folded_side === sid)) ||
-    ((ix.folded_under_machine_id || ix.machine_id) === mid && ix.folded_under === sid);
+    ((ix.folded_under_machine_id || ix.machine_id) === mid && ix.folded_under === sid) ||
+    (isMain && !embedded && isBackgroundSupervisorInteraction(assistantInfo, ix, skillManager));
   const interactions = useStore((s) => s.interactions.filter(ownCard));
   const answered = useStore((s) => Object.values(s.answered).filter((a) => ownCard(a.ix)));
   const delegated = useStore((s) => Object.values(s.delegated).filter((d) => ownCard(d.ix)));
@@ -856,10 +861,8 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
     [draftKey, title, session?.manager, mainCache?.manager, canCompose, canFork, canRewind, detached, rewindCode, rewindDeclared, rewindLive, mid, sid, assistant, persona.name, forwardFrom, picker],
   );
   // the assistant works on any computer, so its @ menu offers workspaces too
-  const shownManager = useShownManager();
   const skillLauncher = usePickedLauncher(conversationKey(mid, sid));
   const assistantLauncher = useStore((s) => assistant ? s.assistant?.launcher : undefined);
-  const skillManager = useStore((s) => session?.manager ?? s.machines.find((m) => m.id === mid)?.manager) ?? shownManager;
   const skillEnvironment = JSON.stringify([session?.launcher, session?.model_pick, session?.pending_switch, session?.source_kind, assistantLauncher]);
   const mention = useMemo(() => ({ cwd: session?.cwd, self: draftKey, files: () => chatFiles(items.current), workspaces: Boolean(assistant),
     repositories: assistant ? skillManager : undefined,
@@ -1814,13 +1817,16 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
   lastLines.current = allLines;
   // The timeline split and the assistant display use the same history boundary: one feed walk per items change.
   const historyFrom = useMemo(() => (tr.hasMore ? loadedFrom(tr.items) : undefined), [tr.hasMore, tr.items]);
+  // While an Assistant transcript is still loading its first page, tr.items is empty and historyFrom is undefined:
+  // hold unanchored timelineFeed cards until items arrive so they do not push the centered <Loading /> out of view.
+  const holdUnanchoredFeed = Boolean(assistant && tr.loading && !tr.items.length);
   // A canonical, completed silent round leaves no empty row or feed card in the main timeline. Its full projection is
   // retained for Background activity; running, legacy quiet and every promoted round keep their existing rendering.
   const quiet = useMemo(() => {
     const through = detached && Date.parse(tr.items.at(-1)?.ts ?? "");
-    const scoped = through === false ? feed : Number.isFinite(through) ? feed.filter((item) => Date.parse(item.at) <= through) : NO_FEED;
+    const scoped = holdUnanchoredFeed ? NO_FEED : through === false ? feed : Number.isFinite(through) ? feed.filter((item) => Date.parse(item.at) <= through) : NO_FEED;
     return splitBackgroundActivity(allLines, scoped, historyFrom);
-  }, [allLines, feed, historyFrom, detached, tr.items]);
+  }, [allLines, feed, historyFrom, detached, tr.items, holdUnanchoredFeed]);
   const lines = quiet.timeline;
   // a DayLine over the first line of each new calendar day (#8160); day-only keys keep them stable as pages and
   // midnight arrivals land. Days the earlier stretches already open with a divider are not repeated here.
@@ -1849,8 +1855,8 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
   );
   const feedFrom = assistant ? historyFrom : undefined;
   const assistantLines = useMemo(
-    () => (assistant ? displayLines(lines, quiet.timelineFeed, feedFrom) : NO_DISPLAY_LINES),
-    [assistant, lines, quiet.timelineFeed, feedFrom],
+    () => (assistant && !holdUnanchoredFeed ? displayLines(lines, quiet.timelineFeed, feedFrom) : NO_DISPLAY_LINES),
+    [assistant, holdUnanchoredFeed, lines, quiet.timelineFeed, feedFrom],
   );
   const groupedAssistantLines = useMemo(() => (assistant ? groupAssistantLines(assistantLines) : NO_DISPLAY_LINES), [assistant, assistantLines]);
   const handoffGroupState = useMemo(() => new Map<string, boolean>(), [mid, sid]);
@@ -2545,8 +2551,10 @@ function ActiveChatView({ mid, sid, assistant, assistantManager, starting: launc
   // a worker's or subagent's own cards in its conversation (embedded) are its own there, not "From subagent"
   const docked = useMemo(() => {
     const mine = interactions.filter((ix) => !elsewhere(ix));
-    return embedded ? mine.map((ix) => (ix.machine_id === mid && ix.session_id === sid && ix.folded_under ? asOwnCard(ix) : ix)) : mine;
-  }, [interactions, elsewhere, embedded, mid, sid]);
+    if (embedded) return mine.map((ix) => (ix.machine_id === mid && ix.session_id === sid && ix.folded_under ? asOwnCard(ix) : ix));
+    if (isMain) return mine.map((ix) => (isBackgroundSupervisorInteraction(assistantInfo, ix, skillManager) ? asBackgroundSupervisorCard(ix, sid, mid) : ix));
+    return mine;
+  }, [interactions, elsewhere, embedded, isMain, assistantInfo, skillManager, mid, sid]);
   // A card belongs to the visible child pane, To Decide, or the stack. A task request must not appear in two places.
   const turnSplit = useMemo(() => (assistant ? splitTurnAsks(docked, mid, sid) : { turn: [], rest: docked }), [assistant, docked, mid, sid]);
   const decisionPlans = useFeed((s) => assistant ? s.plans : undefined);

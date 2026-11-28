@@ -25,6 +25,7 @@ import (
 	"github.com/nwverse/persona/server/internal/db"
 	"github.com/nwverse/persona/server/internal/repositorywire"
 	"github.com/nwverse/persona/server/internal/rpc"
+	"github.com/nwverse/persona/server/internal/taskworkspace"
 )
 
 // Exercise authentication and the bus codec with in-memory tokens and an RPC pipe, without Postgres.
@@ -229,13 +230,14 @@ func TestBusForwardsTheAssistantRoutes(t *testing.T) {
 func TestBusForwardWorkspaceTimeouts(t *testing.T) {
 	mux := http.NewServeMux()
 	(&Hub{}).assistantRoutesRelayed(mux)
+	perRepo := repositorywire.MirrorEnsureTimeout + taskworkspace.GitTimeout + taskworkspace.ColdFetchTimeout
 	for _, tc := range []struct {
 		path string
 		want time.Duration
 	}{
 		{"/api/v1/task-plans/p1/start", 5 * time.Minute},
 		{"/api/v1/assistant/repositories/repo_web/mirrors/node1/sync", repositorywire.MirrorEnsureTimeout + time.Minute},
-		{"/api/v1/todos/t1/backend-workspace/prepare", repositorywire.MaxTaskRepositories*repositorywire.MirrorEnsureTimeout + 6*time.Minute},
+		{"/api/v1/todos/t1/backend-workspace/prepare", repositorywire.MaxTaskRepositories*perRepo + taskworkspace.RPCTimeout + time.Minute},
 	} {
 		req := httptest.NewRequest(http.MethodPost, tc.path, nil)
 		_, pattern := mux.Handler(req)

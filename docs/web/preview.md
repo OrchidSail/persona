@@ -128,11 +128,17 @@ Headless Chromium draws native `<select>` popups in an OS widget outside the scr
 
 ## iPhone
 
-The iPhone needs no browser on the computer: it already opens a computer's port in the link card through the port forwarding
-([ports.md](../operations/ports.md) "Forwarding"), so the page runs in the app's own WKWebView and only the server list,
-Start, a screenshot and picking are added. The iPad keeps the same card for now (a column beside the chat is a follow-up);
-the Mac app is frozen and has none of it.
+The iPhone supports two preview modes inside the same link card (`LinkSheet` + `PreviewPage`):
 
+1. **Direct loopback forwarding (default)**: opens the computer's port through `PortForwarder` ([ports.md](../operations/ports.md) "Forwarding") and runs the page natively in `WKWebView`. No browser on the computer is required.
+2. **View through the computer (headless browser stream)**: reuses the hub/node WebSocket stream (`GET /api/v1/machines/{mid}/preview/connect?port=&path=&w=&h=&dpr=&mobile=1`) implemented in `PreviewStreamView.swift` and `PreviewStreamModel.swift` (`@MainActor @Observable` with `Deps` injection). It draws binary `f` frames decoded off the main actor via ImageIO (detecting PNG `89 50 4E 47` and JPEG `FF D8 FF` by magic bytes) and sends `ack {seq}` for every frame, announces `features {select: true, png: true}` after every `ready`, sends `size` with `mobile: true` and `dpr: min(displayScale, 2)`, translates taps into `mouse` move/down/up and drags into `wheel`, bridges software/IME typing through a hidden `UITextField` (`key`/`text`) toggled from the bottom bar, updates title/URL/back/forward from `page`, routes `external` through the card's normal in-app link handling, presents native SwiftUI alerts for `dialog` (`alert`/`confirm`/`prompt`/`beforeunload`) and replies with `dialog`, and opens `PreviewSelectSheet` for `select_open` (grouped options, disabled rows, selected checkmark), sending `select_choose {id, index}` on selection or `select_close {id}` on dismiss and closing locally without echo on a node `select_close`. Screenshots (`shot`) and element picking (`pick` / `picked` / `pick_failed`) reuse the same bottom bar controls and composer comment flow as direct mode.
+
+The iPad keeps the same card for now (a column beside the chat is a follow-up); the Mac app is frozen and has none of it.
+
+- **Switching modes and automatic fallback**:
+  - The card header's `⋯` menu switches between **View through the computer** and **View directly** while keeping the current page path. When the computer has no supported browser (`no_browser` / empty `browser` from `…/preview/servers`) or runs an older node (`node_outdated`), stream mode is not offered and the menu explains why.
+  - When direct mode hits a failure that the computer's browser can resolve (gateway/connection/TLS/timeout/listener errors), the direct error overlay shows **View through the computer** beside **Retry**. Failures that streaming cannot solve either (`port_gone`, computer offline, authentication/permission failures, hub unreachable, no internet) omit the stream button.
+  - Declining a loopback self-signed certificate, an untrusted TLS error, a direct load timeout, a local listener failure, or two consecutive recoverable direct failures automatically switch the card to **View through the computer** (when the hub advertises `preview` and stream mode is available) and show a dismissible `NoticeBanner`: *"Couldn't show the page directly, so it's shown through the computer."* The chosen mode stays pinned for the open card so it does not bounce back and forth between modes (`PreviewCardModeState`).
 - **Servers**: an Agent chat's ⋯ › Preview (when its hub lists the `preview` feature) opens `PreviewChooser`
   (`apple/Persona/Views/Link/PreviewChooser.swift`): `…/preview/servers` for the session's folder, the usable launch.json
   entries first, then the session's own ports, then the entries that cannot be used and why; with nothing, the launch.json
@@ -144,15 +150,17 @@ the Mac app is frozen and has none of it.
   until the port answers (an Agent's port counts too). The row says what it waits for and can be cancelled; the page opens
   once the port answers. `PreviewModel` holds this; `PreviewLogic` (`Preview.swift`) is the web's `lib/preview.ts`.
 - **The bar** under any forwarded page opened from a chat (`PreviewPage` in `PreviewBar.swift`): back, forward, where the
-  page is on the computer (`:5173/settings`), a screenshot (Visible Area through `takeSnapshot`, Whole Page drawn from the
-  page's PDF, at most 12,000 pixels high) into the message box, and Pick an Element.
-- **Picking** runs the node's own `preview_pick.js` in the page: the app bundles a copy
+  page is on the computer (`:5173/settings`), a keyboard toggle when viewing through the computer, a screenshot (Visible Area
+  through `takeSnapshot` or `shot {full: false}`, Whole Page from the page's PDF or `shot {full: true}`, at most 12,000
+  pixels high) into the message box, and Pick an Element.
+- **Picking** in direct mode runs the node's own `preview_pick.js` in the page: the app bundles a copy
   (`apple/Persona/Resources/Render/preview_pick.js`, kept equal by `scripts/test/test_preview_pick_copy.py`), injected with a
-  wrapper in the page's own world (an isolated world could not see what React, Vue or Svelte leave on the element). A tap that
-  does not scroll picks the element under it without pressing it; the element stays outlined with its selector and size, the
-  bar gives way to a line to write about it, and Add to Message puts an `Element comment N` card over the composer, the same
-  block the web writes. Its `Page:` is the computer's address (`http://localhost:5173/…`, `PortForwarder.key(for:)`), not
-  the phone's forwarded one. The pick comes back through the script handler `personaPreviewPick`, added while picking and
+  wrapper in the page's own world (an isolated world could not see what React, Vue or Svelte leave on the element). In stream
+  mode it sends `pick {on: true}` and consumes the node's `picked` / `pick_failed` messages. Either way, a tap that does not
+  scroll picks the element under it without pressing it; the element stays outlined with its selector and size, the bar gives
+  way to a line to write about it, and Add to Message puts an `Element comment N` card over the composer, the same block the
+  web writes. Its `Page:` is the computer's address (`http://localhost:5173/…`, `PortForwarder.key(for:)`), not the phone's
+  forwarded one. In direct mode the pick comes back through the script handler `personaPreviewPick`, added while picking and
   removed after: the pool's web views share one user content controller, so a handler left there would answer for every page.
 - **The accessibility text sizes** (#5114, #5172): a row's Running, Start… or Cancel goes on a line under its name and port; the bar
   puts the address on a line of its own above its buttons; picking's banner takes up to four lines; the comment panel
@@ -160,8 +168,11 @@ the Mac app is frozen and has none of it.
   scrolling when it is taller than the room above the keyboard; the card's header, a bar, grows with the text up to the
   largest standard size (xxxLarge), as the viewers' bars do, so its title and the server chooser stay readable beside its
   buttons. The standard sizes are unchanged.
-- **Tests**: `PreviewLogicTests` / `PreviewModelTests` (the web's cases, and Start against `FakeHub`); `PreviewUITests` against
-  `MOCK_PREVIEW=1`, whose running ports forward to the mock's own page server with the made-up app (`mock_preview.forward`).
+- **Tests**: `PreviewLogicTests` / `PreviewModelTests` (the web's cases, and Start against `FakeHub`); `PreviewStreamModelTests`
+  (frame parsing, PNG/JPEG detection, per-frame `ack`, `features` on `ready`, coordinate conversion, `select_open` /
+  `select_choose` / `select_close`, and automatic fallback policy against a fake socket); `PreviewUITests` and
+  `PreviewStreamUITests` against `MOCK_PREVIEW=1`, whose running ports forward to the mock's own page server with the made-up
+  app (`mock_preview.forward`) and stream frames / `<select>` popups over `/preview/connect`.
 
 ## Isolated preview origin
 
@@ -230,8 +241,20 @@ Non-HTML subresources and non-GET requests receive a JSON error body `{"error": 
 
 Web clients should verify `event.origin === grant.origin` (and `event.source === iframe.contentWindow`) and `event.data?.persona_preview === "unreachable"` before acting: e.g., re-granting once on `auth_failed` if the device is still signed in, or falling back automatically to the headless browser stream (`GET /api/v1/machines/{mid}/preview/connect`) on `port_gone`, `timeout`, `bad_gateway`, or `too_many_connections`.
 
+### Web panel modes and fallback (`web/src/views/session/PreviewPanel.tsx`, `web/src/lib/preview.ts`)
+
+- **Default mode**: When `hello.features` includes `preview_origin`, opening a dev server starts directly in isolated-origin iframe mode without asking the user to pick a mode. When `preview_origin` is absent, the panel stays on the headless browser stream with unchanged behavior and controls.
+- **Direct mode iframe**: Opens the port (`POST …/ports/{port}/open`), requests `POST …/preview/grant {port, path}`, and renders `<iframe src={grant.url}>` with `sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups"` (no `allow-top-navigation`, so the preview page cannot navigate the hub tab) and `referrerPolicy="no-referrer"`. Desktop fills the panel; Phone renders a `390 × 844` frame scaled to fit without unmounting the iframe on toggle.
+- **Controls by mode**:
+  - **Both modes**: Reload (in direct mode reloads `grant.origin + currentPath` using the session cookie rather than replaying the one-time redemption code), Address bar (in direct mode swaps `src` directly on the same port, re-grants when navigating to another localhost port, and offers external URLs in a new tab), Desktop / Phone viewport toggle, Pick an element, and Screenshot.
+  - **Browser stream only**: Back and Forward history buttons, and live in-page address synchronization. These are hidden in direct mode because cross-origin iframe history cannot be inspected or driven without affecting the hub page's own history.
+  - **Pick an element & Screenshot in direct mode**: Clicking either automatically switches the panel to viewing through the computer (with a brief notice banner) and runs the pick or screenshot once the browser stream is ready.
+- **Automatic fallback**: Direct mode falls back to the headless browser stream automatically when `preview/grant` fails (non-2xx or malformed response), when a verified `unreachable` `postMessage` arrives (`event.origin === grant.origin` and `event.source === iframe.contentWindow`; `auth_failed` retries `preview/grant` once before falling back, while all other codes fall back immediately; messages from any other origin or window are ignored), or when the iframe does not finish loading within 15 seconds (`DIRECT_LOAD_TIMEOUT_MS`). After falling back, the panel shows a dismissible notice ("Couldn't show the page directly, so it's shown through the computer.") and remembers the fallback for that `(machine, port)` within the panel session so switching servers and returning does not bounce back and forth.
+- **Manual switching**: Shown only when `preview_origin` is advertised, inside the preview toolbar's `⋯` secondary menu (never as a top-level button): **View through the computer** while in direct mode, and **View directly** while in browser stream mode (which clears any remembered fallback for that port).
+
 ### Verification
 
 - Go unit and integration tests live in `server/internal/hub/preview_origin_test.go`.
 - Real-browser isolation E2E test: `node scripts/test/preview_origin_isolation_e2e.mjs` (runs a throwaway Go hub + SNI wildcard TLS + dev server via `TestPreviewOriginE2EHarness` and launches Chromium with `--host-resolver-rules` to prove parent `localStorage` / `document`, `document.cookie`, cross-origin hub API fetches, same-origin `/api/v1/*`, `document.referrer`, `location.href`, and cross-origin framing are all blocked while ES modules, native `<select>`, dev cookies/redirects, HMR WebSocket, and `unreachable` `postMessage` work).
+- Web panel unit and E2E tests: `web/src/lib/preview.test.ts`, `web/src/views/session/PreviewPanel.origin.test.tsx`, and `scripts/test/web_preview_e2e.py` (with `MOCK_PREVIEW=1` and `MOCK_PREVIEW_ORIGIN=1`).
 
