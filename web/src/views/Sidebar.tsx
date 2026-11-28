@@ -83,7 +83,8 @@ import { ListError } from "../ui/ListError";
 import { SESSION_LIST_STYLE } from "../ui/list-metrics";
 import { RUNTIME_AGENTS_PATH, supportsPagedAgents, runtimeActiveAt, runtimeAgents, runtimeIdentity, runtimeNeedsYou, runtimeOrder, runtimeParentIdentity, runtimePlace, runtimeRemoval } from "../lib/runtime-list";
 import { JUST_FINISHED_KEY, SESSIONS_CATALOG_FEATURE, SESSIONS_JUST_FINISHED_FEATURE, SESSIONS_QUICK_FILTERS_FEATURE, SESSIONS_TODO_FEATURE, type GroupDimension, type TodoNames } from "../lib/session-groups";
-import { SESSIONS_LIST_FEATURE, type ListCounts, type ListFilters } from "../lib/session-list";
+import { filterQuery, SESSIONS_LIST_FEATURE, type ListCounts, type ListFilters } from "../lib/session-list";
+import { followHinted } from "../lib/hinted-read";
 import { heldCounts } from "../lib/seen-outbox";
 import { heldSidesOf, useHeldVersion } from "../lib/use-child-sessions";
 import { NoComputers, useAddComputer } from "./machines/AddComputerEntry";
@@ -1051,19 +1052,36 @@ function BoundedAgentsBlock({ reg, hover, activeKey, go, onNewAgent, onNavigate,
     chips: <>{showFilter && <PagedFilterChips filters={dimFilters} machines={machines} />}{todosUnread && <div className="-mx-1"><TodosUnread /></div>}</>,
     heldSeen: pagedHeld,
   }), [grouping, todoNames, groupings, chooseGrouping, quick, rowOrder, byUpdate, engaged, narrowed, listQuery, showFilter, dimFilters, machines, todosUnread, pagedHeld]);
+  const tallyFilters = useMemo((): ListFilters => ({
+    ...narrowed,
+    ...(botmuxHidden ? HIDE_BOTMUX : SHOW_ALL),
+  }), [narrowed, botmuxHidden]);
+  const tallyScoped = Object.keys(tallyFilters).length > 0;
+  const rootsMode = runtimeAgents.isRoots();
+  const crossMode = runtimeAgents.isCrossMachineHierarchy();
+  const tallyPath = `${RUNTIME_AGENTS_PATH}&${rootsMode ? `roots=1&${crossMode ? "cross_machine_hierarchy=1&" : ""}` : ""}${filterQuery(tallyFilters)}`;
+  const [scopedTally, setScopedTally] = useState<{ path: string; counts: ListCounts } | null>(null);
+  useEffect(() => {
+    if (!folded || !tallyScoped) return;
+    return followHinted<ListCounts>("sessions_list", tallyPath, (c) => {
+      if (c?.state) setScopedTally({ path: tallyPath, counts: c });
+    }, () => {});
+  }, [folded, tallyScoped, tallyPath]);
   const tallyCounts = useMemo((): FoldedCounts => {
-    const effective = rootAgents.counts && runtimeAgents.usesPageCounts()
-      ? holdCounts(rootAgents.counts, rootRows)
-      : rootAgents.counts;
+    const effective = tallyScoped
+      ? (scopedTally?.path === tallyPath ? scopedTally.counts : null)
+      : (rootAgents.counts && runtimeAgents.usesPageCounts() ? holdCounts(rootAgents.counts, rootRows) : rootAgents.counts);
     const base = effective ? boundedCounts(effective, false) : { needs: 0, working: 0, waiting: 0, unread: 0 };
-    const pendingLaunches = launches.filter((l) => isInFlightLaunch(l) && !l.session).length;
+    const pendingLaunches = launches.filter((l) =>
+      isInFlightLaunch(l) && !l.session && (!dimFilters.machines.length || dimFilters.machines.includes(l.machineId)),
+    ).length;
     return {
       needs_you: base.needs,
       working: base.working + pendingLaunches,
       bg_waiting: base.waiting,
       unread: base.unread,
     };
-  }, [rootAgents.counts, rootRows, holdCounts, launches]);
+  }, [tallyScoped, scopedTally, tallyPath, rootAgents.counts, rootRows, holdCounts, launches, dimFilters.machines]);
   return <div data-sidebar-agents ref={groupsRef}>
     {/* the complete list's title row (#6662): fold all, the ⋯ with its sorts and the archived Agents, and "+" */}
     <div className={cx("group/sec relative", SESSION_LIST_STYLE.heading, TITLE_ROW_TOUCH)}>

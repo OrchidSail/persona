@@ -6,7 +6,8 @@ vi.hoisted(() => {
   globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver;
   window.matchMedia ??= ((query: string) => ({ matches: false, media: query, onchange: null, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, dispatchEvent: () => false })) as typeof window.matchMedia;
 });
-import { filterAgentList, resetAgentListFilters } from "../lib/agent-list-filters";
+import { DEFAULT_DIMENSION_FILTERS } from "../lib/agent-chatlist-filter";
+import { filterAgentList, resetAgentListFilters, setAgentListFilters } from "../lib/agent-list-filters";
 import { seedAgentsDisplay } from "../lib/agents-display";
 import { SESSIONS_AGENTS_ONLY_FEATURE } from "../lib/runtime-list";
 import { connect, getState, reset } from "../lib/store";
@@ -268,5 +269,75 @@ describe("BoundedAgentsBlock folding", () => {
 
     expect(agentsFoldButton()!.getAttribute("aria-expanded")).toBe("false");
     expect(agentsBlock().querySelector("[data-testid=state-tally]")).toBeNull();
+  });
+
+  it("scopes folded StateTally and in-flight launches to the selected machine filter without fetching paged sessions", async () => {
+    localStorage.setItem("fold:agents", "1");
+    localStorage.setItem("persona.agentGrouping", "machine");
+    const fetchMock = vi.fn((input: string) => {
+      const url = new URL(input, "http://hub.example.com");
+      if (url.pathname.endsWith("/sessions") && !url.pathname.includes("/agents/")) {
+        const q = url.searchParams;
+        if (q.has("counts")) {
+          const mid = q.get("machine_id");
+          if (mid === "computer-b") {
+            return json({ total: 1, state: { idle: 1 }, machine: { "computer-b": 1 }, group: {}, project: {}, revision: "r1" });
+          }
+          if (mid === "computer") {
+            return json({ total: 2, state: { needs_you: 1, working: 1 }, machine: { computer: 2 }, group: {}, project: {}, revision: "r1" });
+          }
+          return json({ total: 3, state: { needs_you: 1, working: 1, idle: 1 }, machine: { computer: 2, "computer-b": 1 }, group: {}, project: {}, revision: "r1" });
+        }
+        return json({ sessions: [agent("First page agent")], remove: [], has_more: false, revision: "r1", total: 3 });
+      }
+      if (url.pathname.endsWith("/pins")) return json({ sessions: [], spaces: [] });
+      if (url.pathname.endsWith("/machines")) {
+        return json({
+          machines: [
+            { id: "computer", name: "Demo computer", online: true, herdr_running: true },
+            { id: "computer-b", name: "Quiet computer", online: true, herdr_running: true },
+          ],
+        });
+      }
+      if (url.pathname.endsWith("/todos")) return json({ todos: [] });
+      return json({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await connectPagedHub();
+    Object.assign(getState(), {
+      launches: {
+        l1: { id: "l1", machineId: "computer", cwd: "/code/demo", launcher: "claude", text: "Starting", phase: "creating", attachments: [], createdAt: Date.now() },
+      },
+    });
+
+    // Select quiet computer-b: must not leak computer's needs_you/working/launch
+    act(() => setAgentListFilters({ ...DEFAULT_DIMENSION_FILTERS, machines: ["computer-b"] }));
+    fetchMock.mockClear();
+    act(() => root.render(<Sidebar route={{ name: "home" }} onSearch={() => {}} onNewAgent={() => {}} />));
+    await flush();
+
+    expect(agentsFoldButton()!.getAttribute("aria-expanded")).toBe("false");
+    expect(pagedList()).toBeNull();
+    expect(agentsBlock().querySelector("[data-testid=state-tally]")).toBeNull();
+    const pagedCallsQuiet = fetchMock.mock.calls.filter(([u]) => {
+      const url = new URL(u as string, "http://hub.example.com");
+      return url.pathname.endsWith("/sessions") && !url.searchParams.has("counts");
+    });
+    expect(pagedCallsQuiet).toHaveLength(0);
+
+    // Switch filter to computer: shows only computer's counts + matching in-flight launch
+    act(() => setAgentListFilters({ ...DEFAULT_DIMENSION_FILTERS, machines: ["computer"] }));
+    await flush();
+
+    const tally = agentsBlock().querySelector<HTMLElement>("[data-testid=state-tally]");
+    expect(tally).not.toBeNull();
+    expect(tally!.querySelector("[data-state=needs_you]")?.textContent).toBe("1");
+    expect(tally!.querySelector("[data-state=working]")?.textContent).toBe("2");
+    const pagedCallsActive = fetchMock.mock.calls.filter(([u]) => {
+      const url = new URL(u as string, "http://hub.example.com");
+      return url.pathname.endsWith("/sessions") && !url.searchParams.has("counts");
+    });
+    expect(pagedCallsActive).toHaveLength(0);
   });
 });
