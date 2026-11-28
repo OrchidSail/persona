@@ -54,9 +54,9 @@ import {
   resolveIntegrationTarget,
   resolveSourceItem,
   type IntegrationItem,
-  type IntegrationSubscriptionAlert,
   type IntegrationTone,
   type LarkGatewaySummary,
+  type SubscriptionAlertSummary,
 } from "./integrations/catalog";
 import { capabilityLabel, projectedCatalogItem, projectedResource, projectionSourceErrors } from "./integrations/projectedCatalog";
 import { editableSection, IntegrationReadProblem, projectedIntegrationTarget, projectedSections, type ProjectedDetail } from "./integrations/projectedDetail";
@@ -153,7 +153,7 @@ function ItemMark({ item }: { item: IntegrationItem }) {
   );
 }
 
-function SubscriptionAlertBadge({ alert }: { alert: IntegrationSubscriptionAlert }) {
+function SubscriptionAlertBadge({ alert }: { alert: SubscriptionAlertSummary }) {
   return (
     <span
       data-subscription-alert-badge={alert.state}

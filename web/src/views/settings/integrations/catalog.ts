@@ -22,7 +22,9 @@ import type { IntegrationTarget } from "./model";
 export type IntegrationCapability = "channels" | "data" | "tools";
 export type IntegrationTone = "green" | "orange" | "red" | "idle";
 
-export interface IntegrationSubscriptionAlert {
+/** What an item's badge and subtitle say about its subscriptions' alerts, worked out here from the hub's subscriptions.
+ * Not the wire's `IntegrationSubscriptionAlert` (`schema/wire/integrations-projection.schema.json`). */
+export interface SubscriptionAlertSummary {
   count: number;
   tone: "red" | "orange";
   state: SubscriptionAlertState;
@@ -53,7 +55,7 @@ export interface IntegrationItem {
   statusText: string;
   subtitle?: string;
   alertTone?: "red" | "orange";
-  subscriptionAlert?: IntegrationSubscriptionAlert;
+  subscriptionAlert?: SubscriptionAlertSummary;
   channel?: Channel;
   connector?: HubConnector;
   extension?: HubExtension;
@@ -144,7 +146,7 @@ function subscriptionAlertLabel(state: SubscriptionAlertState): string {
   }
 }
 
-function buildSubscriptionAlert(subs: readonly HubSubscription[]): IntegrationSubscriptionAlert | undefined {
+function buildSubscriptionAlert(subs: readonly HubSubscription[]): SubscriptionAlertSummary | undefined {
   const alerts = subs.filter((s): s is HubSubscription & { state: SubscriptionAlertState } => isSubscriptionAlertState(s.state));
   if (!alerts.length) return undefined;
   const sorted = [...alerts].sort((a, b) => ALERT_RANK[b.state] - ALERT_RANK[a.state]);
