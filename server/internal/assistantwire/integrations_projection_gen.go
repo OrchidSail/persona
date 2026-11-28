@@ -210,6 +210,40 @@ func (v IntegrationRelationshipIssue) Valid() bool {
 	return false
 }
 
+// IntegrationSubscriptionAlertState: subscription alert states in descending severity.
+// A value this side does not know keeps its raw string and is not Valid.
+type IntegrationSubscriptionAlertState string
+
+const (
+	IntegrationSubscriptionAlertStateFailing      IntegrationSubscriptionAlertState = "failing"
+	IntegrationSubscriptionAlertStateNeedsRecipe  IntegrationSubscriptionAlertState = "needs_recipe"
+	IntegrationSubscriptionAlertStateRateLimited  IntegrationSubscriptionAlertState = "rate_limited"
+	IntegrationSubscriptionAlertStateNotConnected IntegrationSubscriptionAlertState = "not_connected"
+)
+
+// IntegrationSubscriptionAlertStates are the values of IntegrationSubscriptionAlertState, in order.
+var IntegrationSubscriptionAlertStates = []IntegrationSubscriptionAlertState{IntegrationSubscriptionAlertStateFailing, IntegrationSubscriptionAlertStateNeedsRecipe, IntegrationSubscriptionAlertStateRateLimited, IntegrationSubscriptionAlertStateNotConnected}
+
+// Valid reports whether v is one of IntegrationSubscriptionAlertStates.
+func (v IntegrationSubscriptionAlertState) Valid() bool {
+	switch v {
+	case IntegrationSubscriptionAlertStateFailing, IntegrationSubscriptionAlertStateNeedsRecipe, IntegrationSubscriptionAlertStateRateLimited, IntegrationSubscriptionAlertStateNotConnected:
+		return true
+	}
+	return false
+}
+
+type IntegrationSubscriptionAlert struct {
+	// The number of this integration's subscriptions in an alert state.
+	Count int `json:"count"`
+	// The state of the highest-severity alert.
+	State IntegrationSubscriptionAlertState `json:"state"`
+	// The representative subscription's display label.
+	Label string `json:"label,omitempty"`
+	// The representative subscription's error summary, when available.
+	Message string `json:"message,omitempty"`
+}
+
 type IntegrationCatalogItem struct {
 	Ref                    IntegrationRef                      `json:"ref"`
 	Name                   string                              `json:"name"`
@@ -218,6 +252,7 @@ type IntegrationCatalogItem struct {
 	Availability           IntegrationAvailability             `json:"availability"`
 	CapabilityAvailability []IntegrationCapabilityAvailability `json:"capability_availability,omitempty"`
 	RelationshipIssue      IntegrationRelationshipIssue        `json:"relationship_issue,omitempty"`
+	SubscriptionAlert      *IntegrationSubscriptionAlert       `json:"subscription_alert,omitempty"`
 }
 
 type IntegrationCounts struct {
@@ -310,6 +345,8 @@ type IntegrationSection struct {
 	Availability        IntegrationAvailability         `json:"availability"`
 	Edit                IntegrationSectionEdit          `json:"edit"`
 	ConfigurationGroups []IntegrationConfigurationGroup `json:"configuration_groups,omitempty"`
+	// The active credentials are file-managed. Edit still describes the section's service controls.
+	CredentialsReadOnly bool `json:"credentials_read_only,omitempty"`
 }
 
 type IntegrationDetail struct {
@@ -324,6 +361,7 @@ var integrationsProjectionDefs = map[string]func() any{
 	"IntegrationAvailability":           func() any { return new(IntegrationAvailability) },
 	"IntegrationCapabilityAvailability": func() any { return new(IntegrationCapabilityAvailability) },
 	"IntegrationSourceAvailability":     func() any { return new(IntegrationSourceAvailability) },
+	"IntegrationSubscriptionAlert":      func() any { return new(IntegrationSubscriptionAlert) },
 	"IntegrationCatalogItem":            func() any { return new(IntegrationCatalogItem) },
 	"IntegrationCounts":                 func() any { return new(IntegrationCounts) },
 	"IntegrationCatalog":                func() any { return new(IntegrationCatalog) },

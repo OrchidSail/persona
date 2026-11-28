@@ -1690,6 +1690,9 @@ back) and only keeps the entry. Tell them apart by git's `CONFLICT` lines plus `
 - **`sync.Once` lazy state**: tests changing fields before first read have them overwritten by subsequent `Once` initialization. Initialize once before modifying.
 - **Private addresses in tests**: `privacy_check.py` rejects private IPv4 literals (except documentation ranges like 192.0.2.0/24). Construct numbers for private-address tests
   (`netip.AddrFrom4`, `ip4` in `ingress_test.go` / `admin_test.go`); don't write literals in comments either.
+- **Explicit Admin extension targets** (#17994). `Header.Get` returns an empty value for both empty and absent
+  selectors, and `URL.Query` drops malformed pairs. Use header values and check query parsing errors before consulting
+  the default assistant. Put the same extension ID on two test assistants so a routing mistake is visible.
 - **`curl … | sh` can ask questions**: stdin contains the script; read `/dev/tty` (`(: </dev/tty) 2>/dev/null` checks terminal availability, absent in CI / cron).
   Test interactive branches locally with `script -q /dev/null <command>` for a pty, feeding answers through stdin.
 

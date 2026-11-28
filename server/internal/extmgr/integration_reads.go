@@ -3,6 +3,7 @@ package extmgr
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/nwverse/persona/server/internal/assistantwire"
 	"github.com/nwverse/persona/server/internal/botport"
@@ -122,9 +123,14 @@ func (h *Manager) IntegrationSubscriptions(ctx context.Context) ([]assistantwire
 		if push && name == "" {
 			name = i18n.T(h.contextLang(ctx), "subscriptions-pages.list.push_section")
 		}
+		availability, alert := subscriptionIntegrationState(sub.State)
+		var message string
+		if alert != "" && sub.Error != nil {
+			message = strings.TrimSpace(sub.Error.Message)
+		}
 		out = append(out, assistantwire.IntegrationSubscriptionRead{ID: assistantwire.IntegrationResourceID(sub.ID), Name: name,
 			Connector: assistantwire.IntegrationResourceID(sub.Connector), Extension: assistantwire.IntegrationResourceID(sub.Extension),
-			Availability: subscriptionIntegrationState(sub.State), Push: push})
+			Availability: availability, Push: push, AlertState: alert, AlertMessage: message})
 	}
 	return out, nil
 }
@@ -133,11 +139,11 @@ func (h *Manager) IntegrationSubscriptions(ctx context.Context) ([]assistantwire
 // so an existing settings link can report the module state.
 func (h *Manager) IntegrationServices(ctx context.Context) []assistantwire.IntegrationServiceRead {
 	l := h.contextLang(ctx)
-	botStatus, botReadOnly := h.integrationBotAvailability(ctx)
+	botStatus, credentialsReadOnly := h.integrationBotAvailability(ctx)
 	return []assistantwire.IntegrationServiceRead{
 		{ID: "feishu-bot", Name: i18n.T(l, "hub-channels.feishu_name"), ModuleFeature: "module.lark",
 			Channel: channel.Feishu, Connector: "larkcli", Capability: assistantwire.IntegrationFilterCapabilityChannels,
-			Availability: botStatus, ConnectionReadOnly: botReadOnly},
+			Availability: botStatus, CredentialsReadOnly: credentialsReadOnly},
 		{ID: "mail", Name: i18n.T(l, "hub-self_settings.title_mail"), ModuleFeature: "module.mail",
 			Connector: "mail", Capability: assistantwire.IntegrationFilterCapabilityData,
 			Availability: h.integrationMailAvailability(ctx)},
@@ -238,19 +244,21 @@ func connectorIntegrationState(status string) assistantwire.IntegrationAvailabil
 	}
 }
 
-func subscriptionIntegrationState(state string) assistantwire.IntegrationAvailability {
+func subscriptionIntegrationState(state string) (assistantwire.IntegrationAvailability, assistantwire.IntegrationSubscriptionAlertState) {
 	switch state {
 	case subscriptions.StateOK:
-		return integrationAvailable()
+		return integrationAvailable(), ""
 	case subscriptions.StateOff:
-		return assistantwire.IntegrationAvailability{State: assistantwire.IntegrationStateDisabled}
+		return assistantwire.IntegrationAvailability{State: assistantwire.IntegrationStateDisabled}, ""
 	case subscriptions.StateNeedsRecipe:
-		return assistantwire.IntegrationAvailability{State: assistantwire.IntegrationStateNeedsSetup}
+		return assistantwire.IntegrationAvailability{State: assistantwire.IntegrationStateNeedsSetup}, assistantwire.IntegrationSubscriptionAlertStateNeedsRecipe
 	case subscriptions.StateNotConnected:
-		return integrationUnavailable(assistantwire.IntegrationReasonNotConnected)
+		return integrationUnavailable(assistantwire.IntegrationReasonNotConnected), assistantwire.IntegrationSubscriptionAlertStateNotConnected
 	case subscriptions.StateRateLimited:
-		return integrationUnavailable(assistantwire.IntegrationReasonRateLimited)
+		return integrationUnavailable(assistantwire.IntegrationReasonRateLimited), assistantwire.IntegrationSubscriptionAlertStateRateLimited
+	case subscriptions.StateFailing:
+		return integrationUnavailable(assistantwire.IntegrationReasonRuntimeError), assistantwire.IntegrationSubscriptionAlertStateFailing
 	default:
-		return integrationUnavailable(assistantwire.IntegrationReasonRuntimeError)
+		return integrationUnavailable(assistantwire.IntegrationReasonRuntimeError), ""
 	}
 }

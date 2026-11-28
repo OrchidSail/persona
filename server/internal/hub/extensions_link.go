@@ -447,8 +447,13 @@ func (h *Hub) extensionRoutesRelayed(api *http.ServeMux) {
 
 // adminExtensionRoutes relays the admin UI's extension pages (a signed-in admin session).
 func (h *Hub) adminExtensionRoutes(mux *http.ServeMux) {
+	relay := func(w http.ResponseWriter, r *http.Request) {
+		if id, ok := h.owner(w, r, h.byAdminExtension); ok {
+			h.relayTo(w, r, true, id)
+		}
+	}
 	for _, pattern := range []string{"/api/v1/admin/extensions", "/api/v1/admin/extensions/", "/api/v1/admin/plugins", "/api/v1/admin/plugins/"} {
-		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) { h.relayToManager(w, r, true) })
+		mux.HandleFunc(pattern, relay)
 	}
 }
 

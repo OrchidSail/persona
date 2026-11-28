@@ -1498,6 +1498,12 @@ The owner can change each one (`personad extension sandbox <id> on|off|default`,
 A change restarts the extension and is recorded as `sandbox` in the audit log. The choice is stored in the hub setting `extension_sandbox`; it is deleted on uninstall, and a reinstall starts from the default.
 In the admin UI (#5696) an installed extension's details have **Network and isolation**: one switch for the sandbox (turning it off asks first, with a destructive button; switching it back to its source's default sends `null`, so there is no separate "default" position), the reason when the machine has none, and the egress counts. The web's settings page only shows the state: when the proxy blocked an address it says so in one sentence (which extension, which address, when) and its **Allow in Admin Page** button opens `/admin/extensions?extension=<id>#network` in a new tab, where that row opens at this block and highlights it.
 
+The Admin extension list and detail, sandbox switch, and egress allow and revoke requests accept a roster ID
+in `X-Persona-Manager` or the `manager` query parameter. The header takes precedence. Omit both to use the default
+assistant. An empty, repeated, or malformed selector returns 400 `invalid_manager`, an unknown assistant returns
+404 `no_manager`, and a known offline assistant returns 503 `assistant_offline`. These routes require an Admin
+session and writes require its CSRF token.
+
 **Socket paths**: an installed extension's sockets live under its manager's directory (`<id>.sock` in `extensions/`, and in a sandbox the ones in its run directory), and a Unix socket path holds at most 103 bytes on macOS and 107 on Linux.
 An external manager's directory (`managers/<id>` in the data directory) leaves the least room. The manager checks each path before the program starts, so a bind does not fail with only `invalid argument`:
 a socket the manager binds itself (the proxy socket, the agent runtime's socket) that is too long stops the extension with an error naming the path, its length and the limit;
@@ -1666,6 +1672,10 @@ Clients use the existing settings routes for writes and for reading the settings
   including the explicit default assistant id, a display name, `origin`, typed `capabilities` and
   `availability {state, reason?}`. `counts.all` counts visible rows once. Each other count is the number of visible
   rows that have that capability. One row may belong to several filters. Only the detail response carries sections.
+- A row with subscription alerts includes `subscription_alert`. Its `count` counts each owned subscription once
+  when its effective state is `failing`, `needs_recipe`, `rate_limited`, or `not_connected`, in descending severity.
+  The highest-severity subscription supplies the `state` and any `label` and `message`. Ties follow the subscription
+  list order (oldest first, then ID). The canonical detail item reports the same summary.
 - Host registrations take precedence over extension contribution references. A legacy producer can use an exact id
   match within a resource type and the same assistant when it has no explicit relationship of that type.
   An independent row reports `relationship_issue` for ambiguous claims, a missing or unavailable owner, or a
@@ -1683,6 +1693,9 @@ Clients use the existing settings routes for writes and for reading the settings
   its permission and confirmation checks. An addressable member resolves to its owning integration. Configuration
   hints map to Connection, Conversation and Push, Inbox and Sync, or Extension Configuration. Missing and unknown
   hints map to the general configuration group. The projection carries section descriptors and status codes.
+- The Feishu bot's service Connection section sets `credentials_read_only: true` when its active credentials
+  come from the configuration file. `edit: settings` still delegates the enable switch, pairing, and unpairing
+  to their existing settings routes.
 
 The wire contract is generated from `schema/wire/integrations-projection.schema.json`. The reads require no new
 setting or migration, and `integrations_v2` continues to control the client entry.

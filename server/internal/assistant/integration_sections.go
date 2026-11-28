@@ -20,7 +20,9 @@ func (b *integrationBook) sections(ctx context.Context, node *integrationNode, r
 		}
 		switch n.key.kind {
 		case assistantwire.IntegrationKindService:
-			out = append(out, n.section(assistantwire.IntegrationSectionKindConnection, state, n.readOnly))
+			connection := n.section(assistantwire.IntegrationSectionKindConnection, state, false)
+			connection.CredentialsReadOnly = n.credentialsReadOnly
+			out = append(out, connection)
 			if n.serviceHasChannel {
 				out = append(out, n.section(assistantwire.IntegrationSectionKindInboxAndSync, state, false))
 			}

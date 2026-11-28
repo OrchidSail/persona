@@ -33,13 +33,14 @@ func integrationResource(kind assistantwire.IntegrationKind, id assistantwire.In
 }
 
 type integrationNode struct {
-	key               integrationKey
-	item              assistantwire.IntegrationCatalogItem
-	children          []*integrationNode
-	readOnly          bool
-	externalSources   bool
-	storesData        bool
-	serviceHasChannel bool
+	key                 integrationKey
+	item                assistantwire.IntegrationCatalogItem
+	children            []*integrationNode
+	readOnly            bool
+	credentialsReadOnly bool
+	externalSources     bool
+	storesData          bool
+	serviceHasChannel   bool
 }
 
 // All keys in the book belong to one assistant. Producer ids have meaning only with their resource kind.
@@ -147,12 +148,32 @@ func (b *integrationBook) attach(n *integrationNode, owner integrationKey) {
 	b.owners[n.key] = owner
 	root.children = append(root.children, n)
 	root.addCapabilities(n.item.Capabilities...)
+	root.addSubscriptionAlert(n.item.SubscriptionAlert)
+}
+
+func (n *integrationNode) addSubscriptionAlert(alert *assistantwire.IntegrationSubscriptionAlert) {
+	if alert == nil {
+		return
+	}
+	current := n.item.SubscriptionAlert
+	if current == nil {
+		summary := *alert
+		n.item.SubscriptionAlert = &summary
+		return
+	}
+	count := current.Count + alert.Count
+	// Keep the first subscription in list order for ties.
+	severity := assistantwire.IntegrationSubscriptionAlertStates
+	if slices.Index(severity, alert.State) < slices.Index(severity, current.State) {
+		*current = *alert
+	}
+	current.Count = count
 }
 
 func (b *integrationBook) addService(v assistantwire.IntegrationServiceRead) {
 	key := integrationResource(assistantwire.IntegrationKindService, v.ID)
 	n := b.add(key, v.Name, assistantwire.IntegrationOriginBuiltinService, v.Availability, v.Capability)
-	n.readOnly = v.ConnectionReadOnly
+	n.credentialsReadOnly = v.CredentialsReadOnly
 	b.availability = append(b.availability, assistantwire.IntegrationSourceAvailability{
 		Source: assistantwire.IntegrationSourceService, Ref: &n.item.Ref, ModuleFeature: v.ModuleFeature, Availability: v.Availability,
 	})
@@ -276,6 +297,11 @@ func (b *integrationBook) addSubscription(v assistantwire.IntegrationSubscriptio
 		kind, origin = assistantwire.IntegrationKindPushSource, assistantwire.IntegrationOriginStandalonePushSource
 	}
 	n := b.add(integrationResource(kind, v.ID), v.Name, origin, v.Availability, assistantwire.IntegrationFilterCapabilityData)
+	if v.AlertState.Valid() {
+		n.item.SubscriptionAlert = &assistantwire.IntegrationSubscriptionAlert{
+			Count: 1, State: v.AlertState, Label: v.Name, Message: v.AlertMessage,
+		}
+	}
 	if v.Push {
 		return
 	}

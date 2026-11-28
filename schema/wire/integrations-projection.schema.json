@@ -81,6 +81,22 @@
       "x-enum": "closed",
       "enum": ["ambiguous_owner", "owner_missing", "owner_unavailable", "owner_conflict"]
     },
+    "IntegrationSubscriptionAlertState": {
+      "type": "string",
+      "x-enum": "closed",
+      "description": "Subscription alert states in descending severity.",
+      "enum": ["failing", "needs_recipe", "rate_limited", "not_connected"]
+    },
+    "IntegrationSubscriptionAlert": {
+      "type": "object",
+      "required": ["count", "state"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 1, "description": "The number of this integration's subscriptions in an alert state." },
+        "state": { "$ref": "#/$defs/IntegrationSubscriptionAlertState", "description": "The state of the highest-severity alert." },
+        "label": { "type": "string", "description": "The representative subscription's display label." },
+        "message": { "type": "string", "description": "The representative subscription's error summary, when available." }
+      }
+    },
     "IntegrationCatalogItem": {
       "type": "object",
       "required": ["ref", "name", "origin", "capabilities", "availability"],
@@ -91,7 +107,8 @@
         "capabilities": { "type": "array", "items": { "$ref": "#/$defs/IntegrationFilterCapability" } },
         "availability": { "$ref": "#/$defs/IntegrationAvailability" },
         "capability_availability": { "type": "array", "items": { "$ref": "#/$defs/IntegrationCapabilityAvailability" } },
-        "relationship_issue": { "$ref": "#/$defs/IntegrationRelationshipIssue" }
+        "relationship_issue": { "$ref": "#/$defs/IntegrationRelationshipIssue" },
+        "subscription_alert": { "$ref": "#/$defs/IntegrationSubscriptionAlert" }
       }
     },
     "IntegrationCounts": {
@@ -136,7 +153,8 @@
         "ref": { "$ref": "#/$defs/IntegrationRef" },
         "availability": { "$ref": "#/$defs/IntegrationAvailability" },
         "edit": { "$ref": "#/$defs/IntegrationSectionEdit" },
-        "configuration_groups": { "type": "array", "items": { "$ref": "#/$defs/IntegrationConfigurationGroup" } }
+        "configuration_groups": { "type": "array", "items": { "$ref": "#/$defs/IntegrationConfigurationGroup" } },
+        "credentials_read_only": { "type": "boolean", "description": "The active credentials are file-managed. Edit still describes the section's service controls." }
       }
     },
     "IntegrationDetail": {

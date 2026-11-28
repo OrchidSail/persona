@@ -47,6 +47,8 @@ const (
 // errUnknownManager: the request names a manager the roster does not have.
 var errUnknownManager = errors.New("no such manager")
 
+var errInvalidManager = errors.New("expected a single valid manager ID")
+
 // errOtherManager: an extension's token is for a machine, session or card of another manager's than its own
 // (extensionReach); answered 403 codeOtherManager.
 var errOtherManager = errors.New("this extension's manager does not own it")
@@ -79,13 +81,38 @@ func (h *Hub) requestManager(r *http.Request) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return h.managerOrDefault(r.Context(), id)
+}
+
+func (h *Hub) managerOrDefault(ctx context.Context, id string) (string, error) {
 	if id == "" {
-		return h.defaultOwner(r.Context()), nil
+		return h.defaultOwner(ctx), nil
 	}
-	if !h.knownManager(r.Context(), id) {
+	if !h.knownManager(ctx, id) {
 		return "", fmt.Errorf("%w: %q", errUnknownManager, clip(id, 64))
 	}
 	return id, nil
+}
+
+// byAdminExtension keeps the normal header precedence and distinguishes a missing selector from an invalid one.
+func (h *Hub) byAdminExtension(r *http.Request) (string, error) {
+	values := r.Header.Values(ManagerHeader)
+	if len(values) == 0 {
+		query, err := url.ParseQuery(r.URL.RawQuery)
+		if err != nil {
+			return "", errInvalidManager
+		}
+		values = query[ManagerQuery]
+	}
+	switch len(values) {
+	case 0:
+		return h.managerOrDefault(r.Context(), "")
+	case 1:
+		if id := strings.TrimSpace(values[0]); busManagerID.MatchString(id) {
+			return h.managerOrDefault(r.Context(), id)
+		}
+	}
+	return "", errInvalidManager
 }
 
 // knownManager: id is a manager of the roster (connected or not). Without a database, the ones connected and the
@@ -283,7 +310,7 @@ func (h *Hub) interactionOwner(id string) string {
 
 // ---- forwarding by owner ----
 
-// ownerOf resolves the manager a request goes to; an error is errUnknownManager.
+// ownerOf resolves the manager a request goes to.
 type ownerOf func(r *http.Request) (string, error)
 
 // byRequest: the manager the request names, else the default.
@@ -453,19 +480,20 @@ func (h *Hub) byTodo(r *http.Request) (string, error) {
 	return h.requestManager(r)
 }
 
-// owner resolves r's manager with by, answering 404 no_manager itself (403 codeOtherManager for an extension's token
-// of another manager); false once it answered.
+// owner resolves r's manager with by and answers routing errors before forwarding.
 func (h *Hub) owner(w http.ResponseWriter, r *http.Request, by ownerOf) (string, bool) {
 	id, err := by(r)
-	if errors.Is(err, errOtherManager) {
+	switch {
+	case errors.Is(err, errInvalidManager):
+		writeErrCode(w, http.StatusBadRequest, "invalid_manager", err)
+	case errors.Is(err, errOtherManager):
 		writeErrCode(w, http.StatusForbidden, codeOtherManager, err)
-		return "", false
-	}
-	if err != nil {
+	case err != nil:
 		writeErrCode(w, http.StatusNotFound, "no_manager", err)
-		return "", false
+	default:
+		return id, true
 	}
-	return id, true
+	return "", false
 }
 
 // forwardOwned is forwardHTTP to the manager by resolves.

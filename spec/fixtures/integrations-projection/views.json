@@ -21,7 +21,8 @@
               "availability": {"state": "available"},
               "capability_availability": [
                 {"capability": "channels", "availability": {"state": "unavailable", "reason": "read_failed"}}
-              ]
+              ],
+              "subscription_alert": {"count": 2, "state": "failing", "label": "Daily records", "message": "The source could not be read."}
             }
           ],
           "counts": {"all": 2, "channels": 1, "data": 2, "tools": 1},
@@ -72,6 +73,30 @@
             {"source": "connectors", "availability": {"state": "available"}},
             {"source": "subscriptions", "availability": {"state": "available"}}
           ]
+        }
+      }
+    },
+    {
+      "name": "file-managed Feishu credentials with service controls",
+      "expected": {
+        "detail": {
+          "item": {
+            "ref": {"manager": "assistant", "kind": "service", "id": "feishu-bot"},
+            "name": "Feishu bot",
+            "origin": "builtin_service",
+            "capabilities": ["channels"],
+            "availability": {"state": "needs_setup"}
+          },
+          "sections": [
+            {
+              "kind": "connection",
+              "ref": {"manager": "assistant", "kind": "service", "id": "feishu-bot"},
+              "availability": {"state": "needs_setup"},
+              "edit": "settings",
+              "credentials_read_only": true
+            }
+          ],
+          "availability": []
         }
       }
     }

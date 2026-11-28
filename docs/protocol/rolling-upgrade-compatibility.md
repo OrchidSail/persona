@@ -60,6 +60,8 @@
 | `target_override` | Optional detail metadata. Clients can display the reported `topics`, `groups_and_topics`, or `threads` precedence hint. An absent hint needs no placeholder. Older clients ignore it and can still edit the default target. |
 | `configuration.*.section` | A manifest property can group a field under `connection`, `channel`, `inbox`, or `advanced`. Omitted or empty keeps the existing form valid. Older clients ignore the returned form hint. Extensions declaring the hint need a matching minimum hub version in `engines.persona` for install-time validation. |
 | `integrations_projection_v1` | A connected assistant names it in `manager.hello`. A hub that serves the projection publishes `integrations_projection_v1: true` on that assistant's entry in `GET /api/v1/managers`. With the field absent, use the existing settings reads for the same assistant. Older clients keep their existing read and write routes. |
+| Projection `credentials_read_only` and `subscription_alert` | Older clients can ignore both optional fields. The existing `edit: settings` value keeps bot controls available for file-managed credentials. With an older assistant, use its reported `edit` and use the returned availability for the catalog status. |
+| Admin extension assistant selector | An absent `X-Persona-Manager` header and `manager` query parameter keep the existing default-assistant behavior. Valid selectors use the existing manager roster and header precedence. The hub rejects an invalid or unknown selected assistant before forwarding. |
 
 ### Agent tab naming (#15387)
 

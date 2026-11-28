@@ -227,6 +227,115 @@ func TestIntegrationProjectionOwnershipPrecedence(t *testing.T) {
 	}
 }
 
+func TestIntegrationProjectionCountsOnlyOwnedSubscriptionAlerts(t *testing.T) {
+	s := New(Options{ID: "m-example"})
+	s.integrationReads = &integrationFixture{input: integrationInput{
+		extensions: []assistantwire.IntegrationExtensionRead{
+			{ID: "bridge", Availability: integrationAvailable()},
+			{ID: "other", Availability: integrationAvailable()},
+		},
+		services: []assistantwire.IntegrationServiceRead{
+			{ID: "mail", Connector: "mail", Capability: assistantwire.IntegrationFilterCapabilityData, Availability: integrationAvailable()},
+		},
+		connectors: []assistantwire.IntegrationConnectorRead{
+			{ID: "records", OwnerExtension: "bridge", StoresData: true, Availability: integrationAvailable()},
+		},
+		subscriptions: []assistantwire.IntegrationSubscriptionRead{
+			{ID: "disconnected", Connector: "records", AlertState: assistantwire.IntegrationSubscriptionAlertStateNotConnected},
+			{ID: "recipe", Connector: "records", Extension: "bridge", AlertState: assistantwire.IntegrationSubscriptionAlertStateNeedsRecipe},
+			{ID: "rate", Connector: "records", AlertState: assistantwire.IntegrationSubscriptionAlertStateRateLimited},
+			{ID: "older-failure", Connector: "records", AlertState: assistantwire.IntegrationSubscriptionAlertStateFailing,
+				Name: "Daily records", AlertMessage: "The source could not be read."},
+			{ID: "another-failure", Connector: "records", AlertState: assistantwire.IntegrationSubscriptionAlertStateFailing},
+			{ID: "healthy", Connector: "records", Availability: integrationAvailable()},
+			{ID: "disabled", Connector: "records", Availability: assistantwire.IntegrationAvailability{State: assistantwire.IntegrationStateDisabled}},
+			{ID: "mail-rate", Connector: "mail", AlertState: assistantwire.IntegrationSubscriptionAlertStateRateLimited},
+			{ID: "mail-recipe", Connector: "mail", AlertState: assistantwire.IntegrationSubscriptionAlertStateNeedsRecipe},
+			{ID: "conflicting-owner", Connector: "records", Extension: "other", AlertState: assistantwire.IntegrationSubscriptionAlertStateNeedsRecipe},
+			{ID: "shortcut", Connector: "records", Extension: "bridge", Push: true, Availability: integrationAvailable()},
+		},
+	}}
+	bridgeAlert := assistantwire.IntegrationSubscriptionAlert{
+		Count: 5, State: assistantwire.IntegrationSubscriptionAlertStateFailing, Label: "Daily records", Message: "The source could not be read.",
+	}
+	want := map[assistantwire.IntegrationResourceID]assistantwire.IntegrationSubscriptionAlert{
+		"bridge":            bridgeAlert,
+		"mail":              {Count: 2, State: assistantwire.IntegrationSubscriptionAlertStateNeedsRecipe},
+		"conflicting-owner": {Count: 1, State: assistantwire.IntegrationSubscriptionAlertStateNeedsRecipe},
+	}
+	var catalog assistantwire.IntegrationCatalog
+	integrationGET(t, s, "", http.StatusOK, &catalog)
+	if len(catalog.Items) != 5 {
+		t.Fatalf("catalog items: %+v", catalog.Items)
+	}
+	for _, item := range catalog.Items {
+		alert, ok := want[item.Ref.ID]
+		if !ok {
+			if item.SubscriptionAlert != nil {
+				t.Errorf("%s has an unrelated alert: %+v", item.Ref.ID, item.SubscriptionAlert)
+			}
+			continue
+		}
+		if item.SubscriptionAlert == nil || *item.SubscriptionAlert != alert {
+			t.Errorf("%s alert %+v, want %+v", item.Ref.ID, item.SubscriptionAlert, alert)
+		}
+		delete(want, item.Ref.ID)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing catalog rows: %v", want)
+	}
+	var detail assistantwire.IntegrationDetail
+	integrationGET(t, s, "/connector/records", http.StatusOK, &detail)
+	if detail.Item.Ref.ID != "bridge" || detail.Item.Ref.Manager != "m-example" ||
+		detail.Item.SubscriptionAlert == nil || *detail.Item.SubscriptionAlert != bridgeAlert {
+		t.Fatalf("canonical detail does not match its catalog row: %+v", detail.Item)
+	}
+}
+
+func TestIntegrationProjectionKeepsFeishuControlsSeparateFromCredentials(t *testing.T) {
+	s := New(Options{})
+	for _, tc := range []struct {
+		name                string
+		availability        assistantwire.IntegrationAvailability
+		credentialsReadOnly bool
+		edit                assistantwire.IntegrationSectionEdit
+	}{
+		{"unpaired file credentials", assistantwire.IntegrationAvailability{State: assistantwire.IntegrationStateNeedsSetup}, true, assistantwire.IntegrationSectionEditSettings},
+		{"paired file credentials", integrationAvailable(), true, assistantwire.IntegrationSectionEditSettings},
+		{"settings-managed credentials", integrationAvailable(), false, assistantwire.IntegrationSectionEditSettings},
+		{"service read failed", integrationUnavailable(assistantwire.IntegrationReasonReadFailed), false, assistantwire.IntegrationSectionEditReadOnly},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s.integrationReads = &integrationFixture{input: integrationInput{
+				services: []assistantwire.IntegrationServiceRead{
+					{ID: "feishu-bot", Channel: channel.Feishu, Connector: "larkcli", Capability: assistantwire.IntegrationFilterCapabilityChannels,
+						Availability: tc.availability, CredentialsReadOnly: tc.credentialsReadOnly},
+				},
+				connectors: []assistantwire.IntegrationConnectorRead{{ID: "larkcli", Builtin: true, Availability: integrationAvailable()}},
+			}}
+			var detail assistantwire.IntegrationDetail
+			body := integrationGET(t, s, "/service/feishu-bot", http.StatusOK, &detail)
+			control := slices.IndexFunc(detail.Sections, func(section assistantwire.IntegrationSection) bool {
+				return section.Kind == assistantwire.IntegrationSectionKindConnection && section.Ref == detail.Item.Ref
+			})
+			if control == -1 {
+				t.Fatalf("missing service connection: %s", body)
+			}
+			for i, section := range detail.Sections {
+				if want := tc.credentialsReadOnly && i == control; section.CredentialsReadOnly != want {
+					t.Errorf("%+v: credentials_read_only, want %v", section, want)
+				}
+			}
+			if connection := detail.Sections[control]; connection.Edit != tc.edit || connection.Availability != tc.availability {
+				t.Errorf("service controls: %+v, want %q and %+v", connection, tc.edit, tc.availability)
+			}
+			if strings.Contains(body, `"credentials_read_only"`) != tc.credentialsReadOnly {
+				t.Errorf("unexpected optional field presence: %s", body)
+			}
+		})
+	}
+}
+
 func TestIntegrationProjectionIsolatesFailedReads(t *testing.T) {
 	s := New(Options{})
 	readError := errors.New("private diagnostic from the provider")

@@ -169,6 +169,38 @@ export function parseIntegrationRelationshipIssue(raw: string): IntegrationRelat
   return unknown;
 }
 
+/**
+ * Subscription alert states in descending severity.
+ */
+export type IntegrationSubscriptionAlertState = "failing" | "needs_recipe" | "rate_limited" | "not_connected";
+export const INTEGRATION_SUBSCRIPTION_ALERT_STATES: readonly IntegrationSubscriptionAlertState[] = ["failing", "needs_recipe", "rate_limited", "not_connected"];
+
+/** A IntegrationSubscriptionAlertState this app does not know, kept as it came. */
+export interface UnknownIntegrationSubscriptionAlertState {
+  unknown: string;
+}
+
+/** A raw IntegrationSubscriptionAlertState: one this app knows, or UnknownIntegrationSubscriptionAlertState with the raw value. */
+export function parseIntegrationSubscriptionAlertState(raw: string): IntegrationSubscriptionAlertState | UnknownIntegrationSubscriptionAlertState {
+  const known = INTEGRATION_SUBSCRIPTION_ALERT_STATES.find((value) => value === raw);
+  if (known !== undefined) {
+    return known;
+  }
+  const unknown: UnknownIntegrationSubscriptionAlertState = { unknown: raw };
+  return unknown;
+}
+
+export interface IntegrationSubscriptionAlert {
+  /** The number of this integration's subscriptions in an alert state. */
+  count: number;
+  /** The state of the highest-severity alert. */
+  state: IntegrationSubscriptionAlertState;
+  /** The representative subscription's display label. */
+  label?: string;
+  /** The representative subscription's error summary, when available. */
+  message?: string;
+}
+
 export interface IntegrationCatalogItem {
   ref: IntegrationRef;
   name: string;
@@ -177,6 +209,7 @@ export interface IntegrationCatalogItem {
   availability: IntegrationAvailability;
   capability_availability?: IntegrationCapabilityAvailability[];
   relationship_issue?: IntegrationRelationshipIssue;
+  subscription_alert?: IntegrationSubscriptionAlert;
 }
 
 export interface IntegrationCounts {
@@ -252,6 +285,8 @@ export interface IntegrationSection {
   availability: IntegrationAvailability;
   edit: IntegrationSectionEdit;
   configuration_groups?: IntegrationConfigurationGroup[];
+  /** The active credentials are file-managed. Edit still describes the section's service controls. */
+  credentials_read_only?: boolean;
 }
 
 export interface IntegrationDetail {

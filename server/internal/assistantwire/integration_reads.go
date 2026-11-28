@@ -28,6 +28,8 @@ type IntegrationSubscriptionRead struct {
 	Extension    IntegrationResourceID
 	Availability IntegrationAvailability
 	Push         bool
+	AlertState   IntegrationSubscriptionAlertState
+	AlertMessage string
 }
 
 type IntegrationServiceRead struct {
@@ -35,9 +37,9 @@ type IntegrationServiceRead struct {
 	Name          string
 	ModuleFeature string
 	// Registered children of this service. Older subscriptions can refer to the connector while it is off.
-	Channel            IntegrationResourceID
-	Connector          IntegrationResourceID
-	Capability         IntegrationFilterCapability
-	Availability       IntegrationAvailability
-	ConnectionReadOnly bool
+	Channel             IntegrationResourceID
+	Connector           IntegrationResourceID
+	Capability          IntegrationFilterCapability
+	Availability        IntegrationAvailability
+	CredentialsReadOnly bool
 }
