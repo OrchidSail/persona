@@ -1,5 +1,6 @@
 // One owner-bound page on the existing authenticated app socket. No automatic write retries.
 import { credentialOwner } from "./api";
+import { safeWebURL } from "./format";
 import { composeText } from "./extension-ui";
 import { appSocketReady, getState, onAppSocket, onPrivateUIStream, send } from "./store";
 import { isPhoneConnectorSettingsURL } from "./extension-ui";
@@ -103,11 +104,11 @@ export class AppUIStreamPage {
         if (r.status !== "rejected" && r.version !== event.version + 1) throw new Error("Invalid consumed-event fence");
         if (new TextEncoder().encode(JSON.stringify(r.result ?? {})).length > 64 * 1024 || new TextEncoder().encode(r.result?.push?.state ?? "").length > 16 * 1024) throw new Error("Receipt result byte limit");
         if (r.result?.open_url) {
-          // Allowed in-app links a receipt may carry: a page's own quick prompt (persona://compose?prompt=<id>&text=<text>)
-          // or the local phone connector settings link (persona://settings/connectors/phone). Every other URL stays credential-free https.
-          if (!isPhoneConnectorSettingsURL(r.result.open_url) && !composeText(r.result.open_url)) {
-            const url = new URL(r.result.open_url);
-            if (url.protocol !== "https:" || url.username || url.password) throw new Error("Unsafe receipt URL");
+          // Allowed in-app links a receipt may carry: a page's own quick prompt (persona://compose?prompt=<id>&text=<text>),
+          // which the hub matched against the extension's manifest (extmgr.checkOpenURL), or the local phone connector
+          // settings link (persona://settings/connectors/phone). Every other URL stays credential-free https.
+          if (!isPhoneConnectorSettingsURL(r.result.open_url) && !composeText(r.result.open_url) && !safeWebURL(r.result.open_url, true)) {
+            throw new Error("Unsafe receipt URL");
           }
         }
         const old = this.receipts.get(this.identity(r));

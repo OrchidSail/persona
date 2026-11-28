@@ -247,7 +247,11 @@ describe("actual app UI stream adapter contract", () => {
       { toast: "Wrong", view: {} },
       { open_url: "https://user:pass@example.com" },
       { open_url: "persona://settings/connectors/mail" },
-      // allowed in-app URLs are whitelisted phone settings or well-formed persona://compose; no other persona:// action passes
+      { open_url: "https:/admin" },
+      { open_url: "https://@evil.example/a" },
+      { open_url: "https://good.example\\@evil.example/a" },
+      { open_url: "https://evil.example/a\tb" },
+      // allowed in-app URLs are whitelisted phone settings or well-formed persona://compose; no other persona:// action, and malformed compose, pass
       { open_url: "persona://settings/extensions/other" },
       { open_url: "persona://ask?text=today" },
       { open_url: "persona://compose?prompt=today" },
