@@ -15,6 +15,7 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
@@ -280,8 +281,11 @@ class AssistOverlaySheetUiTest {
             "320dp send button right edge must stay flush to card inner padding (<= 2px), diff=${abs(expectedSendRightPx - actualSendRightPx)}px",
             abs(expectedSendRightPx - actualSendRightPx) <= 2f,
         )
-        assertTrue("320dp model pill must stay left of send button", modelBounds.right <= sendBounds.left)
-        assertTrue("320dp screen chip must stay left of model pill", screenBounds.right <= modelBounds.left)
+        assertTrue(
+            "320dp model pill sits in dedicated meta row above screen chip & send button",
+            modelBounds.bottom <= screenBounds.top && modelBounds.right <= cardBounds.right,
+        )
+        assertTrue("320dp screen chip must stay left of send button", screenBounds.right <= sendBounds.left)
     }
 
     @Test
@@ -779,7 +783,8 @@ class AssistOverlaySheetUiTest {
             )
         }
         rule.waitForIdle()
-        rule.onNodeWithText("New · Gemini 2.5 Flash").assertExists()
+        rule.onNodeWithTag("assist-target-label", useUnmergedTree = true).assertTextEquals("New")
+        rule.onNodeWithTag("assist-model-label", useUnmergedTree = true).assertTextEquals("Gemini 2.5 Flash")
 
         // Existing non-main conversation shows its title on both pill and expanded reply header.
         rule.runOnIdle {
@@ -793,8 +798,81 @@ class AssistOverlaySheetUiTest {
             )
         }
         rule.waitForIdle()
-        rule.onNodeWithText("Travel Plan · Gemini 2.5 Flash").assertExists()
+        rule.onNodeWithTag("assist-target-label", useUnmergedTree = true).assertTextEquals("Travel Plan")
+        rule.onNodeWithTag("assist-model-label", useUnmergedTree = true).assertTextEquals("Gemini 2.5 Flash")
         rule.onNodeWithTag("assist-reply-target-label").assertExists()
+    }
+
+    @Test
+    @Config(application = Application::class, sdk = [35], qualifiers = "zh-w384dp-h832dp-450dpi")
+    fun narrow384dpOverlayShowsFullTargetAndLongModelWithoutCrushing() {
+        val target = AssistTargetConversation.Existing(
+            key = SessionKey("m1", "conv-singscale"),
+            title = "SingScale",
+        )
+        val longModel = DigitalAssistantModelChoice(
+            pick = ModelPick("antigravity-cli", "gemini-4-neon-xhigh"),
+            modelLabel = "Gemini 4 Neon (XHigh)",
+            launcherLabel = "Antigravity CLI",
+        )
+        var uiState by mutableStateOf(
+            AssistOverlayUiState(
+                invocationId = "inv-384dp-a16",
+                captureStatus = AssistCaptureStatus.NotSupported,
+                hubStatus = AssistHubStatus.Ready,
+                targetConversation = target,
+                modelChoice = longModel,
+            ),
+        )
+        rule.setContent {
+            PersonaTheme(darkTheme = true, reduceMotion = true, style = AppStyle.Glass) {
+                AssistOverlaySheet(
+                    ui = uiState,
+                    onDraftChange = {},
+                    onDictationHeard = {},
+                    onNotice = {},
+                    onAttachScreen = {},
+                    onRemoveScreen = {},
+                    onSend = {},
+                    onOpenInPersona = {},
+                    onDismiss = {},
+                )
+            }
+        }
+
+        val pillBounds = rule.onNodeWithTag("assist-model-pill").getUnclippedBoundsInRoot()
+        val targetBounds = rule.onNodeWithTag("assist-target-label", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        val modelBounds = rule.onNodeWithTag("assist-model-label", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        val sendBounds = rule.onNodeWithTag("assist-send-button").getUnclippedBoundsInRoot()
+
+        rule.onNodeWithTag("assist-target-label", useUnmergedTree = true).assertTextEquals("SingScale")
+        rule.onNodeWithTag("assist-model-label", useUnmergedTree = true).assertTextEquals("Gemini 4 Neon (XHigh)")
+        assertTrue("Model label must be visibly wider than short target label", modelBounds.width > targetBounds.width)
+        assertTrue("Pill must stay left-anchored with zero dead left gap", pillBounds.left < sendBounds.left / 2)
+        assertTrue("Pill must not overlap send button", pillBounds.right <= sendBounds.left)
+        assertTrue("Target and model must not overlap", targetBounds.right <= modelBounds.left)
+
+        // Now test with a very long conversation title + attached screen chip on 384dp:
+        // pill promotes to dedicated full-width meta row above screen chip & send button.
+        rule.runOnIdle {
+            uiState = uiState.copy(
+                captureStatus = AssistCaptureStatus.Attached,
+                targetConversation = AssistTargetConversation.Existing(
+                    key = SessionKey("m1", "conv-long"),
+                    title = "Persona Android 悬浮窗设计与真机验证超长对话标题",
+                ),
+            )
+        }
+        rule.waitForIdle()
+        val cardBounds = rule.onNodeWithTag("assist-composer-island").getUnclippedBoundsInRoot()
+        val attachedPillBounds = rule.onNodeWithTag("assist-model-pill").getUnclippedBoundsInRoot()
+        val attachedTargetBounds = rule.onNodeWithTag("assist-target-label", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        val attachedModelBounds = rule.onNodeWithTag("assist-model-label", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        val screenBounds = rule.onNodeWithTag("assist-screen-attached-row").getUnclippedBoundsInRoot()
+        assertTrue("With screen chip + custom model, pill sits above screen chip", attachedPillBounds.bottom <= screenBounds.top)
+        assertTrue("Pill stays inside card bounds", attachedPillBounds.right <= cardBounds.right)
+        assertTrue("Target and model do not overlap", attachedTargetBounds.right <= attachedModelBounds.left)
+        assertTrue("Model label remains visible and non-zero", attachedModelBounds.width > 0.dp)
     }
 
     private class FakeDictationController : AssistDictationController {

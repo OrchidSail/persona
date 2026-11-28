@@ -19,6 +19,7 @@ import persona.android.PersonaApp
 import persona.android.R
 import persona.android.ui.AppServices
 import persona.core.contracts.ModelPick
+import persona.core.contracts.SessionKey
 import persona.core.contracts.api.AgentLauncher
 import persona.core.contracts.api.ConnectionState
 import persona.core.contracts.api.DigitalAssistantModelCatalog
@@ -27,7 +28,19 @@ import persona.core.contracts.api.DigitalAssistantModelGroup
 import persona.core.contracts.api.DigitalAssistantModelOption
 import persona.core.contracts.api.DigitalAssistantModelSettings
 import persona.core.contracts.api.LauncherModels
+import persona.core.domain.lines.ModelChanges
 import persona.feature.chat.ChatWiringSource
+
+/**
+ * Locally persisted floating-overlay target conversation + optional non-main model override,
+ * scoped per paired Hub. When [target] is [AssistTargetConversation.Main], Main's persisted
+ * [DigitalAssistantModelChoice] (`overlay_model:<scope>`) remains the single source of truth.
+ */
+internal data class AssistOverlaySelection(
+    val target: AssistTargetConversation = AssistTargetConversation.Main,
+    val targetModelChoice: DigitalAssistantModelChoice? = null,
+    val explicitDefaultModel: Boolean = false,
+)
 
 /**
  * Local per-Hub persistence for Android's Digital Assistant floating overlay model preference.
@@ -56,12 +69,37 @@ internal class AssistModelPreferences(private val prefs: SharedPreferences) {
         prefs.edit().remove(keyFor(hubScope)).apply()
     }
 
+    fun readSelection(hubScope: String): AssistOverlaySelection {
+        val raw = prefs.getString(selectionKeyFor(hubScope), null) ?: return AssistOverlaySelection()
+        return decodeSelection(raw) ?: AssistOverlaySelection()
+    }
+
+    fun writeSelection(hubScope: String, selection: AssistOverlaySelection) {
+        val key = selectionKeyFor(hubScope)
+        if (selection.target is AssistTargetConversation.Main &&
+            selection.targetModelChoice == null &&
+            !selection.explicitDefaultModel
+        ) {
+            prefs.edit().remove(key).apply()
+        } else {
+            prefs.edit().putString(key, encodeSelection(selection)).apply()
+        }
+    }
+
+    fun clearSelection(hubScope: String) {
+        prefs.edit().remove(selectionKeyFor(hubScope)).apply()
+    }
+
     private fun keyFor(hubScope: String): String =
         "$KEY_PREFIX${hubScope.trim().ifEmpty { DEFAULT_SCOPE }}"
+
+    private fun selectionKeyFor(hubScope: String): String =
+        "$SELECTION_KEY_PREFIX${hubScope.trim().ifEmpty { DEFAULT_SCOPE }}"
 
     companion object {
         private const val PREFS_NAME = "persona_assist_model_prefs"
         private const val KEY_PREFIX = "overlay_model:"
+        private const val SELECTION_KEY_PREFIX = "overlay_selection:"
         private const val DEFAULT_SCOPE = "default"
 
         internal fun encodeChoice(choice: DigitalAssistantModelChoice): String {
@@ -90,7 +128,144 @@ internal class AssistModelPreferences(private val prefs: SharedPreferences) {
                 launcherLabel = launcherLabel,
             )
         }
+
+        internal fun encodeSelection(selection: AssistOverlaySelection): String =
+            JSONObject().apply {
+                when (val target = selection.target) {
+                    AssistTargetConversation.Main -> put("kind", "main")
+                    AssistTargetConversation.NewChat -> put("kind", "new")
+                    is AssistTargetConversation.Existing -> {
+                        put("kind", "existing")
+                        put("machineId", target.key.machineId)
+                        put("sessionId", target.key.sessionId)
+                        target.title.trim().takeIf(String::isNotEmpty)?.let { put("title", it) }
+                    }
+                }
+                if (selection.target !is AssistTargetConversation.Main) {
+                    val choice = selection.targetModelChoice
+                    if (choice?.pick != null) {
+                        put("modelChoice", JSONObject(encodeChoice(choice)))
+                    }
+                    if (selection.explicitDefaultModel) {
+                        put("explicitDefaultModel", true)
+                    }
+                }
+            }.toString()
+
+        internal fun decodeSelection(raw: String): AssistOverlaySelection? {
+            if (raw.isBlank()) return null
+            val obj = runCatching { JSONObject(raw) }.getOrNull() ?: return null
+            val target: AssistTargetConversation = when (obj.optString("kind").trim()) {
+                "main", "" -> AssistTargetConversation.Main
+                "new" -> AssistTargetConversation.NewChat
+                "existing" -> {
+                    val machineId = obj.optString("machineId").trim()
+                    val sessionId = obj.optString("sessionId").trim()
+                    if (machineId.isEmpty() || sessionId.isEmpty()) return null
+                    AssistTargetConversation.Existing(
+                        key = SessionKey(machineId = machineId, sessionId = sessionId),
+                        title = obj.optString("title").trim(),
+                    )
+                }
+                else -> return null
+            }
+            if (target is AssistTargetConversation.Main) {
+                return AssistOverlaySelection(target = AssistTargetConversation.Main)
+            }
+            val modelObj = obj.optJSONObject("modelChoice")
+            val targetModelChoice = modelObj?.toString()?.let(::decodeChoice)?.takeIf { it.pick != null }
+            val explicitDefaultModel = targetModelChoice == null && obj.optBoolean("explicitDefaultModel", false)
+            return AssistOverlaySelection(
+                target = target,
+                targetModelChoice = targetModelChoice,
+                explicitDefaultModel = explicitDefaultModel,
+            )
+        }
     }
+}
+
+private val RAW_PREVIEW_DATE_SUFFIX = Regex("""-(?:preview|exp)(?:-\d{2}-\d{2})?$""", RegexOption.IGNORE_CASE)
+private val CLAUDE_FRIENDLY_PREFIX = Regex("""^claude\s+(opus|sonnet|haiku)\b""", RegexOption.IGNORE_CASE)
+private val UPPERCASE_MODEL_TOKENS = setOf("gpt", "glm", "o1", "o3", "o4", "xl", "xhigh", "ai")
+
+internal fun formatCompactAssistEffort(effort: String): String = when (effort.trim().lowercase()) {
+    "xhigh", "very_high", "very-high" -> "XHigh"
+    "high" -> "High"
+    "medium", "med" -> "Med"
+    "low" -> "Low"
+    "max" -> "Max"
+    else -> effort.trim().replaceFirstChar { it.uppercaseChar() }
+}
+
+/**
+ * Formats a concise, readable model display name for the floating overlay pill:
+ * - Reuses [ModelChanges.replyModelName] for raw vendor/date-suffixed model IDs (e.g.
+ *   `claude-sonnet-4-5-20250929` -> `Sonnet 4.5`, `openai/gpt-5.3-codex-20260401` -> `GPT-5.3 Codex`).
+ * - Strips redundant leading `Claude ` before `Opus`/`Sonnet`/`Haiku` and cleans kebab-case IDs
+ *   like `gemini-4-neon-medium` -> `Gemini 4 Neon Medium`.
+ * - Appends compact effort (`· XHigh` / `· High` / `· Med` / `· Low`) when `pick.effort` is set
+ *   and not already present in the label.
+ */
+internal fun formatCompactAssistModelLabel(choice: DigitalAssistantModelChoice): String {
+    val raw = choice.modelLabel.trim()
+        .ifBlank { choice.pick?.model?.trim().orEmpty() }
+        .ifBlank { choice.launcherLabel.trim() }
+        .ifBlank { choice.pick?.launcher?.trim().orEmpty() }
+    if (raw.isEmpty()) return ""
+
+    val looksLikeRawId = !raw.contains(' ') && (raw.contains('-') || raw.contains('/') || raw.contains('@'))
+    var label = if (looksLikeRawId) {
+        val cleaned = ModelChanges.bareModel(raw).replace(RAW_PREVIEW_DATE_SUFFIX, "")
+        val fromDomain = ModelChanges.replyModelName(cleaned)
+        if (fromDomain.contains('-') && !fromDomain.contains(' ')) {
+            formatKebabModelId(fromDomain)
+        } else {
+            fromDomain
+        }
+    } else {
+        raw
+    }
+
+    if (CLAUDE_FRIENDLY_PREFIX.containsMatchIn(label)) {
+        label = label.replaceFirst(Regex("""^claude\s+""", RegexOption.IGNORE_CASE), "")
+    }
+
+    val effort = choice.pick?.effort?.trim().orEmpty()
+    if (effort.isNotEmpty()) {
+        val formattedEffort = formatCompactAssistEffort(effort)
+        val lower = label.lowercase()
+        val hasEffort = lower.contains(effort.lowercase()) ||
+            lower.contains(formattedEffort.lowercase()) ||
+            (effort.equals("medium", ignoreCase = true) && lower.contains("med"))
+        if (!hasEffort) {
+            label = "$label · $formattedEffort"
+        }
+    }
+    return label.trim()
+}
+
+private fun formatKebabModelId(id: String): String {
+    val parts = id.split('-').filter(String::isNotEmpty)
+    if (parts.isEmpty()) return id
+    val out = mutableListOf<String>()
+    var i = 0
+    while (i < parts.size) {
+        val token = parts[i]
+        val lower = token.lowercase()
+        if ((lower == "gpt" || lower == "glm") && i + 1 < parts.size && parts[i + 1].firstOrNull()?.isDigit() == true) {
+            out += "${token.uppercase()}-${parts[i + 1]}"
+            i += 2
+            continue
+        }
+        out += when {
+            lower == "xhigh" -> "XHigh"
+            lower in UPPERCASE_MODEL_TOKENS -> token.uppercase()
+            token.first().isDigit() -> token
+            else -> token.replaceFirstChar { it.uppercaseChar() }
+        }
+        i++
+    }
+    return out.joinToString(" ")
 }
 
 /**
@@ -156,6 +331,8 @@ class AssistModelRuntime @Inject constructor(
     private val activeScope = MutableStateFlow(services.session.value?.identity.orEmpty())
     private val mutableChoice = MutableStateFlow(store.read(activeScope.value))
     override val choice: StateFlow<DigitalAssistantModelChoice> = mutableChoice.asStateFlow()
+    private val mutableSelection = MutableStateFlow(store.readSelection(activeScope.value))
+    internal val selection: StateFlow<AssistOverlaySelection> = mutableSelection.asStateFlow()
 
     init {
         app.scope.launch {
@@ -163,8 +340,15 @@ class AssistModelRuntime @Inject constructor(
                 val scopeId = session?.identity.orEmpty()
                 activeScope.value = scopeId
                 mutableChoice.value = store.read(scopeId)
+                mutableSelection.value = store.readSelection(scopeId)
             }
         }
+    }
+
+    internal fun saveSelection(selection: AssistOverlaySelection) {
+        val scopeId = currentScopeId()
+        store.writeSelection(scopeId, selection)
+        mutableSelection.value = selection
     }
 
     override fun selectDefault() {

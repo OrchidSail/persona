@@ -87,6 +87,7 @@ class PersonaVoiceInteractionSession(context: Context) : VoiceInteractionSession
             scope = sessionScope,
             onSnapshot = { snapshot -> controller.onHubUpdate(snapshot) },
             onModelChoice = { choice -> controller.onModelChoiceUpdated(choice) },
+            onSelection = { selection -> controller.onSelectionUpdated(selection) },
         )
         controller = createOverlayController(
             uiContext = uiContext,
@@ -461,6 +462,7 @@ internal fun createOverlayController(
         loadModelCatalog = bridge::loadModelCatalog,
         onPersistDefaultModel = bridge::selectDefaultModel,
         onPersistModelChoice = bridge::selectModel,
+        onPersistSelection = bridge::saveSelection,
         publishDraftForFullApp = { id, screenshot, contextCard, text, targetSession ->
             AssistDraftBus.publish(id = id, screenshot = screenshot, context = contextCard, text = text)
             if (targetSession != null) {
@@ -474,6 +476,7 @@ internal fun createOverlayController(
         defaultSendError = { uiContext.getString(R.string.app_assist_send_failed) },
         defaultModelStartError = { uiContext.getString(R.string.app_assist_model_start_failed) },
         initialModelChoice = bridge.currentModelChoice(),
+        initialSelection = bridge.currentSelection(),
     )
 }
 

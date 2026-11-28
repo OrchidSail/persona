@@ -63,6 +63,7 @@ internal class AssistHubBridge(
     private val scope: CoroutineScope,
     private val onSnapshot: (AssistHubSnapshot) -> Unit,
     private val onModelChoice: (DigitalAssistantModelChoice) -> Unit = {},
+    private val onSelection: (AssistOverlaySelection) -> Unit = {},
 ) {
     private val appContext = context.applicationContext
     private val app: PersonaApp? = appContext as? PersonaApp
@@ -73,6 +74,7 @@ internal class AssistHubBridge(
     private val targetSessionOverride = MutableStateFlow<SessionKey?>(null)
     private var observeJob: Job? = null
     private var modelChoiceJob: Job? = null
+    private var selectionJob: Job? = null
 
     fun wakeHub() {
         val _ = runCatching { entryPoint?.assistConnections()?.wake() }
@@ -94,6 +96,13 @@ internal class AssistHubBridge(
         entryPoint?.assistModelRuntime()?.selectModel(choice)
     }
 
+    fun currentSelection(): AssistOverlaySelection =
+        entryPoint?.assistModelRuntime()?.selection?.value ?: AssistOverlaySelection()
+
+    fun saveSelection(selection: AssistOverlaySelection) {
+        entryPoint?.assistModelRuntime()?.saveSelection(selection)
+    }
+
     suspend fun loadModelCatalog(refresh: Boolean = false): DigitalAssistantModelCatalog {
         val runtime = entryPoint?.assistModelRuntime()
             ?: return DigitalAssistantModelCatalog(
@@ -111,6 +120,15 @@ internal class AssistHubBridge(
                 onModelChoice(modelFlow.value)
                 modelChoiceJob = scope.launch {
                     modelFlow.collect { choice -> onModelChoice(choice) }
+                }
+            }
+        }
+        if (selectionJob?.isActive != true) {
+            val selectionFlow = entryPoint?.assistModelRuntime()?.selection
+            if (selectionFlow != null) {
+                onSelection(selectionFlow.value)
+                selectionJob = scope.launch {
+                    selectionFlow.collect { selection -> onSelection(selection) }
                 }
             }
         }
@@ -198,6 +216,13 @@ internal class AssistHubBridge(
                         connectionState = connState,
                         hasBinding = activeBinding != null || session.demo != null,
                     )
+                    val conversationsLoaded = hubStatus == AssistHubStatus.Ready &&
+                        (mainKey != null || assistant.conversations.isNotEmpty() || sessions.isNotEmpty())
+                    val eligibleKeys = if (conversationsLoaded) {
+                        collectEligibleOverlayConversationKeys(assistant, sessions)
+                    } else {
+                        null
+                    }
                     AssistHubSnapshot(
                         status = hubStatus,
                         mainSession = mainKey,
@@ -208,6 +233,8 @@ internal class AssistHubBridge(
                         activeModelPick = activeRow?.modelPick,
                         activeWorking = activeWorking,
                         conversations = selectOverlayConversations(assistant, sessions, pinned),
+                        conversationsLoaded = conversationsLoaded,
+                        availableConversationKeys = eligibleKeys,
                         chatSnapshot = chat,
                         outbox = outbox,
                     )
@@ -224,6 +251,8 @@ internal class AssistHubBridge(
         observeJob = null
         modelChoiceJob?.cancel()
         modelChoiceJob = null
+        selectionJob?.cancel()
+        selectionJob = null
     }
 
     /**
@@ -412,6 +441,32 @@ private data class EligibleOverlayConversation(
  * - Falls back to at most 2 recent user-initiated chats updated within 24 hours only when both leaders
  *   and pinned chats are empty.
  */
+/**
+ * Returns the full set of active, non-archived, sendable non-main assistant conversation keys
+ * (not capped at [MAX_OVERLAY_CONVERSATIONS]) so restored persisted targets outside the top 5
+ * remain valid while truly archived or deleted conversations are safely detected.
+ */
+internal fun collectEligibleOverlayConversationKeys(
+    assistant: AssistantSnapshot,
+    sessions: List<Session>,
+): Set<SessionKey> {
+    val mainKey = assistant.mainSession
+    val backgroundId = assistant.backgroundSupervisor?.takeIf(String::isNotBlank)
+    val liveByKey = sessions.associateBy { it.key }
+    val keys = HashSet<SessionKey>()
+    for (row in assistant.conversations) {
+        val live = liveByKey[row.key]
+        val archived = live?.archived ?: row.archived
+        val isSpace = live?.isSpace == true || row.isSpace
+        val readOnly = live?.readOnlyReason ?: row.readOnlyReason
+        if (archived || isSpace || readOnly != null) continue
+        if (row.key == mainKey || row.sessionId.isBlank() || row.machineId.isBlank()) continue
+        if (backgroundId != null && row.sessionId == backgroundId) continue
+        keys += row.key
+    }
+    return keys
+}
+
 internal fun selectOverlayConversations(
     assistant: AssistantSnapshot,
     sessions: List<Session>,

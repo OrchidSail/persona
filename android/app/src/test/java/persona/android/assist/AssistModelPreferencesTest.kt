@@ -10,6 +10,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import persona.core.contracts.ModelPick
+import persona.core.contracts.SessionKey
 import persona.core.contracts.api.AgentLauncher
 import persona.core.contracts.api.AgentModel
 import persona.core.contracts.api.DigitalAssistantModelChoice
@@ -95,5 +96,120 @@ class AssistModelPreferencesTest {
         assertEquals("Custom", groups[2].title)
         assertEquals(1, groups[2].options.size)
         assertEquals(ModelPick("no-list", null), groups[2].options.single().pick)
+    }
+
+    @Test
+    fun persistsOverlayTargetAndModelSelectionPerHubScopeAndHandlesMalformedJson() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = context.getSharedPreferences("test_assist_selection_prefs", Context.MODE_PRIVATE)
+        prefs.edit().clear().commit()
+        val store = AssistModelPreferences(prefs)
+
+        assertEquals(AssistOverlaySelection(), store.readSelection("hub-a"))
+
+        val existingSelection = AssistOverlaySelection(
+            target = AssistTargetConversation.Existing(
+                key = SessionKey("machine-1", "conv-singscale"),
+                title = "SingScale",
+            ),
+            targetModelChoice = DigitalAssistantModelChoice(
+                pick = ModelPick(launcher = "antigravity-cli", model = "gemini-4-neon", effort = "xhigh"),
+                modelLabel = "Gemini 4 Neon (XHigh)",
+                launcherLabel = "Antigravity CLI",
+            ),
+        )
+        store.writeSelection("hub-a", existingSelection)
+        assertEquals(existingSelection, store.readSelection("hub-a"))
+        assertEquals("Other Hub must remain isolated", AssistOverlaySelection(), store.readSelection("hub-b"))
+
+        val explicitDefaultSelection = AssistOverlaySelection(
+            target = AssistTargetConversation.NewChat,
+            targetModelChoice = null,
+            explicitDefaultModel = true,
+        )
+        store.writeSelection("hub-a", explicitDefaultSelection)
+        assertEquals(explicitDefaultSelection, store.readSelection("hub-a"))
+
+        store.writeSelection("hub-a", AssistOverlaySelection(target = AssistTargetConversation.Main))
+        assertEquals(AssistOverlaySelection(), store.readSelection("hub-a"))
+
+        assertNull(AssistModelPreferences.decodeSelection(""))
+        assertNull(AssistModelPreferences.decodeSelection("broken-json"))
+        assertNull(AssistModelPreferences.decodeSelection("""{"kind":"existing","machineId":"m1"}"""))
+        assertNull(AssistModelPreferences.decodeSelection("""{"kind":"unknown"}"""))
+    }
+
+    @Test
+    fun formatCompactAssistModelLabelCompactsRawIdsClaudePrefixAndEffort() {
+        assertEquals(
+            "Sonnet 4.5",
+            formatCompactAssistModelLabel(
+                DigitalAssistantModelChoice(
+                    pick = ModelPick("claude", "claude-sonnet-4-5-20250929"),
+                    modelLabel = "claude-sonnet-4-5-20250929",
+                    launcherLabel = "Claude Code",
+                ),
+            ),
+        )
+        assertEquals(
+            "Opus 4.6",
+            formatCompactAssistModelLabel(
+                DigitalAssistantModelChoice(
+                    pick = ModelPick("claude", "us.anthropic.claude-opus-4-6-v1:0"),
+                    modelLabel = "us.anthropic.claude-opus-4-6-v1:0",
+                    launcherLabel = "Claude Code",
+                ),
+            ),
+        )
+        assertEquals(
+            "GPT-5.3 Codex · XHigh",
+            formatCompactAssistModelLabel(
+                DigitalAssistantModelChoice(
+                    pick = ModelPick("codex", "openai/gpt-5.3-codex-20260401", effort = "xhigh"),
+                    modelLabel = "openai/gpt-5.3-codex-20260401",
+                    launcherLabel = "Codex",
+                ),
+            ),
+        )
+        assertEquals(
+            "Gemini 2.5 Pro",
+            formatCompactAssistModelLabel(
+                DigitalAssistantModelChoice(
+                    pick = ModelPick("gemini", "models/gemini-2.5-pro-preview-06-05"),
+                    modelLabel = "models/gemini-2.5-pro-preview-06-05",
+                    launcherLabel = "Gemini",
+                ),
+            ),
+        )
+        assertEquals(
+            "Gemini 4 Neon Medium",
+            formatCompactAssistModelLabel(
+                DigitalAssistantModelChoice(
+                    pick = ModelPick("antigravity-cli", "gemini-4-neon-medium"),
+                    modelLabel = "gemini-4-neon-medium",
+                    launcherLabel = "Antigravity CLI",
+                ),
+            ),
+        )
+        assertEquals(
+            "Sonnet 4.5 (High)",
+            formatCompactAssistModelLabel(
+                DigitalAssistantModelChoice(
+                    pick = ModelPick("claude", "claude-sonnet-4-5", effort = "high"),
+                    modelLabel = "Claude Sonnet 4.5 (High)",
+                    launcherLabel = "Claude Code",
+                ),
+            ),
+        )
+        assertEquals(
+            "Gemini 4 Neon (XHigh)",
+            formatCompactAssistModelLabel(
+                DigitalAssistantModelChoice(
+                    pick = ModelPick("antigravity-cli", "gemini-4-neon-xhigh"),
+                    modelLabel = "Gemini 4 Neon (XHigh)",
+                    launcherLabel = "Antigravity CLI",
+                ),
+            ),
+        )
     }
 }

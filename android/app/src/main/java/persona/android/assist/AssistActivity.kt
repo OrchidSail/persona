@@ -37,6 +37,7 @@ class AssistActivity : ComponentActivity() {
             scope = lifecycleScope,
             onSnapshot = { snapshot -> controller.onHubUpdate(snapshot) },
             onModelChoice = { choice -> controller.onModelChoiceUpdated(choice) },
+            onSelection = { selection -> controller.onSelectionUpdated(selection) },
         )
         controller = createOverlayController(
             uiContext = this,

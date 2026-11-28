@@ -70,6 +70,7 @@ class AssistOverlayControllerTest {
         scope: TestScope,
         timeoutMs: Long = 4_000L,
         initialModelChoice: DigitalAssistantModelChoice = DigitalAssistantModelChoice(),
+        initialSelection: AssistOverlaySelection = AssistOverlaySelection(),
         private val resolvedMainSession: SessionKey? = SessionKey("machine-1", "main-1"),
     ) {
         val preparedBitmaps = mutableListOf<Bitmap>()
@@ -82,6 +83,7 @@ class AssistOverlayControllerTest {
         val sentTargets = mutableListOf<SessionKey?>()
         val sentWithScreen = mutableListOf<Triple<String, ComposerAttachment, ChatLinkContext?>>()
         val persistedChoices = mutableListOf<DigitalAssistantModelChoice>()
+        val persistedSelections = mutableListOf<AssistOverlaySelection>()
         var modelSwitchFailure: Exception? = null
         var createConversationFailure: Exception? = null
         var nextCreatedSession: SessionKey = SessionKey("machine-1", "created-1")
@@ -152,6 +154,7 @@ class AssistOverlayControllerTest {
             },
             onPersistDefaultModel = { persistedChoices += DigitalAssistantModelChoice() },
             onPersistModelChoice = { persistedChoices += it },
+            onPersistSelection = { persistedSelections += it },
             publishDraftForFullApp = { id, shot, ctx, text, target ->
                 publishedDrafts += PublishedDraft(id, shot, ctx, text, target)
             },
@@ -162,6 +165,7 @@ class AssistOverlayControllerTest {
             defaultSendError = { "Couldn't send message" },
             defaultModelStartError = { "Selected model is unavailable right now" },
             initialModelChoice = initialModelChoice,
+            initialSelection = initialSelection,
             screenshotWaitTimeoutMillis = timeoutMs,
             nextId = { "id-${++idSeq}" },
             log = {},
@@ -1816,6 +1820,193 @@ class AssistOverlayControllerTest {
         controller.selectMainConversation()
         assertEquals(topFive, controller.state.value.availableConversations)
 
+        controller.endSession()
+        runCurrent()
+    }
+
+    @Test
+    fun persistsTargetConversationAndModelAcrossReopenAndProcessRestart() = runTest {
+        val singScaleKey = SessionKey("machine-1", "conv-singscale")
+        val singScaleOption = AssistConversationOption(key = singScaleKey, title = "SingScale")
+        val neonPick = ModelPick("antigravity-cli", "gemini-4-neon-xhigh")
+        val neonChoice = DigitalAssistantModelChoice(
+            pick = neonPick,
+            modelLabel = "Gemini 4 Neon (XHigh)",
+            launcherLabel = "Antigravity CLI",
+        )
+        val harness = Harness(this)
+        val controller = harness.controller
+        controller.onHubUpdate(
+            AssistHubSnapshot(
+                status = AssistHubStatus.Ready,
+                mainSession = mainKey,
+                conversations = listOf(singScaleOption),
+                conversationsLoaded = true,
+                availableConversationKeys = setOf(singScaleKey),
+            ),
+        )
+        controller.beginSession(supportsScreenshot = false)
+        controller.selectExistingConversation(singScaleOption)
+        controller.selectModel(neonChoice)
+
+        val savedSelection = harness.persistedSelections.last()
+        assertEquals(AssistTargetConversation.Existing(singScaleKey, "SingScale"), savedSelection.target)
+        assertEquals(neonChoice, savedSelection.targetModelChoice)
+
+        // Close and reopen in-process -> automatically restores target & model.
+        controller.endSession()
+        runCurrent()
+        controller.beginSession(supportsScreenshot = false)
+        assertEquals(singScaleKey, (controller.state.value.targetConversation as AssistTargetConversation.Existing).key)
+        assertEquals("SingScale", (controller.state.value.targetConversation as AssistTargetConversation.Existing).title)
+        assertEquals(neonChoice, controller.state.value.modelChoice)
+        assertEquals(singScaleKey, harness.observedSessions.last())
+
+        // Simulate process restart (force-stop) with brand-new controller seeded from persisted selection.
+        val restartedHarness = Harness(this, initialSelection = savedSelection)
+        val restarted = restartedHarness.controller
+        restarted.beginSession(supportsScreenshot = false)
+        assertEquals(singScaleKey, (restarted.state.value.targetConversation as AssistTargetConversation.Existing).key)
+        assertEquals(neonChoice, restarted.state.value.modelChoice)
+
+        // Async Hub update arriving with activeModelPick == null must NOT clobber remembered custom model.
+        restarted.onHubUpdate(
+            AssistHubSnapshot(
+                status = AssistHubStatus.Ready,
+                mainSession = mainKey,
+                activeSession = singScaleKey,
+                activeTitle = "SingScale",
+                activeModelPick = null,
+                conversations = listOf(singScaleOption),
+                conversationsLoaded = true,
+                availableConversationKeys = setOf(singScaleKey),
+            ),
+        )
+        assertEquals(singScaleKey, (restarted.state.value.targetConversation as AssistTargetConversation.Existing).key)
+        assertEquals(neonChoice, restarted.state.value.modelChoice)
+        restarted.endSession()
+        runCurrent()
+    }
+
+    @Test
+    fun asyncLoadingBeforeHubOrCatalogReadyNeverClearsPersistedSelection() = runTest {
+        val savedKey = SessionKey("machine-1", "conv-saved")
+        val neonPick = ModelPick("antigravity-cli", "gemini-4-neon-xhigh")
+        val neonChoice = DigitalAssistantModelChoice(
+            pick = neonPick,
+            modelLabel = "Gemini 4 Neon (XHigh)",
+            launcherLabel = "Antigravity CLI",
+        )
+        val savedSelection = AssistOverlaySelection(
+            target = AssistTargetConversation.Existing(savedKey, "SingScale"),
+            targetModelChoice = neonChoice,
+        )
+        val harness = Harness(this, initialSelection = savedSelection).apply {
+            catalogResponse = DigitalAssistantModelCatalog(
+                loading = false,
+                groups = emptyList(),
+                error = "Hub offline",
+                hubAvailable = false,
+            )
+        }
+        val controller = harness.controller
+        controller.beginSession(supportsScreenshot = false)
+
+        // Connecting / empty snapshot before Hub is ready must NOT clear persisted target or model.
+        controller.onHubUpdate(
+            AssistHubSnapshot(
+                status = AssistHubStatus.Connecting,
+                conversations = emptyList(),
+                conversationsLoaded = false,
+            ),
+        )
+        controller.onHubUpdate(
+            AssistHubSnapshot(
+                status = AssistHubStatus.Ready,
+                conversations = emptyList(),
+                conversationsLoaded = false,
+            ),
+        )
+        assertEquals(savedKey, (controller.state.value.targetConversation as AssistTargetConversation.Existing).key)
+        assertEquals(neonChoice, controller.state.value.modelChoice)
+        assertTrue("Loading snapshots must not overwrite saved selection", harness.persistedSelections.isEmpty())
+
+        // Failed / offline model catalog load must NOT clear persisted model choice.
+        controller.toggleModelPicker()
+        runCurrent()
+        assertEquals(neonChoice, controller.state.value.modelChoice)
+        assertTrue("Failed catalog load must not clear saved selection", harness.persistedSelections.isEmpty())
+        controller.endSession()
+        runCurrent()
+    }
+
+    @Test
+    fun archivedOrDeletedPersistedTargetFallsBackSafelyToMain() = runTest {
+        val deletedKey = SessionKey("machine-1", "conv-deleted")
+        val activeKey = SessionKey("machine-1", "conv-live")
+        val savedSelection = AssistOverlaySelection(
+            target = AssistTargetConversation.Existing(deletedKey, "Archived Chat"),
+            targetModelChoice = fastChoice,
+        )
+        val mainModelChoice = DigitalAssistantModelChoice(
+            pick = ModelPick("claude", "claude-sonnet-4-5"),
+            modelLabel = "Sonnet 4.5",
+            launcherLabel = "Claude Code",
+        )
+        val harness = Harness(this, initialModelChoice = mainModelChoice, initialSelection = savedSelection)
+        val controller = harness.controller
+        controller.beginSession(supportsScreenshot = false)
+        assertEquals(deletedKey, (controller.state.value.targetConversation as AssistTargetConversation.Existing).key)
+
+        // Hub finishes loading and confirms deletedKey is no longer in availableConversationKeys.
+        controller.onHubUpdate(
+            AssistHubSnapshot(
+                status = AssistHubStatus.Ready,
+                mainSession = mainKey,
+                conversations = listOf(AssistConversationOption(activeKey, "Live Chat")),
+                conversationsLoaded = true,
+                availableConversationKeys = setOf(activeKey),
+            ),
+        )
+
+        assertEquals(AssistTargetConversation.Main, controller.state.value.targetConversation)
+        assertEquals(mainModelChoice, controller.state.value.modelChoice)
+        assertEquals(null, harness.observedSessions.last())
+        assertEquals(AssistOverlaySelection(target = AssistTargetConversation.Main), harness.persistedSelections.last())
+        controller.endSession()
+        runCurrent()
+    }
+
+    @Test
+    fun unavailablePersistedModelFallsBackSafelyToDefaultAfterCatalogLoads() = runTest {
+        val retiredPick = ModelPick("legacy-cli", "retired-model-v1")
+        val retiredChoice = DigitalAssistantModelChoice(
+            pick = retiredPick,
+            modelLabel = "Retired Model",
+            launcherLabel = "Legacy CLI",
+        )
+        val singScaleKey = SessionKey("machine-1", "conv-singscale")
+        val savedSelection = AssistOverlaySelection(
+            target = AssistTargetConversation.Existing(singScaleKey, "SingScale"),
+            targetModelChoice = retiredChoice,
+        )
+        val harness = Harness(this, initialSelection = savedSelection)
+        val controller = harness.controller
+        controller.beginSession(supportsScreenshot = false)
+        assertEquals(retiredChoice, controller.state.value.modelChoice)
+
+        // Opening picker loads catalog that only contains gemini-2.5-flash -> retired model falls back to default.
+        controller.toggleModelPicker()
+        runCurrent()
+        assertTrue("Unavailable persisted model must fall back to default", controller.state.value.modelChoice.isDefault)
+        assertEquals(
+            AssistOverlaySelection(
+                target = AssistTargetConversation.Existing(singScaleKey, "SingScale"),
+                targetModelChoice = null,
+                explicitDefaultModel = false,
+            ),
+            harness.persistedSelections.last(),
+        )
         controller.endSession()
         runCurrent()
     }

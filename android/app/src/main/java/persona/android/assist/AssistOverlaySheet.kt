@@ -80,6 +80,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -724,28 +726,36 @@ private fun AssistUnifiedComposerCard(
     val openInPersonaLabel = stringResource(R.string.app_assist_open_in_persona)
     val dictateLabel = stringResource(R.string.app_assist_dictate)
     val stopDictateLabel = stringResource(R.string.app_assist_dictate_stop)
-    val modelCompactLabel = ui.modelChoice.compactLabel
-    val modelPillLabel = when (val target = ui.targetConversation) {
-        AssistTargetConversation.Main -> if (ui.modelChoice.isDefault) {
-            defaultShortLabel
-        } else {
-            modelCompactLabel.ifBlank { defaultShortLabel }
-        }
-        AssistTargetConversation.NewChat -> if (ui.modelChoice.isDefault || modelCompactLabel.isBlank()) {
-            newChatLabel
-        } else {
-            stringResource(R.string.app_assist_target_model_format, newChatShortLabel, modelCompactLabel)
-        }
-        is AssistTargetConversation.Existing -> {
-            val chatLabel = target.title.ifBlank { untitledChatLabel }
-            if (ui.modelChoice.isDefault || modelCompactLabel.isBlank()) {
-                chatLabel
-            } else {
-                stringResource(R.string.app_assist_target_model_format, chatLabel, modelCompactLabel)
-            }
-        }
+    val modelCompactLabel = remember(ui.modelChoice) {
+        formatCompactAssistModelLabel(ui.modelChoice)
     }
-    val modelPillHighlighted = !ui.modelChoice.isDefault || ui.targetConversation !is AssistTargetConversation.Main
+    val hasCustomModel = !ui.modelChoice.isDefault && modelCompactLabel.isNotBlank()
+    val targetIcon = when (ui.targetConversation) {
+        AssistTargetConversation.Main -> PersonaIcons.home
+        AssistTargetConversation.NewChat -> PersonaIcons.newConversation
+        is AssistTargetConversation.Existing -> PersonaIcons.conversation
+    }
+    val targetDisplayLabel = when (val target = ui.targetConversation) {
+        AssistTargetConversation.Main -> defaultShortLabel
+        AssistTargetConversation.NewChat -> if (hasCustomModel) newChatShortLabel else newChatLabel
+        is AssistTargetConversation.Existing -> target.title.ifBlank { untitledChatLabel }
+    }
+    val modelDisplayLabel = if (hasCustomModel) modelCompactLabel else null
+    val modelPillAccessibleLabel = if (modelDisplayLabel != null) {
+        stringResource(R.string.app_assist_target_model_format, targetDisplayLabel, modelDisplayLabel)
+    } else {
+        targetDisplayLabel
+    }
+    val modelPillHighlighted = hasCustomModel || ui.targetConversation !is AssistTargetConversation.Main
+    val hasScreenControl = when (ui.captureStatus) {
+        AssistCaptureStatus.Available,
+        AssistCaptureStatus.Attached,
+        AssistCaptureStatus.DisabledBySettings,
+        AssistCaptureStatus.Waiting,
+        AssistCaptureStatus.Unavailable,
+        AssistCaptureStatus.TimedOut -> true
+        AssistCaptureStatus.NotSupported -> ui.hubStatus == AssistHubStatus.Connecting
+    }
     val placeholder = stringResource(
         if (voiceAvailable) {
             R.string.app_assist_input_placeholder_voice
@@ -1049,37 +1059,24 @@ private fun AssistUnifiedComposerCard(
                 }
             }
 
-            // Bottom integrated action row: minimalist 3-control bar where left screen toggle and
-            // right-aligned model switcher fill remaining space so the fixed 44dp Send button stays
-            // strictly flush to the card's right inner edge across all locales and screen widths.
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = Tokens.MinTouch.android),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
-            ) {
+            // Layered target/model bar + bottom action row:
+            // - When screen capture / connecting status is present, give Target + Model its own
+            //   dedicated full-width meta row above the bottom action bar so neither chip ever
+            //   gets crushed to a few letters on 320dp–384dp narrow screens.
+            // - When no screen control is present (e.g. ACTION_ASSIST), place Target + Model
+            //   directly on the bottom row with full remaining width next to the 44dp Send button
+            //   so the floating card stays compact with zero wasted whitespace.
+            val useDedicatedMetaRow = hasScreenControl && hasCustomModel
+            if (useDedicatedMetaRow) {
                 Box(
-                    Modifier.weight(1.1f),
+                    Modifier.fillMaxWidth(),
                     contentAlignment = Alignment.CenterStart,
                 ) {
-                    AssistScreenContextControl(
-                        ui = ui,
-                        style = style,
-                        chipShape = chipShape,
-                        tonalFill = tonalFill,
-                        onAttachScreen = onAttachScreen,
-                        onRemoveScreen = onRemoveScreen,
-                        onOpenAssistantSettings = onOpenAssistantSettings,
-                    )
-                }
-
-                Box(
-                    Modifier.weight(1f),
-                    contentAlignment = Alignment.CenterEnd,
-                ) {
                     AssistModelSwitcherButton(
-                        label = modelPillLabel,
+                        targetLabel = targetDisplayLabel,
+                        modelLabel = modelDisplayLabel,
+                        accessibleLabel = modelPillAccessibleLabel,
+                        targetIcon = targetIcon,
                         open = ui.modelPickerOpen,
                         enabled = !ui.sending,
                         isCustom = modelPillHighlighted,
@@ -1087,6 +1084,81 @@ private fun AssistUnifiedComposerCard(
                         chipShape = chipShape,
                         onClick = onToggleModelPicker,
                     )
+                }
+            }
+
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = Tokens.MinTouch.android),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
+            ) {
+                if (useDedicatedMetaRow) {
+                    Box(
+                        Modifier.weight(1f),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        AssistScreenContextControl(
+                            ui = ui,
+                            style = style,
+                            chipShape = chipShape,
+                            tonalFill = tonalFill,
+                            onAttachScreen = onAttachScreen,
+                            onRemoveScreen = onRemoveScreen,
+                            onOpenAssistantSettings = onOpenAssistantSettings,
+                        )
+                    }
+                } else if (hasScreenControl) {
+                    Box(
+                        Modifier.weight(1.1f),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        AssistScreenContextControl(
+                            ui = ui,
+                            style = style,
+                            chipShape = chipShape,
+                            tonalFill = tonalFill,
+                            onAttachScreen = onAttachScreen,
+                            onRemoveScreen = onRemoveScreen,
+                            onOpenAssistantSettings = onOpenAssistantSettings,
+                        )
+                    }
+                    Box(
+                        Modifier.weight(1f),
+                        contentAlignment = Alignment.CenterEnd,
+                    ) {
+                        AssistModelSwitcherButton(
+                            targetLabel = targetDisplayLabel,
+                            modelLabel = modelDisplayLabel,
+                            accessibleLabel = modelPillAccessibleLabel,
+                            targetIcon = targetIcon,
+                            open = ui.modelPickerOpen,
+                            enabled = !ui.sending,
+                            isCustom = modelPillHighlighted,
+                            style = style,
+                            chipShape = chipShape,
+                            onClick = onToggleModelPicker,
+                        )
+                    }
+                } else {
+                    Box(
+                        Modifier.weight(1f),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        AssistModelSwitcherButton(
+                            targetLabel = targetDisplayLabel,
+                            modelLabel = modelDisplayLabel,
+                            accessibleLabel = modelPillAccessibleLabel,
+                            targetIcon = targetIcon,
+                            open = ui.modelPickerOpen,
+                            enabled = !ui.sending,
+                            isCustom = modelPillHighlighted,
+                            style = style,
+                            chipShape = chipShape,
+                            onClick = onToggleModelPicker,
+                        )
+                    }
                 }
 
                 val sendLabel = stringResource(R.string.app_send)
@@ -1354,7 +1426,10 @@ private fun AssistScreenContextControl(
  */
 @Composable
 private fun AssistModelSwitcherButton(
-    label: String,
+    targetLabel: String,
+    modelLabel: String?,
+    accessibleLabel: String,
+    targetIcon: PhIcon,
     open: Boolean,
     enabled: Boolean,
     isCustom: Boolean,
@@ -1365,14 +1440,16 @@ private fun AssistModelSwitcherButton(
 ) {
     val palette = PersonaTheme.palette
     val type = PersonaTheme.type
-    val description = stringResource(R.string.app_assist_model_picker_description, label)
+    val description = stringResource(R.string.app_assist_model_picker_description, accessibleLabel)
     val highlighted = open || isCustom
     val fill = when {
         highlighted -> palette.accentSoft
         style == AppStyle.Board -> palette.sunken
-        else -> palette.surface.copy(alpha = 0f)
+        else -> assistTonalFill(style)
     }
     val contentTint = if (highlighted) palette.accent else palette.ink2
+    val targetTint = if (highlighted) palette.ink else palette.ink2
+    val separatorTint = if (highlighted) palette.accent.copy(alpha = 0.55f) else palette.ink3
 
     Row(
         modifier
@@ -1396,24 +1473,151 @@ private fun AssistModelSwitcherButton(
             .testTag("assist-model-pill")
             .padding(horizontal = Tokens.Space.s, vertical = Tokens.Space.xs),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xxs),
+        horizontalArrangement = Arrangement.spacedBy(Tokens.Space.xs),
     ) {
-        Text(
-            text = label,
-            style = type.labelSmall.copy(
-                fontWeight = if (highlighted) FontWeight.SemiBold else FontWeight.Medium,
-            ),
-            color = contentTint,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false),
+        JIcon(
+            icon = targetIcon,
+            contentDescription = null,
+            size = Tokens.Size.markS,
+            tint = contentTint,
         )
+        if (modelLabel == null) {
+            Text(
+                text = targetLabel,
+                style = type.labelSmall.copy(
+                    fontWeight = if (highlighted) FontWeight.SemiBold else FontWeight.Medium,
+                ),
+                color = contentTint,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .testTag("assist-target-label"),
+            )
+        } else {
+            AssistTargetModelLabelRow(
+                targetLabel = targetLabel,
+                modelLabel = modelLabel,
+                targetTint = targetTint,
+                separatorTint = separatorTint,
+                modelTint = contentTint,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+        }
         JIcon(
             icon = if (open) PersonaIcons.collapse else PersonaIcons.expand,
             contentDescription = null,
             size = Tokens.Size.markS,
             tint = contentTint,
         )
+    }
+}
+
+/**
+ * Elastic two-slot horizontal layout for `Target · Model` inside the overlay switcher pill.
+ * - When both labels fit at natural width, both display in full with zero truncation.
+ * - When overflowing on narrow screens, whichever label is shorter takes only its natural width
+ *   and donates all remaining width to the longer one; when both are long, Model keeps a 62%
+ *   priority floor so a long conversation title can never crush the model name to a few letters.
+ */
+@Composable
+private fun AssistTargetModelLabelRow(
+    targetLabel: String,
+    modelLabel: String,
+    targetTint: Color,
+    separatorTint: Color,
+    modelTint: Color,
+    modifier: Modifier = Modifier,
+) {
+    val type = PersonaTheme.type
+    val gap = Tokens.Space.xxs
+    Layout(
+        modifier = modifier,
+        content = {
+            Text(
+                text = targetLabel,
+                style = type.labelSmall.copy(fontWeight = FontWeight.Medium),
+                color = targetTint,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag("assist-target-label"),
+            )
+            Text(
+                text = "·",
+                style = type.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                color = separatorTint,
+                maxLines = 1,
+            )
+            Text(
+                text = modelLabel,
+                style = type.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                color = modelTint,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag("assist-model-label"),
+            )
+        },
+    ) { measurables, constraints ->
+        val gapPx = gap.roundToPx()
+        val sepPlaceable = measurables[1].measure(Constraints(maxHeight = constraints.maxHeight))
+        val maxTotal = constraints.maxWidth
+        val avail = if (maxTotal == Constraints.Infinity) {
+            Constraints.Infinity
+        } else {
+            (maxTotal - sepPlaceable.width - gapPx * 2).coerceAtLeast(0)
+        }
+
+        val targetMaxW: Int
+        val modelMaxW: Int
+        if (avail == Constraints.Infinity) {
+            targetMaxW = Constraints.Infinity
+            modelMaxW = Constraints.Infinity
+        } else {
+            val targetIntrinsic = measurables[0].maxIntrinsicWidth(constraints.maxHeight)
+            val modelIntrinsic = measurables[2].maxIntrinsicWidth(constraints.maxHeight)
+            if (targetIntrinsic + modelIntrinsic <= avail) {
+                targetMaxW = targetIntrinsic
+                modelMaxW = modelIntrinsic
+            } else {
+                val modelFloor = (avail * 0.62f).toInt()
+                val targetFloor = (avail - modelFloor).coerceAtLeast(0)
+                when {
+                    modelIntrinsic <= modelFloor -> {
+                        modelMaxW = modelIntrinsic
+                        targetMaxW = (avail - modelMaxW).coerceAtLeast(0)
+                    }
+                    targetIntrinsic <= targetFloor -> {
+                        targetMaxW = targetIntrinsic
+                        modelMaxW = (avail - targetMaxW).coerceAtLeast(0)
+                    }
+                    else -> {
+                        targetMaxW = targetFloor
+                        modelMaxW = (avail - targetMaxW).coerceAtLeast(0)
+                    }
+                }
+            }
+        }
+
+        val targetPlaceable = measurables[0].measure(
+            Constraints(maxWidth = targetMaxW, maxHeight = constraints.maxHeight),
+        )
+        val modelPlaceable = measurables[2].measure(
+            Constraints(maxWidth = modelMaxW, maxHeight = constraints.maxHeight),
+        )
+
+        val totalWidth = (targetPlaceable.width + gapPx + sepPlaceable.width + gapPx + modelPlaceable.width)
+            .coerceIn(constraints.minWidth, constraints.maxWidth)
+        val totalHeight = maxOf(targetPlaceable.height, sepPlaceable.height, modelPlaceable.height)
+            .coerceIn(constraints.minHeight, constraints.maxHeight)
+
+        layout(totalWidth, totalHeight) {
+            var x = 0
+            targetPlaceable.placeRelative(x, (totalHeight - targetPlaceable.height) / 2)
+            x += targetPlaceable.width + gapPx
+            sepPlaceable.placeRelative(x, (totalHeight - sepPlaceable.height) / 2)
+            x += sepPlaceable.width + gapPx
+            modelPlaceable.placeRelative(x, (totalHeight - modelPlaceable.height) / 2)
+        }
     }
 }
 

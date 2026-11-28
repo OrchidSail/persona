@@ -105,6 +105,8 @@ internal data class AssistHubSnapshot(
     val activeModelPick: ModelPick? = mainModelPick,
     val activeWorking: Boolean = mainWorking,
     val conversations: List<AssistConversationOption> = emptyList(),
+    val conversationsLoaded: Boolean = false,
+    val availableConversationKeys: Set<SessionKey>? = null,
     val chatSnapshot: ChatSnapshot? = null,
     val outbox: List<OutboxMessage> = emptyList(),
 )
@@ -182,6 +184,7 @@ internal class AssistOverlayController(
     },
     private val onPersistDefaultModel: () -> Unit = {},
     private val onPersistModelChoice: (DigitalAssistantModelChoice) -> Unit = {},
+    private val onPersistSelection: (AssistOverlaySelection) -> Unit = {},
     private val publishDraftForFullApp: (String, ComposerAttachment?, ChatLinkContext?, String, SessionKey?) -> Unit,
     private val onWakeHub: () -> Unit,
     private val onLaunchFullApp: (SessionKey?) -> Unit,
@@ -190,6 +193,7 @@ internal class AssistOverlayController(
     private val defaultSendError: () -> String,
     private val defaultModelStartError: () -> String = defaultSendError,
     private val initialModelChoice: DigitalAssistantModelChoice = DigitalAssistantModelChoice(),
+    private val initialSelection: AssistOverlaySelection = AssistOverlaySelection(),
     private val screenshotWaitTimeoutMillis: Long = SCREENSHOT_WAIT_TIMEOUT_MILLIS,
     private val noFlagScreenshotGraceMillis: Long = NO_FLAG_SCREENSHOT_GRACE_MILLIS,
     private val nextId: () -> String = { UUID.randomUUID().toString() },
@@ -213,6 +217,8 @@ internal class AssistOverlayController(
     private var baselineCaptured = false
     private val sentTurns = mutableListOf<SentOverlayTurn>()
     private var persistedModelChoice: DigitalAssistantModelChoice = initialModelChoice
+    private var persistedSelection: AssistOverlaySelection = initialSelection
+    private var justCreatedTargetKey: SessionKey? = null
     private var clearMainModelOnNextSend = false
     private var userModifiedTargetModel = false
     private var clearTargetModelOnNextSend = false
@@ -262,9 +268,11 @@ internal class AssistOverlayController(
         baselineItemIds = emptySet()
         baselineCaptured = false
         sentTurns.clear()
+        justCreatedTargetKey = null
         userModifiedTargetModel = false
         clearTargetModelOnNextSend = false
-        onSelectObservedSession(null)
+        val restored = resolveInitialSelectionForSession()
+        onSelectObservedSession((restored.target as? AssistTargetConversation.Existing)?.key)
         val initialCaptureStatus = when {
             !allowCapture -> AssistCaptureStatus.NotSupported
             screenshotDisabledBySettings -> AssistCaptureStatus.DisabledBySettings
@@ -284,9 +292,14 @@ internal class AssistOverlayController(
             captureStatus = initialCaptureStatus,
             hubStatus = hubSnapshot.status,
             mainSession = hubSnapshot.mainSession,
-            targetConversation = AssistTargetConversation.Main,
-            availableConversations = hubSnapshot.conversations,
-            modelChoice = persistedModelChoice,
+            targetConversation = restored.target,
+            availableConversations = mergeAvailableConversations(
+                remote = hubSnapshot.conversations,
+                target = restored.target,
+                activeSession = hubSnapshot.activeSession,
+                activeWorking = hubSnapshot.activeWorking,
+            ),
+            modelChoice = restored.modelChoice,
             modelCatalog = cachedCatalog ?: DigitalAssistantModelCatalog(),
         )
         val effectiveWaitMillis = if (expectScreenshotFromFlags) {
@@ -339,6 +352,11 @@ internal class AssistOverlayController(
         }
     }
 
+    /** Keeps the overlay's persisted target/model selection synced when Hub scope changes. */
+    fun onSelectionUpdated(selection: AssistOverlaySelection) {
+        persistedSelection = selection
+    }
+
     /** Updates live Hub connection, conversation list, target metadata, and streaming transcript snapshot. */
     fun onHubUpdate(snapshot: AssistHubSnapshot) {
         hubSnapshot = snapshot
@@ -346,22 +364,52 @@ internal class AssistOverlayController(
             resolvedMainSession = snapshot.mainSession
         }
         val currentState = mutableState.value
+        var fellBackToMain = false
         val updatedTarget = when (val target = currentState.targetConversation) {
             AssistTargetConversation.Main -> target
             AssistTargetConversation.NewChat -> target
             is AssistTargetConversation.Existing -> {
                 val matchingOption = snapshot.conversations.firstOrNull { it.key == target.key }
-                val updatedTitle = matchingOption?.title?.takeIf(String::isNotBlank)
-                    ?: snapshot.activeTitle?.takeIf { snapshot.activeSession == target.key && it.isNotBlank() }
-                    ?: target.title
-                val updatedPick = when {
-                    snapshot.activeSession == target.key &&
-                        (snapshot.activeModelPick != null || matchingOption != null || snapshot.activeTitle != null) ->
-                        snapshot.activeModelPick
-                    matchingOption != null -> matchingOption.modelPick
-                    else -> target.modelPick
+                val hasActiveConfirmation = snapshot.activeSession == target.key &&
+                    (snapshot.activeTitle != null || snapshot.activeModelPick != null || snapshot.chatSnapshot != null)
+                val isConfirmedUnavailable = isExistingTargetConfirmedUnavailable(
+                    targetKey = target.key,
+                    snapshot = snapshot,
+                    matchingOption = matchingOption,
+                    hasActiveConfirmation = hasActiveConfirmation,
+                )
+                if (isConfirmedUnavailable) {
+                    fellBackToMain = true
+                    resetProjectionForConversationSwitch()
+                    justCreatedTargetKey = null
+                    onSelectObservedSession(null)
+                    persistSelection(AssistOverlaySelection(target = AssistTargetConversation.Main))
+                    AssistTargetConversation.Main
+                } else {
+                    if (matchingOption != null ||
+                        snapshot.availableConversationKeys?.contains(target.key) == true
+                    ) {
+                        if (justCreatedTargetKey == target.key) {
+                            justCreatedTargetKey = null
+                        }
+                    }
+                    val updatedTitle = matchingOption?.title?.takeIf(String::isNotBlank)
+                        ?: snapshot.activeTitle?.takeIf { snapshot.activeSession == target.key && it.isNotBlank() }
+                        ?: target.title
+                    val updatedPick = when {
+                        snapshot.activeSession == target.key &&
+                            (snapshot.activeModelPick != null || matchingOption != null || snapshot.activeTitle != null) ->
+                            snapshot.activeModelPick
+                        matchingOption != null -> matchingOption.modelPick
+                        else -> target.modelPick
+                    }
+                    val refreshed = target.copy(title = updatedTitle, modelPick = updatedPick)
+                    val savedTarget = persistedSelection.target as? AssistTargetConversation.Existing
+                    if (savedTarget != null && savedTarget.key == refreshed.key && savedTarget.title != refreshed.title) {
+                        persistSelection(persistedSelection.copy(target = refreshed))
+                    }
+                    refreshed
                 }
-                target.copy(title = updatedTitle, modelPick = updatedPick)
             }
         }
         if (sentTurns.isNotEmpty() && !baselineCaptured && snapshotMatchesTarget(snapshot, updatedTarget)) {
@@ -385,14 +433,17 @@ internal class AssistOverlayController(
             activeWorking = snapshot.activeWorking,
         )
         mutableState.update { current ->
-            val syncedModelChoice = if (
+            val syncedModelChoice = when {
+                fellBackToMain -> validateChoiceWithCatalogIfReady(
+                    choice = persistedModelChoice,
+                    target = AssistTargetConversation.Main,
+                    catalog = cachedCatalog ?: current.modelCatalog,
+                )
                 updatedTarget is AssistTargetConversation.Existing &&
-                !userModifiedTargetModel &&
-                !current.sending
-            ) {
-                resolveModelChoiceForPick(updatedTarget.modelPick, cachedCatalog ?: current.modelCatalog)
-            } else {
-                current.modelChoice
+                    !userModifiedTargetModel &&
+                    !current.sending ->
+                    resolveModelChoiceForPick(updatedTarget.modelPick, cachedCatalog ?: current.modelCatalog)
+                else -> current.modelChoice
             }
             current.copy(
                 hubStatus = snapshot.status,
@@ -544,7 +595,9 @@ internal class AssistOverlayController(
             return
         }
         resetProjectionForConversationSwitch()
+        justCreatedTargetKey = null
         onSelectObservedSession(null)
+        persistSelection(AssistOverlaySelection(target = AssistTargetConversation.Main))
         mutableState.update {
             it.copy(
                 targetConversation = AssistTargetConversation.Main,
@@ -573,7 +626,9 @@ internal class AssistOverlayController(
             modelPick = option.modelPick,
         )
         resetProjectionForConversationSwitch()
+        justCreatedTargetKey = null
         onSelectObservedSession(option.key)
+        persistSelection(AssistOverlaySelection(target = nextTarget))
         val targetModel = resolveModelChoiceForPick(option.modelPick, cachedCatalog ?: current.modelCatalog)
         mutableState.update {
             it.copy(
@@ -597,7 +652,9 @@ internal class AssistOverlayController(
             return
         }
         resetProjectionForConversationSwitch()
+        justCreatedTargetKey = null
         onSelectObservedSession(null)
+        persistSelection(AssistOverlaySelection(target = AssistTargetConversation.NewChat))
         mutableState.update {
             it.copy(
                 targetConversation = AssistTargetConversation.NewChat,
@@ -617,6 +674,7 @@ internal class AssistOverlayController(
             persistedModelChoice = DigitalAssistantModelChoice()
             clearMainModelOnNextSend = true
             onPersistDefaultModel()
+            persistSelection(AssistOverlaySelection(target = AssistTargetConversation.Main))
             mutableState.update {
                 it.copy(
                     modelChoice = persistedModelChoice,
@@ -629,6 +687,13 @@ internal class AssistOverlayController(
         }
         userModifiedTargetModel = true
         clearTargetModelOnNextSend = true
+        persistSelection(
+            AssistOverlaySelection(
+                target = target,
+                targetModelChoice = null,
+                explicitDefaultModel = true,
+            ),
+        )
         mutableState.update {
             it.copy(
                 modelChoice = DigitalAssistantModelChoice(),
@@ -649,6 +714,7 @@ internal class AssistOverlayController(
             persistedModelChoice = choice
             clearMainModelOnNextSend = false
             onPersistModelChoice(choice)
+            persistSelection(AssistOverlaySelection(target = AssistTargetConversation.Main))
             mutableState.update {
                 it.copy(
                     modelChoice = choice,
@@ -661,6 +727,13 @@ internal class AssistOverlayController(
         }
         userModifiedTargetModel = true
         clearTargetModelOnNextSend = false
+        persistSelection(
+            AssistOverlaySelection(
+                target = target,
+                targetModelChoice = choice,
+                explicitDefaultModel = false,
+            ),
+        )
         mutableState.update {
             it.copy(
                 modelChoice = choice,
@@ -802,6 +875,7 @@ internal class AssistOverlayController(
                             title = "",
                             modelPick = selectedPick,
                         )
+                        justCreatedTargetKey = createdKey
                         effectiveTarget = boundTarget
                         onSelectObservedSession(createdKey)
                         val boundModelChoice = if (forceDefaultModel) {
@@ -809,6 +883,13 @@ internal class AssistOverlayController(
                         } else {
                             mutableState.value.modelChoice
                         }
+                        persistSelection(
+                            AssistOverlaySelection(
+                                target = boundTarget,
+                                targetModelChoice = boundModelChoice.takeIf { !it.isDefault },
+                                explicitDefaultModel = forceDefaultModel,
+                            ),
+                        )
                         mutableState.update {
                             it.copy(
                                 targetConversation = boundTarget,
@@ -1030,16 +1111,146 @@ internal class AssistOverlayController(
             cachedCatalog = loaded
             mutableState.update { current ->
                 val target = current.targetConversation
-                val upgradedChoice = if (
+                val upgradedChoice = when {
                     target is AssistTargetConversation.Existing &&
-                    !userModifiedTargetModel &&
-                    target.modelPick != null
-                ) {
-                    resolveModelChoiceForPick(target.modelPick, loaded)
-                } else {
-                    current.modelChoice
+                        !userModifiedTargetModel &&
+                        target.modelPick != null ->
+                        resolveModelChoiceForPick(target.modelPick, loaded)
+                    else -> validateChoiceWithCatalogIfReady(
+                        choice = current.modelChoice,
+                        target = target,
+                        catalog = loaded,
+                    )
                 }
                 current.copy(modelCatalog = loaded, modelChoice = upgradedChoice)
+            }
+        }
+    }
+
+    private data class RestoredSessionSelection(
+        val target: AssistTargetConversation,
+        val modelChoice: DigitalAssistantModelChoice,
+    )
+
+    private fun persistSelection(selection: AssistOverlaySelection) {
+        persistedSelection = selection
+        onPersistSelection(selection)
+    }
+
+    private fun isExistingTargetConfirmedUnavailable(
+        targetKey: SessionKey,
+        snapshot: AssistHubSnapshot,
+        matchingOption: AssistConversationOption?,
+        hasActiveConfirmation: Boolean,
+    ): Boolean {
+        if (snapshot.status != AssistHubStatus.Ready || !snapshot.conversationsLoaded) return false
+        if (targetKey == justCreatedTargetKey) return false
+        if (matchingOption != null || hasActiveConfirmation) return false
+        val liveKeys = snapshot.availableConversationKeys
+            ?: snapshot.conversations.mapTo(HashSet()) { it.key }
+        return targetKey !in liveKeys
+    }
+
+    private fun validateChoiceWithCatalogIfReady(
+        choice: DigitalAssistantModelChoice,
+        target: AssistTargetConversation,
+        catalog: DigitalAssistantModelCatalog,
+    ): DigitalAssistantModelChoice {
+        if (choice.isDefault) return choice
+        if (catalog.loading || catalog.error != null || !catalog.hubAvailable || catalog.groups.isEmpty()) {
+            return choice
+        }
+        val matched = matchModelChoiceInCatalog(choice, catalog)
+        if (matched != null) {
+            if (matched != choice) {
+                if (target is AssistTargetConversation.Main) {
+                    persistedModelChoice = matched
+                    onPersistModelChoice(matched)
+                } else if (persistedSelection.targetModelChoice != null) {
+                    persistSelection(persistedSelection.copy(targetModelChoice = matched))
+                }
+            }
+            return matched
+        }
+        // Confirmed unavailable in loaded catalog -> safely fall back to default model.
+        if (target is AssistTargetConversation.Main) {
+            persistedModelChoice = DigitalAssistantModelChoice()
+            clearMainModelOnNextSend = false
+            onPersistDefaultModel()
+        } else {
+            userModifiedTargetModel = false
+            clearTargetModelOnNextSend = false
+            persistSelection(
+                AssistOverlaySelection(
+                    target = target,
+                    targetModelChoice = null,
+                    explicitDefaultModel = false,
+                ),
+            )
+        }
+        return DigitalAssistantModelChoice()
+    }
+
+    private fun resolveInitialSelectionForSession(): RestoredSessionSelection {
+        val catalog = cachedCatalog ?: DigitalAssistantModelCatalog()
+        return when (val savedTarget = persistedSelection.target) {
+            AssistTargetConversation.Main -> {
+                val validChoice = validateChoiceWithCatalogIfReady(
+                    choice = persistedModelChoice,
+                    target = AssistTargetConversation.Main,
+                    catalog = catalog,
+                )
+                RestoredSessionSelection(AssistTargetConversation.Main, validChoice)
+            }
+
+            AssistTargetConversation.NewChat -> {
+                val rawChoice = persistedSelection.targetModelChoice ?: DigitalAssistantModelChoice()
+                val validChoice = validateChoiceWithCatalogIfReady(
+                    choice = rawChoice,
+                    target = AssistTargetConversation.NewChat,
+                    catalog = catalog,
+                )
+                userModifiedTargetModel = !validChoice.isDefault || persistedSelection.explicitDefaultModel
+                clearTargetModelOnNextSend = validChoice.isDefault && persistedSelection.explicitDefaultModel
+                RestoredSessionSelection(AssistTargetConversation.NewChat, validChoice)
+            }
+
+            is AssistTargetConversation.Existing -> {
+                val matchingOption = hubSnapshot.conversations.firstOrNull { it.key == savedTarget.key }
+                val hasActiveConfirmation = hubSnapshot.activeSession == savedTarget.key &&
+                    (hubSnapshot.activeTitle != null || hubSnapshot.activeModelPick != null || hubSnapshot.chatSnapshot != null)
+                if (isExistingTargetConfirmedUnavailable(savedTarget.key, hubSnapshot, matchingOption, hasActiveConfirmation)) {
+                    persistSelection(AssistOverlaySelection(target = AssistTargetConversation.Main))
+                    val validMainChoice = validateChoiceWithCatalogIfReady(
+                        choice = persistedModelChoice,
+                        target = AssistTargetConversation.Main,
+                        catalog = catalog,
+                    )
+                    return RestoredSessionSelection(AssistTargetConversation.Main, validMainChoice)
+                }
+                val hydratedTarget = savedTarget.copy(
+                    title = matchingOption?.title?.takeIf(String::isNotBlank) ?: savedTarget.title,
+                    modelPick = matchingOption?.modelPick ?: savedTarget.modelPick,
+                )
+                val choice = when {
+                    persistedSelection.targetModelChoice != null -> {
+                        val validChoice = validateChoiceWithCatalogIfReady(
+                            choice = persistedSelection.targetModelChoice!!,
+                            target = hydratedTarget,
+                            catalog = catalog,
+                        )
+                        userModifiedTargetModel = !validChoice.isDefault
+                        clearTargetModelOnNextSend = false
+                        validChoice
+                    }
+                    persistedSelection.explicitDefaultModel -> {
+                        userModifiedTargetModel = true
+                        clearTargetModelOnNextSend = true
+                        DigitalAssistantModelChoice()
+                    }
+                    else -> resolveModelChoiceForPick(hydratedTarget.modelPick, catalog)
+                }
+                RestoredSessionSelection(hydratedTarget, choice)
             }
         }
     }
@@ -1190,6 +1401,35 @@ internal fun resolveModelChoiceForPick(
         modelLabel = pick.model.orEmpty(),
         launcherLabel = launcherTitle.ifBlank { pick.launcher },
     )
+}
+
+/**
+ * Validates a persisted [choice] against a loaded, non-empty [catalog].
+ * Returns a label-refreshed [DigitalAssistantModelChoice] if the pick is still available (exact
+ * match or compatible launcher+model), or `null` if the model/launcher is no longer available.
+ */
+internal fun matchModelChoiceInCatalog(
+    choice: DigitalAssistantModelChoice,
+    catalog: DigitalAssistantModelCatalog,
+): DigitalAssistantModelChoice? {
+    val pick = choice.pick ?: return choice
+    for (group in catalog.groups) {
+        val exact = group.options.firstOrNull { it.pick == pick }
+        if (exact != null) return exact.toChoice()
+    }
+    for (group in catalog.groups) {
+        val sameModel = group.options.firstOrNull {
+            it.pick.launcher == pick.launcher && it.pick.model == pick.model
+        }
+        if (sameModel != null) {
+            return DigitalAssistantModelChoice(
+                pick = pick,
+                modelLabel = sameModel.modelLabel,
+                launcherLabel = sameModel.launcherLabel,
+            )
+        }
+    }
+    return null
 }
 
 internal fun projectOverlayTurns(
