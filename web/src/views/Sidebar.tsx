@@ -88,6 +88,7 @@ import { heldCounts } from "../lib/seen-outbox";
 import { heldSidesOf, useHeldVersion } from "../lib/use-child-sessions";
 import { NoComputers, useAddComputer } from "./machines/AddComputerEntry";
 import { BADGE_CLASS, DOT_CLASS, type GoFn, GroupCount, HISTORY_ICON, holdsRow, morePagesMenu, type NavPage, type NodeMenuFn, pageIconStyle, pageLabel, type RegFn, rowKey, type RowMenuFn, Section, SidebarGroup, GroupFoldButton, useActiveKey, useGo, useNavPages } from "./SidebarParts";
+import { NavPageIcon } from "./extensions/NavPageIcon";
 import { NavRow, PersonalAgents, PersonaRow, SessionRow, SubHeading, unreadShown } from "./SidebarRows";
 import { GroupBranch, LooseSection, MachineSection, RepoMachineSection, SessionTally, ShellSpaceSection, type SpaceMenuFn, type WorkspaceTreeActions, SpaceSection, TodoTreeView } from "./SidebarTree";
 import { CollapseButton, PagesTally } from "./SidebarRail";
@@ -687,8 +688,8 @@ export function NavGrid({ showHubNotice, pages, more = [], activeKey, go, onNavi
             aria-current={active ? "page" : undefined}
             className={cx("relative z-10 flex min-h-12 min-w-0 flex-col items-center justify-center gap-1 rounded-[9px] py-1.5 transition-[background-color,transform] duration-150 active:scale-[0.96]", p.k !== "settings" && "px-0.5", active ? "bg-hover" : "hover:bg-hover")}
           >
-            <span className={cx("relative", active ? "text-ink" : "text-ink-3")} style={pageIconStyle(p.color, active)}>
-              <Icon name={p.icon} size={17} stroke={1.8} />
+            <span className={cx("relative", active ? "text-ink" : "text-ink-3")} style={p.iconUrl ? undefined : pageIconStyle(p.color, active)}>
+              <NavPageIcon icon={p.icon} iconUrl={p.iconUrl} size={17} stroke={1.8} logoClassName="size-[18px] rounded-[4px]" fallbackStyle={p.iconUrl ? pageIconStyle(p.color, active) : undefined} />
               {p.notice && <NoticeDot className="absolute -top-0.5 -right-1 ring-2 ring-canvas" />}
               {p.badge !== undefined && (
                 <span className={cx("absolute -top-1.5 left-2.5 flex h-4 min-w-4 items-center justify-center whitespace-nowrap rounded-full px-1 text-[10px] font-semibold tabular-nums", BADGE_CLASS[p.badgeTone ?? "accent"])}>{p.badge}</span>

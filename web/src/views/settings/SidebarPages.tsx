@@ -13,6 +13,7 @@ import { useStartPageSynced } from "../../lib/start-page";
 import { Button, cx, IconButton, toast } from "../../ui/atoms";
 import { Icon } from "../../ui/icons";
 import { useNavPages } from "../Sidebar";
+import { NavPageIcon } from "../extensions/NavPageIcon";
 import { Group, Switch } from "./SettingsParts";
 
 const FIELD = "h-8 min-w-0 rounded-control bg-field px-2.5 text-meta text-ink shadow-inset-field outline-none focus:shadow-[inset_0_0_0_1px_var(--accent)]";
@@ -142,9 +143,13 @@ export function SidebarPagesGroup() {
                     <span aria-hidden className="cursor-grab text-ink-3 active:cursor-grabbing" title={t("settings.sidebar_pages_drag")}>
                       <Icon name="menu" size={14} />
                     </span>
-                    <span className="flex size-7 shrink-0 items-center justify-center rounded-control bg-inset text-ink-2 shadow-hairline">
-                      <Icon name={p.icon} size={14} />
-                    </span>
+                    <NavPageIcon
+                      icon={p.icon}
+                      iconUrl={p.iconUrl}
+                      size={14}
+                      frameClassName="flex size-7 shrink-0 items-center justify-center rounded-control bg-inset text-ink-2 shadow-hairline"
+                      logoClassName="size-7 rounded-control bg-inset text-ink-2 shadow-hairline"
+                    />
                     {/* the page's name and where it is wrap on a phone, beside the row's controls, rather than being cut */}
                     {/* at least a name's width: on a phone the controls go under it rather than squeezing it */}
                     <div className="min-w-32 flex-1">

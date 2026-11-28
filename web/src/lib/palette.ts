@@ -267,6 +267,7 @@ export interface PlaceInput {
   key: string;
   title: string;
   icon: IconName;
+  iconUrl?: string;
   to: Route;
   /** More words that find it, space-separated (inbox mail lark…). */
   words?: string;

@@ -12,6 +12,7 @@ import { useHerdrTabName } from "../lib/agents-display";
 import { appCommands, commandKeys, contextCommands, filterCommands, inboxHits, matchPaletteWords, orderGroups, parseQuery, placeHits, openPaletteWith, setPaletteQuery, terminalHits, usePalette, type InboxHit, type MachinePanes, type PaletteCommand, type PaletteContext, type PlaceHit, type PlaceInput, type TerminalHit } from "../lib/palette";
 import { isDone, itemRoute, useInbox, type InboxItem } from "../lib/inbox";
 import { useNavPages, type NavPage } from "./Sidebar";
+import { NavPageIcon } from "./extensions/NavPageIcon";
 import type { EvidenceSnippet } from "../lib/agent-chatlist-filter";
 import { storedValue } from "../lib/compatibility";
 import { useScope } from "../lib/current-assistant";
@@ -160,7 +161,7 @@ function markSnippetParts(snippet: string, ranges: readonly [number, number][]):
   return out.length ? out : [[snippet, false]];
 }
 
-export type PaletteNavPage = Pick<NavPage, "k" | "label" | "icon" | "to">;
+export type PaletteNavPage = Pick<NavPage, "k" | "label" | "icon" | "iconUrl" | "to">;
 export type PaletteRecentChats = { entries: string[]; current: string };
 export type PaletteSavedSearches = ReturnType<typeof useSavedSearches>;
 export type PaletteRuntimeSearch = ReturnType<typeof useRuntimeSearch>;
@@ -671,11 +672,11 @@ function PaletteView({
   const applyAgentListFilter = onFilterAgentList ?? filterAgentList;
   // the pages come anew each render: kept by what they are, so the list (and the highlight under it) stays put
   const hasAssistant = Boolean(assistant);
-  const pagesKey = pages.map((p) => [p.k, p.label, p.icon, formatHref(p.to)].join("\u0001")).join("\n");
+  const pagesKey = pages.map((p) => [p.k, p.label, p.icon, p.iconUrl ?? "", formatHref(p.to)].join("\u0001")).join("\n");
   const places = useMemo<PlaceInput[]>(
     () => [
       ...(hasAssistant ? [{ key: "persona", title: t("palette.place_persona"), icon: "home" as const, to: { name: "persona" } as Route }, { key: "history", title: t("sidebar.all_chats"), icon: "list" as const, to: { name: "history" } as Route }] : []),
-      ...pages.map((p) => ({ key: p.k, title: p.label, icon: p.icon, to: p.to })),
+      ...pages.map((p) => ({ key: p.k, title: p.label, icon: p.icon, ...(p.iconUrl ? { iconUrl: p.iconUrl } : {}), to: p.to })),
       // the Sessions and Terminal page's Terminals list (#4754): every plain terminal, to open one and type
       ...(panesOn ? [{ key: "terminals", title: t("palette.place_terminals"), icon: "terminal" as const, to: { name: "terminal", view: "terminals" } as Route }] : []),
     ].map((p) => ({ ...p, words: agentSearch?.placeWords(p.key) ?? "" })),
@@ -1011,7 +1012,15 @@ function PaletteView({
                   </>
                 ) : (
                   <>
-                    <span className="flex size-5 shrink-0 items-center justify-center"><Icon name={r.hit.place.icon} size={13} className="text-ink-3" /></span>
+                    <span className="flex size-5 shrink-0 items-center justify-center">
+                      <NavPageIcon
+                        icon={r.hit.place.icon}
+                        iconUrl={r.hit.place.iconUrl}
+                        size={13}
+                        logoClassName="size-4 rounded-[4px]"
+                        fallbackClassName="text-ink-3"
+                      />
+                    </span>
                     <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">{r.hit.place.title}</span>
                   </>
                 );

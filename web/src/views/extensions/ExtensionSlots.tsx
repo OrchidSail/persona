@@ -15,7 +15,10 @@ import { cx, EASE, IconButton, Loading, Spinner } from "../../ui/atoms";
 import { Icon, type IconName } from "../../ui/icons";
 import { lazyPage } from "../../lib/lazy-page";
 import { ROW_ICON } from "./icon-map";
+import { NavPageIcon } from "./NavPageIcon";
 import { ExtensionOwnerScope } from "../../lib/extension-owner";
+
+export { NavPageIcon, type NavPageIconProps } from "./NavPageIcon";
 
 // The extension page is its own chunk (#1794): App.tsx reaches this file for the sidebar's and the nav page's icons and
 // titles, and the first screen draws no extension UI. A page, a card and a section each wait under their own Suspense
@@ -96,9 +99,13 @@ export function ExtensionNavPage({ extension, ui, onToggleSidebar }: { extension
     <div className="flex h-full flex-col">
       <header className="flex h-14 shrink-0 items-center gap-2 border-b border-line px-3 sm:px-4">
         <IconButton icon="sidebar" label={t("extensions-extensionslots.sidebar")} onClick={onToggleSidebar} className="lg:hidden" />
-        <span className="flex size-7 shrink-0 items-center justify-center rounded-[8px] bg-field text-ink-2">
-          <Icon name={navIcon(place?.icon ?? (pages ? "chart" : undefined))} size={14} />
-        </span>
+        <NavPageIcon
+          icon={navIcon(place?.icon ?? (pages ? "chart" : undefined))}
+          iconUrl={place?.icon_url}
+          size={14}
+          frameClassName="flex size-7 shrink-0 items-center justify-center rounded-[8px] bg-field text-ink-2"
+          logoClassName="size-7 rounded-[8px] bg-field text-ink-2"
+        />
         {owned ? (
           <div className="min-w-0">
             {heading}

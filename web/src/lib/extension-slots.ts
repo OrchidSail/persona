@@ -37,7 +37,9 @@ const NONE: UIPlace[] = [];
 function keptPlaces(): UIPlace[] {
   try {
     const v = JSON.parse(localStorage.getItem(scopedKey(placesScope, KEPT) ?? "") ?? "null");
-    const list = v.places.filter((u: UIPlace) => [u.extension, u.id, u.title, u.placement].every((x) => typeof x === "string"));
+    const list = v.places
+      .filter((u: UIPlace) => [u.extension, u.id, u.title, u.placement].every((x) => typeof x === "string"))
+      .map((u: UIPlace) => (u.icon_url === undefined || typeof u.icon_url === "string" ? u : { ...u, icon_url: undefined }));
     kept = String(v.manager);
     return list;
   } catch {

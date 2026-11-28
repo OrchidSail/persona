@@ -453,6 +453,8 @@ export interface UIPlace {
   group?: { id: string; title: string };
   /** A nav_page's icon color (a named Color), drawn only with Colored sidebar icons (#10822); colorOf reads it. */
   icon_color?: string;
+  /** Optional versioned URL of the installed extension's bundled brand icon (`assets/icon.png`), when present (#17983). */
+  icon_url?: string;
 }
 
 export interface UIBadge {

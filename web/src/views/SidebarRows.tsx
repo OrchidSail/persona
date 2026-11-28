@@ -53,6 +53,7 @@ import { backgroundStall } from "../lib/background-work";
 import { SESSIONS_LIST_FEATURE } from "../lib/session-list";
 import { personalHideDeps, personalOrder, personalSessions, removeAgentSession, useGoingIds } from "../lib/agents";
 import { BADGE_CLASS, CURRENT_ROW, type GoFn, GroupCount, pageIconStyle, type RegFn, ROW_TITLE_MIN, type RowMenuFn, Section, useRowMenuSource } from "./SidebarParts";
+import { NavPageIcon } from "./extensions/NavPageIcon";
 import { sidebarRowHover } from "./SidebarRowHover";
 import { requestDirectWaiting } from "../lib/direct-waiting";
 import { needsYouAutoOpen } from "../lib/needs-you-auto-open";
@@ -146,11 +147,11 @@ export function SubHeading({ label, folded, onToggle, help, tally }: { label: st
   );
 }
 
-type NavRowProps = { onMenu?: (at: MenuAt, el: HTMLElement, button: boolean) => void; menuLabel?: string; k: string; reg: RegFn; hover: (k: string | null) => void; active: boolean; to: Route; go: GoFn; icon: IconName; /** Engine mark ID shown in place of `icon` (e.g. a starting agent placeholder's resolved engine). */ agent?: string; label: string; badge?: number | string; badgeTone?: keyof typeof BADGE_CLASS; /** Spoken for the badge in place of its digits (NavPage). */ badgeLabel?: string; notice?: string; hint?: string; hintCount?: { n: number; label: string }; title?: string; /** A state shown as a dot before the hint ("Automatic"'s rows: some run). */ dot?: AgentState; /** A page's icon color (NavPage.color, #10822). */ color?: UIColor };
+type NavRowProps = { onMenu?: (at: MenuAt, el: HTMLElement, button: boolean) => void; menuLabel?: string; k: string; reg: RegFn; hover: (k: string | null) => void; active: boolean; to: Route; go: GoFn; icon: IconName; /** Optional extension brand icon URL (`UIPlace.icon_url`, #17983). */ iconUrl?: string; /** Engine mark ID shown in place of `icon` (e.g. a starting agent placeholder's resolved engine). */ agent?: string; label: string; badge?: number | string; badgeTone?: keyof typeof BADGE_CLASS; /** Spoken for the badge in place of its digits (NavPage). */ badgeLabel?: string; notice?: string; hint?: string; hintCount?: { n: number; label: string }; title?: string; /** A state shown as a dot before the hint ("Automatic"'s rows: some run). */ dot?: AgentState; /** A page's icon color (NavPage.color, #10822). */ color?: UIColor };
 
 // The pages take nothing from the sessions, yet every sessions push re-renders the sidebar: memoized like SessionRow
 // (sameProps), a page row renders again only when its own props change (a badge, the highlight).
-export const NavRow = memo(function NavRow({ k, reg, hover, active, to, go, icon, agent, label, badge, badgeTone, badgeLabel, notice, hint, hintCount, title, onMenu, menuLabel, dot, color }: NavRowProps) {
+export const NavRow = memo(function NavRow({ k, reg, hover, active, to, go, icon, iconUrl, agent, label, badge, badgeTone, badgeLabel, notice, hint, hintCount, title, onMenu, menuLabel, dot, color }: NavRowProps) {
   // one ref for the row's life, so a re-render does not let go of it and register it again (useGlide's reg)
   const ref = useMemo(() => reg(k), [reg, k]);
   const link = (
@@ -167,8 +168,9 @@ export const NavRow = memo(function NavRow({ k, reg, hover, active, to, go, icon
       aria-current={active ? "page" : undefined}
       className={cx("relative z-10 flex w-full items-center gap-2 rounded-[7px] px-2 sidebar-row transition-transform duration-150 active:scale-[0.98] [@media(pointer:coarse)]:min-h-11", active && CURRENT_ROW, onMenu && (active ? "pr-8" : "group-hover/row:pr-8"), onMenu && "[@media(hover:none)]:pr-11")}
     >
-      <span className={active ? "text-ink" : "text-ink-3"} style={pageIconStyle(color, active)}>
-        {agent ? <AgentMark agent={agent} size={14} decorative /> : <Icon name={icon} size={14} stroke={1.8} />}
+      <span className={active ? "text-ink" : "text-ink-3"} style={iconUrl ? undefined : pageIconStyle(color, active)}>
+        {agent ? <AgentMark agent={agent} size={14} decorative />
+          : <NavPageIcon icon={icon} iconUrl={iconUrl} size={14} stroke={1.8} logoClassName="size-4 rounded-[4px]" fallbackStyle={iconUrl ? pageIconStyle(color, active) : undefined} />}
       </span>
       <span className={cx("min-w-0 flex-1 truncate text-[13px]", active ? "font-medium text-ink" : "text-ink-2")}>{label}</span>
       {notice && <NoticeDot />}

@@ -15,6 +15,7 @@ import { Icon } from "../ui/icons";
 import { formatChord, jumpHint, useBindings } from "../lib/shortcuts";
 import { takeFocusHandoff, toggleSidebarColumn } from "../lib/layout";
 import { CURRENT_ROW, DOT_CLASS, morePagesMenu, pageLabel, type NavPage, pageIconStyle, useActiveKey, useGo, useNavPages } from "./SidebarParts";
+import { NavPageIcon } from "./extensions/NavPageIcon";
 import { requestDirectWaiting } from "../lib/direct-waiting";
 import { needsYouAutoOpen } from "../lib/needs-you-auto-open";
 import { useMainWaiting } from "./assistant/use-main-waiting";
@@ -128,11 +129,11 @@ export function SidebarRail({ route, onSearch, onNewAgent, hideCollapse = false 
           p.k,
           p.to,
           pageLabel(p),
-          <Icon name={p.icon} size={16} stroke={1.8} />,
+          <NavPageIcon icon={p.icon} iconUrl={p.iconUrl} size={16} stroke={1.8} logoClassName="size-[18px] rounded-[4px]" fallbackStyle={p.iconUrl ? pageIconStyle(p.color, activeKey === p.k) : undefined} />,
           p.notice ? <NoticeDot className="absolute top-1.5 right-1.5 ring-2 ring-canvas" />
             : p.badge !== undefined ? <span aria-hidden className={cx("absolute top-1.5 right-1.5 size-2 rounded-full ring-2 ring-canvas", DOT_CLASS[p.badgeTone ?? "accent"])} /> : null,
           [p.title ?? (p.notice ? pageLabel(p) : p.label), p.badge ?? p.hint].filter((x) => x !== undefined).join(" · "),
-          p.color,
+          p.iconUrl ? undefined : p.color,
         ))}
         {more.length > 0 && (
           <button

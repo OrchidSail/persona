@@ -24,8 +24,8 @@ vi.mock("./store", async (original) => {
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-type Place = { extension: string; id: string; placement: string; title: string; icon?: string; badge?: { text: string } };
-const place = (id: string, title: string, badge?: string): Place => ({ extension: "example-today", id, placement: "nav_page", title, icon: "calendar", ...(badge ? { badge: { text: badge } } : {}) });
+type Place = { extension: string; id: string; placement: string; title: string; icon?: string; icon_url?: string; badge?: { text: string } };
+const place = (id: string, title: string, badge?: string, icon_url?: string): Place => ({ extension: "example-today", id, placement: "nav_page", title, icon: "calendar", ...(icon_url ? { icon_url } : {}), ...(badge ? { badge: { text: badge } } : {}) });
 const emit = (type: string, msg: Record<string, unknown>) => hub.listeners.get(type)?.forEach((l) => l({ type, ...msg }));
 let answer: Place[] = [];
 let asked = 0;
@@ -64,6 +64,7 @@ function Page() {
   return (
     <>
       <p data-entries>{entries.map((u) => `${u.title}${u.badge ? `(${u.badge.text})` : ""}`).join(",")}</p>
+      <p data-icons>{entries.map((u) => `${u.id}:${u.icon_url ?? ""}`).join(",")}</p>
       <h1>{open?.title ?? "today"}</h1>
     </>
   );
@@ -183,5 +184,27 @@ describe("the extensions' places on reload", () => {
     await reload();
     act(() => root.render(<Page />));
     expect(host.querySelector("h1")!.textContent).toBe("today");
+  });
+
+  it("preserves icon_url across ext-places cache reloads and badge updates, and drops malformed non-string icon_url", async () => {
+    const iconURL = "/api/v1/extensions/example-today/-/icon?v=1.2.3";
+    keep("m-1", [
+      place("today", "Today", "1", iconURL),
+      { ...place("lark", "Lark"), icon_url: 42 as unknown as string },
+    ]);
+    await reload();
+    act(() => root.render(<Page />));
+    expect(host.querySelector("[data-icons]")!.textContent).toBe(`today:${iconURL},lark:`);
+
+    act(() => managers.setRosterDefault("m-1"));
+    answer = [place("today", "Today", "1", iconURL), place("lark", "Lark")];
+    await hello();
+    act(() => emit("extension_ui", { extension: "example-today", id: "today", badge: { text: "4" }, manager: "m-1" }));
+    expect(host.querySelector("[data-icons]")!.textContent).toBe(`today:${iconURL},lark:`);
+
+    await reload();
+    act(() => root.render(<Page />));
+    expect(host.querySelector("[data-entries]")!.textContent).toBe("Today(4),Lark");
+    expect(host.querySelector("[data-icons]")!.textContent).toBe(`today:${iconURL},lark:`);
   });
 });

@@ -18,6 +18,7 @@ import { toneOf } from "../lib/extension-ui";
 import { colorOf, hue, type UIColor } from "../lib/extension-ui-v6";
 import { BUILTIN_PAGE_COLORS, useSidebarIconMode } from "../lib/sidebar-icons";
 import { BADGE_TONE, navIcon, pageRoute } from "./extensions/ExtensionSlots";
+import { NavPageIcon } from "./extensions/NavPageIcon";
 import { href, inWorkView, navigate, parse, type Route } from "../lib/router";
 import { scoped, useScope, useScopedCounts } from "../lib/current-assistant";
 import { useOwnerNeeds, useTodoBoard } from "../lib/todo-owner-needs";
@@ -90,8 +91,9 @@ export function useGo(onNavigate?: () => void): GoFn {
 
 /** One entry of the pages under Persona ("Overview", "Inbox" … "Settings", and the extensions' pages). `badgeLabel`:
  *  what a screen reader hears for the badge in place of its digits, when the number alone does not say what it counts.
- *  `color`: its icon's, only with Settings › Appearance › Sidebar icons on Colored (#10822, lib/sidebar-icons.ts). */
-export type NavPage = { k: string; to: Route; icon: IconName; label: string; short?: string; badge?: number | string; badgeTone?: keyof typeof BADGE_CLASS; badgeLabel?: string; notice?: string; hint?: string; title?: string; group?: { id: string; title: string }; color?: UIColor };
+ *  `color`: its icon's, only with Settings › Appearance › Sidebar icons on Colored (#10822, lib/sidebar-icons.ts).
+ *  `iconUrl`: optional versioned brand icon URL for an extension nav_page (#17983). */
+export type NavPage = { k: string; to: Route; icon: IconName; iconUrl?: string; label: string; short?: string; badge?: number | string; badgeTone?: keyof typeof BADGE_CLASS; badgeLabel?: string; notice?: string; hint?: string; title?: string; group?: { id: string; title: string }; color?: UIColor };
 
 /** A page's icon in its color (#10822), unless it is the open page, whose icon keeps the open row's ink; none without a
  *  color, so Monochrome draws what it always drew. */
@@ -161,7 +163,7 @@ export function useNavPages() {
     ...(k === "settings"
       ? extensionPages.map((u) => {
           const key = extensionNavKey(u.extension, u.id);
-          return tint({ k: key, to: pageRoute(u.extension, u.id), icon: navIcon(u.icon), label: u.title, badge: u.badge?.text || undefined, badgeTone: BADGE_TONE[toneOf(u.badge?.tone)], title: u.extension_name ? `${u.title} · ${u.extension_name}` : u.title, group: u.group }, colorOf(u.icon_color));
+          return tint({ k: key, to: pageRoute(u.extension, u.id), icon: navIcon(u.icon), ...(u.icon_url ? { iconUrl: u.icon_url } : {}), label: u.title, badge: u.badge?.text || undefined, badgeTone: BADGE_TONE[toneOf(u.badge?.tone)], title: u.extension_name ? `${u.title} · ${u.extension_name}` : u.title, group: u.group }, colorOf(u.icon_color));
         })
       : []),
     ...(page[k] ? [tint(page[k], k === "terminal" || k === "starred" ? undefined : BUILTIN_PAGE_COLORS[k])] : []),
@@ -187,10 +189,32 @@ export function morePagesMenu(more: NavPage[], activeKey: string, onNavigate?: (
     onNavigate?.();
   };
   return [
-    ...more.map((p): MenuItem => ({ key: p.k, label: p.label, icon: p.icon, hint: p.badge !== undefined ? String(p.badge) : p.hint, checked: p.k === activeKey || undefined, onSelect: open(p.to) })),
+    ...more.map((p): MenuItem => ({
+      key: p.k,
+      label: p.label,
+      ...(p.iconUrl
+        ? {
+            lead: (
+              <NavPageIcon
+                icon={p.icon}
+                iconUrl={p.iconUrl}
+                size={14}
+                logoClassName="size-4 rounded-[4px]"
+                fallbackClassName="text-ink-3"
+                fallbackStyle={pageIconStyle(p.color, p.k === activeKey)}
+              />
+            ),
+          }
+        : { icon: p.icon }),
+      hint: p.badge !== undefined ? String(p.badge) : p.hint,
+      checked: p.k === activeKey || undefined,
+      onSelect: open(p.to),
+    })),
     { key: "-arrange", label: t("sidebar.arrange_pages"), icon: "gear", divider: true, onSelect: open({ name: "settings" }) },
   ];
 }
+
+export { NavPageIcon } from "./extensions/NavPageIcon";
 
 export { GroupCount, Section, SidebarGroup } from "./SidebarSection";
 
